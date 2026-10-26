@@ -40,6 +40,7 @@ class Fake:
         self.killed: list[tuple[int, int]] = []
         self.hostname = "desk.lan"
         self.processes: dict[int, list[str]] = {}
+        self.starts: dict[int, int] = {}
         self.mounts: set[Path] = set()
         self.on_run = None
         self.replaced: frozenset[str] = frozenset()
@@ -76,6 +77,7 @@ class Fake:
             hostname=lambda: self.hostname,
             runtime_dir=runtime_dir,
             process_argv=self.processes.get,
+            process_start=self.starts.get,
             terminate=terminate,
             is_mount=lambda path: path in self.mounts,
             replaced_tools=lambda: self.replaced,
@@ -128,6 +130,38 @@ def test_a_reused_or_dead_pid_is_never_signalled(tmp_path) -> None:
     # Not running, so the click starts a new UxPlay instead of killing.
     assert tools.toggle_mirroring(system).ok
     assert fake.killed == [] and len(fake.commands) == 1
+
+
+def test_only_a_uxplay_program_with_the_recorded_start_time_is_stopped(tmp_path) -> None:
+    fake = Fake(tmp_path, installed={"uxplay"})
+    system = fake.system()
+    pid_file = system.runtime_dir() / tools.MIRROR_PID_FILE
+    fake.starts[4242] = 1000
+    assert tools.toggle_mirroring(system).ok
+    assert pid_file.read_text() == "4242 1000"
+
+    # The pid now belongs to an editor that merely names uxplay.
+    fake.processes[4242] = ["vim", "uxplay"]
+    assert tools.mirroring_pid(system) is None
+    assert not pid_file.exists()
+
+    # A later uxplay under the same pid is another process.
+    pid_file.write_text("4242 1000")
+    pid_file.chmod(0o600)
+    fake.processes[4242] = ["/usr/bin/uxplay", "-n", "desk"]
+    fake.starts[4242] = 2000
+    assert tools.mirroring_pid(system) is None
+    assert fake.killed == []
+
+    pid_file.write_text("4242 2000")
+    pid_file.chmod(0o600)
+    assert tools.mirroring_pid(system) == 4242
+    assert tools.toggle_mirroring(system).ok and fake.killed == [(4242, signal.SIGTERM)]
+
+
+def test_process_start_reads_this_process_and_ignores_missing_ones() -> None:
+    assert isinstance(tools.process_start(os.getpid()), int)
+    assert tools.process_start(2**22 + 12345) is None
 
 
 def test_mirroring_is_greyed_out_without_uxplay_and_launch_errors_are_plain(tmp_path) -> None:

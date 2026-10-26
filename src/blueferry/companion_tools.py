@@ -61,6 +61,8 @@ IDEVICEPAIR = "idevicepair"
 FUSERMOUNT = ("fusermount3", "fusermount")
 
 MIRROR_PID_FILE = "uxplay.pid"
+# Execs the desktop entry's command; briefly the launched pid's program.
+GIO_LAUNCH_DESKTOP = "gio-launch-desktop"
 PHOTOS_DIR = "iphone-photos"
 
 PROBE_TIMEOUT_SEC = 5.0
@@ -172,6 +174,20 @@ def process_argv(pid: int) -> list[str] | None:
     return [part.decode("utf-8", "replace") for part in raw.split(b"\0") if part]
 
 
+def process_start(pid: int) -> int | None:
+    """When a process started (field 22 of ``/proc/<pid>/stat``, clock ticks
+    since boot); None when it is gone. A reused pid has another value."""
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    fields = stat.rpartition(")")[2].split()
+    try:
+        return int(fields[19])
+    except (IndexError, ValueError):
+        return None
+
+
 def replaced_by_plugins() -> frozenset[str]:
     """Tool names (``localsend``, ``uxplay``) an enabled plugin replaces
     (manifest key ``ReplacesTools``). *Blocking*: reads the manifests, starts
@@ -228,6 +244,7 @@ class System:
     hostname: Callable[[], str] = socket.gethostname
     runtime_dir: Callable[[], Path] = runtime_private_directory
     process_argv: Callable[[int], list[str] | None] = process_argv
+    process_start: Callable[[int], int | None] = process_start
     # SIGTERM to a pid while it is still the process we started (pidfd).
     terminate: Callable[[int, Callable[[int], bool]], None] = pidfd_terminate
     is_mount: Callable[[Path], bool] = os.path.ismount
@@ -302,27 +319,48 @@ def _pid_file(system: System) -> Path:
     return system.runtime_dir() / MIRROR_PID_FILE
 
 
-def _runs_uxplay(system: System, pid: int) -> bool:
+def _runs_uxplay(system: System, pid: int, started: int | None) -> bool:
+    """Whether ``pid`` is still the UxPlay we started.
+
+    The program itself must be ``uxplay`` (or gio-launch-desktop right
+    before it execs uxplay), not merely name it as an argument; and a
+    recorded start time must match, so a reused pid never counts. Records
+    from before start times were kept only have the program check.
+    """
     argv = system.process_argv(pid) if pid > 1 and pid != os.getpid() else None
-    return argv is not None and any(os.path.basename(part) == UXPLAY for part in argv[:3])
+    if not argv:
+        return False
+    program = [os.path.basename(part) for part in argv[:2]]
+    if program[0] == GIO_LAUNCH_DESKTOP:
+        program = program[1:]
+    if program[:1] != [UXPLAY]:
+        return False
+    return started is None or system.process_start(pid) == started
+
+
+def _mirror_record(system: System) -> tuple[int, int | None] | None:
+    path = _pid_file(system)
+    try:
+        parts = read_private_text(path, maximum_bytes=64).split()
+        pid = int(parts[0])
+        started = int(parts[1]) if len(parts) > 1 else None
+    except (OSError, ValueError, IndexError):
+        return None
+    if _runs_uxplay(system, pid, started):
+        return pid, started
+    path.unlink(missing_ok=True)
+    return None
 
 
 def mirroring_pid(system: System) -> int | None:
     """The UxPlay process this user's BlueFerry clients started, if it runs.
 
     The id comes from our own record, not from a process search, and only
-    counts while that process still runs ``uxplay``; a stale record is
-    removed.
+    counts while that process still runs ``uxplay`` and started when the
+    record says; a stale record is removed.
     """
-    path = _pid_file(system)
-    try:
-        pid = int(read_private_text(path, maximum_bytes=32).strip())
-    except (OSError, ValueError):
-        return None
-    if _runs_uxplay(system, pid):
-        return pid
-    path.unlink(missing_ok=True)
-    return None
+    record = _mirror_record(system)
+    return record[0] if record is not None else None
 
 
 def mirror_state(system: System) -> ToolState:
@@ -343,10 +381,11 @@ def mirror_state(system: System) -> ToolState:
 
 def toggle_mirroring(system: System) -> ActionResult:
     """Start UxPlay, or stop the one started earlier. Does not block."""
-    pid = mirroring_pid(system)
-    if pid is not None:
+    record = _mirror_record(system)
+    if record is not None:
+        pid, started = record
         try:
-            system.terminate(pid, lambda candidate: _runs_uxplay(system, candidate))
+            system.terminate(pid, lambda candidate: _runs_uxplay(system, candidate, started))
         except ProcessLookupError:
             pass
         except OSError:
@@ -361,7 +400,9 @@ def toggle_mirroring(system: System) -> ActionResult:
     except Exception:  # GLib.Error and friends: report, never crash a client
         return ActionResult(False, _("Could not start UxPlay."))
     if started is not None:
-        atomic_write_private_text(_pid_file(system), str(started), maximum_bytes=32)
+        since = system.process_start(started)
+        text = str(started) if since is None else f"{started} {since}"
+        atomic_write_private_text(_pid_file(system), text, maximum_bytes=64)
     return ActionResult(True, _("Screen mirroring is ready. {hint}").format(hint=MIRROR_HINT))
 
 
