@@ -163,6 +163,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `client_wire.py` | Validates and decodes `Messages1` JSON into models for every Python client. |
 | `models.py` | Typed client-side models (`BackendStatus`, `Thread`, …); `Thread` derives unread counts, approval tokens, and roster-warning keys. |
 | `conversation_state.py` | Toolkit-neutral conversation snapshot, contact search, and reply planning. |
+| `client_tasks.py` | Seams for the shared client models below: a `TaskRunner` (work on a worker thread, results on the UI thread) and a restartable single-shot `Timer` (`ScheduledTimer` builds one from `GLib.timeout_add`/`source_remove`). Qt adapts them in `qt/tasks.py`; the GTK client adapts them with its worker pool and `GLib.idle_add`. |
 | `backend_lifecycle.py` | Starts the daemon and restarts one that predates installed files. |
 | `client_activation.py` | Picks and activates one desktop client (recency files, notification-open forwarding). |
 | `glib_client_activation.py` | GLib adapter for client activation (GTK and the Quickshell bridge). |
@@ -193,6 +194,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `plugin_prefs.py` | Reads which plugins are disabled without the plugin manager. |
 | `plugin_logs.py` | Finds a plugin's standard log file and reads its tail without following symlinks. |
 | `plugin_settings_view.py` | Toolkit-free plugin rows, store cards and settings forms for the Qt client (`qt/plugin_settings.py`, `qt/qml/SettingsPlugins.qml`, `qt/qml/PluginConfigForm.qml`, `qt/qml/PluginStoreCard.qml`). |
+| `plugin_settings_model.py`, `qt/plugin_settings.py` | Toolkit-neutral plugin management shared by Qt and (soon) GTK: install/update/remove with confirmation, the enable/disable kill switch, settings form load/save/test, browser sign-in polling, settings actions, store and indexes, one step at a time on a `TaskRunner`. Late answers never reach a closed or different form. `qt/plugin_settings.py` only adapts it to a `QThreadPool`, a `QTimer` and the `changed` signal. |
 | `plugin_surfaces.py`, `cli_surfaces.py`, `qt/plugin_surfaces.py`, `qt/qml/PluginCardSection.qml` | Host side of the `card` and `share` surfaces: card rows, actions, "Send to…" targets, card actions that take files; `blueferry cards`/`blueferry send` and the Qt "From Plugins" section (which hears `CardChanged` only from enabled card plugins). Plugin calls run on worker threads with timeouts. |
 | `plugin_notify.py` | Daemon side of the `notify` capability: watches the content-free `Plugin1.NotifyChanged`, accepts it only from the owner of an enabled notify plugin's bus name running as the same user, fetches the popup with `GetPendingNotification` from that connection, rate-limits, and hands it to the libnotify sink; the popup button calls `InvokeAction` asynchronously. |
 | `photos_view.py`, `cli_photos.py`, `qt/qml/PhotosTab.qml` | Client side of the `photos` capability: plugin lookup, loads for worker threads, plain-text labels; `blueferry photos` and the Qt Photos tab (loaded only while shown). |
@@ -226,7 +228,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `phone_overview.py`, `qt/phone_link.py` | Toolkit-free rules behind the phone card and the Calls and Notifications tabs: opt-in hints that name the setting, day-grouped recent calls, notification rows. |
 | `qt/tray.py`, `qt/tray_presenter.py` | `blueferry-tray`: standalone StatusNotifierItem (unread badge, battery/signal tooltip); asynchronous QtDBus calls with auto-start disabled, so it never starts the daemon; owns `io.weirdware.BlueFerry.Client.Tray`, which `qt/app.py` watches to hide its own icon; pure presenters. |
 | `tray_autostart.py` | The tray's opt-in per-user XDG autostart entry. |
-| `qt/tasks.py` | Qt worker primitive. |
+| `qt/tasks.py` | Qt worker primitive, and `QtTaskRunner`/`QtTimer`, the Qt side of `client_tasks.py`. |
 | `qt/avatars.py` | Image provider that decodes opt-in contact photos with `QImageReader` after header and size checks. |
 | `qt/activation.py` | Qt adapter for client activation. |
 | `qt/qml/Main.qml` | Kirigami window: navigation and composition. |
