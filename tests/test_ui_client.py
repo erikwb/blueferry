@@ -383,3 +383,17 @@ def test_notification_sync_preference_uses_mutation_worker(monkeypatch) -> None:
     finally:
         client.stop()
     assert results == [True] and submitted == ["mutation"]
+
+
+def test_battery_warning_preference_uses_mutation_worker(monkeypatch) -> None:
+    class Backend:
+        def set_phone_battery_warning(self, enabled):
+            return enabled
+
+    client, submitted = _recording_client(monkeypatch, Backend())
+    results = []
+    try:
+        client.set_phone_battery_warning_async(True, results.append, None)
+    finally:
+        client.stop()
+    assert results == [True] and submitted == ["mutation"]

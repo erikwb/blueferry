@@ -11,7 +11,10 @@ from tests.gtk_broadway import run_scenario
 
 
 @pytest.mark.parametrize(
-    "scenario", ["categories", "features", "old-daemon", "doctor", "mirror-removals"],
+    "scenario", [
+        "categories", "features", "old-daemon", "doctor", "mirror-removals",
+        "battery-warning",
+    ],
 )
 def test_gtk_settings(tmp_path, scenario):
     run_scenario(tmp_path, str(Path(__file__).resolve()), scenario)
@@ -63,6 +66,9 @@ class FakeClient:
 
     def set_mirror_notification_removals_async(self, enabled, on_ok, on_err):
         self.calls.append((("mirror", enabled), on_ok, on_err))
+
+    def set_phone_battery_warning_async(self, enabled, on_ok, on_err):
+        self.calls.append((("battery", enabled), on_ok, on_err))
 
     def run_doctor_async(self, on_ok, on_err, runner=None):
         self.calls.append(("doctor", on_ok, on_err))
@@ -353,8 +359,37 @@ def _exercise_mirror_removals():
     window.destroy()
 
 
+def _exercise_battery_warning():
+    from blueferry.models import BackendStatus
+
+    dialog, window, client = _settings()
+    group, row = dialog._battery_group, dialog._battery_warning_row
+    assert group.get_ancestor(type(dialog.pages["calls"])) is dialog.pages["calls"]
+    dialog._apply_status(BackendStatus.from_dict({
+        "daemon": True, "phone_battery_warning": False, "phone_battery_warning_percent": 15,
+    }))
+    assert group.get_visible() and not row.get_active() and row.get_sensitive()
+    assert row.get_subtitle() == "One desktop notification per discharge, at 15 % or less."
+    toasts = []
+    dialog._toast = toasts.append
+    row.set_active(True)
+    assert not row.get_sensitive()
+    client.take(("battery", True))[2]("busy")
+    assert not row.get_active() and row.get_sensitive()
+    assert toasts == ["Could not save battery warning preference: busy"]
+    client.status = BackendStatus.from_dict({"daemon": True, "phone_battery_warning": True})
+    row.set_active(True)
+    client.take(("battery", True))[1](True)
+    assert row.get_active() and row.get_sensitive()
+    assert row.get_subtitle().endswith("at 20 % or less.")
+    dialog._apply_status(BackendStatus.from_dict({"daemon": False}))
+    assert not row.get_sensitive()
+    window.destroy()
+
+
 if __name__ == "__main__":
     {
+        "battery-warning": _exercise_battery_warning,
         "mirror-removals": _exercise_mirror_removals,
         "categories": _exercise_categories,
         "features": _exercise_features,

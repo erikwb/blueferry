@@ -60,6 +60,7 @@ class SettingsDialog(Adw.PreferencesDialog):
         self._applying_contacts_only_notifications = False
         self._applying_ancs_actions = False
         self._applying_mirror_removals = False
+        self._applying_battery_warning = False
         self._applying_saved_switches = False
         self._media_control_choice = SavedChoice()
         self._auto_profile_reset_choice = SavedChoice()
@@ -516,6 +517,14 @@ class SettingsDialog(Adw.PreferencesDialog):
         )
         self._call_history_group.add(self._missed_call_popups_row)
 
+        self._battery_group = Adw.PreferencesGroup(title=_("Battery"))
+        self._battery_warning_row = Adw.SwitchRow(
+            title=_("Warn When the iPhone's Battery Runs Low"), use_markup=False,
+        )
+        self._battery_warning_row.connect("notify::active", self._battery_warning_changed)
+        self._battery_group.add(self._battery_warning_row)
+        self._battery_group.set_visible(False)
+
         # Shown only when the backend reports the away-lock keys.
         self._proximity_lock_group = Adw.PreferencesGroup(
             title=_("Away Lock"),
@@ -665,7 +674,7 @@ class SettingsDialog(Adw.PreferencesDialog):
             )),
             ("notifications", (notification_group, content_group, history_group)),
             ("calls", (
-                self._calls_group, self._call_history_group,
+                self._calls_group, self._call_history_group, self._battery_group,
                 self._phone_audio_group, self._media_group,
             )),
             ("security", (self._otp_group, self._proximity_lock_group, data_group)),
@@ -1304,6 +1313,7 @@ class SettingsDialog(Adw.PreferencesDialog):
         self._applying_contacts_only_notifications = False
         self._apply_ancs_actions(status, reachable)
         self._apply_mirror_removals(status, reachable)
+        self._apply_battery_warning(status, values, reachable)
         self._apply_media_switches(status, reachable)
         self._apply_phone_audio(status, reachable)
         self._apply_connection_switches(status, reachable)
@@ -1474,6 +1484,37 @@ class SettingsDialog(Adw.PreferencesDialog):
             self._apply_status(self._last_status)
 
         self._client.set_mirror_notification_removals_async(row.get_active(), saved, failed)
+
+    def _apply_battery_warning(self, status: BackendStatus, values: dict, reachable: bool) -> None:
+        # As in the Qt client: shown for daemons that report the key.
+        self._battery_group.set_visible("phone_battery_warning" in values)
+        percent = status.extra.get("phone_battery_warning_percent", 20)
+        self._battery_warning_row.set_subtitle(
+            _("One desktop notification per discharge, at {percent} % or less.").format(
+                percent=percent,
+            )
+        )
+        self._applying_battery_warning = True
+        self._battery_warning_row.set_active(status.phone_battery_warning)
+        self._applying_battery_warning = False
+        self._battery_warning_row.set_sensitive(reachable)
+
+    def _battery_warning_changed(self, row, _property) -> None:
+        if self._applying_battery_warning:
+            return
+        row.set_sensitive(False)
+
+        def saved(_value: bool) -> None:
+            self._toast(_("Battery warning preference saved"))
+            self._refresh()
+
+        def failed(error: str) -> None:
+            self._toast(
+                _("Could not save battery warning preference: {error}").format(error=error)
+            )
+            self._apply_status(self._last_status)
+
+        self._client.set_phone_battery_warning_async(row.get_active(), saved, failed)
 
     def _show_saved_choice(self, switch, choice: SavedChoice, reported: bool) -> None:
         """Set ``switch`` for a status reporting ``reported``."""
