@@ -915,7 +915,7 @@ class SettingsDialog(Adw.PreferencesDialog):
                 self._toast(_("Could not open GitHub. The report is at {path}.").format(path=path))
 
         dialog.connect("response", responded)
-        dialog.present(self)
+        dialog.present(self.get_root())
 
     def _setup_failed(self, message: str) -> bool:
         self._set_pairing_busy(False)
@@ -974,7 +974,7 @@ class SettingsDialog(Adw.PreferencesDialog):
             self._run_setup(self._setup.activate_bluez, activated)
 
         dialog.connect("response", responded)
-        dialog.present(self)
+        dialog.present(self.get_root())
 
     def _load_devices(self, *, scan: bool) -> None:
         def loaded(devices: list[PairedDevice]) -> None:
@@ -1060,7 +1060,7 @@ class SettingsDialog(Adw.PreferencesDialog):
                 )
 
         dialog.connect("response", responded)
-        dialog.present(self)
+        dialog.present(self.get_root())
 
     def _start_pairing(
         self,
@@ -1129,7 +1129,7 @@ class SettingsDialog(Adw.PreferencesDialog):
                     decided.set()
 
                 dialog.connect("response", responded)
-                dialog.present(self)
+                dialog.present(self.get_root())
                 return GLib.SOURCE_REMOVE
 
             GLib.idle_add(present_confirmation)
@@ -1210,7 +1210,7 @@ class SettingsDialog(Adw.PreferencesDialog):
                 )
 
         dialog.connect("response", responded)
-        dialog.present(self)
+        dialog.present(self.get_root())
 
     def _refresh(self) -> None:
         self._client.get_status_async(self._apply_status, self._status_failed)
@@ -1799,7 +1799,7 @@ class SettingsDialog(Adw.PreferencesDialog):
                 else self._apply_status(self._last_status)
             ),
         )
-        dialog.present(self)
+        dialog.present(self.get_root())
 
     def _save_storage_policy(self, policy: str) -> None:
         self._storage_policy_row.set_sensitive(False)
@@ -1873,4 +1873,4 @@ class SettingsDialog(Adw.PreferencesDialog):
             )
 
         dialog.connect("response", responded)
-        dialog.present(self)
+        dialog.present(self.get_root())
