@@ -13,6 +13,21 @@ Desktops.
 
 ![GTK-Client](../../images/gtk.png)
 
+Das Fenster ist eine Telefon-Übersicht. Eine Karte über den Reitern zeigt
+Name und Verbindung des iPhones, Akku, Empfang und Netz sowie, was gerade
+läuft (mit zurück, Wiedergabe/Pause und weiter). Ist etwas ausgeschaltet,
+nennt die Karte die Einstellung, die es einschaltet. Die Reiter wechselt man
+in der Kopfzeile, in einem schmalen Fenster unten:
+
+- **Messages**: Unterhaltungen und der Chat.
+- **Calls**: ein Wählfeld für [Anrufe](calls.md), das auch deine Kontakte
+  nach Namen durchsucht, und die [Anrufliste](call-history.md) nach Tagen
+  gruppiert, mit All und Missed, Rückruf- und Nachrichtenknöpfen und
+  **Refresh from iPhone**. Jeder Anruf fragt vorher nach.
+- **Notifications**: die [letzten iPhone-Mitteilungen](notification-history.md)
+  anderer Apps. Ist die Liste aus, sagt der Reiter warum und öffnet die
+  Einstellung.
+
 **Settings** (Hauptmenü, `Strg+,`) hat dieselben Kategorien wie der
 KDE-Client, je eine Seite; die Umschaltleiste sitzt in der Kopfzeile, in
 einem schmalen Fenster unten, und der Suchknopf findet jede Einstellung:
@@ -28,9 +43,12 @@ einem schmalen Fenster unten, und der Suchknopf findet jede Einstellung:
 Die Schalter, die einen Neustart brauchen (unten), funktionieren wie im
 KDE-Client: Solange eine Änderung auf den Neustart wartet, beginnt jede
 Seite mit einem Hinweis und **Restart Service**. Die Klickregeln für
-Mitteilungen, die Akku-Warnung und die Plugin-Einstellungen hat der
-GTK-Client noch nicht; dafür gibt es den KDE-Client oder `blueferry` auf der
-Kommandozeile.
+Mitteilungen, die Akku-Warnung, die Plugin-Einstellungen und den Reiter
+Photos hat der GTK-Client noch nicht, und laufende Anrufe zeigt er nicht an
+(annehmen, halten und auflegen am iPhone oder in der Anruf-Mitteilung);
+dafür gibt es den KDE-Client oder `blueferry` auf der Kommandozeile. Die
+Schalter für den Ton und die Abwesenheitssperre liegen unter **Settings**
+statt auf der Karte.
 
 ## KDE Plasma (Kirigami)
 

@@ -537,8 +537,8 @@ terminal client does not show photos.
 `BLUEFERRY_NOTIFICATION_HISTORY=true` (or **Keep recent iPhone notifications**
 in the Qt or GTK settings, or `blueferry features on notification_history`, after a
 service restart) keeps the last 200 non-Messages iPhone app notifications in
-the daemon's memory so the Qt client's Notifications tab and `blueferry
-notifications recent` can list them. Nothing is written to disk: BlueFerry's
+the daemon's memory so the Notifications tab of the Qt and GTK clients and
+`blueferry notifications recent` can list them. Nothing is written to disk: BlueFerry's
 history deliberately retains only Messages records, so the list starts empty
 after every backend restart. Titles and bodies are kept only with
 `BLUEFERRY_SHOW_NOTIFICATION_CONTENT=true`, otherwise just the app and the
@@ -745,9 +745,9 @@ blueferry phone-status --warn   # or --no-warn
 ```
 
 The Qt client shows a small battery and signal indicator next to
-"Conversations" (hover for the network name); the terminal client, the
-Quickshell header, and the GTK status page add battery and signal to their
-connection line.
+"Conversations" (hover for the network name), the GTK client shows battery,
+signal and network on its phone card; the terminal client and the
+Quickshell header add battery and signal to their connection line.
 
 An optional low-battery warning (off by default) fires once per discharge
 when the battery reaches the threshold, and again only after the phone has
@@ -996,8 +996,7 @@ takes precedence. `BLUEFERRY_CALL_HISTORY_INTERVAL_SEC` (60–86400, default
 
 View the list with `blueferry call-history` (`--missed`, `--limit N`,
 `--sync` to refresh from the iPhone first), the **Calls** tab of the KDE
-client, the **iPhone** dialog of the GTK client (`Ctrl+I`), or `h` in the
-terminal client. The Quickshell client does not show it yet.
+or GTK client, or `h` in the terminal client. The Quickshell client does not show it yet.
 ## iPhone media control (optional)
 
 BlueFerry can show what the iPhone is playing and send play, pause, next,
@@ -1018,8 +1017,8 @@ blueferry media toggle     # also: play, pause, next, previous, volume-up,
 Only commands the iPhone currently offers are sent; for example, like/dislike
 exist only for players that advertise them. While a player is active, the
 Kirigami client shows a small now-playing bar above the conversations, the
-Quickshell client a strip under its header, the GTK client a **Now Playing**
-row in its **iPhone** dialog (`Ctrl+I`), and the terminal client a line under
+Quickshell client a strip under its header, the GTK client the track with
+its buttons on the phone card above its tabs, and the terminal client a line under
 its status pills (`p`, `[` and `]` play/pause, go back and skip). No client
 asks for now playing while the option is off.
 
