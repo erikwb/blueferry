@@ -156,7 +156,7 @@ class TrayController(QObject):
         self.autostart_action = QAction(_("Start at login"), self.menu)
         self.autostart_action.setCheckable(True)
         self.autostart_action.triggered.connect(self._autostart_triggered)
-        self.quit_action = QAction(_("Quit"), self.menu)
+        self.quit_action = QAction(_("Quit Tray Icon"), self.menu)
         self.quit_action.triggered.connect(QApplication.quit)
         self.menu.addAction(self.open_action)
         self.menu.addSeparator()

@@ -118,7 +118,7 @@ _SMOKE = textwrap.dedent("""
     lines = tray.tray.toolTip().splitlines()
     assert lines == ["iPhone connected", "Battery: 87 %", "2 unread messages"], lines
     texts = [action.text() for action in tray.menu.actions() if not action.isSeparator()]
-    assert texts == ["Open BlueFerry", "Start at login", "Quit"], texts
+    assert texts == ["Open BlueFerry", "Start at login", "Quit Tray Icon"], texts
     # Autostart is opt-in: off until the user checks it, then a user entry.
     assert not tray.autostart_action.isChecked() and not entry.exists()
     tray.autostart_action.trigger()
