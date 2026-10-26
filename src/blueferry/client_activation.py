@@ -15,7 +15,7 @@ import sys
 import threading
 import time
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -78,27 +78,57 @@ def _last_used(client: DesktopClient) -> int:
         return 0
 
 
+def _preferred_key(environment: Mapping[str, str]) -> str:
+    desktop = environment.get("XDG_CURRENT_DESKTOP", "").lower().split(":")
+    if "gnome" in desktop or "unity" in desktop:
+        return "gtk"
+    if "kde" in desktop:
+        return "qt"
+    if "hyprland" in desktop or environment.get("OMARCHY_PATH"):
+        return "quickshell"
+    return "gtk"
+
+
+def is_live(client: DesktopClient, running: Sequence[str]) -> bool:
+    """Whether ``client`` runs; a pre-upgrade GTK only owns its application ID."""
+    return client.bus_name in running or (
+        client == GTK_CLIENT and client.desktop_id in running
+    )
+
+
+def _installed(client: DesktopClient) -> bool:
+    return os.access(client.executable, os.X_OK)
+
+
+def ranked_clients(
+    running: Sequence[str],
+    *,
+    environment: Mapping[str, str] | None = None,
+    installed: Callable[[DesktopClient], bool] = _installed,
+) -> list[DesktopClient]:
+    """Every usable client, best first: running ones, then installed ones.
+
+    Within each group the most recently used client wins, then the one that
+    suits the current desktop.
+    """
+    preferred = _preferred_key(os.environ if environment is None else environment)
+
+    def ordered(clients: list[DesktopClient]) -> list[DesktopClient]:
+        # sorted() is stable, so ties keep the CLIENTS order, as max() did.
+        return sorted(
+            clients, key=lambda client: (_last_used(client), client.key == preferred),
+            reverse=True,
+        )
+
+    live = [client for client in CLIENTS if is_live(client, running)]
+    idle = [client for client in CLIENTS if client not in live and installed(client)]
+    return ordered(live) + ordered(idle)
+
+
 def select_client(
     running: Sequence[str], *, environment: Mapping[str, str] | None = None,
 ) -> DesktopClient | None:
-    environment = os.environ if environment is None else environment
-    desktop = environment.get("XDG_CURRENT_DESKTOP", "").lower().split(":")
-    if "gnome" in desktop or "unity" in desktop:
-        preferred = "gtk"
-    elif "kde" in desktop:
-        preferred = "qt"
-    elif "hyprland" in desktop or environment.get("OMARCHY_PATH"):
-        preferred = "quickshell"
-    else:
-        preferred = "gtk"
-    live = [client for client in CLIENTS if (
-        client.bus_name in running
-        or (client == GTK_CLIENT and client.desktop_id in running)
-    )]
-    candidates = live or [client for client in CLIENTS if os.access(client.executable, os.X_OK)]
-    return max(
-        candidates, key=lambda client: (_last_used(client), client.key == preferred), default=None,
-    )
+    return next(iter(ranked_clients(running, environment=environment)), None)
 
 
 def activation_argv(handle: str) -> list[str]:

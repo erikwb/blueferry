@@ -102,6 +102,21 @@ def test_removed_preference_and_corrupt_file_fall_back(preferences, monkeypatch)
     assert activation.select_client([]) is None
 
 
+def test_ranked_clients_puts_running_first_then_installed_by_recency(preferences, monkeypatch):
+    for stamp, key in ((100, "quickshell"), (200, "gtk")):
+        monkeypatch.setattr(activation.time, "time_ns", lambda stamp=stamp: stamp)
+        activation.record_client_use(key)
+    qt = next(client for client in activation.CLIENTS if client.key == "qt")
+    ranked = activation.ranked_clients([qt.bus_name], environment={"XDG_CURRENT_DESKTOP": "KDE"})
+    assert [client.key for client in ranked] == ["qt", "gtk", "quickshell"]
+    # A client that is not installed drops out; select_client takes the head.
+    ranked = activation.ranked_clients(
+        [], environment={}, installed=lambda client: client.key != "gtk",
+    )
+    assert [client.key for client in ranked] == ["quickshell", "qt"]
+    assert activation.select_client([], environment={}).key == "gtk"
+
+
 def test_recency_files_are_private_and_leave_daemon_settings_alone(preferences):
     settings = preferences / "settings.json"
     settings.write_text('{"storage_policy":"keep"}')

@@ -2,8 +2,9 @@
 
 Under Plasma ``QSystemTrayIcon`` becomes a StatusNotifierItem. The icon is a
 phone with the number of unread messages painted over it, the tooltip shows
-the connection plus battery, signal and network, and the menu opens the Qt
-client, switches the tray's own autostart entry and quits the tray.
+the connection plus battery, signal and network, and the menu opens the
+BlueFerry client in use, switches the tray's own autostart entry and quits
+the tray.
 
 The tray is a thin client of the existing session-bus API. Every call is
 asynchronous and sent with auto-start disabled: it follows a running daemon
@@ -15,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import shutil
 import signal
 import sys
@@ -44,8 +46,11 @@ from blueferry import tray_autostart
 from blueferry.client_activation import (
     ACTIVATION_INTERFACE,
     ACTIVATION_PATH,
-    CLIENTS,
     TRAY_BUS_NAME,
+    DesktopClient,
+    activation_environment,
+    is_live,
+    ranked_clients,
 )
 from blueferry.client_wire import decode_mapping, decode_threads
 from blueferry.i18n import _
@@ -59,7 +64,6 @@ from blueferry.protocol import (
 )
 from blueferry.qt import tray_presenter as presenter
 
-QT_CLIENT = next(client for client in CLIENTS if client.key == "qt")
 APP_ICON = "io.weirdware.BlueFerry"
 PHONE_ICONS = ("smartphone", "phone", APP_ICON)
 ICON_SIZES = (16, 22, 24, 32, 48, 64)
@@ -125,12 +129,12 @@ class TrayController(QObject):
         bus: QDBusConnection | None = None,
         *,
         parent: QObject | None = None,
-        launch: Callable[[], bool] | None = None,
+        launch: Callable[[DesktopClient, str], bool] | None = None,
         autostart_path: Path | None = None,
     ) -> None:
         super().__init__(parent)
         self._bus = bus if bus is not None else QDBusConnection.sessionBus()
-        self._launch = launch or launch_qt_client
+        self._launch = launch or launch_client
         self._autostart_path = autostart_path or tray_autostart.entry_path()
         self._watchers: set[QDBusPendingCallWatcher] = set()
         self._generation = 0
@@ -421,30 +425,122 @@ class TrayController(QObject):
         self.render_autostart()
 
     def _activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
+        # Qt maps the StatusNotifierItem calls to reasons: Activate is
+        # Trigger, SecondaryActivate MiddleClick and ContextMenu Context.
+        # Only a primary click opens the client; the host shows the menu.
         if reason == QSystemTrayIcon.ActivationReason.Trigger:
             self.open_app()
 
     @Slot()
     def open_app(self) -> None:
-        """Raise a running Qt client, or start one."""
-        if name_registered(self._bus, QT_CLIENT.bus_name):
-            self._call(
-                QT_CLIENT.bus_name, ACTIVATION_INTERFACE, "OpenMessage",
-                # On Wayland the running window may only take focus with the
-                # activation token Plasma handed to the tray for this click.
-                ["", QProcessEnvironment.systemEnvironment().value("XDG_ACTIVATION_TOKEN")],
-                lambda _args: None, lambda _name: self._launch(),
-                path=ACTIVATION_PATH,
-            )
+        """Raise the client the user works with, or start the best one.
+
+        The same choice as notifications and phone links: a running client
+        first, then the most recently used one, then the desktop's own.
+        """
+        # On Wayland a window may only take focus with the activation token
+        # the panel handed to the tray for this click. It is single-use.
+        token = take_activation_token()
+        if not self._bus.isConnected():
+            # A call on a dead connection never reports back.
+            self._open_client([], token)
             return
-        self._launch()
+        self._call(
+            "org.freedesktop.DBus", "org.freedesktop.DBus", "ListNames", [],
+            lambda args: self._open_client(
+                [str(name) for name in (args[0] if args else []) or []], token,
+            ),
+            lambda _name: self._open_client([], token),
+            path="/org/freedesktop/DBus",
+        )
+
+    def _open_client(self, running: list[str], token: str) -> None:
+        if self._closed:
+            return
+        candidates = ranked_clients(running, installed=lambda client: (
+            client_command(client) is not None
+        ))
+        if not candidates:
+            log.warning("no BlueFerry graphical client is installed")
+            return
+        client = candidates[0]
+        if not is_live(client, running):
+            self._launch_first(candidates, token)
+            return
+        if client.bus_name in running:
+            service, path = client.bus_name, ACTIVATION_PATH
+            interface, method = ACTIVATION_INTERFACE, "OpenMessage"
+            args: list = ["", token]
+        else:
+            # A GTK window from before the shared activation protocol.
+            service, path = client.desktop_id, "/" + client.desktop_id.replace(".", "/")
+            interface, method = "org.freedesktop.Application", "Activate"
+            platform_data = (
+                {"activation-token": token, "desktop-startup-id": token} if token else {}
+            )
+            args = [platform_data]
+
+        def failed(_error: str) -> None:
+            # The window may have closed since ListNames. Only start the
+            # client again when its name is gone: a slow reply must not
+            # open a second, competing window.
+            self._call(
+                "org.freedesktop.DBus", "org.freedesktop.DBus", "NameHasOwner", [service],
+                lambda reply: None if reply and reply[0] else self._launch_first(
+                    candidates, token,
+                ),
+                lambda _name: None, path="/org/freedesktop/DBus",
+            )
+
+        self._call(service, interface, method, args, lambda _args: None, failed, path=path)
+
+    def _launch_first(self, candidates: list[DesktopClient], token: str) -> None:
+        """Start the first client that launches; skip ones that cannot."""
+        for client in candidates:
+            if self._launch(client, token):
+                return
+        log.warning("could not start a BlueFerry graphical client")
 
 
-def launch_qt_client() -> bool:
-    program = shutil.which("blueferry-qt")
+def take_activation_token() -> str:
+    """The token for the current click, removed so no later click reuses it.
+
+    Qt stores the token a panel provides through ProvideXdgActivationToken
+    in this process's environment.
+    """
+    environment = QProcessEnvironment.systemEnvironment()
+    token = (
+        environment.value("XDG_ACTIVATION_TOKEN") or environment.value("DESKTOP_STARTUP_ID")
+    )
+    for name in ("XDG_ACTIVATION_TOKEN", "DESKTOP_STARTUP_ID"):
+        os.environ.pop(name, None)
+        os.unsetenv(name)
+    return token if len(token) <= 4096 else ""
+
+
+def client_command(client: DesktopClient) -> tuple[str, list[str]] | None:
+    """How to start ``client`` here, or None when it is not installed."""
+    program = shutil.which(Path(client.executable).name)
     if program:
-        return bool(QProcess.startDetached(program, [])[0])
-    return bool(QProcess.startDetached(sys.executable, ["-m", "blueferry.qt.app"])[0])
+        return program, []
+    if client.key == "qt":
+        # The tray ships with the Qt client: run it from this installation.
+        return sys.executable, ["-m", "blueferry.qt.app"]
+    return None
+
+
+def launch_client(client: DesktopClient, token: str) -> bool:
+    command = client_command(client)
+    if command is None:
+        return False
+    process = QProcess()
+    process.setProgram(command[0])
+    process.setArguments(command[1])
+    environment = QProcessEnvironment()
+    for name, value in activation_environment(token).items():
+        environment.insert(name, value)
+    process.setProcessEnvironment(environment)
+    return bool(process.startDetached()[0])
 
 
 def name_registered(bus: QDBusConnection, name: str) -> bool:
