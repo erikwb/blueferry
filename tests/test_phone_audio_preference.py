@@ -41,7 +41,7 @@ class Route:
             success(choice)
 
 
-def setup(tmp_path, *, choice="auto", policy_present=False, configure=None):
+def make_preference(tmp_path, *, choice="auto", policy_present=False, configure=None):
     settings = PhoneAudioSettings(MAC, tmp_path / "settings.json")
     if choice != "auto":
         settings.set(choice)
@@ -69,7 +69,7 @@ def setup(tmp_path, *, choice="auto", policy_present=False, configure=None):
 
 
 def test_default_does_nothing_until_the_user_makes_a_choice(tmp_path):
-    p, route, settings, _state, timers, configured = setup(tmp_path)
+    p, route, settings, _state, timers, configured = make_preference(tmp_path)
     p.connection_changed()
     timers.fire()
     assert settings.choice == "auto" and configured == [] and route.calls == []
@@ -77,7 +77,7 @@ def test_default_does_nothing_until_the_user_makes_a_choice(tmp_path):
 
 
 def test_explicit_pc_choice_is_saved_after_the_profile_operation_succeeds(tmp_path):
-    p, route, settings, _state, timers, configured = setup(tmp_path)
+    p, route, settings, _state, timers, configured = make_preference(tmp_path)
     replies, failures = [], []
     p.set_route("pc", replies.append, failures.append)
     timers.fire()  # install/reload the rule, then observe endpoints
@@ -97,7 +97,7 @@ def test_explicit_pc_choice_is_saved_after_the_profile_operation_succeeds(tmp_pa
 
 
 def test_first_use_waits_for_registered_audio_sink_after_reload(tmp_path):
-    p, route, _settings, _state, timers, _configured = setup(tmp_path)
+    p, route, _settings, _state, timers, _configured = make_preference(tmp_path)
     route.sink_available = False
     p.set_route("pc", lambda _r: None, pytest.fail)
     timers.fire()
@@ -110,7 +110,7 @@ def test_first_use_waits_for_registered_audio_sink_after_reload(tmp_path):
 
 
 def test_pairing_blocks_policy_reload_and_audio_calls(tmp_path):
-    _p, route, _settings, _state, timers, configured = setup(tmp_path, choice="phone")
+    _p, route, _settings, _state, timers, configured = make_preference(tmp_path, choice="phone")
     route.current = "pc"
     with audio_activity():
         timers.fire()
@@ -127,7 +127,7 @@ def test_pairing_blocks_policy_reload_and_audio_calls(tmp_path):
 
 
 def test_audio_guard_is_held_until_dbus_reply_even_if_transport_changes_early(tmp_path):
-    p, route, _settings, _state, timers, _configured = setup(tmp_path)
+    p, route, _settings, _state, timers, _configured = make_preference(tmp_path)
     p.set_route("pc", lambda _r: None, pytest.fail)
     timers.fire()
     timers.fire()
@@ -140,7 +140,7 @@ def test_audio_guard_is_held_until_dbus_reply_even_if_transport_changes_early(tm
 
 
 def test_automatic_restore_waits_for_setup_and_uses_normal_handback(tmp_path):
-    _p, route, _settings, state, timers, configured = setup(tmp_path, choice="phone")
+    _p, route, _settings, state, timers, configured = make_preference(tmp_path, choice="phone")
     route.current = "pc"
     state.ready = False
     timers.fire()
@@ -154,7 +154,7 @@ def test_automatic_restore_waits_for_setup_and_uses_normal_handback(tmp_path):
 
 
 def test_only_one_automatic_attempt_per_connection_then_honor_manual_pc(tmp_path):
-    p, route, _settings, state, timers, configured = setup(tmp_path, choice="phone")
+    p, route, _settings, state, timers, configured = make_preference(tmp_path, choice="phone")
     p.connection_changed()
     timers.fire()
     timers.fire()
@@ -189,7 +189,7 @@ def test_only_one_automatic_attempt_per_connection_then_honor_manual_pc(tmp_path
 
 
 def test_failed_profile_operation_does_not_save_and_does_not_loop(tmp_path):
-    p, route, settings, _state, timers, _configured = setup(tmp_path, choice="phone")
+    p, route, settings, _state, timers, _configured = make_preference(tmp_path, choice="phone")
     timers.fire()
     failures = []
     p.set_route("pc", pytest.fail, failures.append)
@@ -203,7 +203,7 @@ def test_failed_profile_operation_does_not_save_and_does_not_loop(tmp_path):
 
 
 def test_auto_removes_the_policy_and_does_not_send_bluetooth_operations(tmp_path):
-    p, route, settings, _state, timers, configured = setup(tmp_path, choice="phone")
+    p, route, settings, _state, timers, configured = make_preference(tmp_path, choice="phone")
     timers.fire()
     replies = []
     p.set_route("auto", replies.append, pytest.fail)
@@ -215,13 +215,13 @@ def test_auto_removes_the_policy_and_does_not_send_bluetooth_operations(tmp_path
 
 
 def test_stale_fragment_is_removed_when_the_selected_phone_has_no_preference(tmp_path):
-    _p, route, settings, _state, timers, configured = setup(tmp_path, policy_present=True)
+    _p, route, settings, _state, timers, configured = make_preference(tmp_path, policy_present=True)
     timers.fire()
     assert configured == [False] and settings.choice == "auto" and not route.calls
 
 
 def test_stop_fails_pending_request_and_ignores_late_profile_reply(tmp_path):
-    p, route, settings, _state, timers, _configured = setup(tmp_path)
+    p, route, settings, _state, timers, _configured = make_preference(tmp_path)
     errors, replies = [], []
     p.set_route("pc", replies.append, errors.append)
     timers.fire()
@@ -236,7 +236,7 @@ def test_stop_fails_pending_request_and_ignores_late_profile_reply(tmp_path):
 
 def test_backend_stop_ignores_late_reload_callback(tmp_path):
     held = []
-    p, route, _settings, _state, timers, _configured = setup(
+    p, route, _settings, _state, timers, _configured = make_preference(
         tmp_path, choice="phone", configure=lambda enabled, done: held.append(done),
     )
     timers.fire()
@@ -246,7 +246,7 @@ def test_backend_stop_ignores_late_reload_callback(tmp_path):
 
 
 def test_busy_runtime_times_out_manual_request_without_saving(tmp_path):
-    p, route, settings, state, timers, configured = setup(tmp_path)
+    p, route, settings, state, timers, configured = make_preference(tmp_path)
     state.safe = False
     errors = []
     p.set_route("pc", pytest.fail, errors.append)
@@ -262,7 +262,7 @@ def test_failed_reload_reports_failure_and_does_not_change_saved_choice(tmp_path
     def configure(enabled, done):
         attempts.append(enabled)
         done(OSError("reload failed"))
-    p, route, settings, _state, timers, _configured = setup(tmp_path, configure=configure)
+    p, route, settings, _state, timers, _configured = make_preference(tmp_path, configure=configure)
     errors = []
     p.set_route("pc", pytest.fail, errors.append)
     timers.fire()
@@ -302,7 +302,7 @@ def test_daemon_policy_worker_defers_to_pairing(make_daemon, monkeypatch):
 
 
 def test_unknown_bearer_observation_does_not_reset_the_one_attempt_budget(tmp_path):
-    p, route, _settings, state, timers, _configured = setup(tmp_path, choice="phone")
+    p, route, _settings, state, timers, _configured = make_preference(tmp_path, choice="phone")
     route.current = "pc"
     timers.fire()
     timers.fire()
@@ -317,7 +317,7 @@ def test_unknown_bearer_observation_does_not_reset_the_one_attempt_budget(tmp_pa
 
 
 def test_remembering_the_current_route_does_not_send_a_redundant_profile_request(tmp_path):
-    p, route, settings, _state, timers, _configured = setup(tmp_path)
+    p, route, settings, _state, timers, _configured = make_preference(tmp_path)
     replies = []
     p.set_route("phone", replies.append, pytest.fail)
     assert p.snapshot()["phone_audio_pending"] == "phone"
@@ -328,7 +328,7 @@ def test_remembering_the_current_route_does_not_send_a_redundant_profile_request
 
 
 def test_clearing_the_preference_works_while_the_phone_is_unavailable(tmp_path):
-    p, route, settings, state, timers, configured = setup(tmp_path, choice="phone")
+    p, route, settings, state, timers, configured = make_preference(tmp_path, choice="phone")
     state.connected = False
     state.ready = False
     route.current = "unavailable"
