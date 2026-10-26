@@ -382,13 +382,16 @@ def test_settings_buttons_run_open_and_reload_the_form(with_actions) -> None:
     work.drain()
     config = settings.state()["config"]
     assert config["actions"]["custom"] == [
-        {"id": "setup_iphone", "label": "Set up &lt;b&gt;iPhone&lt;/b&gt;", "icon": "smartphone",
+        {"id": "setup_iphone", "label": "Set up &lt;b&gt;iPhone&lt;/b&gt;",
+         "labelPlain": "Set up <b>iPhone</b>", "icon": "smartphone",
          "help": "Shows a QR code.", "primary": True},
-        {"id": "approve", "label": "Approve this network", "icon": "", "help": "",
+        {"id": "approve", "label": "Approve this network",
+         "labelPlain": "Approve this network", "icon": "", "help": "", "primary": False},
+        {"id": "broken", "label": "Broken", "labelPlain": "Broken", "icon": "", "help": "",
          "primary": False},
-        {"id": "broken", "label": "Broken", "icon": "", "help": "", "primary": False},
     ]
     assert config["fields"][0]["helpUrlLabel"] == "Which port?"
+    assert config["fields"][0]["helpUrlLabelPlain"] == "Which port?"
     settings.run_action("io.example.setup", "setup_iphone")
     assert settings.state()["config"]["status"] == {
         "kind": "action", "ok": True, "text": "Working…", "pending": True}
