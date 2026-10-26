@@ -60,6 +60,8 @@ class DaemonClient(GObject.Object):
         "now-playing-changed": (GObject.SignalFlags.RUN_FIRST, None, ()),
         "call-history-changed": (GObject.SignalFlags.RUN_FIRST, None, ()),
         "notifications-changed": (GObject.SignalFlags.RUN_FIRST, None, ()),
+        # Running phone calls changed (Calls1); clients call ListCalls.
+        "calls-changed": (GObject.SignalFlags.RUN_FIRST, None, ()),
     }
 
     def __init__(self) -> None:
@@ -124,6 +126,7 @@ class DaemonClient(GObject.Object):
             ("NowPlayingChanged", "now-playing-changed"),
             ("CallHistoryChanged", "call-history-changed"),
             ("NotificationsChanged", "notifications-changed"),
+            ("CallsChanged", "calls-changed"),
         ):
             self._matches.append(
                 self._bus.add_signal_receiver(
@@ -580,6 +583,39 @@ class DaemonClient(GObject.Object):
         """Place a call the user has just confirmed (Calls1.Dial)."""
         self._submit(
             lambda: self._call_backend(lambda backend: backend.dial(number)),
+            on_ok,
+            on_err,
+            mutation=True,
+        )
+
+    def calls_async(self, on_ok, on_err=None) -> None:
+        """Calls1.ListCalls: the running calls as a ``CallsSnapshot``."""
+        self._submit(
+            lambda: self._call_backend(lambda backend: backend.calls()),
+            on_ok,
+            on_err,
+        )
+
+    def answer_call_async(self, call_id: str, on_ok, on_err) -> None:
+        self._submit(
+            lambda: self._call_backend(lambda backend: backend.answer_call(call_id)),
+            on_ok,
+            on_err,
+            mutation=True,
+        )
+
+    def hangup_call_async(self, call_id: str, on_ok, on_err) -> None:
+        self._submit(
+            lambda: self._call_backend(lambda backend: backend.hangup_call(call_id)),
+            on_ok,
+            on_err,
+            mutation=True,
+        )
+
+    def swap_calls_async(self, on_ok, on_err) -> None:
+        """Hold the active call or resume the held one (AT+CHLD=2)."""
+        self._submit(
+            lambda: self._call_backend(lambda backend: backend.swap_calls()),
             on_ok,
             on_err,
             mutation=True,
