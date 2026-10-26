@@ -383,3 +383,49 @@ def test_notification_sync_preference_uses_mutation_worker(monkeypatch) -> None:
     finally:
         client.stop()
     assert results == [True] and submitted == ["mutation"]
+
+
+def test_shared_models_run_on_the_read_worker_and_finish_last(monkeypatch) -> None:
+    class Backend:
+        def notifications(self, limit):
+            return {"enabled": True, "notifications": [], "limit": limit}
+
+        def sync_call_history(self):
+            return 3
+
+    client, submitted = _recording_client(monkeypatch, Backend())
+    events = []
+    try:
+        client.submit(lambda: client.notifications(5), lambda value: events.append(value),
+                      events.append, lambda: events.append("finished"))
+        client.submit(lambda: 1 / 0, events.append, lambda message: events.append(message),
+                      lambda: events.append("finished"))
+        client.submit(lambda: None)  # every callback is optional
+        client.sync_call_history_async(events.append, events.append)
+    finally:
+        client.stop()
+    assert events == [
+        {"enabled": True, "notifications": [], "limit": 5}, "finished",
+        "division by zero", "finished", 3,
+    ]
+    assert submitted == ["read", "read", "read", "mutation"]
+
+
+def test_notifications_changed_is_forwarded_as_a_gobject_signal(monkeypatch) -> None:
+    receivers = {}
+
+    class Bus:
+        def add_signal_receiver(self, handler, **kwargs):
+            receivers[kwargs["signal_name"]] = handler
+            return _SignalMatch()
+
+    monkeypatch.setattr(client_module, "get_session_bus", Bus)
+    monkeypatch.setattr(client_module, "SetupClient", _UnconfiguredSetup)
+    client = client_module.DaemonClient()
+    seen = []
+    client.connect("notifications-changed", lambda _client: seen.append(True))
+    try:
+        receivers["NotificationsChanged"]()
+    finally:
+        client.stop()
+    assert seen == [True]
