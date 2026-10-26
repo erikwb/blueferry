@@ -49,6 +49,8 @@ DELETE_CALL_TIMEOUT_SEC = 20
 # A media command waits behind at most a few queued GATT round trips, each
 # bounded by the backend's 10-second BlueZ call timeout.
 MEDIA_CALL_TIMEOUT_SEC = 25
+# First use may reload WirePlumber before the bounded BlueZ profile request.
+PHONE_AUDIO_CALL_TIMEOUT_SEC = 60
 
 # oFono bounds its own call-control requests at 30 seconds (Dial waits for the
 # phone to accept the call); leave room for the backend's reply.

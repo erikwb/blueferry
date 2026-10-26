@@ -22,7 +22,7 @@ LOCAL_ENV_KEYS = frozenset({
     "BLUEFERRY_ANCS_ACTIONS",
     "BLUEFERRY_ANCS_ACTION_TIMEOUT_MS",
     "BLUEFERRY_SHOW_NOTIFICATION_CONTENT",
-    "BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE",
+    "BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE",  # Retired; accept old local.env files, ignore the value.
     "BLUEFERRY_CALLS_ENABLED",
     "BLUEFERRY_PHONE_BATTERY_NOTIFY",
     "BLUEFERRY_PHONE_BATTERY_LOW_PERCENT",
@@ -318,9 +318,6 @@ choice saved through a client or the CLI takes precedence.
 SHOW_NOTIFICATION_CONTENT: bool = _env_bool(
     "BLUEFERRY_SHOW_NOTIFICATION_CONTENT", True
 )
-KEEP_PHONE_AUDIO_ON_PHONE: bool = _env_bool(
-    "BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE", True
-)
 CALLS_ENABLED: bool = _env_opt_in("BLUEFERRY_CALLS_ENABLED")
 """Initial value of the experimental, default-off HFP call control.
 
@@ -328,9 +325,8 @@ A preference saved in settings.json (Qt settings, ``blueferry calls
 enable``/``disable``) wins; see ``blueferry.calls.settings``.
 
 When enabled the daemon watches oFono for the iPhone's hands-free modem and
-exposes the private ``Calls1`` interface. The WirePlumber phone-audio policy
-then keeps the hands-free roles so call audio can reach this computer, while
-still stripping ``a2dp_sink`` when ``KEEP_PHONE_AUDIO_ON_PHONE`` is true.
+exposes the private ``Calls1`` interface. Bluetooth audio roles follow the
+user's desktop audio configuration.
 """
 PHONE_BATTERY_NOTIFY: bool = _env_opt_in("BLUEFERRY_PHONE_BATTERY_NOTIFY")
 """Default-off desktop warning when the iPhone's battery runs low.

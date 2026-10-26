@@ -13,8 +13,8 @@ from blueferry import bluez_setup, config, pair_setup
 from blueferry.bluetooth_devices import iphone_candidates
 
 _BLUEZ_DEVICE_SNAPSHOT = pair_setup._bluez_device_snapshot
-_REAL_APPLY_PHONE_AUDIO_POLICY = pair_setup._apply_phone_audio_policy
-_REAL_REVERT_PHONE_AUDIO_POLICY = pair_setup._revert_phone_audio_policy
+_REAL_REMOVE_PHONE_AUDIO_POLICY = pair_setup._remove_legacy_phone_audio_policy
+_REAL_WAIT_AUDIO_PROFILES = pair_setup._wait_for_pairing_audio_profiles
 
 
 @pytest.fixture(autouse=True)
@@ -37,8 +37,8 @@ def _pairing_reports_in_tmp(tmp_path, monkeypatch):
         "_bluez_device_snapshot",
         lambda _path: {"device_present": False},
     )
-    monkeypatch.setattr(pair_setup, "_apply_phone_audio_policy", lambda _attempt: False)
-    monkeypatch.setattr(pair_setup, "_revert_phone_audio_policy", lambda _attempt: None)
+    monkeypatch.setattr(pair_setup, "_remove_legacy_phone_audio_policy", lambda _attempt: None)
+    monkeypatch.setattr(pair_setup, "_wait_for_pairing_audio_profiles", lambda _adapter: None)
 
 
 def _device(*, paired: bool) -> pair_setup.PairedDevice:
@@ -1695,161 +1695,130 @@ def _stub_execute_pairing_body(monkeypatch, device, *, pair=None, prepare=None):
     monkeypatch.setattr(pair_setup, "_device", lambda *_args, **_kwargs: device)
 
 
-def test_phone_audio_policy_is_applied_before_classic_prepare(monkeypatch):
-    device = _device(paired=True)
-    order = []
+@pytest.mark.parametrize("fail", [False, True])
+def test_pairing_removes_old_audio_restrictions_before_connect(tmp_path, monkeypatch, fail):
+    from blueferry.wireplumber_policy import LegacyPhoneAudioPolicy
+
+    path = tmp_path / "99-blueferry-keep-phone-audio.conf"
+    path.write_text("monitor.bluez.properties = { bluez5.roles = [ a2dp_source ] }")
+    calls = []
     monkeypatch.setattr(
-        pair_setup,
-        "_apply_phone_audio_policy",
-        lambda _attempt: order.append("audio") or True,
+        pair_setup, "_wait_for_pairing_audio_profiles",
+        lambda adapter: calls.append(("profiles", adapter)),
     )
+    policy = LegacyPhoneAudioPolicy(
+        path=path, active=lambda: True, restart=lambda: calls.append("restart"),
+    )
+    monkeypatch.setattr(pair_setup, "LegacyPhoneAudioPolicy", lambda **kw: policy)
     monkeypatch.setattr(
-        pair_setup,
-        "_revert_phone_audio_policy",
-        lambda _attempt: order.append("revert"),
+        pair_setup, "_remove_legacy_phone_audio_policy", _REAL_REMOVE_PHONE_AUDIO_POLICY,
     )
-    _stub_execute_pairing_body(
-        monkeypatch,
-        device,
-        prepare=lambda *_args, **_kwargs: order.append("classic"),
-        pair=lambda *_args, **_kwargs: order.append("pair") or device,
-    )
-
-    pair_setup._execute_pairing(
-        device.mac,
-        attempt=pair_setup.quirks_report.start_attempt(interactive=False),
-    )
-
-    assert order == ["audio", "classic", "pair"]
-
-
-def test_failed_pairing_removes_phone_audio_policy_it_installed(monkeypatch):
+    # An old saved opt-in must not reinstall the restriction.
+    monkeypatch.setenv("BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE", "true")
     device = _device(paired=False)
-    calls = []
-    monkeypatch.setattr(
-        pair_setup,
-        "_apply_phone_audio_policy",
-        lambda _attempt: calls.append("apply") or True,
-    )
-    monkeypatch.setattr(
-        pair_setup,
-        "_revert_phone_audio_policy",
-        lambda _attempt: calls.append("revert"),
-    )
-    _stub_execute_pairing_body(
-        monkeypatch,
-        device,
-        pair=lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            pair_setup.PairingError("confirmation cancelled")
-        ),
-    )
 
-    with pytest.raises(pair_setup.PairingError, match="confirmation cancelled"):
-        pair_setup._execute_pairing(
-            device.mac,
-            attempt=pair_setup.quirks_report.start_attempt(interactive=False),
-        )
+    def prepare(*_args, **_kwargs):
+        assert not path.exists()
+        assert calls == ["restart"]
+        calls.append("classic")
 
-    assert calls == ["apply", "revert"]
+    def pair(*_args, **_kwargs):
+        assert not path.exists()
+        calls.append("connect")
+        if fail:
+            raise pair_setup.PairingError("confirmation cancelled")
+        return _device(paired=True)
+
+    _stub_execute_pairing_body(monkeypatch, device, prepare=prepare, pair=pair)
+    attempt = pair_setup.quirks_report.start_attempt(interactive=True)
+    if fail:
+        with pytest.raises(pair_setup.PairingError, match="confirmation cancelled"):
+            pair_setup._execute_pairing(device.mac, attempt=attempt)
+    else:
+        pair_setup._execute_pairing(device.mac, attempt=attempt)
+    assert calls == ["restart", "classic", ("profiles", "hci0"), "connect"]
+    assert not path.exists()
+    assert attempt["timeline"][1]["event"] == "phone_audio_policy_removed"
 
 
-def test_failed_pairing_keeps_a_preexisting_phone_audio_policy(monkeypatch):
-    device = _device(paired=False)
-    calls = []
-    monkeypatch.setattr(
-        pair_setup,
-        "_apply_phone_audio_policy",
-        lambda _attempt: calls.append("apply") or False,
-    )
-    monkeypatch.setattr(
-        pair_setup,
-        "_revert_phone_audio_policy",
-        lambda _attempt: calls.append("revert"),
-    )
-    _stub_execute_pairing_body(
-        monkeypatch,
-        device,
-        prepare=lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            pair_setup.PairingError("adapter prepare failed")
-        ),
-    )
-
-    with pytest.raises(pair_setup.PairingError, match="adapter prepare failed"):
-        pair_setup._execute_pairing(
-            device.mac,
-            attempt=pair_setup.quirks_report.start_attempt(interactive=False),
-        )
-
-    assert calls == ["apply"]
-
-
-def test_successful_pairing_keeps_phone_audio_policy(monkeypatch):
-    device = _device(paired=True)
-    calls = []
-    monkeypatch.setattr(
-        pair_setup,
-        "_apply_phone_audio_policy",
-        lambda _attempt: calls.append("apply") or True,
-    )
-    monkeypatch.setattr(
-        pair_setup,
-        "_revert_phone_audio_policy",
-        lambda _attempt: calls.append("revert"),
-    )
-    _stub_execute_pairing_body(monkeypatch, device)
-
-    pair_setup._execute_pairing(
-        device.mac,
-        attempt=pair_setup.quirks_report.start_attempt(interactive=False),
-    )
-
-    assert calls == ["apply"]
-
-
-def test_apply_phone_audio_policy_skips_when_disabled(monkeypatch):
-    monkeypatch.setattr(
-        pair_setup, "_apply_phone_audio_policy", _REAL_APPLY_PHONE_AUDIO_POLICY
-    )
-    monkeypatch.setattr(config, "KEEP_PHONE_AUDIO_ON_PHONE", False)
+def test_pairing_cleanup_waits_for_wireplumber(monkeypatch):
     constructed = []
 
-    class FakePolicy:
+    class Policy:
         def __init__(self, **kwargs):
             constructed.append(kwargs)
 
-        def reconcile(self, **_kwargs):
-            raise AssertionError("disabled policy must not write a fragment")
-
-    monkeypatch.setattr(pair_setup, "WirePlumberPhoneAudioPolicy", FakePolicy)
-    attempt = pair_setup.quirks_report.start_attempt(interactive=False)
-
-    assert pair_setup._apply_phone_audio_policy(attempt) is False
-    assert constructed == []
-    assert attempt["timeline"][-1]["event"] == "phone_audio_policy_skipped"
-
-
-def test_apply_phone_audio_policy_waits_for_wireplumber(monkeypatch):
-    monkeypatch.setattr(
-        pair_setup, "_apply_phone_audio_policy", _REAL_APPLY_PHONE_AUDIO_POLICY
-    )
-    monkeypatch.setattr(config, "KEEP_PHONE_AUDIO_ON_PHONE", True)
-    monkeypatch.setattr(pair_setup, "calls_enabled", lambda: True)
-    constructed = []
-
-    class FakePolicy:
-        def __init__(self, **kwargs):
-            constructed.append(kwargs)
-
-        def reconcile(self, *, enabled):
-            assert enabled is True
+        def remove(self):
             return True
 
-    monkeypatch.setattr(pair_setup, "WirePlumberPhoneAudioPolicy", FakePolicy)
+    monkeypatch.setattr(pair_setup, "LegacyPhoneAudioPolicy", Policy)
     attempt = pair_setup.quirks_report.start_attempt(interactive=False)
+    _REAL_REMOVE_PHONE_AUDIO_POLICY(attempt)
+    assert constructed == [{"wait_for_restart": True}]
+    assert attempt["timeline"][-1]["event"] == "phone_audio_policy_removed"
+    assert attempt["timeline"][-1]["changed"] is True
 
-    assert pair_setup._apply_phone_audio_policy(attempt) is True
-    assert constructed == [{"wait_for_restart": True, "allow_calls": True}]
-    assert attempt["timeline"][-1]["event"] == "phone_audio_policy_ready"
+
+def test_pairing_holds_audio_guard_for_the_transaction_and_releases_on_error(monkeypatch):
+    from blueferry.audio_activity import audio_activity
+
+    def execute(*_args, **_kwargs):
+        with pytest.raises(BlockingIOError), audio_activity(blocking=False):
+            pass
+        raise pair_setup.PairingError("test cancellation")
+
+    monkeypatch.setattr(pair_setup, "_execute_pairing", execute)
+    monkeypatch.setattr(pair_setup, "_record_pairing_report", lambda *_a, **_k: None)
+    with pytest.raises(pair_setup.PairingError, match="test cancellation"):
+        pair_setup.complete_pairing("AA:BB:CC:DD:EE:FF", confirmation=lambda _code: True)
+    with audio_activity(blocking=False):
+        pass
+
+
+@pytest.mark.parametrize("ready", [True, False])
+def test_pairing_waits_for_an_actual_audio_role(monkeypatch, ready):
+    from types import SimpleNamespace
+
+    path = []
+    source_only = ["0000110a-0000-1000-8000-00805f9b34fb"]
+    roles = source_only.copy()
+    props = SimpleNamespace(Get=lambda *_args, **_kwargs: roles)
+    bus = SimpleNamespace(get_object=lambda _service, adapter: path.append(adapter) or props)
+    monkeypatch.setattr(pair_setup, "get_system_bus", lambda: bus)
+    monkeypatch.setattr(pair_setup.dbus, "Interface", lambda obj, _iface: obj)
+
+    def dispatch(_deadline, done):
+        assert done() is False  # A source alone cannot connect to the iPhone's source.
+        if ready:
+            roles.append("0000110b-0000-1000-8000-00805f9b34fb")
+        return done()
+
+    monkeypatch.setattr(pair_setup, "_dispatching_wait", dispatch)
+    if ready:
+        _REAL_WAIT_AUDIO_PROFILES("hci1")
+    else:
+        with pytest.raises(pair_setup.PairingError, match="audio profiles are unavailable"):
+            _REAL_WAIT_AUDIO_PROFILES("hci1")
+    assert path == ["/org/bluez/hci1"]
+
+
+@pytest.mark.parametrize("paired,explicit", [(True, False), (False, True), (False, False)])
+def test_audio_readiness_only_gates_new_connect_first_bonds(monkeypatch, paired, explicit):
+    device = _device(paired=paired)
+    _stub_execute_pairing_body(monkeypatch, device)
+    policy = pair_setup.resolve_pairing_policy(
+        {"notifications_supported": True}, force_explicit_pairing=explicit,
+    )
+    monkeypatch.setattr(
+        pair_setup, "_prepare_pairing",
+        lambda *_args, **_kwargs: pair_setup._PairingPreparation(device, "hci0", policy),
+    )
+    waited = []
+    monkeypatch.setattr(pair_setup, "_wait_for_pairing_audio_profiles", waited.append)
+    pair_setup._execute_pairing(
+        device.mac, attempt=pair_setup.quirks_report.start_attempt(interactive=True),
+    )
+    assert waited == (["hci0"] if not paired and not explicit else [])
 
 
 def test_full_pairing_still_requires_solicitation(monkeypatch):
@@ -1917,7 +1886,7 @@ def test_incompatible_adapter_stops_before_setup_changes(monkeypatch, paired, co
     monkeypatch.setattr(pair_setup, "bluetooth_compatibility", lambda *_args: compatibility)
     monkeypatch.setattr(pair_setup, "_controller_snapshot", lambda *_args: compatibility)
     monkeypatch.setattr(
-        pair_setup, "_apply_phone_audio_policy",
+        pair_setup, "_remove_legacy_phone_audio_policy",
         lambda *_args: pytest.fail("incompatible adapter changed system configuration"),
     )
     with pytest.raises(pair_setup.PairingError, match="Incompatible Bluetooth adapter"):

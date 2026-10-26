@@ -167,105 +167,33 @@ def test_daemon_follows_the_saved_opt_in_over_local_env(make_daemon, monkeypatch
     instance = make_daemon()
 
     assert instance.calls.enabled is True
-    assert instance.phone_audio.allow_calls is True
 
 
-def test_switching_calls_at_runtime_saves_applies_and_rewrites_roles(
+def test_switching_calls_saves_and_applies_without_changing_audio_roles(
     make_daemon, monkeypatch,
 ) -> None:
     from blueferry import daemon as daemon_mod
     from blueferry.calls.settings import CallsSettings
 
-    monkeypatch.setattr(daemon_mod.config, "KEEP_PHONE_AUDIO_ON_PHONE", True)
     instance = make_daemon()
-    started, applied, statuses = [], [], []
+    started, statuses = [], []
     instance.calls.start = lambda: started.append(True)
     instance._emit_status = lambda: statuses.append(True)
     instance._idle_add = lambda callback, **_options: callback()
 
-    class FakePolicy:
-        def __init__(self, *, allow_calls):
-            self.allow_calls = allow_calls
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("changing calls must not rewrite Bluetooth audio roles")
 
-        def reconcile(self, *, enabled):
-            applied.append((self.allow_calls, enabled))
-            return True
-
-    background = []
-
-    def inline(target, name):
-        background.append(name)
-        target()
-
-    monkeypatch.setattr(daemon_mod, "WirePlumberPhoneAudioPolicy", FakePolicy)
-    monkeypatch.setattr(daemon_mod, "_in_background", inline)
-
+    monkeypatch.setattr(daemon_mod, "LegacyPhoneAudioPolicy", forbidden)
+    monkeypatch.setattr(daemon_mod, "_in_background", forbidden)
+    instance.phone_audio.remove = forbidden
     status = instance._set_calls_enabled(True)
-
     assert status["calls_enabled"] is True
     assert started == [True] and statuses
     assert CallsSettings().enabled is True
-    assert applied == [(True, True)]
-    assert background == ["blueferry-phone-audio"]
-
     instance._set_calls_enabled(False)
     assert instance.calls.enabled is False
     assert CallsSettings().enabled is False
-    assert applied[-1] == (False, True)
-
-
-def test_quick_toggles_leave_the_roles_matching_the_saved_setting(
-    make_daemon, monkeypatch,
-) -> None:
-    from blueferry import daemon as daemon_mod
-
-    monkeypatch.setattr(daemon_mod.config, "KEEP_PHONE_AUDIO_ON_PHONE", True)
-    instance = make_daemon()
-    instance.calls.start = lambda: None
-    # Status emission is coalesced through an idle callback.
-    instance._idle_add = lambda callback, **_options: callback()
-    instance._emit_status = lambda: None
-    applied, queued = [], []
-
-    class FakePolicy:
-        def __init__(self, *, allow_calls):
-            self.allow_calls = allow_calls
-
-        def reconcile(self, *, enabled):
-            applied.append(self.allow_calls)
-            return True
-
-    monkeypatch.setattr(daemon_mod, "WirePlumberPhoneAudioPolicy", FakePolicy)
-    monkeypatch.setattr(daemon_mod, "_in_background", lambda target, _name: queued.append(target))
-
-    instance._set_calls_enabled(True)
-    instance._set_calls_enabled(False)
-    assert len(queued) == 2 and applied == []
-
-    # The thread started for "on" gets the lock last.
-    queued[1]()
-    queued[0]()
-
-    assert applied[-1] is False
-    assert instance.phone_audio.allow_calls is False
-
-
-def test_switching_calls_leaves_wireplumber_alone_without_the_audio_policy(
-    make_daemon, monkeypatch,
-) -> None:
-    from blueferry import daemon as daemon_mod
-
-    monkeypatch.setattr(daemon_mod.config, "KEEP_PHONE_AUDIO_ON_PHONE", False)
-    instance = make_daemon()
-    instance.calls.start = lambda: None
-    instance._idle_add = lambda callback, **_options: callback()
-    instance._emit_status = lambda: None
-    def forbidden(_target, _name):
-        raise AssertionError("no reconcile expected")
-
-    monkeypatch.setattr(daemon_mod, "_in_background", forbidden)
-
-    instance._set_calls_enabled(True)
 
 
 def _conflict_daemon(make_daemon, monkeypatch, *, argv, version):

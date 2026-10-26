@@ -23,11 +23,27 @@ from blueferry.obex import transfer
 from blueferry.vcard import iter_vcard_bodies
 
 
+@pytest.fixture(autouse=True)
+def transfer_signals(monkeypatch):
+    from unittest.mock import Mock
+
+    matches = []
+    def subscribe(_callback):
+        match = Mock()
+        matches.append(match)
+        return match
+    monkeypatch.setattr(transfer, "_add_transfer_receiver", subscribe)
+    yield
+    for match in matches:
+        match.remove.assert_called_once_with()
+
+
 def test_pbap_filters_use_phonebook_access_names():
     filters = _pbap_pull_filters(123)
-    assert set(filters) == {"MaxCount", "Format"}
+    assert set(filters) == {"MaxCount", "Format", "Offset"}
     assert int(filters["MaxCount"]) == 123
     assert str(filters["Format"]) == "vcard30"
+    assert int(filters["Offset"]) == 1
 
 
 def test_phonebook_transfer_uses_runtime_dir_and_cleans_up_on_failure(
@@ -56,6 +72,21 @@ def test_phonebook_transfer_uses_runtime_dir_and_cleans_up_on_failure(
     assert target.parent.parent == runtime_dir / "blueferry"
     assert not target.parent.exists()
     assert (runtime_dir / "blueferry").stat().st_mode & 0o777 == 0o700
+
+
+def test_phonebook_does_not_start_if_completion_watch_cannot_subscribe(tmp_path, monkeypatch):
+    def fail_subscription(_callback):
+        raise RuntimeError("cannot subscribe to transfer status")
+
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    monkeypatch.setattr(transfer, "_add_transfer_receiver", fail_subscription)
+    monkeypatch.setattr(contacts, "obex", lambda *_args: SimpleNamespace(
+        Select=lambda *_args, **_kwargs: None,
+        PullAll=lambda *_args, **_kwargs: pytest.fail("must subscribe before PullAll"),
+    ))
+    with pytest.raises(RuntimeError, match="cannot subscribe"):
+        contacts.pull_phonebook(SimpleNamespace(pbap_path="/pbap"))
+    assert list((tmp_path / "blueferry").iterdir()) == []
 
 
 def test_phonebook_transfer_fails_closed_without_runtime_dir(
@@ -136,8 +167,34 @@ def test_phonebook_pull_selects_pb_with_pbap_filters_and_private_name(
     assert seen["name"] == "pb.vcf"
     assert seen["filters"] == {
         "MaxCount": ("UInt16", 10), "Format": ("String", "vcard30"),
+        "Offset": ("UInt16", 1),
     }
     assert stored == [("Alice", ["+15551111111"], [])]
+
+
+@pytest.mark.parametrize("phonebook", ["ich", "och", "mch", "cch"])
+def test_call_history_pull_keeps_the_first_entry(tmp_path, monkeypatch, phonebook):
+    cards = [
+        "BEGIN:VCARD\nFN:First caller\nTEL:+15551111111\nEND:VCARD\n",
+        "BEGIN:VCARD\nFN:Second caller\nTEL:+15552222222\nEND:VCARD\n",
+    ]
+
+    class _Pbap:
+        def Select(self, location, selected, **_kwargs):
+            assert (location, selected) == ("int", phonebook)
+
+        def PullAll(self, path, filters, **_kwargs):
+            start = int(filters.get("Offset", 0))
+            data = "".join(cards[start:start + int(filters["MaxCount"])])
+            Path(path).write_text(data)
+            return "/transfer/calls", {"Status": "complete", "Size": len(data)}
+
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    monkeypatch.setattr(contacts, "obex", lambda *_args: _Pbap())
+    monkeypatch.setattr(contacts, "wait_for_transfer", lambda *_args, **_kwargs: "complete")
+    assert contacts.pull_vcard_listing(
+        SimpleNamespace(pbap_path="/pbap"), phonebook, max_entries=1,
+    ) == cards[0]
 
 
 def test_listing_pull_clamps_count_and_forwards_the_transfer_bound(
