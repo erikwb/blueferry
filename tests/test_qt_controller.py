@@ -1806,6 +1806,45 @@ def test_photos_load_only_while_watched_and_open_the_original(monkeypatch, tmp_p
     assert controller.photos["items"] == []
 
 
+def test_a_photo_of_a_plugin_disabled_meanwhile_is_not_fetched(monkeypatch, tmp_path):
+    from blueferry import photos_view
+    from blueferry.plugin_api.client import Photo
+    from blueferry.plugin_api.testing import manifest
+
+    plugin = manifest()
+    found = [plugin]
+    snapshot = photos_view.PhotosSnapshot(True, True, "1 recent items", [
+        Photo("a", "2026-10-06T16:21:00Z", "photo", tmp_path / "t.webp"),
+    ])
+    monkeypatch.setattr(photos_view, "find_plugin", lambda: found[0])
+    monkeypatch.setattr(photos_view, "load_recent", lambda manifest: snapshot)
+    fetched = []
+    monkeypatch.setattr(photos_view, "fetch_original",
+                        lambda manifest, photo_id: fetched.append(photo_id) or tmp_path / "a")
+    opened = []
+    from PySide6.QtGui import QDesktopServices
+    monkeypatch.setattr(QDesktopServices, "openUrl", lambda url: opened.append(url))
+    controller = BridgeController(
+        backend=_Backend(), setup=object(), subscribe=False, autostart=False,
+    )
+    monkeypatch.setattr(
+        controller, "_run",
+        lambda operation, on_done=None, *_args, **_kwargs: on_done(operation()),
+    )
+    controller.watchPhotos(True)
+    found[0] = None  # disabled after the list loaded
+    controller.openPhoto("a")
+    assert fetched == [] and opened == []
+
+    controller._plugin_set = (("io.example.demo", True),)
+    monkeypatch.setattr(controller._plugin_settings, "state",
+                        lambda: {"plugins": [{"id": "io.example.demo", "enabled": False}]})
+    monkeypatch.setattr(photos_view, "load_recent",
+                        lambda manifest: photos_view.PhotosSnapshot(False, False, "none", []))
+    controller._plugin_set_changed()
+    assert controller._photos_plugin is None and controller.photos["items"] == []
+
+
 def test_manual_reconnect_reports_an_unreachable_phone(monkeypatch):
     from blueferry.reconnect_view import UNREACHABLE_TEXT
 
