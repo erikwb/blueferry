@@ -223,8 +223,10 @@ All paths are relative to `src/blueferry/` unless noted.
 | `ui/notification_rules.py` | Settings > Notifications: the notification click rules editor (`GetNotificationOpenMap`/`SetNotificationOpenTarget`), reread only when the status revision changes. |
 | `ui/doctor.py` | Settings > Phone > Diagnostics: runs `blueferry doctor` (`doctor_report.py`) on the client's local worker and shows the report as plain text with Copy. |
 | `ui/status_presenter.py` | Pure presentation rules for the status page (including the optional phone battery/signal suffix). |
-| `ui/phone_card.py` | GTK phone card: name, connection, battery/signal/network or the hint naming the setting, opt-in now playing with its buttons; reads the status once for all tabs and nothing while the window is hidden. |
-| `ui/calls.py` | GTK Calls tab: dial pad with contact suggestions and the opt-in recent calls (`phone_overview.call_groups`), read only while the tab is shown. |
+| `ui/phone_card.py` | GTK phone card: name, connection, battery/signal/network or the hint naming the setting, opt-in now playing with its buttons, the Quick Settings popover; reads the status once for all tabs and nothing while the window is hidden. |
+| `ui/calls.py` | GTK Calls tab: running calls (`running_calls.py`), dial pad with contact suggestions and the opt-in recent calls (`phone_overview.call_groups`), read only while the tab is shown and only re-read when the opt-in changes. |
+| `ui/running_calls.py` | GTK running calls on the Calls tab (`phone_link_view.call_card`): answer, hold/resume, hang up and the sound switch; `ListCalls` on `CallsChanged`, on a calls status change and after each action, while the window is shown; the duration ticks only on the visible tab. |
+| `ui/quick_switches.py` | The phone card's Quick Settings (sound on this computer, lock when I walk away) as `Adw.SwitchRow` controllers that follow the daemon status. |
 | `ui/notifications.py` | GTK Notifications tab on `notification_history.py`, with the empty/off page that opens the setting. |
 | `ui/phone_presenter.py` | Pure presentation rules for the phone card and the Calls tab (status chips, icons, now playing). |
 | `ui/reads.py` | `CoalescedRead`: one outstanding daemon read per kind, bursts collapse into one more, replies after a reset are dropped. |
