@@ -481,7 +481,7 @@ def test_an_answer_never_lands_in_another_form(with_actions) -> None:
     _wait(lambda: _idle(settings))
     assert settings.state()["config"]["id"] == "io.example.other"
     assert settings.state()["config"]["status"] == {}
-    assert opened == ["http://127.0.0.1:4711/abc/"]  # the page the user asked for still opens
+    assert opened == []  # nothing opens for a form that is no longer shown
 
 
 def test_a_test_result_never_lands_in_another_or_a_closed_form(guided) -> None:

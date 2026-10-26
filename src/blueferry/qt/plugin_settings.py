@@ -492,12 +492,13 @@ class PluginSettings(QObject):
         self._set_status("action", True, _("Working…"), pending=True)
 
         def done(result: Any) -> None:
-            if result.ok and result.open_uri:
-                self._open(result.open_uri)
-            # The user may have closed this form or opened another one
-            # meanwhile: the answer belongs to this form only.
+            # The user may have closed this form, opened another one or
+            # disabled the plugin meanwhile: the answer, and any page it
+            # asks to open, belongs to this form only.
             if self._current(plugin_id) is None:
                 return
+            if result.ok and result.open_uri:
+                self._open(result.open_uri)
             self._set_status("action", result.ok,
                              view.config_action_text(result.ok, result.message, manifest.name))
             # The action may have changed settings or the plugin's status.
