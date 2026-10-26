@@ -463,8 +463,8 @@ Restart the user service after editing `local.env` settings.
 
 Three on/off switches without a setting of their own
 (`BLUEFERRY_SHOW_NOTIFICATION_CONTENT`, `BLUEFERRY_MARK_READ_ON_DISMISS`,
-`BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE`) can also be changed in the Qt settings
-or with `blueferry features` (`blueferry features off
+`BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE`) can also be changed in the Qt or GTK
+settings (both offer **Restart Service** while a change waits) or with `blueferry features` (`blueferry features off
 keep_phone_audio_on_phone`). They are stored in
 `~/.config/blueferry/settings.json`, override `local.env`, and apply after
 the service restarts; a variable set in the service's own environment still
@@ -474,7 +474,7 @@ wins.
 
 With **All iPhone Notifications** selected, an iPhone app popup normally
 stays until it times out, even after you cleared the notification on the
-phone. Turn on **Sync notifications with iPhone** in the Qt client's iPhone
+phone. Turn on **Sync notifications with iPhone** in the Qt or GTK client's
 settings, or run `blueferry notifications sync enable`, and a notification
 removed or dismissed on the iPhone also closes its desktop popup. It only
 closes popups and never sends anything to the phone. The choice is saved as
@@ -535,7 +535,7 @@ terminal client does not show photos.
 ### Recent app notifications (opt-in)
 
 `BLUEFERRY_NOTIFICATION_HISTORY=true` (or **Keep recent iPhone notifications**
-in the Qt settings, or `blueferry features on notification_history`, after a
+in the Qt or GTK settings, or `blueferry features on notification_history`, after a
 service restart) keeps the last 200 non-Messages iPhone app notifications in
 the daemon's memory so the Qt client's Notifications tab and `blueferry
 notifications recent` can list them. Nothing is written to disk: BlueFerry's

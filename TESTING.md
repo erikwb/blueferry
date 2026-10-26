@@ -170,6 +170,16 @@ perform I/O. They exercise first-run navigation, repeated page reopening,
 device selection and busy state, storage-status recovery, and confirmation
 across refreshes or settings closure. Binding warnings fail these tests;
 pairing and storage actions must reach the recorder only after confirmation.
+GTK widget tests run each scenario in a child process on a private
+Broadway display (`tests/gtk_broadway.py`; they skip without
+`gtk4-broadwayd`). The settings scenarios build the real dialog with a fake
+client that queues every daemon call, so the test answers late, fails or
+never answers on purpose: the category pages, feature switches with the
+restart notice and the fallback for daemons without `GetFeatures`, and the
+doctor report with Copy. Closing the dialog must disarm its reload timers.
+`tests/test_gtk_min_versions.py` keeps the GTK sources on libadwaita 1.5
+and GTK 4.14 by reading the symbol versions from the installed GIR files,
+with a fixed list of newer libadwaita symbols where those are missing.
 
 Quickshell setup tests load the real controller without a transport and inject
 helper replies. They cover first install, adapter changes, cancellation, failed

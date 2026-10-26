@@ -1,9 +1,10 @@
 """Toolkit-neutral state of the ``local.env`` feature switches in Settings.
 
 Shared by the Qt client (``qt/controller.py``, ``qt/qml/FeatureSwitch.qml``)
-and, soon, the GTK client. The switches come from ``Messages1.GetFeatures``
-and change through ``SetFeature``; older daemons have no ``GetFeatures``,
-and the clients then fall back to the ``local.env`` hints. Every function
+and the GTK client (``ui/feature_switches.py``). The switches come from
+``Messages1.GetFeatures`` and change through ``SetFeature``; older daemons
+have no ``GetFeatures``, and the clients then fall back to the ``local.env``
+hints. Every function
 returns a new plain map; the wording is plain text. :func:`view` adds what
 the settings page shows: one entry per switch and the restart notice.
 """

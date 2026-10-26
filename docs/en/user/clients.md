@@ -10,6 +10,24 @@ desktops.
 
 ![GTK client](../../images/gtk.png)
 
+**Settings** (main menu, `Ctrl+,`) has the same categories as the KDE
+client, one page each; the switcher sits in the header bar, or at the
+bottom in a narrow window, and the search button finds any setting:
+
+| Category | What's there |
+| --- | --- |
+| Phone | Pairing, connection health, **Run Diagnostics** (the same checks as `blueferry doctor`; the report opens in its own dialog with a copy button), pairing report, contact sync, contact photos |
+| Notifications | Which events create popups, contacts only, notification content, action buttons, sync notifications with iPhone, mark read on dismiss, keeping recent notifications |
+| Calls & Audio | Phone calls, call history, [iPhone sound on this computer](phone-audio.md), media control |
+| Security | One-time codes, away lock, local storage and its encryption, Clear History |
+| About | Version, the background service, About BlueFerry, keyboard shortcuts, **Restart Service**, Quit |
+
+The switches that need a restart (below) work as in the KDE client: while a
+change waits for the restart, every page starts with a notice and
+**Restart Service**. The GTK client doesn't have the notification click
+rules, the battery warning or the plugin settings yet; use the KDE client
+or `blueferry` on the command line for those.
+
 ## KDE Plasma (Kirigami)
 
 `blueferry-qt` is a Kirigami app for KDE Plasma. It isn't available on
