@@ -60,14 +60,6 @@ ColumnLayout {
             bridge: section.bridge
         }
     }
-    FeatureSwitch {
-        Layout.fillWidth: true
-        bridge: section.bridge
-        feature: "keep_phone_audio_on_phone"
-        variable: "BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE"
-        text: qsTr("Keep iPhone sound on the iPhone")
-        description: qsTr("On: this computer never becomes the iPhone's speaker. Turn off to allow the switch above.")
-    }
 
     Kirigami.Heading { text: qsTr("Media"); level: 2 }
     // Runtime opt-in (Media1.SetMediaControl); only daemons that report the

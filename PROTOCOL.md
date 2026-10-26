@@ -160,10 +160,24 @@ same defaults;
 `--no-explicit-pairing` selects Connect-first instead. This does not change the
 ANCS compatibility mode or require explicit pairing on other Realtek adapters.
 
-Both modes activate obexd's local Message Notification Server before pairing
-and install BlueFerry's WirePlumber phone-audio fragment so this computer is
-not an A2DP/HFP sink when iOS first connects. A failed pairing attempt removes
-that fragment if this attempt created it.
+Both modes activate obexd's local Message Notification Server before pairing.
+BlueFerry no longer restricts the adapter's audio roles: removing the A2DP
+sink made `Device1.Connect()` fail before authentication with
+`br-connection-unknown` on BlueZ 5.87. Old BlueFerry WirePlumber fragments
+are removed before pairing and on daemon startup, including without a bond.
+Before creating a new bond, Connect-first setup waits for an audio role in
+the adapter's UUIDs, including when cleanup raced daemon startup. A restarted
+WirePlumber process alone does not prove that its endpoints have registered.
+
+A controlled MediaTek test on 2026-10-24 confirmed the regression: connecting
+only AVRCP could pair Classic and open MAP/PBAP, but created no LE bond or
+ANCS service. Restoring the original `Device1.Connect()` path with normal
+audio roles produced BR/EDR SMP Pairing Request/Response and identity exchange,
+both Classic and LE bonds, and authorized ANCS alongside MAP/PBAP. The normal
+phone-audio restriction was reapplied after that test's bond; ANCS still
+completed. The fix removes the restriction rather than changing the pairing
+profile. Automatic audio routing restrictions are deferred to separate work.
+
 After authentication, setup trusts the bond, selects BR/EDR as the preferred
 bearer, lets the existing Classic ACL settle, and only then registers the
 short-lived solicitation advertisement. The daemon starts while that advert
@@ -302,9 +316,19 @@ The iPhone phonebook is available through BlueZ's
 
 - Select the main phonebook with `Select("int", "pb")`; this is not MAP's
   `SetFolder` API.
-- Pull it with `PullAll(path, {"MaxCount": ..., "Format": "vcard30"})`.
+- Pull it with `PullAll(path, {"MaxCount": ..., "Format": "vcard30", "Offset": 1})`.
   `MaxListCount` is a MAP option and causes a PBAP transfer to fail or yield a
   zero-byte file.
+- PBAP reserves `telecom/pb/0.vcf` for the owner card and returns the bulk
+  phonebook in ascending index order (PBAP 1.2.3, sections 3.1.5.2 and 4.2).
+  `Offset=1` excludes this entry before parsing or photo budgeting. This
+  prevents iOS's synthetic "My Number" entry from making the real self
+  contact ambiguous, without depending on its localized name. A confirmed
+  empty download after skipping the owner is a valid empty contact list;
+  disappearance of an empty transfer alone does not clear the cache.
+- Subscribe to transfer completion before `PullAll`. BlueZ can emit the
+  terminal signal and remove `Transfer1` before polling observes completion;
+  retain that signal as evidence for valid empty contacts and call histories.
 - vCards contain `FN`, multiple `TEL` values, and `EMAIL` values. Retaining
   emails is necessary for contacts that exist only as Apple-ID destinations.
 - BlueFerry sends no `Fields` filter, and BlueZ then omits the PBAP Filter
@@ -330,7 +354,8 @@ than one address must remain ambiguous.
 
 BlueFerry's opt-in call history relies on the PBAP call-history phonebooks,
 selected with `Select("int", "ich" | "och" | "mch")` and pulled with the same
-`PullAll` filters as the main phonebook.
+`PullAll` format/count filters as the main phonebook. They keep the default
+zero offset: call-history folders have no owner card to skip.
 
 Observed with an iPhone on iOS 27 and BlueZ 5.87 (2026-10-07/08, daemon log
 only, no call content recorded):
@@ -789,8 +814,9 @@ bluetoothd then exports `org.bluez.MediaTransport1` with the local sink UUID
 `0000110b-…`. Starting the stream is the phone's job (AVDTP START on
 playback). `"phone"` calls `DisconnectProfile`, which closes the stream
 (`avdtp_close`). The route is reported as `pc` while that transport exists.
-None of this works while BlueFerry's WirePlumber fragment strips `a2dp_sink`
-(`BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE=true`, the default).
+The desktop audio configuration must provide `a2dp_sink`. BlueFerry no longer
+removes that role; the retired `BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE` setting
+has no effect.
 
 Where the sound plays is reported separately as `phone_audio_playing`: `pc`
 while `MediaTransport1.State` is `active`, otherwise the AMS playback state
@@ -801,14 +827,56 @@ moves its `State` from `active` to `idle` while AMS still reports playback;
 GetStatus then reports route `pc` with `phone_audio_playing` `phone`, and
 picking this computer again returns to `pc`.
 
-Open hardware questions:
+Hardware validation on 2026-10-25 UTC (MediaTek, BlueZ 5.87, PipeWire 1.6.9,
+WirePlumber 0.5.18): with normal adapter roles and a rule matching only the
+selected phone's `api.bluez5.address` with `bluez5.auto-connect = [ ]`, an
+explicit PC route opened an active A2DP transport and AVRCP. Returning to
+the phone removed that transport and disconnected AVRCP. Both bearers,
+MAP/PBAP and authorized/subscribed ANCS stayed up. Apple Media Service
+remained available: pause and play changed the observed playback state,
+and the operator confirmed sound on the phone. The operator also reported
+sound staying on the phone after reconnecting; polling did not capture the
+disconnect itself, so that part is not an independently verified reconnect
+trace. Fresh pairing with the rule, call audio, and delivery of a new ANCS
+notification were not tested in that experiment.
 
-- `DisconnectProfile` on the A2DP Source UUID may take AVRCP down with the
-  stream. The AVRCP target would then disappear and media control could
-  report NowPlaying as unavailable until the phone reconnects it.
+### Remembered media route
+
+The default is `auto`: BlueFerry leaves routing alone until an explicit
+PC/phone choice. `SetPhoneAudioRoute` now persists a successful choice for
+the selected phone in `settings.json`; `auto` clears it. A different phone
+does not inherit the choice. GetStatus separately reports the actual route,
+`phone_audio_preference`, and `phone_audio_autoconnect_policy`.
+
+While remembering either destination, an owned
+`zz-blueferry-phone-audio.conf` fragment disables automatic profile dials
+for that phone. It never changes `bluez5.roles`. Installing/removing the rule
+reloads WirePlumber on a worker; subsequent PC/phone choices reuse the same
+rule. Before a PC request, the controller observes the adapter's sink UUID
+after the reload. Unsupported WirePlumber leaves manual routing available,
+but cannot suppress the audio server's own dials.
+
+Pairing and forgetting hold an interprocess advisory lock for their whole
+operation. Audio policy reloads and profile requests acquire that same lock
+without blocking the daemon main loop. The audio lock lasts until the D-Bus
+operation replies, including if transport properties change first. A dead
+helper releases the lock through normal descriptor cleanup.
+
+Automatic restoration additionally waits for messaging and, when enabled,
+working ANCS. It makes one attempt per Classic connection, so an incoming
+stream cannot trigger an endless disconnect/reconnect loop. Unknown bearer
+observations do not replenish that budget. Explicit PC/phone requests always
+remain possible, and the existing playback-session guards govern resuming
+audio that was playing before a handback. Phone calls retain their separate
+opt-in and HFP roles. Automatic restoration is covered by hermetic tests;
+the hardware result above exercised the manual profile operations and rule.
+
+Remaining hardware questions:
+
 - The iPhone can open the A2DP stream itself, so a route set to `phone` may
-  silently return to `pc` without any BlueFerry request. The status follows
-  bluetoothd, so clients see that change, but BlueFerry does not prevent it.
+  return to `pc` without any BlueFerry request. The remembered preference
+  corrects the first unwanted stream after reconnecting, but deliberately
+  does not enforce it continuously.
 - How quickly iOS suspends the stream between tracks has not been measured;
   the two-second debounce is a guess.
 

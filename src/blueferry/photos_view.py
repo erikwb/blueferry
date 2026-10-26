@@ -92,11 +92,11 @@ def taken_text(photo: Photo) -> str:
         return ""
     try:
         moment = datetime.fromisoformat(photo.taken_at.replace("Z", "+00:00"))
-    except ValueError:
+        if moment.tzinfo is not None:
+            moment = moment.astimezone()
+        return moment.strftime("%Y-%m-%d %H:%M")
+    except (ValueError, OverflowError):
         return ""
-    if moment.tzinfo is not None:
-        moment = moment.astimezone()
-    return moment.strftime("%Y-%m-%d %H:%M")
 
 
 def type_text(photo: Photo) -> str:
