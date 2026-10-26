@@ -13,7 +13,7 @@ from tests.gtk_broadway import run_scenario
 @pytest.mark.parametrize(
     "scenario", [
         "categories", "features", "old-daemon", "doctor", "mirror-removals",
-        "battery-warning", "reconnect",
+        "battery-warning", "reconnect", "notification-rules",
     ],
 )
 def test_gtk_settings(tmp_path, scenario):
@@ -72,6 +72,15 @@ class FakeClient:
 
     def reconnect_phone_async(self, on_ok, on_err):
         self.calls.append(("reconnect", on_ok, on_err))
+
+    def notification_open_map_async(self, on_ok, on_err=None):
+        self.calls.append(("open_map", on_ok, on_err))
+
+    def set_notification_open_target_async(self, bundle, target, on_ok, on_err):
+        self.calls.append((("set_rule", bundle, target), on_ok, on_err))
+
+    def remove_notification_open_target_async(self, bundle, on_ok, on_err):
+        self.calls.append((("remove_rule", bundle), on_ok, on_err))
 
     def run_doctor_async(self, on_ok, on_err, runner=None):
         self.calls.append(("doctor", on_ok, on_err))
@@ -431,8 +440,69 @@ def _exercise_reconnect():
     window.destroy()
 
 
+def _exercise_notification_rules():
+    from blueferry.models import BackendStatus
+
+    dialog, window, client = _settings()
+    rules = dialog.notification_rules
+    page = dialog.pages["notifications"]
+    assert rules.group.get_ancestor(type(page)) is page
+    assert not rules.group.get_visible() and not rules.form.get_visible()
+
+    def status(**values):
+        return BackendStatus.from_dict({"daemon": True, "notification_policy": "all",
+                                        "notification_open_map_revision": 1, **values})
+
+    # Messages only, or a daemon without the revision: no editor, no read.
+    dialog._apply_status(status(notification_policy="messages"))
+    dialog._apply_status(BackendStatus.from_dict({"daemon": True,
+                                                  "notification_policy": "all"}))
+    assert not rules.group.get_visible() and client.calls == []
+    dialog._apply_status(status())
+    assert rules.group.get_visible() and rules.form.get_visible()
+    client.take("open_map")[1]([])
+    assert rules.empty_row.get_visible()
+    # The same revision again is not reread.
+    dialog._apply_status(status())
+    assert client.calls == []
+
+    assert not rules.add_button.get_sensitive()
+    rules.bundle_entry.set_text("com.apple.mobilemail")
+    rules.target_entry.set_text("javascript:alert(1)")
+    assert not rules.add_button.get_sensitive()
+    assert rules.target_entry.has_css_class("error")
+    rules.target_entry.set_text(" https://mail.example.com/ ")
+    assert rules.add_button.get_sensitive() and not rules.target_entry.has_css_class("error")
+    rules.target_entry.emit("entry-activated")  # Enter in the target field adds
+    _name, updated, failed = client.take(
+        ("set_rule", "com.apple.mobilemail", "https://mail.example.com/"))
+    # A failure keeps the form; an answer without this rule does too.
+    failed("invalid target")
+    updated([{"bundle_id": "org.other", "target": "https://other.example/"}])
+    assert rules.bundle_entry.get_text() == "com.apple.mobilemail"
+    rule = {"bundle_id": "com.apple.mobilemail", "target": "https://mail.example.com/"}
+    updated([rule])
+    assert rules.bundle_entry.get_text() == "" and rules.target_entry.get_text() == ""
+    assert not rules.empty_row.get_visible()
+    rows = [row for row in _descendants(rules.group)
+            if getattr(row, "get_title", None) and row.get_title() == "com.apple.mobilemail"]
+    assert len(rows) == 1 and rows[0].get_subtitle() == "https://mail.example.com/"
+    remove = next(widget for widget in _descendants(rows[0])
+                  if getattr(widget, "get_icon_name", None)
+                  and widget.get_icon_name() == "edit-delete-symbolic")
+    remove.emit("clicked")
+    client.take(("remove_rule", "com.apple.mobilemail"))[1](True)
+    client.take("open_map")[1]([])
+    assert rules.empty_row.get_visible() and rules.rules == []
+    # Another client changed the rules: a new revision rereads them.
+    dialog._apply_status(status(notification_open_map_revision=2))
+    client.take("open_map")
+    window.destroy()
+
+
 if __name__ == "__main__":
     {
+        "notification-rules": _exercise_notification_rules,
         "reconnect": _exercise_reconnect,
         "battery-warning": _exercise_battery_warning,
         "mirror-removals": _exercise_mirror_removals,

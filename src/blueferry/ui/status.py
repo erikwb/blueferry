@@ -33,6 +33,7 @@ from blueferry.setup_verification import (
 )
 from blueferry.ui.doctor import DoctorSection
 from blueferry.ui.feature_switches import FeatureSwitches
+from blueferry.ui.notification_rules import NotificationRules
 from blueferry.ui.saved_choice import SavedChoice
 from blueferry.ui.settings_presenter import categories, service_state
 from blueferry.ui.setup_runner import SetupRunner
@@ -401,6 +402,8 @@ class SettingsDialog(Adw.PreferencesDialog):
         self._ancs_actions_row.add_suffix(self._ancs_actions_switch)
         self._ancs_actions_row.set_activatable_widget(self._ancs_actions_switch)
 
+        self.notification_rules = NotificationRules(client, self._toast)
+
         content_group = Adw.PreferencesGroup(title=_("Content and Actions"))
         content_group.add(self.features.row(
             "show_notification_content",
@@ -682,7 +685,10 @@ class SettingsDialog(Adw.PreferencesDialog):
                 self._iphone_setup_group, daemon_group, self.doctor.group,
                 contacts_group, self._photos_group,
             )),
-            ("notifications", (notification_group, content_group, history_group)),
+            ("notifications", (
+                notification_group, *self.notification_rules.groups, content_group,
+                history_group,
+            )),
             ("calls", (
                 self._calls_group, self._call_history_group, self._battery_group,
                 self._phone_audio_group, self._media_group,
@@ -1330,6 +1336,7 @@ class SettingsDialog(Adw.PreferencesDialog):
         )
         self._applying_contacts_only_notifications = False
         self._apply_ancs_actions(status, reachable)
+        self.notification_rules.apply(status, reachable)
         self._apply_mirror_removals(status, reachable)
         self._apply_battery_warning(status, values, reachable)
         self._apply_media_switches(status, reachable)

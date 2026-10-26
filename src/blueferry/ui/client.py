@@ -464,6 +464,37 @@ class DaemonClient(GObject.Object):
             mutation=True,
         )
 
+    def notification_open_map_async(self, on_ok, on_err=None) -> None:
+        """The notification click rules (Messages1.GetNotificationOpenMap)."""
+        self._submit(
+            lambda: self._call_backend(lambda backend: backend.notification_open_map()),
+            on_ok,
+            on_err,
+        )
+
+    def set_notification_open_target_async(
+        self, bundle_id: str, target: str, on_ok, on_err
+    ) -> None:
+        """Store one click rule; answers with all rules."""
+        self._submit(
+            lambda: self._call_backend(
+                lambda backend: backend.set_notification_open_target(bundle_id, target)
+            ),
+            on_ok,
+            on_err,
+            mutation=True,
+        )
+
+    def remove_notification_open_target_async(self, bundle_id: str, on_ok, on_err) -> None:
+        self._submit(
+            lambda: self._call_backend(
+                lambda backend: backend.remove_notification_open_target(bundle_id)
+            ),
+            on_ok,
+            on_err,
+            mutation=True,
+        )
+
     def set_media_control_async(self, enabled: bool, on_ok, on_err) -> None:
         self._submit(
             lambda: self._call_backend(

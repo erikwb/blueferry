@@ -411,3 +411,29 @@ def test_manual_reconnect_uses_mutation_worker(monkeypatch) -> None:
     finally:
         client.stop()
     assert results == ["started"] and submitted == ["mutation"]
+
+
+def test_notification_rules_read_and_change_on_their_workers(monkeypatch) -> None:
+    rule = {"bundle_id": "com.apple.mobilemail", "target": "https://mail.example.com/"}
+
+    class Backend:
+        def notification_open_map(self):
+            return [rule]
+
+        def set_notification_open_target(self, bundle_id, target):
+            return [{"bundle_id": bundle_id, "target": target}]
+
+        def remove_notification_open_target(self, bundle_id):
+            return True
+
+    client, submitted = _recording_client(monkeypatch, Backend())
+    results = []
+    try:
+        client.notification_open_map_async(results.append)
+        client.set_notification_open_target_async(
+            rule["bundle_id"], rule["target"], results.append, None)
+        client.remove_notification_open_target_async(rule["bundle_id"], results.append, None)
+    finally:
+        client.stop()
+    assert results == [[rule], [rule], True]
+    assert submitted == ["read", "mutation", "mutation"]
