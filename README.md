@@ -463,9 +463,9 @@ Restart the user service after editing `local.env` settings.
 
 Three on/off switches without a setting of their own
 (`BLUEFERRY_SHOW_NOTIFICATION_CONTENT`, `BLUEFERRY_MARK_READ_ON_DISMISS`,
-`BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE`) can also be changed in the Qt or GTK
-settings (both offer **Restart Service** while a change waits) or with `blueferry features` (`blueferry features off
-keep_phone_audio_on_phone`). They are stored in
+`BLUEFERRY_NOTIFICATION_HISTORY`) can also be changed in the Qt or GTK
+settings (both offer **Restart Service** while a change waits) or with
+`blueferry features` (`blueferry features on notification_history`). They are stored in
 `~/.config/blueferry/settings.json`, override `local.env`, and apply after
 the service restarts; a variable set in the service's own environment still
 wins.

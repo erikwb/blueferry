@@ -74,8 +74,8 @@ class MainWindow(Adw.ApplicationWindow):
         self.settings = SettingsDialog(client)
 
         self._banner = Adw.Banner(
-            title=_("Background service unavailable — open iPhone to repair it"),
-            button_label=_("Open iPhone"),
+            title=_("Background service unavailable — open Settings to repair it"),
+            button_label=_("Open Settings"),
         )
         self._banner.connect(
             "button-clicked",
