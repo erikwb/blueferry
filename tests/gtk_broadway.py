@@ -28,7 +28,10 @@ def run_scenario(tmp_path: Path, script: str, scenario: str, timeout: float = 30
         os.environ, XDG_RUNTIME_DIR=str(runtime), GDK_BACKEND="broadway",
         BROADWAY_DISPLAY=":0", GTK_A11Y="none", GSETTINGS_BACKEND="memory",
         PYTHONPATH=os.pathsep.join([str(ROOT / "src"), str(ROOT)]),
-        XDG_CONFIG_HOME=str(tmp_path / "config"),
+        # Private XDG directories: a scenario never sees the developer's
+        # plugins, logs, caches or settings.
+        XDG_CONFIG_HOME=str(tmp_path / "config"), XDG_DATA_HOME=str(tmp_path / "data"),
+        XDG_STATE_HOME=str(tmp_path / "state"), XDG_CACHE_HOME=str(tmp_path / "cache"),
     )
     # Both the GTK display and its HTTP endpoint use private Unix sockets.
     daemon = subprocess.Popen(
