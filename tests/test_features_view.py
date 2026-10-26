@@ -84,3 +84,24 @@ def test_doctor_summary_names_the_worst_outcome() -> None:
     assert doctor_report.summary({**done, "warnings": True})[0] == "warning"
     assert doctor_report.summary(doctor_report.failed_state("boom")) == (
         "error", "One or more checks failed.")
+
+
+def test_a_saved_choice_is_assumed_until_the_reload() -> None:
+    items = {
+        "mark_read_on_dismiss": {"value": False, "running": False, "source": "default",
+                                 "restart_required": False},
+        "show_notification_content": {"value": True, "running": True,
+                                      "source": "environment", "restart_required": False},
+    }
+    state = features_view.loaded(features_view.initial(), items)
+    assumed = features_view.assume(state, "mark_read_on_dismiss", True)
+    row = features_view.switch(assumed, "mark_read_on_dismiss")
+    assert row["active"] is True and features_view.restart_pending(assumed)
+    assert state["items"]["mark_read_on_dismiss"]["value"] is False  # unchanged
+    back = features_view.assume(assumed, "mark_read_on_dismiss", False)
+    assert not features_view.restart_pending(back)
+    # The environment wins: no restart can apply the stored value.
+    pinned = features_view.assume(state, "show_notification_content", False)
+    assert not features_view.restart_pending(pinned)
+    # Unknown switches and old daemons stay as they are.
+    assert features_view.assume(state, "notification_history", True) is state

@@ -135,8 +135,11 @@ class FeatureSwitches:
         if self._applying:
             return
         enabled = row.get_active()
+        # Show the choice while it is saved; a failure puts the old state back.
+        previous = self._state
+        self._state = features_view.assume(previous, name, enabled)
         self._saving.add(name)
-        self._render_row(name)
+        self._render()
 
         def saved(value: object) -> None:
             self._saving.discard(name)
@@ -148,6 +151,7 @@ class FeatureSwitches:
 
         def failed(message: str) -> None:
             self._saving.discard(name)
+            self._state = previous
             self._toast(_("Could not save the setting: {error}").format(error=message))
             self._render()
 

@@ -194,6 +194,8 @@ def _exercise_features():
     assert mark_read.get_active() and not mark_read.get_sensitive()
     _call, saved, _failed = client.take(("set_feature", "mark_read_on_dismiss", True))
     saved("restart-required")
+    # Saved, the reload not answered yet: the switch keeps the choice.
+    assert mark_read.get_active() and mark_read.get_sensitive()
     client.take("features")[1]({**ITEMS, "mark_read_on_dismiss": {
         **ITEMS["mark_read_on_dismiss"], "value": True, "source": "settings",
         "restart_required": True,

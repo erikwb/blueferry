@@ -1411,13 +1411,23 @@ class BridgeController(QObject):
 
     @Slot(str, bool)
     def setFeature(self, name: str, enabled: bool) -> None:
+        # Show the choice while it is saved; a failure puts the old state back.
+        previous = self._features
+        self._features = features_view.assume(previous, str(name), bool(enabled))
+        self.featuresChanged.emit()
+
         def done(value: object) -> None:
             self._features = features_view.with_notice(
                 self._features, features_view.set_notice(value))
             self.featuresChanged.emit()
             self.loadFeatures()
 
-        self._run(lambda: self._backend.set_feature(str(name), bool(enabled)), done)
+        def failed(message: str) -> None:
+            self._features = previous
+            self.featuresChanged.emit()
+            self._operation_failed(message)
+
+        self._run(lambda: self._backend.set_feature(str(name), bool(enabled)), done, failed)
 
     @Property("QVariantMap", notify=doctorChanged)
     def doctor(self):

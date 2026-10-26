@@ -50,6 +50,20 @@ def with_notice(state: dict[str, Any], notice: str) -> dict[str, Any]:
     return {**state, "notice": notice}
 
 
+def assume(state: dict[str, Any], name: str, value: bool) -> dict[str, Any]:
+    """The state once ``SetFeature(name, value)`` is stored, shown while it is
+    being saved, so the switch does not jump back until the reload."""
+    items = state.get("items") or {}
+    info = items.get(name)
+    if not isinstance(info, dict):
+        return state
+    running = info.get("running")
+    changed = {**info, "value": bool(value)}
+    if isinstance(running, bool) and info.get("source") != "environment":
+        changed["restart_required"] = bool(value) != running
+    return {**state, "items": {**items, name: changed}}
+
+
 def restart_pending(state: dict[str, Any]) -> bool:
     """A stored switch differs from what the running service uses."""
     items = state.get("items") or {}
