@@ -84,10 +84,46 @@ def _newer_symbols() -> tuple[dict[str, set[str]], set[tuple[str, str, str]]]:
     return newer_top, newer_members
 
 
+# Method names of Python's own containers (``text.find``, ``rows.insert``)
+# would match GTK methods of the same name added later. The price: such a
+# name is not checked on an Adw/Gtk receiver either (Adw.PreferencesPage
+# .insert is libadwaita 1.8, Gtk.StringList.find GTK 4.16); the scan cannot
+# tell the receiver's type.
 _PYTHON_METHODS = {
     name for kind in (str, bytes, list, dict, set, tuple) for name in dir(kind)
     if not name.startswith("_")
 }
+_CONSTRUCTOR = re.compile(r"\b(Adw|Gtk)\.([A-Z]\w*)\(")
+
+
+def _constructor_calls(source: str) -> list[tuple[str, str, str]]:
+    """``(namespace, class, top-level arguments)`` of each Adw/Gtk constructor
+    call. Nested calls (``title=_("x")``) and string literals are blanked, so
+    only the call's own keywords remain; the nested calls are found on their
+    own."""
+    calls = []
+    for match in _CONSTRUCTOR.finditer(source):
+        depth, quote, top = 1, "", []
+        index = match.end()
+        while index < len(source) and depth:
+            char = source[index]
+            if quote:
+                if char == "\\":
+                    index += 1
+                elif char == quote:
+                    quote = ""
+                char = " "
+            elif char in "'\"":
+                quote, char = char, " "
+            elif char in "([{":
+                depth += 1
+            elif char in ")]}":
+                depth -= 1
+            if depth == 1 and char not in "([{)]}":
+                top.append(char)
+            index += 1
+        calls.append((match[1], match[2], "".join(top)))
+    return calls
 
 
 def _uses(source: str) -> tuple[set[tuple[str, str]], set[tuple[str, str, str]], set[str]]:
@@ -99,13 +135,11 @@ def _uses(source: str) -> tuple[set[tuple[str, str]], set[tuple[str, str, str]],
     """
     top = set(re.findall(r"\b(Adw|Gtk)\.([A-Za-z_]\w*)", source))
     qualified = set(re.findall(r"\b(Adw|Gtk)\.(\w+)\.([A-Z][A-Z0-9_]*)\b", source))
-    # Method names of Python's own containers (``text.find``, ``rows.insert``)
-    # would match GTK methods of the same name added later.
     members = set(re.findall(r"\.([A-Za-z_]\w*)\s*\(", source)) - _PYTHON_METHODS  # calls
     members |= {name.replace("-", "_") for name in re.findall(
         r"""["'](?:notify::)?([a-z][a-z0-9-]*)["']""", source)}  # properties, signals
     # Keyword arguments only inside Adw/Gtk constructor calls, not every assignment.
-    for arguments in re.findall(r"\b(?:Adw|Gtk)\.[A-Z]\w*\(([^()]*)\)", source):
+    for _namespace, _name, arguments in _constructor_calls(source):
         members |= set(re.findall(r"\b([a-z][a-z0-9_]*)\s*=(?!=)", arguments))
     return top, qualified, members
 
@@ -150,11 +184,19 @@ def test_the_check_sees_newer_symbols(monkeypatch, tmp_path) -> None:
         "Adw.PreferencesPage(description_centered=True)\n"
         "icon = theme.lookup_icon('x', None, 16, 1, 0, Gtk.IconLookupFlags.NONE)\n"
         "box = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)\n"
+        "row = Adw.EntryRow(title=_('Number (mobile)'), max_length=64)\n"
+        "page = Adw.PreferencesPage(\n    title=_('x'), banner_text='a=b',\n    description_centered=True,\n)\n"
     )
     monkeypatch.setattr(sys.modules[__name__], "SOURCES", [sample])
     found = _found(newer_top, newer_members)
     assert "sample.py: Adw.ButtonRow" in found
     assert {"sample.py: set_banner", "sample.py: description_centered"} <= set(found)
+    # Keywords after a nested call such as _("…") count too.
+    assert "sample.py: max_length" in found
+    [(_ns, _name, arguments)] = [
+        call for call in _constructor_calls("Adw.PreferencesPage(title=_('x'), text='a=b')")
+        if call[1] == "PreferencesPage"]
+    assert re.findall(r"\b([a-z][a-z0-9_]*)\s*=(?!=)", arguments) == ["title", "text"]
     # Enum members count per type: IconLookupFlags.NONE is GTK 4.18,
     # SelectionMode.NONE is old.
     assert "sample.py: Gtk.IconLookupFlags.NONE" in found
