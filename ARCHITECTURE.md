@@ -202,6 +202,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `cli_plugins.py` | `blueferry plugins …` and `blueferry plugins ALIAS …` (exec of the plugin's own CLI; refused for a disabled plugin). |
 | `desktop_open.py` | Opens a checked URI with the desktop's default handler for the CLIs. |
 | `companion_tools.py`, `cli_tools.py`, `qt/companion.py`, `qt/qml/CompanionToolsSection.qml` | Client-only launchers for UxPlay screen mirroring, LocalSend and the iPhone camera roll over USB (ifuse); `blueferry tools` and the Qt card's Tools section. Not part of the daemon or its D-Bus API. |
+| `companion_model.py` | Toolkit-neutral state of the card's Tools section, shared by Qt and (soon) GTK: probe and actions on a `TaskRunner`, one action at a time, the last message and the "trust this computer" hint. `qt/companion.py` adapts it to a `QThreadPool` and the `changed`/`reported` signals. |
 | `cli_notification_actions.py` | `notification-actions` status, enable, and disable for the opt-in iPhone action buttons. |
 | `cli_calls.py` | Optional `blueferry calls` commands over `Calls1` and `blueferry phone-status` (battery, signal, network from `GetStatus`). |
 | `cli_otp.py` | `blueferry otp status`, `enable`, `disable` and `check` for one-time code auto-copy (`otp-status` and `otp-check` stay as aliases). |

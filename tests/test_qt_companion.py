@@ -1,4 +1,7 @@
-"""Qt adapter for the companion tools: worker hand-off and state, fake system."""
+"""Qt adapter for the companion tools: worker hand-off and signals, fake system.
+
+The state logic is tested without Qt in ``tests/test_companion_model.py``.
+"""
 from __future__ import annotations
 
 import dataclasses
@@ -47,27 +50,20 @@ def test_refresh_probes_on_the_worker_and_exposes_rows(app, tmp_path, track) -> 
     assert not rows["send"]["installed"] and not rows["eject"]["enabled"]
 
 
-def test_blocking_actions_run_one_at_a_time_and_report(app, tmp_path, track) -> None:
+def test_actions_report_through_the_qt_signal(app, tmp_path, track) -> None:
     fake = Fake(tmp_path, installed=PHOTO_TOOLS, answers={
         **DEVICE, ("idevicepair", "validate"): CommandResult(1, "not paired"),
     })
     tools = track(CompanionTools(fake.system()))
     reports: list[tuple[bool, str]] = []
+    changes: list[None] = []
     tools.reported.connect(lambda ok, message: reports.append((ok, message)))
+    tools.changed.connect(lambda: changes.append(None))
     tools.run("photos")
-    assert tools.state()["busy"] == "photos"
-    tools.run("eject")  # ignored while busy
+    assert tools.busy == "photos" and changes
     _wait(tools, lambda: tools.state()["busy"] == "" and reports)
-    assert tools.state()["needsPairing"] is True
+    assert tools.needs_pairing is True
     assert reports[0][0] is False and "Trust This Computer" in reports[0][1]
-    assert ["fusermount3", "-u"] not in [argv[:2] for argv in fake.ran]
-
-    fake.answers[("idevicepair", "pair")] = CommandResult(0, "SUCCESS")
-    tools.run("pair")
-    _wait(tools, lambda: len(reports) == 2 and tools.state()["busy"] == "")
-    assert tools.state()["needsPairing"] is False
-    tools.clear_message()
-    assert tools.state()["message"] == ""
 
 
 def test_mirroring_starts_on_the_worker_not_the_ui_thread(app, tmp_path, track) -> None:
