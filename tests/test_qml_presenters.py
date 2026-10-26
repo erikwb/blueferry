@@ -4288,40 +4288,42 @@ def _open_category(qml_engine, window, category):
 def test_settings_categories_switch_features_and_ask_for_a_restart(qml_engine, settings_window):
     window, bridge = settings_window
     bridge.setProperty("status", {"daemon": True})
+    pinned_item = {
+        "value": True, "running": False, "source": "environment",
+        "variable": "BLUEFERRY_SHOW_NOTIFICATION_CONTENT", "restart_required": False,
+    }
     bridge.setProperty("features", {"loaded": True, "available": True, "items": {
-        "keep_phone_audio_on_phone": {
+        "mark_read_on_dismiss": {
             "value": False, "running": False, "source": "default",
-            "variable": "BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE", "restart_required": False,
+            "variable": "BLUEFERRY_MARK_READ_ON_DISMISS", "restart_required": False,
         },
-        "show_notification_content": {
-            "value": True, "running": False, "source": "environment",
-            "variable": "BLUEFERRY_SHOW_NOTIFICATION_CONTENT", "restart_required": False,
-        },
+        "show_notification_content": pinned_item,
     }})
-    page = _open_category(qml_engine, window, "calls")
+    _open_category(qml_engine, window, "notifications")
     assert bridge.property("featureLoads") >= 1
-    switch = _settings_object(window, "feature_keep_phone_audio_on_phone")
+    switch = _settings_object(window, "feature_mark_read_on_dismiss")
     assert switch.property("enabled") is True and switch.property("checked") is False
     QMetaObject.invokeMethod(switch, "toggle")
     QMetaObject.invokeMethod(switch, "toggled")
     assert _evaluate(qml_engine, "testBridge.calls")[-1] == {
-        "method": "setFeature", "args": ["keep_phone_audio_on_phone", True],
+        "method": "setFeature", "args": ["mark_read_on_dismiss", True],
     }
-    # A switch the daemon does not report (older daemon) names the variable;
-    # one the service environment sets cannot be changed here.
-    page.setProperty("category", "notifications")
-    QGuiApplication.processEvents()
-    unknown = _settings_object(window, "feature_mark_read_on_dismiss")
-    assert unknown.property("enabled") is False
-    assert "BLUEFERRY_MARK_READ_ON_DISMISS" in unknown.property("subtitle")
+    # One the service environment sets cannot be changed here.
     pinned = _settings_object(window, "feature_show_notification_content")
     assert pinned.property("enabled") is False and "environment" in pinned.property("subtitle")
     notice = _settings_object(window, "restartNotice")
     assert notice.property("visible") is False
+    # A switch the daemon does not report (older daemon) names the variable.
     bridge.setProperty("features", {"loaded": True, "available": True, "items": {
-        "keep_phone_audio_on_phone": {
+        "show_notification_content": pinned_item,
+    }})
+    QGuiApplication.processEvents()
+    assert switch.property("enabled") is False
+    assert "BLUEFERRY_MARK_READ_ON_DISMISS" in switch.property("subtitle")
+    bridge.setProperty("features", {"loaded": True, "available": True, "items": {
+        "mark_read_on_dismiss": {
             "value": True, "running": False, "source": "settings",
-            "variable": "BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE", "restart_required": True,
+            "variable": "BLUEFERRY_MARK_READ_ON_DISMISS", "restart_required": True,
         },
     }})
     QGuiApplication.processEvents()

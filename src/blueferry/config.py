@@ -59,7 +59,6 @@ LOCAL_ENV_PATH: Path = CONFIG_DIR / "local.env"
 FEATURE_SWITCHES: tuple[tuple[str, str, bool], ...] = (
     ("show_notification_content", "BLUEFERRY_SHOW_NOTIFICATION_CONTENT", True),
     ("mark_read_on_dismiss", "BLUEFERRY_MARK_READ_ON_DISMISS", True),
-    ("keep_phone_audio_on_phone", "BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE", True),
 )
 FEATURE_ENV_KEYS = frozenset(variable for _, variable, _ in FEATURE_SWITCHES)
 FEATURES_SETTINGS_KEY = "features"

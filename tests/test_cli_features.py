@@ -13,9 +13,9 @@ class _Client:
         self.calls: list[tuple[str, bool]] = []
 
     def features(self):
-        return {"keep_phone_audio_on_phone": {
+        return {"mark_read_on_dismiss": {
             "value": False, "source": "settings",
-            "variable": "BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE", "restart_required": True,
+            "variable": "BLUEFERRY_MARK_READ_ON_DISMISS", "restart_required": True,
         }}
 
     def set_feature(self, name, enabled):
@@ -30,9 +30,9 @@ def test_list_and_switch(monkeypatch) -> None:
     monkeypatch.setattr(cli_features, "_client", lambda: client)
     result = CliRunner().invoke(app, ["features"])
     assert result.exit_code == 0, result.output
-    assert "keep_phone_audio_on_phone" in result.output and "restart pending" in result.output
-    result = CliRunner().invoke(app, ["features", "off", "keep_phone_audio_on_phone"])
+    assert "mark_read_on_dismiss" in result.output and "restart pending" in result.output
+    result = CliRunner().invoke(app, ["features", "off", "mark_read_on_dismiss"])
     assert "restart the BlueFerry service" in result.output
-    assert client.calls == [("keep_phone_audio_on_phone", False)]
+    assert client.calls == [("mark_read_on_dismiss", False)]
     result = CliRunner().invoke(app, ["features", "on", "nope"])
     assert result.exit_code == 2 and "unknown feature" in result.output
