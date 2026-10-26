@@ -27,7 +27,7 @@ blueferry tools eject
 
 ## Ein Plugin installieren
 
-Im KDE-Client **Settings › Plugins** öffnen. Der Store listet ausgewählte
+Im GTK- oder KDE-Client **Settings › Plugins** öffnen. Der Store listet ausgewählte
 Plugins; **Install** zeigt Quelle, Version, was das Plugin darf (seine
 Fähigkeiten) und den Befehl, den es ausführt (`Exec` aus seinem Manifest),
 und fragt vorher nach. Man kann auch jede https-Git-URL einfügen. Im

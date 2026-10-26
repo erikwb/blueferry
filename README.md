@@ -828,13 +828,13 @@ installed by default.
 
 - **Install** with `blueferry plugins install URL` (any https Git URL) or
   pick one from the curated store (`blueferry plugins available`), or from
-  **Settings › Plugins** in the Qt client. Every install and update
+  **Settings › Plugins** in the GTK or Qt client. Every install and update
   shows the source, the pinned ref and commit, the capabilities and the
   command the plugin's manifest runs (`Exec`), and asks first. Each plugin
   gets its own virtual environment under `~/.local/share/blueferry/plugins`;
   pip fetches its dependencies from the network. Everything runs as you;
   nothing asks for root.
-- **Settings** of a plugin come from its schema: a form in the Qt client with
+- **Settings** of a plugin come from its schema: a form in the GTK and Qt clients with
   help links, **Test connection**, where offered a browser sign-in and the
   plugin's own buttons (such as "Set up iPhone"), or
   `blueferry plugins config ID --set KEY=VALUE --secret KEY` (`--test`,

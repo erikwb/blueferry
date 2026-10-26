@@ -38,12 +38,13 @@ einem schmalen Fenster unten, und der Suchknopf findet jede Einstellung:
 | Notifications | Welche Ereignisse Popups erzeugen, nur Kontakte, Klickregeln, Mitteilungsinhalt, Aktionsknöpfe, Mitteilungen mit dem iPhone abgleichen, beim Wegklicken als gelesen markieren, letzte Mitteilungen behalten |
 | Calls & Audio | Anrufe, Anrufliste, Akku-Warnung, [iPhone-Ton am Computer](phone-audio.md), Mediensteuerung |
 | Security | Einmalcodes, Abwesenheitssperre, lokale Daten und ihre Verschlüsselung, Verlauf löschen |
+| Plugins | Installierte [Plugins](plugins.md) mit Schalter, **Show Log**, **Check for Update** und **Remove**; der Store, eine eigene Git-URL und die Plugin-Listen. Jede Installation fragt vorher nach. Die **Settings** eines Plugins öffnen sich als eigene Seite |
 | About | Version, Hintergrunddienst, About BlueFerry, Tastenkürzel, **Restart Service**, Beenden |
 
 Die Schalter, die einen Neustart brauchen (unten), funktionieren wie im
 KDE-Client: Solange eine Änderung auf den Neustart wartet, beginnt jede
-Seite mit einem Hinweis und **Restart Service**. Die Plugin-Einstellungen
-und den Reiter Photos hat der GTK-Client noch nicht, und laufende Anrufe
+Seite mit einem Hinweis und **Restart Service**. Den Reiter Photos und den
+Plugin-Abschnitt der Karte hat der GTK-Client noch nicht, und laufende Anrufe
 zeigt er nicht an (annehmen, halten und auflegen am iPhone oder in der
 Anruf-Mitteilung); dafür gibt es den KDE-Client oder `blueferry` auf der
 Kommandozeile. Die Schalter für den Ton und die Abwesenheitssperre liegen

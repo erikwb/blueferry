@@ -35,12 +35,13 @@ bottom in a narrow window, and the search button finds any setting:
 | Notifications | Which events create popups, contacts only, click rules, notification content, action buttons, sync notifications with iPhone, mark read on dismiss, keeping recent notifications |
 | Calls & Audio | Phone calls, call history, battery warning, [iPhone sound on this computer](phone-audio.md), media control |
 | Security | One-time codes, away lock, local storage and its encryption, Clear History |
+| Plugins | Installed [plugins](plugins.md) with their switch, **Show Log**, **Check for Update** and **Remove**; the store, your own Git URL and the plugin lists. Every install asks first. A plugin's **Settings** open as a page of their own |
 | About | Version, the background service, About BlueFerry, keyboard shortcuts, **Restart Service**, Quit |
 
 The switches that need a restart (below) work as in the KDE client: while a
 change waits for the restart, every page starts with a notice and
-**Restart Service**. The GTK client doesn't have the plugin settings and
-the Photos tab yet, and it shows no running calls (answer, hold and hang up
+**Restart Service**. The GTK client doesn't have the Photos tab and the
+plugin section of the card yet, and it shows no running calls (answer, hold and hang up
 on the iPhone or in the call popup); use the KDE client or `blueferry` on
 the command line for those. The sound and away lock switches are under
 **Settings** rather than on the card.
