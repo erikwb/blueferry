@@ -644,21 +644,16 @@ class SettingsDialog(Adw.PreferencesDialog):
             use_markup=False, css_classes=["property"],
         )
         about_group.add(self._service_row)
+        self._service_row.add_suffix(self.features.restart_button())
         about_links = Adw.PreferencesGroup()
         for title, action in (
             (_("About BlueFerry"), "app.about"),
             (_("Keyboard Shortcuts"), "app.shortcuts"),
+            (_("Quit"), "app.quit"),
         ):
             row = Adw.ActionRow(title=title, activatable=True, action_name=action)
             row.add_suffix(Gtk.Image(icon_name="go-next-symbolic"))
             about_links.add(row)
-        service_group = Adw.PreferencesGroup()
-        restart_row = Adw.ActionRow(title=_("Restart Service"))
-        restart_row.add_suffix(self.features.restart_button())
-        service_group.add(restart_row)
-        quit_row = Adw.ActionRow(title=_("Quit"), activatable=True, action_name="app.quit")
-        quit_row.add_suffix(Gtk.Image(icon_name="go-next-symbolic"))
-        service_group.add(quit_row)
 
         for key, groups in (
             ("phone", (
@@ -672,7 +667,7 @@ class SettingsDialog(Adw.PreferencesDialog):
                 self._phone_audio_group, self._media_group,
             )),
             ("security", (self._otp_group, self._proximity_lock_group, data_group)),
-            ("about", (about_group, about_links, service_group)),
+            ("about", (about_group, about_links)),
         ):
             for group in groups:
                 self.pages[key].add(group)
