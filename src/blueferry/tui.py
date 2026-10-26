@@ -3,22 +3,32 @@ from __future__ import annotations
 
 import sys
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
+from functools import partial
 from pathlib import Path
 from typing import ClassVar, Protocol
 
 from gi.repository import GLib
 from rich.text import Text
 from textual import events, on, work
-from textual.app import App, ComposeResult
+from textual.app import App, ComposeResult, SystemCommand
 from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.css.query import NoMatches
 from textual.message import Message
-from textual.screen import ModalScreen
-from textual.widgets import Button, Footer, Input, ListItem, ListView, Static, TextArea
+from textual.screen import ModalScreen, Screen
+from textual.widgets import (
+    Button,
+    Footer,
+    Input,
+    ListItem,
+    ListView,
+    Static,
+    TabbedContent,
+    TextArea,
+)
 
-from blueferry import config, phone_overview
+from blueferry import config, doctor_report, phone_overview
 from blueferry.backend_lifecycle import BackendLifecycleError, ensure_backend_current
 from blueferry.bus import get_session_bus
 from blueferry.client import BackendClient, BackendError
@@ -28,6 +38,8 @@ from blueferry.conversation_state import (
     ReplyDisposition,
     fetch_conversation_snapshot,
 )
+from blueferry.doctor_report import DoctorReport, run_doctor
+from blueferry.i18n import _
 from blueferry.models import (
     BackendStatus,
     CallHistoryEntry,
@@ -49,8 +61,9 @@ from blueferry.reconnect_view import (
 from blueferry.text_safety import terminal_text
 from blueferry.time_display import format_message_timestamp
 from blueferry.tui_calls import CallsScreen
+from blueferry.tui_doctor import DoctorScreen
 from blueferry.tui_notification_rules import REVISION_KEY, NotificationRulesScreen
-from blueferry.tui_options import OptionsScreen
+from blueferry.tui_options import OptionsScreen, categories
 from blueferry.tui_phone import RecentCallsScreen, now_playing_text
 
 _REFRESH_SECONDS = 15.0
@@ -102,6 +115,15 @@ class _Client(Protocol):
     def set_phone_audio_route(self, route: str) -> str: ...
     # Manual Classic reconnect (Messages1.ReconnectPhone).
     def reconnect_phone(self) -> str: ...
+
+    # Options screen: local.env switches, the popup policy, contact sync.
+    def features(self) -> dict: ...
+
+    def set_feature(self, name: str, enabled: bool) -> str: ...
+
+    def set_notification_policy(self, policy: str) -> str: ...
+
+    def sync_contacts(self) -> int: ...
 
     # Messages1.SetAutoProfileReset; returns the saved value.
     def set_auto_profile_reset(self, enabled: bool) -> bool: ...
@@ -614,7 +636,7 @@ class HelpScreen(ModalScreen[None]):
             "[bold #7dd3fc]Star conversation[/]  s\n"
             "[bold #7dd3fc]Delete conversation[/]  Delete\n"
             f"{calls_line}"
-            "[bold #7dd3fc]Options[/]  o\n"
+            "[bold #7dd3fc]Options · diagnostics · restart service[/]  o\n"
             "[bold #7dd3fc]Notification click rules[/]  l\n"
             f"{audio_line}"
             "[bold #7dd3fc]Reconnect iPhone[/]  b\n"
@@ -670,9 +692,14 @@ class BlueFerryApp(App[None]):
         state: TuiState,
         *,
         monitor_factory: Callable[[], _Monitor | None] = _EventMonitor,
+        restart: Callable[[], None] | None = None,
+        doctor: Callable[[], DoctorReport] = run_doctor,
     ) -> None:
         super().__init__()
         self.state = state
+        # Seams for tests; None keeps OptionsScreen's restart_backend.
+        self._restart = restart
+        self._doctor = doctor
         self._monitor_factory = monitor_factory
         self._monitor: _Monitor | None = None
         self._pending_open_handle: str | None = None
@@ -753,6 +780,9 @@ class BlueFerryApp(App[None]):
     def on_unmount(self) -> None:
         if self._monitor is not None:
             self._monitor.close()
+        # A diagnostics run still going would hold up interpreter exit
+        # until its timeout.
+        doctor_report.terminate_running()
 
     def on_resize(self, event: events.Resize) -> None:
         self._update_responsive(event.size.width)
@@ -849,6 +879,9 @@ class BlueFerryApp(App[None]):
         if self.state.status != previous_status:
             self._update_status()
             self._update_notice()
+            for screen in self.screen_stack:
+                if isinstance(screen, OptionsScreen):
+                    screen.status_changed(self.state.status)
         elif self.state.error != previous_error:
             self._update_notice()
         if threads_changed:
@@ -1181,11 +1214,39 @@ class BlueFerryApp(App[None]):
             phone_audio="phone_audio_route" in status.extra,
         ))
 
-    def action_options(self) -> None:
+    def action_options(self, category: str = "phone") -> None:
         focused = self.focused
         if isinstance(focused, Input | TextArea) or isinstance(self.screen, OptionsScreen):
             return
-        self.push_screen(OptionsScreen(self.state.client))
+        self.push_screen(OptionsScreen(
+            self.state.client, category=category, restart=self._restart, doctor=self._doctor,
+        ))
+
+    def action_diagnostics(self) -> None:
+        if not isinstance(self.screen, DoctorScreen):
+            self.push_screen(DoctorScreen(self._doctor))
+
+    def get_system_commands(self, screen: Screen) -> Iterable[SystemCommand]:
+        yield from super().get_system_commands(screen)
+        # The settings live in Options (o); the palette (Ctrl+P) jumps
+        # straight to a category, so no new single-letter keys are needed.
+        for category in categories():
+            yield SystemCommand(
+                _("Options: {category}").format(category=category.title),
+                _("Open the {category} settings").format(category=category.title),
+                partial(self._open_options_from_palette, category.key),
+            )
+        yield SystemCommand(
+            _("Run Diagnostics"),
+            _("Check Bluetooth, BlueZ OBEX, the iPhone and notifications (blueferry doctor)"),
+            self.action_diagnostics,
+        )
+
+    def _open_options_from_palette(self, category: str) -> None:
+        if isinstance(self.screen, OptionsScreen):
+            self.screen.query_one("#options-tabs", TabbedContent).active = f"options-{category}"
+            return
+        self.action_options(category)
 
     def action_new_message(self) -> None:
         self.push_screen(NewMessageScreen(), self._new_message_ready)
