@@ -31,6 +31,8 @@ def test_doctor_state_follows_the_run() -> None:
     done = doctor_report.finished_state(state, DoctorReport(True, True, "WARNING something"))
     assert done == {"running": False, "ran": True, "ok": True, "warnings": True,
                     "text": "WARNING something"}
+    # A runner that returns no report still ends the run.
+    assert doctor_report.finished_state(state, None) == doctor_report.idle_state()
     assert doctor_report.failed_state("boom") == {
         "running": False, "ran": True, "ok": False, "warnings": False, "text": "boom"}
 

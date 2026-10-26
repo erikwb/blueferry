@@ -61,11 +61,12 @@ def running_state(state: dict[str, Any]) -> dict[str, Any]:
 
 
 def finished_state(state: dict[str, Any], report: object) -> dict[str, Any]:
-    """The worker's answer: a :class:`DoctorReport` replaces the state."""
+    """The worker's answer: a :class:`DoctorReport` replaces the state;
+    anything else only ends the run, so the page never spins forever."""
     if isinstance(report, DoctorReport):
         return {"running": False, "ran": True, "ok": report.ok,
                 "warnings": report.warnings, "text": report.text}
-    return state
+    return {**state, "running": False}
 
 
 def failed_state(message: str) -> dict[str, Any]:
