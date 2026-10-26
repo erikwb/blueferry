@@ -74,6 +74,15 @@ class WorkerRunner:
         future.add_done_callback(completed)
 
     def stop(self) -> None:
-        """Drop queued work and every answer still on its way."""
+        """Drop queued work and every answer still on its way.
+
+        A task that already runs is not interrupted: the interpreter joins
+        the pool's thread at exit, so quitting during a plugin install waits
+        for its git or pip step. Those steps are bounded by the plugin
+        manager's timeouts (``GIT_TIMEOUT_SEC``, ``PIP_TIMEOUT_SEC``), and
+        ``plugin_manager.SubprocessRunner`` does not expose its process to
+        terminate; stopping pip half-way would also leave a half-built
+        environment behind.
+        """
         self._stopped = True
         self._executor.shutdown(wait=False, cancel_futures=True)
