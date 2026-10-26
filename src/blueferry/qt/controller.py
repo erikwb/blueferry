@@ -5,6 +5,7 @@ from __future__ import annotations
 import threading
 from collections import OrderedDict
 from collections.abc import Callable
+from typing import Any
 
 from PySide6.QtCore import (
     SLOT,
@@ -36,6 +37,7 @@ from blueferry.conversation_state import (
 from blueferry.doctor_report import DoctorReport, run_doctor
 from blueferry.i18n import _
 from blueferry.models import BackendStatus, CallsSnapshot
+from blueferry.notification_history import NotificationHistory
 from blueferry.onboarding import OnboardingState, effective_compatibility
 from blueferry.plugin_api.client import Photo
 from blueferry.protocol import BUS_NAME, EVENTS_IFACE, OBJECT_PATH
@@ -43,7 +45,7 @@ from blueferry.qt.avatars import avatar_url
 from blueferry.qt.companion import CompanionTools
 from blueferry.qt.plugin_settings import PluginSettings
 from blueferry.qt.plugin_surfaces import PluginSurfaces
-from blueferry.qt.tasks import Task
+from blueferry.qt.tasks import Task, qt_timers
 from blueferry.quirks_report import issue_report, issue_url
 from blueferry.reconnect_view import UNREACHABLE_TEXT, reconnect_view, result_text
 from blueferry.service_manager import bluetooth_restart_command
@@ -64,6 +66,39 @@ MAX_CACHED_AVATAR_BYTES = 16 * 1024 * 1024
 MAX_PENDING_AVATARS = 32
 AVATAR_RETRY_SECONDS = 30
 AVATAR_RETRY_MAX_SECONDS = 600
+
+
+class _WorkerRunner:
+    """:class:`blueferry.client_tasks.TaskRunner` on the controller's
+    serialized D-Bus worker (``BridgeController._run``), without the busy
+    indicator. ``_run`` is looked up per call, so tests that replace it
+    run these tasks inline too."""
+
+    def __init__(self, controller: BridgeController) -> None:
+        self._controller = controller
+
+    def submit(
+        self,
+        operation: Callable[[], object],
+        on_done: Callable[[Any], None] | None = None,
+        on_error: Callable[[str], None] | None = None,
+        on_finished: Callable[[], None] | None = None,
+    ) -> None:
+        controller = self._controller
+        if on_finished is None:
+            controller._run(operation, on_done, on_error, busy=False)
+            return
+
+        def done(value: object) -> None:
+            if on_done is not None:
+                on_done(value)
+            on_finished()
+
+        def failed(message: str) -> None:
+            (on_error or controller._operation_failed)(message)
+            on_finished()
+
+        controller._run(operation, done, failed, busy=False)
 
 
 class BridgeController(QObject):
@@ -205,13 +240,11 @@ class BridgeController(QObject):
         self._now_playing_timer.setInterval(150)
         self._now_playing_timer.timeout.connect(self.refreshNowPlaying)
         # Opt-in app-notification list: fetched only while its tab is shown.
-        self._notifications: list[dict] = []
-        self._notifications_info: dict = {"enabled": False, "content": False, "error": ""}
-        self._notifications_watched = False
-        self._notifications_timer = QTimer(self)
-        self._notifications_timer.setSingleShot(True)
-        self._notifications_timer.setInterval(150)
-        self._notifications_timer.timeout.connect(self.refreshNotifications)
+        self._notification_history = NotificationHistory(
+            runner=_WorkerRunner(self), timer=qt_timers(self),
+            fetch=lambda limit: self._backend.notifications(limit),
+            on_change=self.notificationsChanged.emit,
+        )
         self.devicesChanged.connect(self.phoneIdentityChanged)
         self.configuredChanged.connect(self.phoneIdentityChanged)
         # The Photos tab (a plugin with the photos capability).
@@ -726,54 +759,24 @@ class BridgeController(QObject):
 
     @Property("QVariantList", notify=notificationsChanged)
     def notifications(self):
-        return self._notifications
+        return self._notification_history.rows
 
     @Property("QVariantMap", notify=notificationsChanged)
     def notificationsInfo(self):
-        return self._notifications_info
+        return self._notification_history.info
 
     @Slot(bool)
     def watchNotifications(self, watched: bool) -> None:
         """The Notifications tab became visible (load) or hidden (forget)."""
-        self._notifications_watched = bool(watched)
-        if self._notifications_watched:
-            self.refreshNotifications()
-            return
-        self._notifications_timer.stop()
-        if self._notifications:
-            self._notifications = []
-            self.notificationsChanged.emit()
+        self._notification_history.watch(bool(watched))
 
     @Slot()
     def refreshNotifications(self) -> None:
-        if not self._notifications_watched:
-            return
-
-        def completed(value: object) -> None:
-            if not self._notifications_watched:
-                return
-            snapshot = value if isinstance(value, dict) else {}
-            self._notifications = phone_link_view.notification_rows(snapshot.get("notifications"))
-            self._notifications_info = {
-                "enabled": snapshot.get("enabled") is True,
-                "content": snapshot.get("content") is True,
-                "error": "",
-            }
-            self.notificationsChanged.emit()
-
-        def failed(message: str) -> None:
-            self._notifications = []
-            self._notifications_info = {
-                **self._notifications_info, "error": message or _("Notifications are unavailable"),
-            }
-            self.notificationsChanged.emit()
-
-        self._run(lambda: self._backend.notifications(100), completed, failed, busy=False)
+        self._notification_history.refresh()
 
     @Slot()
     def _notificationsInvalidated(self) -> None:
-        if self._notifications_watched:
-            self._notifications_timer.start()
+        self._notification_history.invalidated()
 
     @Property(str, notify=callHistoryChanged)
     def callHistoryError(self) -> str:

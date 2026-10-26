@@ -228,6 +228,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `qt/app.py` | PySide6/Kirigami entry point. |
 | `qt/controller.py` | Asynchronous `BridgeController` exposed to QML. |
 | `phone_overview.py`, `phone_link_view.py` | Toolkit-free rules behind the phone card and the Calls and Notifications tabs: opt-in hints that name the setting, day-grouped recent calls, notification rows; shared by Qt and (soon) GTK. |
+| `notification_history.py` | Toolkit-neutral state of the opt-in Notifications tab, shared by Qt and (soon) GTK: `ListNotifications` only while the tab is shown, coalesced reloads on `NotificationsChanged`, rows forgotten when hidden, errors kept in the tab. |
 | `qt/tray.py`, `qt/tray_presenter.py` | `blueferry-tray`: standalone StatusNotifierItem (unread badge, battery/signal tooltip); asynchronous QtDBus calls with auto-start disabled, so it never starts the daemon; owns `io.weirdware.BlueFerry.Client.Tray`, which `qt/app.py` watches to hide its own icon; pure presenters. |
 | `tray_autostart.py` | The tray's opt-in per-user XDG autostart entry. |
 | `qt/tasks.py` | Qt worker primitive, and `QtTaskRunner`/`QtTimer`, the Qt side of `client_tasks.py`. |
