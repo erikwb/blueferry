@@ -156,7 +156,11 @@ class PluginSurfaces(QObject):
         self._update(busy=f"{plugin_id}:{item_id}:{action_id}", message="")
 
         def work() -> surfaces.Outcome:
-            return self._invoke(self._find(plugin_id, "card"), item_id, action_id)
+            outcome = self._invoke(self._find(plugin_id, "card"), item_id, action_id)
+            if outcome.open_uri and self._find(plugin_id, "card") is None:
+                # Disabled or removed while the action ran: open nothing for it.
+                return surfaces.Outcome(outcome.ok, outcome.message, None, outcome.job)
+            return outcome
 
         def done(outcome: surfaces.Outcome) -> None:
             self._say(outcome.message, outcome.ok)
@@ -201,6 +205,8 @@ class PluginSurfaces(QObject):
         self._run(self._load_targets, done, failed)
 
     def send(self, key: str, urls: Sequence[object]) -> None:
+        if self._state["busy"]:
+            return
         choice = self._choices.get(key)
         if choice is None:
             self._say(_("That target is gone; open \u201cSend to\u201d again."), False)
