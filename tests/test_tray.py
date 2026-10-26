@@ -473,3 +473,25 @@ def test_tray_opens_the_client_in_use(tmp_path: Path, scenario: str) -> None:
         capture_output=True, text=True, timeout=30, check=False,
     )
     assert result.returncode == 0 and "OPEN-OK" in result.stdout, result.stdout + result.stderr
+
+
+@needs_pyside6
+def test_launch_client_really_starts_the_program(tmp_path: Path, monkeypatch) -> None:
+    """Without mocks: PySide6's startDetached returns a bare bool, not (ok, pid)."""
+    import time
+
+    from blueferry.client_activation import CLIENTS
+    from blueferry.qt import tray
+
+    marker = tmp_path / "started"
+    stub = tmp_path / "blueferry-gtk"
+    stub.write_text(f'#!/bin/sh\necho "$XDG_ACTIVATION_TOKEN" > "{marker}"\n')
+    stub.chmod(0o755)
+    monkeypatch.setattr(tray, "client_program", lambda client: [str(stub)])
+    gtk = next(client for client in CLIENTS if client.key == "gtk")
+    assert tray.launch_client(gtk, "click-token") is True
+    for _attempt in range(100):
+        if marker.exists() and marker.read_text().strip():
+            break
+        time.sleep(0.05)
+    assert marker.read_text().strip() == "click-token"

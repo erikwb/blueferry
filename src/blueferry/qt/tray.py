@@ -527,7 +527,9 @@ def launch_client(client: DesktopClient, token: str) -> bool:
     for name, value in activation_environment(token).items():
         environment.insert(name, value)
     process.setProcessEnvironment(environment)
-    return bool(process.startDetached()[0])
+    # PySide6 returns a bare bool here; some bindings return (ok, pid).
+    started = process.startDetached()
+    return bool(started[0] if isinstance(started, tuple) else started)
 
 
 def name_registered(bus: QDBusConnection, name: str) -> bool:
