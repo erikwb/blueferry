@@ -14,7 +14,7 @@ from gi.repository import GLib, GObject
 from blueferry.backend_lifecycle import ensure_backend_current, restart_backend
 from blueferry.bus import get_session_bus
 from blueferry.client import BackendClient, CompatibilityCache
-from blueferry.doctor_report import DoctorReport, run_doctor
+from blueferry.doctor_report import DoctorReport, run_doctor, terminate_running
 from blueferry.models import BackendStatus
 from blueferry.protocol import (
     BUS_NAME,
@@ -143,6 +143,9 @@ class DaemonClient(GObject.Object):
         self._read_executor.shutdown(wait=False, cancel_futures=True)
         self._mutation_executor.shutdown(wait=False, cancel_futures=True)
         self._local_executor.shutdown(wait=False, cancel_futures=True)
+        # The interpreter joins the worker at exit: end a doctor run now
+        # instead of waiting for its timeout.
+        terminate_running()
 
     def _call_backend(self, operation: Callable[[BackendClient], T]) -> T:
         """Call the shared backend facade on a worker-owned connection."""

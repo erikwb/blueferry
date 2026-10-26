@@ -105,3 +105,32 @@ def test_a_saved_choice_is_assumed_until_the_reload() -> None:
     assert not features_view.restart_pending(pinned)
     # Unknown switches and old daemons stay as they are.
     assert features_view.assume(state, "notification_history", True) is state
+
+
+def test_quitting_stops_a_running_doctor_check() -> None:
+    import sys
+    import threading
+    import time
+
+    reports = []
+    worker = threading.Thread(target=lambda: reports.append(doctor_report.run_doctor(
+        timeout=30, command=[sys.executable, "-c", "import time; time.sleep(30)"])))
+    started = time.monotonic()
+    worker.start()
+    deadline = time.monotonic() + 5
+    while not doctor_report._running and time.monotonic() < deadline:
+        time.sleep(0.01)
+    doctor_report.terminate_running()
+    worker.join(5)
+    assert not worker.is_alive() and time.monotonic() - started < 10
+    assert reports[0].ok is False and not doctor_report._running
+
+
+def test_a_doctor_check_that_runs_too_long_is_killed() -> None:
+    import sys
+
+    report = doctor_report.run_doctor(
+        timeout=0.2, command=[sys.executable, "-c", "import time; time.sleep(30)"])
+    assert report == DoctorReport(False, False, "blueferry doctor did not finish: TimeoutExpired")
+    ok = doctor_report.run_doctor(command=[sys.executable, "-c", "print('WARNING x')"])
+    assert ok.ok and ok.warnings and ok.text == "WARNING x"

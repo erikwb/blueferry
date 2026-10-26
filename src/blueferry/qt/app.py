@@ -15,6 +15,7 @@ from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
 from blueferry.client_activation import TRAY_BUS_NAME, record_client_use
+from blueferry.doctor_report import terminate_running
 from blueferry.qt.activation import ClientActivation
 from blueferry.qt.avatars import AVATAR_PROVIDER, AvatarImageProvider
 from blueferry.qt.controller import BridgeController
@@ -385,6 +386,8 @@ def main() -> int:
         return 0 if activation.forward(args.message, token) else 1
 
     controller = BridgeController(parent=application)
+    # A running doctor check must not keep the process alive after quitting.
+    application.aboutToQuit.connect(terminate_running)
     engine = QQmlApplicationEngine()
     # The engine owns the provider; it only reads the controller's cache.
     engine.addImageProvider(AVATAR_PROVIDER, AvatarImageProvider(controller.avatar_bytes))
