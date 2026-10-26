@@ -6,7 +6,9 @@ the daemon status for the Calls and Notifications tabs (see
 :meth:`PhoneCard.add_status_listener`), so the window asks once per
 ``StatusChanged``. Nothing is read while the window is hidden
 (:meth:`PhoneCard.set_watched`). Every label takes iPhone text (the phone's
-name, track titles, the operator) verbatim, never as Pango markup.
+name, track titles, the operator) verbatim, never as Pango markup. The
+Quick Settings button holds the sound and away lock switches
+(``ui/quick_switches.py``).
 """
 
 from __future__ import annotations
@@ -21,6 +23,12 @@ from blueferry import phone_overview as overview
 from blueferry.i18n import _
 from blueferry.models import BackendStatus
 from blueferry.ui.phone_presenter import media, phone_status
+from blueferry.ui.quick_switches import (
+    PhoneAudioSwitch,
+    ProximitySwitch,
+    away_lock_row,
+    sound_row,
+)
 from blueferry.ui.reads import CoalescedRead
 
 _END = Pango.EllipsizeMode.END
@@ -144,6 +152,25 @@ class PhoneCard(Gtk.Box):
         self.media_box.append(self.media_hint)
         self.append(self.media_box)
 
+        # ---- quick settings: the sound and the away lock ----------------
+        switches = Gtk.ListBox(
+            css_classes=["boxed-list"], selection_mode=Gtk.SelectionMode.NONE,
+            width_request=320,
+        )
+        self.sound = PhoneAudioSwitch(sound_row(), client, toast)
+        self.away_lock = ProximitySwitch(away_lock_row(), client, toast)
+        switches.append(self.sound.row)
+        switches.append(self.away_lock.row)
+        self.quick_settings = Gtk.MenuButton(
+            icon_name="preferences-system-symbolic", tooltip_text=_("Quick Settings"),
+            valign=Gtk.Align.CENTER, halign=Gtk.Align.END, css_classes=["flat"],
+            popover=Gtk.Popover(child=switches),
+        )
+        self.quick_settings.update_property(
+            [Gtk.AccessibleProperty.LABEL], [_("Quick Settings")],
+        )
+        self.append(self.quick_settings)
+
         client.connect("status-invalidated", lambda _c: self._status_read.refresh())
         client.connect("availability-changed", self._availability_changed)
         client.connect("now-playing-changed", lambda _c: self._media_read.refresh())
@@ -209,6 +236,8 @@ class PhoneCard(Gtk.Box):
 
     def _render(self) -> None:
         self.connection_label.set_label(phone_link_view.connection_text(self._status))
+        self.sound.apply(self._status)
+        self.away_lock.apply(self._status)
         state = phone_status(self._status)
         child = self.status_chips.get_first_child()
         while child is not None:
