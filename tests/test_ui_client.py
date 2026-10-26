@@ -429,6 +429,7 @@ def test_notifications_changed_is_forwarded_as_a_gobject_signal(monkeypatch) -> 
     finally:
         client.stop()
     assert seen == [True]
+    assert "CallsChanged" in receivers
 
 
 def test_battery_warning_preference_uses_mutation_worker(monkeypatch) -> None:
@@ -483,3 +484,35 @@ def test_notification_rules_read_and_change_on_their_workers(monkeypatch) -> Non
         client.stop()
     assert results == [[rule], [rule], True]
     assert submitted == ["read", "mutation", "mutation"]
+
+
+def test_running_calls_are_read_and_controlled_on_their_workers(monkeypatch) -> None:
+    from blueferry.models import CallsSnapshot
+
+    actions = []
+
+    class Backend:
+        def calls(self):
+            return CallsSnapshot(state="ready")
+
+        def answer_call(self, call_id):
+            actions.append(("answer", call_id))
+
+        def hangup_call(self, call_id):
+            actions.append(("hangup", call_id))
+
+        def swap_calls(self):
+            actions.append(("swap",))
+
+    client, submitted = _recording_client(monkeypatch, Backend())
+    results = []
+    try:
+        client.calls_async(results.append)
+        client.answer_call_async("voicecall01", results.append, None)
+        client.swap_calls_async(results.append, None)
+        client.hangup_call_async("voicecall01", results.append, None)
+    finally:
+        client.stop()
+    assert results == [CallsSnapshot(state="ready"), None, None, None]
+    assert actions == [("answer", "voicecall01"), ("swap",), ("hangup", "voicecall01")]
+    assert submitted == ["read", "mutation", "mutation", "mutation"]

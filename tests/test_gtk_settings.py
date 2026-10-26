@@ -382,6 +382,8 @@ def _exercise_battery_warning():
     dialog, window, client = _settings()
     group, row = dialog._battery_group, dialog._battery_warning_row
     assert group.get_ancestor(type(dialog.pages["calls"])) is dialog.pages["calls"]
+    dialog._apply_status(BackendStatus.from_dict({"daemon": True}))  # an older daemon
+    assert not group.get_visible()
     dialog._apply_status(BackendStatus.from_dict({
         "daemon": True, "phone_battery_warning": False, "phone_battery_warning_percent": 15,
     }))
@@ -394,7 +396,9 @@ def _exercise_battery_warning():
     client.take(("battery", True))[2]("busy")
     assert not row.get_active() and row.get_sensitive()
     assert toasts == ["Could not save battery warning preference: busy"]
-    client.status = BackendStatus.from_dict({"daemon": True, "phone_battery_warning": True})
+    client.status = BackendStatus.from_dict({
+        "daemon": True, "phone_battery_warning": True, "phone_battery_warning_percent": 20,
+    })
     row.set_active(True)
     client.take(("battery", True))[1](True)
     assert row.get_active() and row.get_sensitive()

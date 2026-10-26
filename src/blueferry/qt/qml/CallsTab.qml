@@ -50,16 +50,6 @@ GridLayout {
         running: callsTab.phoneCalls.length > 0 && callsTab.visible
         onTriggered: callsTab.now = Date.now()
     }
-    function duration(firstSeen: string): string {
-        const started = Date.parse(firstSeen || "")
-        if (isNaN(started))
-            return ""
-        const total = Math.max(0, Math.floor((callsTab.now - started) / 1000))
-        const minutes = Math.floor(total / 60)
-        const seconds = total % 60
-        return minutes + ":" + (seconds < 10 ? "0" : "") + seconds
-    }
-
     columns: width > Kirigami.Units.gridUnit * 36 ? 2 : 1
     columnSpacing: 0
     rowSpacing: 0
@@ -78,16 +68,14 @@ GridLayout {
             delegate: CardFrame {
                 id: activeCall
                 required property var modelData
+                // Wording from phone_link_view.call_card; "now" ticks the duration.
+                readonly property var card: callsTab.bridge.callCard(
+                    activeCall.modelData, callsTab.now) || ({})
                 objectName: "activeCallCard"
                 Layout.fillWidth: true
-                title: activeCall.modelData.display_peer
+                title: activeCall.card.title || ""
                 subtitleItem.objectName: "activeCallState"
-                subtitle: activeCall.modelData.ringing === true ? qsTr("Incoming call…")
-                    : activeCall.modelData.state === "held" ? qsTr("On hold")
-                    : activeCall.modelData.state === "dialing"
-                        || activeCall.modelData.state === "alerting"
-                        ? qsTr("Calling…")
-                        : callsTab.duration(activeCall.modelData.first_seen)
+                subtitle: activeCall.card.subtitle || ""
                 leading: Component {
                     ContactAvatar {
                         bridge: callsTab.bridge
@@ -96,23 +84,23 @@ GridLayout {
                 }
                 actions: [
                     Controls.Button {
-                        visible: activeCall.modelData.ringing === true
-                        text: qsTr("Answer")
+                        visible: activeCall.card.ringing === true
+                        text: activeCall.card.answer || ""
                         icon.name: "call-start"
                         enabled: !callsTab.bridge.busy
                         onClicked: callsTab.bridge.answerCall(activeCall.modelData.call_id)
                     },
                     Controls.Button {
-                        visible: activeCall.modelData.ringing !== true
-                        text: activeCall.modelData.state === "held" ? qsTr("Resume") : qsTr("Hold")
-                        icon.name: activeCall.modelData.state === "held"
+                        visible: activeCall.card.ringing !== true
+                        text: activeCall.card.hold || ""
+                        icon.name: activeCall.card.held === true
                             ? "media-playback-start" : "media-playback-pause"
                         enabled: !callsTab.bridge.busy
                         onClicked: callsTab.bridge.swapCalls()
                     },
                     Controls.Button {
                         objectName: "activeCallHangup"
-                        text: activeCall.modelData.ringing === true ? qsTr("Decline") : qsTr("Hang Up")
+                        text: activeCall.card.hangup || ""
                         icon.name: "call-stop"
                         enabled: !callsTab.bridge.busy
                         palette.button: Kirigami.Theme.negativeBackgroundColor

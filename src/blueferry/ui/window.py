@@ -209,6 +209,7 @@ class MainWindow(Adw.ApplicationWindow):
         visible = self.stack.get_visible_child_name()
         if hasattr(self, "phone_card"):
             self.phone_card.set_watched(shown)
+            self.calls.set_shown(shown)
         if hasattr(self, "extras"):
             # Each look runs idevice_id: only while someone sees the section.
             self.tools.set_watched(

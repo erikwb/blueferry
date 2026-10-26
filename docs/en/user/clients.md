@@ -12,12 +12,15 @@ desktops.
 
 The window is a phone overview. A card above the tabs shows the iPhone's
 name and connection, battery, signal and network, and what is playing (with
-previous, play/pause and next). When something is off, the card says which
+previous, play/pause and next). Its **Quick Settings** button holds the
+switches for [the sound](phone-audio.md) and the
+[away lock](proximity-lock.md). When something is off, the card says which
 setting turns it on. The tabs are switched in the header bar, or at the
 bottom in a narrow window:
 
 - **Messages**: conversations and the chat.
-- **Calls**: a dial pad for [phone calls](calls.md) that also searches your
+- **Calls**: running [phone calls](calls.md) with answer, hold/resume and
+  hang up and the sound switch, a dial pad that also searches your
   contacts by name, and the [call history](call-history.md) grouped by day,
   with All and Missed, call back and message buttons, and **Refresh from
   iPhone**. Every call asks for confirmation first.
@@ -49,10 +52,7 @@ bottom in a narrow window, and the search button finds any setting:
 
 The switches that need a restart (below) work as in the KDE client: while a
 change waits for the restart, every page starts with a notice and
-**Restart Service**. The GTK client shows no running calls (answer, hold and hang up
-on the iPhone or in the call popup); use the KDE client or `blueferry` on
-the command line for those. The sound and away lock switches are under
-**Settings** rather than on the card.
+**Restart Service**.
 
 ## KDE Plasma (Kirigami)
 

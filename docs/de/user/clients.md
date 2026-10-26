@@ -15,13 +15,16 @@ Desktops.
 
 Das Fenster ist eine Telefon-Übersicht. Eine Karte über den Reitern zeigt
 Name und Verbindung des iPhones, Akku, Empfang und Netz sowie, was gerade
-läuft (mit zurück, Wiedergabe/Pause und weiter). Ist etwas ausgeschaltet,
-nennt die Karte die Einstellung, die es einschaltet. Die Reiter wechselt man
+läuft (mit zurück, Wiedergabe/Pause und weiter). Ihr Knopf **Quick
+Settings** enthält die Schalter für [den Ton](phone-audio.md) und die
+[Abwesenheitssperre](proximity-lock.md). Ist etwas ausgeschaltet, nennt die
+Karte die Einstellung, die es einschaltet. Die Reiter wechselt man
 in der Kopfzeile, in einem schmalen Fenster unten:
 
 - **Messages**: Unterhaltungen und der Chat.
-- **Calls**: ein Wählfeld für [Anrufe](calls.md), das auch deine Kontakte
-  nach Namen durchsucht, und die [Anrufliste](call-history.md) nach Tagen
+- **Calls**: laufende [Anrufe](calls.md) mit annehmen, halten/fortsetzen
+  und auflegen sowie dem Ton-Schalter, ein Wählfeld, das auch deine
+  Kontakte nach Namen durchsucht, und die [Anrufliste](call-history.md) nach Tagen
   gruppiert, mit All und Missed, Rückruf- und Nachrichtenknöpfen und
   **Refresh from iPhone**. Jeder Anruf fragt vorher nach.
 - **Notifications**: die [letzten iPhone-Mitteilungen](notification-history.md)
@@ -52,11 +55,7 @@ einem schmalen Fenster unten, und der Suchknopf findet jede Einstellung:
 
 Die Schalter, die einen Neustart brauchen (unten), funktionieren wie im
 KDE-Client: Solange eine Änderung auf den Neustart wartet, beginnt jede
-Seite mit einem Hinweis und **Restart Service**. Laufende Anrufe
-zeigt er nicht an (annehmen, halten und auflegen am iPhone oder in der
-Anruf-Mitteilung); dafür gibt es den KDE-Client oder `blueferry` auf der
-Kommandozeile. Die Schalter für den Ton und die Abwesenheitssperre liegen
-unter **Settings** statt auf der Karte.
+Seite mit einem Hinweis und **Restart Service**.
 
 ## KDE Plasma (Kirigami)
 

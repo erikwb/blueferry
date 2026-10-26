@@ -12,7 +12,10 @@ from tests.gtk_broadway import run_scenario
 
 
 @pytest.mark.parametrize(
-    "scenario", ["layout", "card", "dial-pad", "recent-calls", "notifications", "close"],
+    "scenario", [
+        "layout", "card", "quick-settings", "dial-pad", "running-calls", "recent-calls",
+        "notifications", "close",
+    ],
 )
 def test_gtk_phone_card(tmp_path, scenario):
     run_scenario(tmp_path, str(Path(__file__).resolve()), scenario)
@@ -66,6 +69,24 @@ class FakeClient:
 
     def dial_async(self, number, on_ok, on_err):
         self.calls.append((("dial", number), on_ok, on_err))
+
+    def calls_async(self, on_ok, on_err=None):
+        self.calls.append(("list-calls", on_ok, on_err))
+
+    def answer_call_async(self, call_id, on_ok, on_err):
+        self.calls.append((("answer", call_id), on_ok, on_err))
+
+    def hangup_call_async(self, call_id, on_ok, on_err):
+        self.calls.append((("hangup", call_id), on_ok, on_err))
+
+    def swap_calls_async(self, on_ok, on_err):
+        self.calls.append(("swap", on_ok, on_err))
+
+    def set_phone_audio_route_async(self, route, on_ok, on_err):
+        self.calls.append((("route", route), on_ok, on_err))
+
+    def set_proximity_lock_async(self, enabled, grace, on_ok, on_err):
+        self.calls.append((("proximity", enabled, grace), on_ok, on_err))
 
     # TaskRunner for NotificationHistory
     def submit(self, operation, on_done=None, on_error=None, on_finished=None):
@@ -345,6 +366,111 @@ def _exercise_dial_pad():
     window.destroy()
 
 
+def _exercise_running_calls():
+    from blueferry.models import CallsSnapshot
+    from tests.client_fakes import ManualRunner
+
+    runner = ManualRunner()
+    now = [1_000_000.0]
+    window, client = _window(timer=runner.timer)
+    running = window.calls.running
+    running._clock = lambda: now[0]
+    # Calls off: ListCalls is not even asked.
+    client.answer_status({"daemon": True, "map": True})
+    assert "list-calls" not in client.names() and not running.get_visible()
+    # Read while the window is shown, whichever tab is visible.
+    client.answer_status(CALLS_READY)
+    from datetime import datetime, timezone
+    started = datetime.fromtimestamp(now[0] - 65, timezone.utc).isoformat()
+    ringing = {"call_id": "voicecall01", "state": "incoming", "number": "+41790000001",
+               "contact_name": "<b>Kim</b>", "first_seen": started}
+    client.take("list-calls")[1](CallsSnapshot.from_dict({"state": "ready", "calls": [ringing]}))
+    assert running.get_visible()
+    [(row, _call, avatar, buttons)] = running.rows
+    assert (row.get_title(), row.get_subtitle()) == ("<b>Kim</b>", "Incoming call…")
+    assert [b.get_tooltip_text() for b in buttons] == ["Answer", "Decline"]
+    assert avatar.get_text() == "<b>Kim</b>"
+    assert running.sound.row.get_parent() is running  # the sound switch under the calls
+    buttons[0].emit("clicked")
+    assert not buttons[1].get_sensitive(), "no second action while one runs"
+    buttons[1].emit("clicked")
+    assert ("hangup", "voicecall01") not in client.names()
+    client.take(("answer", "voicecall01"))[1](None)
+    # Answered: the call ticks while the Calls tab is visible.
+    client.take("list-calls")[1](CallsSnapshot.from_dict({"state": "ready", "calls": [
+        {**ringing, "state": "active"}]}))
+    [(row, _call, _avatar, buttons)] = running.rows
+    assert row.get_subtitle() == "1:05"
+    assert [b.get_tooltip_text() for b in buttons] == ["Hold", "Hang Up"]
+    ticker = running._ticker
+    assert not ticker.active, "the duration ticks only on the visible Calls tab"
+    window.show_tab("calls")
+    _settle()
+    assert ticker.active and ticker.delay == 1000
+    now[0] += 10
+    ticker.fire()
+    assert row.get_subtitle() == "1:15" and ticker.active
+    buttons[0].emit("clicked")
+    client.take("swap")[2]("Not supported")
+    assert "list-calls" in client.names()
+    client.take("list-calls")[2]("Timed out")
+    # A failed ListCalls: no stale call, and the pad says calls are unavailable.
+    assert not running.get_visible() and not ticker.active
+    assert running.state == "unavailable"
+    assert "oFono" in window.calls.hint_banner.get_title()
+    # CallsChanged reads again; a hidden window does not.
+    client.emit("calls-changed")
+    client.take("list-calls")[1](CallsSnapshot.from_dict({"state": "ready", "calls": [
+        {**ringing, "state": "held"}]}))
+    assert running.rows[0][0].get_subtitle() == "On hold"
+    assert running.rows[0][3][0].get_tooltip_text() == "Resume"
+    running.rows[0][3][1].emit("clicked")
+    client.take(("hangup", "voicecall01"))[1](None)
+    client.take("list-calls")[1](CallsSnapshot.from_dict({"state": "ready", "calls": []}))
+    assert not running.get_visible() and running.rows == []
+    window.set_visible(False)
+    _settle()
+    client.emit("calls-changed")
+    assert "list-calls" not in client.names()
+    window.destroy()
+
+
+def _exercise_quick_settings():
+    window, client = _window()
+    card = window.phone_card
+    assert card.quick_settings.get_tooltip_text() == "Quick Settings"
+    sound, lock = card.sound.row, card.away_lock.row
+    # An older daemon: both switches greyed out, the reason underneath.
+    client.answer_status({"daemon": True, "map": True})
+    assert not sound.get_sensitive() and not lock.get_sensitive()
+    assert "Update the BlueFerry backend" in lock.get_subtitle()
+    client.answer_status({
+        "daemon": True, "map": True, "phone_audio_route": "phone",
+        "proximity_lock": "present",
+        "proximity_lock_enabled": False, "proximity_lock_grace_sec": 30,
+    })
+    assert lock.get_sensitive() and not lock.get_active() and lock.get_subtitle() == ""
+    lock.set_active(True)
+    assert not lock.get_sensitive()
+    client.take(("proximity", True, 30))[1]({})
+    assert lock.get_active() and lock.get_sensitive()
+    assert sound.get_sensitive() and not sound.get_active()
+    assert sound.get_subtitle() == "iPhone sound plays on the iPhone."
+    toasts = []
+    card.sound._toast = toasts.append
+    sound.set_active(True)
+    assert not sound.get_sensitive()
+    client.take(("route", "pc"))[2]("Bluetooth audio is not connected")
+    assert not sound.get_active() and sound.get_sensitive()  # the daemon's report again
+    assert toasts == ["Bluetooth audio is not connected"]
+    # The popover opens from the card.
+    card.quick_settings.popup()
+    _settle()
+    assert card.quick_settings.get_popover().get_visible()
+    card.quick_settings.popdown()
+    window.destroy()
+
+
 def _entries():
     from blueferry.models import CallHistoryEntry
 
@@ -379,6 +505,10 @@ def _exercise_recent_calls():
     rows = _rows(calls.recent_list)
     assert [(row.get_title(), row.get_subtitle()) for row in rows] == [
         ("<b>Anna</b> (2)", "Missed · +41790000001"), ("+41790000002", "Outgoing")]
+    # Another StatusChanged with the same opt-in neither reads nor rebuilds.
+    client.answer_status({**CALLS_READY, "call_history_enabled": True, "phone_battery_level": 9})
+    assert ("calls", 200) not in client.names()
+    assert _rows(calls.recent_list)[0] is rows[0]
     assert rows[0].has_css_class("error")
     calls.missed_filter.set_active(True)
     assert [row.get_title() for row in _rows(calls.recent_list)] == ["<b>Anna</b> (2)"]
@@ -500,6 +630,8 @@ if __name__ == "__main__":
         "layout": _exercise_layout,
         "card": _exercise_card,
         "dial-pad": _exercise_dial_pad,
+        "running-calls": _exercise_running_calls,
+        "quick-settings": _exercise_quick_settings,
         "recent-calls": _exercise_recent_calls,
         "notifications": _exercise_notifications,
         "close": _exercise_close,
