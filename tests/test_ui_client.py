@@ -276,3 +276,96 @@ def test_otp_autocopy_is_saved_on_the_mutation_worker(monkeypatch) -> None:
 
     assert completed == [{"otp_autocopy": True}]
     assert submitted == {"mutation": True}
+
+
+def _recording_client(monkeypatch, backend):
+    monkeypatch.setattr(client_module, "get_session_bus", _Bus)
+    monkeypatch.setattr(client_module, "SetupClient", _UnconfiguredSetup)
+    client = client_module.DaemonClient()
+    monkeypatch.setattr(client, "_call_backend", lambda operation: operation(backend))
+    submitted = []
+
+    def submit(operation, on_ok, on_err=None, *, mutation=False, local=False):
+        submitted.append("local" if local else "mutation" if mutation else "read")
+        try:
+            value = operation()
+        except Exception as error:
+            on_err(str(error))
+        else:
+            on_ok(value)
+
+    monkeypatch.setattr(client, "_submit", submit)
+    return client, submitted
+
+
+def test_feature_switches_read_and_save_on_their_workers(monkeypatch) -> None:
+    saved = []
+
+    class Backend:
+        def features(self):
+            return {"mark_read_on_dismiss": {"value": True}}
+
+        def set_feature(self, name, enabled):
+            saved.append((name, enabled))
+            return "restart-required"
+
+    client, submitted = _recording_client(monkeypatch, Backend())
+    results = []
+    try:
+        client.features_async(results.append)
+        client.set_feature_async("mark_read_on_dismiss", False, results.append, None)
+    finally:
+        client.stop()
+    assert results == [{"mark_read_on_dismiss": {"value": True}}, "restart-required"]
+    assert saved == [("mark_read_on_dismiss", False)]
+    assert submitted == ["read", "mutation"]
+
+
+def test_restart_follows_mutations_and_the_doctor_runs_locally(monkeypatch) -> None:
+    from blueferry.doctor_report import DoctorReport
+
+    restarted = []
+    monkeypatch.setattr(client_module, "restart_backend", lambda: restarted.append(True))
+    client, submitted = _recording_client(monkeypatch, object())
+    results, errors = [], []
+    report = DoctorReport(True, False, "OK")
+
+    def broken():
+        raise RuntimeError("doctor crashed")
+
+    try:
+        client.restart_backend_async(results.append, errors.append)
+        client.run_doctor_async(results.append, errors.append, runner=lambda: report)
+        client.run_doctor_async(results.append, errors.append, runner=broken)
+    finally:
+        client.stop()
+    assert restarted == [True]
+    assert results == [None, report] and errors == ["doctor crashed"]
+    assert submitted == ["mutation", "local", "local"]
+
+
+def test_doctor_work_does_not_wait_for_daemon_reads(monkeypatch) -> None:
+    monkeypatch.setattr(client_module, "get_session_bus", _Bus)
+    monkeypatch.setattr(client_module, "SetupClient", _UnconfiguredSetup)
+    delivered = threading.Event()
+
+    def idle_add(callback, *args):
+        callback(*args)
+        delivered.set()
+        return 1
+
+    monkeypatch.setattr(client_module.GLib, "idle_add", idle_add)
+    release_read = threading.Event()
+    client = client_module.DaemonClient()
+    monkeypatch.setattr(client, "_call_backend", lambda _operation: release_read.wait(5))
+    reports = []
+    read_done = threading.Event()
+    try:
+        client.get_status_async(lambda _status: read_done.set())  # holds the read worker
+        client.run_doctor_async(reports.append, None, runner=lambda: "report")
+        assert delivered.wait(3), "the doctor waited behind a daemon read"
+        assert reports == ["report"]
+    finally:
+        release_read.set()
+        assert read_done.wait(3)
+        client.stop()

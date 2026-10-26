@@ -11,9 +11,10 @@ import dbus
 import dbus.mainloop
 from gi.repository import GLib, GObject
 
-from blueferry.backend_lifecycle import ensure_backend_current
+from blueferry.backend_lifecycle import ensure_backend_current, restart_backend
 from blueferry.bus import get_session_bus
 from blueferry.client import BackendClient, CompatibilityCache
+from blueferry.doctor_report import DoctorReport, run_doctor
 from blueferry.models import BackendStatus
 from blueferry.protocol import (
     BUS_NAME,
@@ -70,6 +71,12 @@ class DaemonClient(GObject.Object):
         self._mutation_executor = ThreadPoolExecutor(
             max_workers=1,
             thread_name_prefix="blueferry-gtk-mutation",
+        )
+        # Local work that does not talk to the daemon and may take long
+        # (``blueferry doctor``), so it never holds up reads or mutations.
+        self._local_executor = ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix="blueferry-gtk-local",
         )
         # Each call opens a private connection, but all share one session bus,
         # so a verified daemon owner stays verified across calls.
@@ -135,6 +142,7 @@ class DaemonClient(GObject.Object):
         self._matches = []
         self._read_executor.shutdown(wait=False, cancel_futures=True)
         self._mutation_executor.shutdown(wait=False, cancel_futures=True)
+        self._local_executor.shutdown(wait=False, cancel_futures=True)
 
     def _call_backend(self, operation: Callable[[BackendClient], T]) -> T:
         """Call the shared backend facade on a worker-owned connection."""
@@ -160,8 +168,13 @@ class DaemonClient(GObject.Object):
         on_err=None,
         *,
         mutation: bool = False,
+        local: bool = False,
     ) -> Future:
-        executor = self._mutation_executor if mutation else self._read_executor
+        executor = (
+            self._local_executor if local
+            else self._mutation_executor if mutation
+            else self._read_executor
+        )
         future = executor.submit(operation)
 
         def completed(result: Future) -> None:
@@ -563,3 +576,34 @@ class DaemonClient(GObject.Object):
             on_ok,
             on_err,
         )
+
+    # ---- settings: feature switches, service restart, doctor -------------
+
+    def features_async(self, on_ok, on_err=None) -> None:
+        """Messages1.GetFeatures; older daemons without it report an error."""
+        self._submit(
+            lambda: self._call_backend(lambda backend: backend.features()),
+            on_ok,
+            on_err,
+        )
+
+    def set_feature_async(self, name: str, enabled: bool, on_ok, on_err) -> None:
+        """Messages1.SetFeature: ``active``, ``restart-required`` or ``environment``."""
+        self._submit(
+            lambda: self._call_backend(
+                lambda backend: backend.set_feature(name, enabled)
+            ),
+            on_ok,
+            on_err,
+            mutation=True,
+        )
+
+    def restart_backend_async(self, on_ok, on_err) -> None:
+        """Restart the user's BlueFerry service, after queued mutations."""
+        self._submit(restart_backend, on_ok, on_err, mutation=True)
+
+    def run_doctor_async(
+        self, on_ok, on_err, runner: Callable[[], DoctorReport] = run_doctor,
+    ) -> None:
+        """Run ``blueferry doctor`` in a child process off the GTK thread."""
+        self._submit(runner, on_ok, on_err, local=True)
