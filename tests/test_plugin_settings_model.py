@@ -6,46 +6,18 @@ work back.
 """
 from __future__ import annotations
 
-import json
 from typing import ClassVar
 
 import pytest
 
 from blueferry import plugin_settings_view as view
-from blueferry.plugin_api.client import ConfigResult, PluginStatus
-from blueferry.plugin_api.config import SECRET_MASK
+from blueferry.plugin_api.client import PluginStatus
 from blueferry.plugin_index import PluginIndex
 from blueferry.plugin_manager import PluginManager
 from blueferry.plugin_settings_model import PluginSettingsModel
 from tests.client_fakes import ManualRunner
+from tests.plugin_settings_fakes import GUIDED, INDEX, DemoClient, GuidedClient, NoManager
 from tests.test_plugin_manager import URL, FakeRunner, FakeStopper
-
-
-class _Client:
-    saved: ClassVar[list[dict]] = []
-
-    def __init__(self, manifest) -> None:
-        self.manifest = manifest
-
-    def status(self):
-        return PluginStatus("unconfigured", "set a server")
-
-    def get_config(self):
-        return {"url": "https://a.example", "api_key": SECRET_MASK, "camera_model": ""}
-
-    def set_config(self, values):
-        _Client.saved.append(dict(values))
-        if values.get("url") == "https://bad.example":
-            return ConfigResult(False, {"url": "not reachable"})
-        return ConfigResult(True, {})
-
-
-INDEX = json.dumps({"version": 1, "plugins": [
-    {"id": "io.example.demo", "name": "Demo photos", "description": "Photos.",
-     "repo": URL, "ref": "v0.1.0", "capabilities": ["photos"], "icon": "folder-pictures"},
-    {"id": "io.example.cal", "name": "Calendar", "repo": URL + "-cal", "ref": None,
-     "capabilities": ["calendar"]},
-]}).encode()
 
 
 def _model(runner: ManualRunner, opened: list[str] | None = None, **kwargs) -> PluginSettingsModel:
@@ -67,9 +39,9 @@ def plugins(tmp_path, monkeypatch):
                             runner=runner, python="/usr/bin/python3",
                             stopper=FakeStopper())
     index = PluginIndex(fetch=lambda _url: INDEX, cache=tmp_path / "cache")
-    _Client.saved = []
+    DemoClient.saved = []
     work = ManualRunner()
-    settings = _model(work, manager=lambda: manager, index=lambda: index, client=_Client)
+    settings = _model(work, manager=lambda: manager, index=lambda: index, client=DemoClient)
     return settings, manager, runner, work
 
 
@@ -152,7 +124,7 @@ def test_settings_form_round_trip_and_enable_switch(plugins) -> None:
     settings.save_config("io.example.demo", {"url": "https://b.example"})
     work.drain()
     assert settings.state()["config"] == {}
-    assert _Client.saved[-1] == {"url": "https://b.example"}
+    assert DemoClient.saved[-1] == {"url": "https://b.example"}
     manager.stopper.state = "stopped"
     settings.set_enabled("io.example.demo", False)
     work.drain()
@@ -200,88 +172,6 @@ def test_removing_a_plugin_closes_its_settings_form(plugins) -> None:
     assert "Removed" in settings.state()["message"] and settings.state()["config"] == {}
 
 
-class _GuidedClient:
-    """A 1.3 plugin: test connection and a Nextcloud sign-in."""
-
-    log: ClassVar[list[tuple]] = []
-    polls: ClassVar[int] = 0
-
-    def __init__(self, manifest) -> None:
-        self.manifest = manifest
-
-    def get_config(self):
-        signed_in = _GuidedClient.polls >= 2
-        return {"url": "https://cloud.example" if signed_in else "",
-                "app_password": SECRET_MASK if signed_in else ""}
-
-    def set_config(self, values):
-        _GuidedClient.log.append(("save", dict(values)))
-        if values.get("url") == "https://bad.example":
-            return ConfigResult(False, {"url": "not reachable"})
-        return ConfigResult(True, {})
-
-    def test_config(self, values):
-        from blueferry.plugin_api.config_flow import ConfigTestResult
-
-        _GuidedClient.log.append(("test", dict(values)))
-        if values.get("url") == "https://down.example":
-            return ConfigTestResult(False, "The server did not answer.", {"url": "unreachable"})
-        return ConfigTestResult(True, "Connected as anna.")
-
-    def config_login(self, values):
-        from blueferry.plugin_api.config_flow import LoginStep
-
-        _GuidedClient.log.append(("login", dict(values)))
-        return LoginStep("open", login_id="flow-1", open_uri="https://cloud.example/login/v2/f")
-
-    def config_login_status(self, login_id):
-        from blueferry.plugin_api.config_flow import LoginStep
-
-        _GuidedClient.polls += 1
-        if _GuidedClient.polls < 2:
-            return LoginStep("pending")
-        return LoginStep("done", "Connected as anna")
-
-    def config_login_cancel(self, login_id):
-        _GuidedClient.log.append(("cancel", login_id))
-
-    def status(self):
-        return PluginStatus("ok")
-
-
-GUIDED = """
-[Config url]
-Label=Server URL
-Type=url
-Required=true
-Placeholder=https://cloud.example.com
-HelpUrl=https://docs.example.com/url
-Group=account
-
-[Config app_password]
-Label=App password
-Type=secret
-Required=true
-Group=account
-
-[Config timeout]
-Label=Timeout
-Type=int
-Min=1
-Max=60
-Default=15
-Advanced=true
-"""
-
-
-class _NoManager:
-    def entries(self):
-        return [], []
-
-    def settings(self):
-        return {}
-
-
 @pytest.fixture
 def guided():
     from blueferry.plugin_api.testing import manifest
@@ -291,10 +181,10 @@ def guided():
     other = manifest("io.example.other", capabilities="card;", api_version="1.3",
                      extra=GUIDED)
     opened: list[str] = []
-    _GuidedClient.log, _GuidedClient.polls = [], 0
+    GuidedClient.log, GuidedClient.polls = [], 0
     work = ManualRunner()
-    settings = _model(work, opened, manager=lambda: _NoManager(), index=lambda: None,
-                      client=_GuidedClient, poll_ms=5)
+    settings = _model(work, opened, manager=lambda: NoManager(), index=lambda: None,
+                      client=GuidedClient, poll_ms=5)
     settings._manifests = {plugin.id: plugin, other.id: other}
     return settings, opened, work
 
@@ -328,7 +218,7 @@ def test_guided_form_checks_tests_and_signs_in(guided) -> None:
     assert timer.delay == 5 and settings.state()["config"]["status"]["pending"] is True
     work.drain()
     # The sign-in got the typed URL but never a secret.
-    assert ("login", {"url": "https://cloud.example"}) in _GuidedClient.log
+    assert ("login", {"url": "https://cloud.example"}) in GuidedClient.log
     assert settings.state()["config"]["fields"][0]["value"] == "https://cloud.example"
     assert settings.state()["config"]["status"] == {
         "kind": "login", "ok": True, "text": "Connected as anna", "pending": False}
@@ -336,7 +226,7 @@ def test_guided_form_checks_tests_and_signs_in(guided) -> None:
 
 def test_a_sign_in_that_never_ends_expires(guided) -> None:
     settings, _opened, work = guided
-    _GuidedClient.polls = -10_000  # stays pending
+    GuidedClient.polls = -10_000  # stays pending
     settings._poll_ms = 600_000  # LOGIN_TIMEOUT_SECONDS allows two polls
     settings.load_config("io.example.cloud")
     work.drain()
@@ -345,14 +235,14 @@ def test_a_sign_in_that_never_ends_expires(guided) -> None:
         work.run_tasks()
         if not work.fire_timers():
             break
-    assert settings._login is None and _GuidedClient.polls == -10_000 + 2
+    assert settings._login is None and GuidedClient.polls == -10_000 + 2
     assert settings.state()["config"]["status"] == {
         "kind": "login", "ok": False, "text": view.login_text("expired"), "pending": False}
 
 
 def test_closing_the_form_cancels_a_running_sign_in(guided) -> None:
     settings, _opened, work = guided
-    _GuidedClient.polls = -10_000  # stays pending
+    GuidedClient.polls = -10_000  # stays pending
     settings.load_config("io.example.cloud")
     work.drain()
     settings.sign_in("io.example.cloud", {"url": "https://cloud.example"})
@@ -362,14 +252,14 @@ def test_closing_the_form_cancels_a_running_sign_in(guided) -> None:
     assert settings.state()["config"]["status"]["text"] == "The sign-in was cancelled."
     assert not settings._login_timer.active
     work.run_tasks()
-    assert ("cancel", "flow-1") in _GuidedClient.log
+    assert ("cancel", "flow-1") in GuidedClient.log
     settings.sign_in("io.example.cloud", {"url": "https://cloud.example"})
     work.run_tasks()
     assert settings._login is not None
     settings.close_config()
     assert settings._login is None and settings.state()["config"] == {}
     work.run_tasks()
-    assert _GuidedClient.log.count(("cancel", "flow-1")) == 2
+    assert GuidedClient.log.count(("cancel", "flow-1")) == 2
 
 
 def test_a_poll_answer_for_a_cancelled_sign_in_is_dropped(guided) -> None:
@@ -378,7 +268,7 @@ def test_a_poll_answer_for_a_cancelled_sign_in_is_dropped(guided) -> None:
     work.drain()
     settings.sign_in("io.example.cloud", {"url": "https://cloud.example"})
     work.run_tasks()
-    _GuidedClient.polls = 5  # the next poll says "done"
+    GuidedClient.polls = 5  # the next poll says "done"
     settings._login_timer.fire()  # the poll is queued ...
     settings.cancel_sign_in()  # ... and the user cancels before it answers
     work.drain()
@@ -394,7 +284,7 @@ def test_show_log_opens_the_plugin_log_or_explains(tmp_path, monkeypatch) -> Non
                             runner=FakeRunner(), python="/usr/bin/python3",
                             stopper=FakeStopper())
     work = ManualRunner()
-    settings = _model(work, opened, manager=lambda: manager, client=_Client,
+    settings = _model(work, opened, manager=lambda: manager, client=DemoClient,
                       index=lambda: PluginIndex(fetch=lambda _url: INDEX,
                                                 cache=tmp_path / "cache"))
     settings.open_log("io.example.ls")
@@ -458,7 +348,7 @@ Label=Broken
 """
 
 
-class _OneManager(_NoManager):
+class _OneManager(NoManager):
     def __init__(self, plugin) -> None:
         self.plugin = plugin
 
@@ -600,7 +490,7 @@ def test_a_late_config_answer_does_not_replace_a_newer_form(guided) -> None:
     settings, _opened, work = guided
     settings.load_config("io.example.cloud")
     settings.load_config("io.example.other")
-    _GuidedClient.polls = 2  # the answers differ from now on
+    GuidedClient.polls = 2  # the answers differ from now on
     work.run_next()  # the first form's answer: dropped
     assert settings.state()["config"]["id"] == "io.example.other"
     assert settings.state()["config"]["loaded"] is False
@@ -616,7 +506,7 @@ def test_a_late_sign_in_opens_nothing_after_the_form_closed(guided) -> None:
     settings.sign_in("io.example.cloud", {"url": "https://cloud.example"})
     settings.close_config()
     work.drain()
-    assert ("cancel", "flow-1") in _GuidedClient.log
+    assert ("cancel", "flow-1") in GuidedClient.log
     assert opened == [] and settings._login is None and settings.state()["config"] == {}
 
 
@@ -638,6 +528,6 @@ def test_a_save_that_ends_later_leaves_another_plugins_form_alone(guided) -> Non
     work.drain()
     assert settings.state()["config"]["loaded"]
     assert any(entry[0] == "save" and entry[1]["url"] == "https://b.example"
-               for entry in _GuidedClient.log)
+               for entry in GuidedClient.log)
     # The other plugin's success never closed the form shown meanwhile.
     assert set(shown) == {"io.example.cloud"}

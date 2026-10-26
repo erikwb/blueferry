@@ -14,8 +14,7 @@ from typing import Any
 
 
 class ManualTimer:
-    def __init__(self, clock: ManualRunner, callback: Callable[[], None]) -> None:
-        self._clock = clock
+    def __init__(self, callback: Callable[[], None]) -> None:
         self._callback = callback
         self.delay: int | None = None
         self.starts = 0
@@ -81,7 +80,7 @@ class ManualRunner:
     # ---- timers ----------------------------------------------------------
 
     def timer(self, callback: Callable[[], None]) -> ManualTimer:
-        timer = ManualTimer(self, callback)
+        timer = ManualTimer(callback)
         self.timers.append(timer)
         return timer
 
@@ -99,16 +98,3 @@ class ManualRunner:
             if not self.fire_timers():
                 return
         raise AssertionError("timers kept re-arming")
-
-
-class ImmediateRunner:
-    """A synchronous TaskRunner: the work and its callbacks run at once."""
-
-    def __init__(self) -> None:
-        self.submitted = 0
-
-    def submit(self, operation, on_done=None, on_error=None, on_finished=None) -> None:
-        self.submitted += 1
-        runner = ManualRunner()
-        runner.submit(operation, on_done, on_error, on_finished)
-        runner.run_next()

@@ -19,9 +19,9 @@ from PySide6.QtGui import QGuiApplication
 from blueferry.plugin_index import PluginIndex
 from blueferry.plugin_manager import PluginManager
 from blueferry.qt.plugin_settings import PluginSettings
+from tests.plugin_settings_fakes import GUIDED, INDEX, DemoClient, GuidedClient, NoManager
 from tests.qt_settle import main_thread_gc, settle, wait
 from tests.test_plugin_manager import URL, FakeRunner, FakeStopper
-from tests.test_plugin_settings_model import GUIDED, INDEX, _Client, _GuidedClient, _NoManager
 
 # Keep the cyclic GC off the pool threads (see tests/qt_settle.py).
 pytestmark = pytest.mark.usefixtures(main_thread_gc.__name__)
@@ -44,8 +44,8 @@ def plugins(app, tmp_path, monkeypatch):
                             runner=runner, python="/usr/bin/python3",
                             stopper=FakeStopper())
     index = PluginIndex(fetch=lambda _url: INDEX, cache=tmp_path / "cache")
-    _Client.saved = []
-    settings = PluginSettings(manager=lambda: manager, index=lambda: index, client=_Client)
+    DemoClient.saved = []
+    settings = PluginSettings(manager=lambda: manager, index=lambda: index, client=DemoClient)
     yield settings, manager, runner
     _settle(settings)
 
@@ -83,9 +83,9 @@ def guided(app):
     plugin = manifest("io.example.cloud", capabilities="card;", api_version="1.3",
                       extra="ConfigTest=true\nConfigLogin=nextcloud\n" + GUIDED)
     opened: list[str] = []
-    _GuidedClient.log, _GuidedClient.polls = [], 0
-    settings = PluginSettings(manager=lambda: _NoManager(), index=lambda: None,
-                              client=_GuidedClient, opener=opened.append, poll_ms=5)
+    GuidedClient.log, GuidedClient.polls = [], 0
+    settings = PluginSettings(manager=lambda: NoManager(), index=lambda: None,
+                              client=GuidedClient, opener=opened.append, poll_ms=5)
     settings.model._manifests = {plugin.id: plugin}
     yield settings, opened
     _settle(settings)
@@ -99,22 +99,22 @@ def _settle(settings) -> None:
 
 def test_closing_the_form_cancels_a_running_sign_in(guided) -> None:
     settings, _opened = guided
-    _GuidedClient.polls = -10_000  # stays pending
+    GuidedClient.polls = -10_000  # stays pending
     settings.load_config("io.example.cloud")
     _wait(lambda: settings.state()["config"].get("loaded"))
     settings.sign_in("io.example.cloud", {"url": "https://cloud.example"})
     _wait(lambda: settings.model._login is not None)
     settings.cancel_sign_in()
     assert settings.state()["config"]["status"]["text"] == "The sign-in was cancelled."
-    _wait(lambda: ("cancel", "flow-1") in _GuidedClient.log)
+    _wait(lambda: ("cancel", "flow-1") in GuidedClient.log)
     settings.sign_in("io.example.cloud", {"url": "https://cloud.example"})
     _wait(lambda: settings.model._login is not None)
     settings.close_config()
     assert settings.model._login is None and settings.state()["config"] == {}
-    _wait(lambda: _GuidedClient.log.count(("cancel", "flow-1")) == 2)
+    _wait(lambda: GuidedClient.log.count(("cancel", "flow-1")) == 2)
 
 
-class _GatedClient(_GuidedClient):
+class _GatedClient(GuidedClient):
     """Holds GetConfig and ConfigLogin on the pool until the test releases them."""
 
     gate: ClassVar[threading.Event] = threading.Event()
@@ -162,7 +162,7 @@ def test_a_late_sign_in_opens_nothing_after_the_form_closed(gated) -> None:
     settings.sign_in("io.example.cloud", {"url": "https://cloud.example"})
     settings.close_config()
     _GatedClient.gate.set()
-    _wait(lambda: ("cancel", "flow-1") in _GuidedClient.log)
+    _wait(lambda: ("cancel", "flow-1") in GuidedClient.log)
     assert opened == [] and settings.model._login is None and settings.state()["config"] == {}
 
 
