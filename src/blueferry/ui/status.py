@@ -1536,8 +1536,10 @@ class SettingsDialog(Adw.PreferencesDialog):
         self._client.set_mirror_notification_removals_async(row.get_active(), saved, failed)
 
     def _apply_battery_warning(self, status: BackendStatus, values: dict, reachable: bool) -> None:
-        # As in the Qt client: shown for daemons that report the key.
-        self._battery_group.set_visible("phone_battery_warning" in values)
+        # As in the Qt client: shown only for daemons that report the setting.
+        # BackendStatus always fills phone_battery_warning, so look for the
+        # threshold the daemon sends along with it.
+        self._battery_group.set_visible("phone_battery_warning_percent" in status.extra)
         percent = status.extra.get("phone_battery_warning_percent", 20)
         self._battery_warning_row.set_subtitle(
             _("One desktop notification per discharge, at {percent} % or less.").format(
