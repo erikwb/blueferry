@@ -1008,8 +1008,8 @@ def test_feature_switches_round_trip(public_service, tmp_path, monkeypatch) -> N
             client = BackendClient(
                 interface_factory=lambda iface: dbus.Interface(interface.proxy_object, iface)
             )
-            outcome["set"] = client.set_feature("keep_phone_audio_on_phone", False)
-            outcome["features"] = client.features()["keep_phone_audio_on_phone"]
+            outcome["set"] = client.set_feature("mark_read_on_dismiss", False)
+            outcome["features"] = client.features()["mark_read_on_dismiss"]
             try:
                 client.set_feature("mac", True)
             except Exception as error:  # BackendError

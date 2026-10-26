@@ -55,9 +55,8 @@ In einem schmalen Fenster werden die Kategorien zur Liste; eine Kategorie
 ### Schalter, die einen Neustart brauchen
 
 Einige Ein/Aus-Einstellungen brauchten bisher eine Änderung in
-`~/.config/blueferry/local.env`: Mitteilungsinhalt anzeigen, eine Nachricht
-beim Wegklicken des Popups als gelesen markieren und den iPhone-Ton auf dem
-iPhone lassen. Die Einstellungsseite und `blueferry features` speichern sie
+`~/.config/blueferry/local.env`: Mitteilungsinhalt anzeigen und eine Nachricht
+beim Wegklicken des Popups als gelesen markieren. Die Einstellungsseite und `blueferry features` speichern sie
 jetzt in `~/.config/blueferry/settings.json`, wo sie `local.env`
 überschreiben. Sie gelten nach einem Neustart des Hintergrunddienstes; die
 Seite sagt das und bietet **Restart Service** an. Eine Variable aus der
@@ -65,7 +64,7 @@ Umgebung des Dienstes gewinnt weiterhin, der Schalter sagt dann das.
 
 ```bash
 blueferry features                                 # alle Schalter mit Wert und Quelle
-blueferry features off keep_phone_audio_on_phone   # gilt nach einem Neustart
+blueferry features off mark_read_on_dismiss        # gilt nach einem Neustart
 ```
 
 ### Symbol im Systemabschnitt der Kontrollleiste

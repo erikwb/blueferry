@@ -74,6 +74,25 @@ def hooks(monkeypatch, tmp_path):
     return state, opened, original
 
 
+@pytest.mark.parametrize("timestamp", [
+    "0001-01-01T00:00:00+01:00", "9999-12-31T23:59:59-01:00", "2026-02-30T12:00:00Z",
+])
+def test_photos_recent_tolerates_unrepresentable_dates(hooks, monkeypatch, timestamp) -> None:
+    import time
+
+    monkeypatch.setitem(cli_photos._hooks, "load", lambda _m, _limit: photos_view.PhotosSnapshot(
+        True, True, "", [Photo("a", timestamp, "image", None)]))
+    try:
+        with monkeypatch.context() as timezone:
+            timezone.setenv("TZ", "UTC")
+            time.tzset()
+            result = CliRunner().invoke(app, ["photos", "recent"])
+            assert result.exit_code == 0
+            assert result.output == "a  -  Photo\n"
+    finally:
+        time.tzset()
+
+
 def test_photos_recent_and_open(hooks) -> None:
     state, opened, original = hooks
     result = CliRunner().invoke(app, ["photos", "recent", "--limit", "5"])
