@@ -1830,7 +1830,7 @@ def test_a_photo_of_a_plugin_disabled_meanwhile_is_not_fetched(monkeypatch, tmp_
     monkeypatch.setattr(photos_view, "load_recent",
                         lambda manifest: photos_view.PhotosSnapshot(False, False, "none", []))
     controller._plugin_set_changed()
-    assert controller._photos_plugin is None and controller.photos["items"] == []
+    assert controller._photos.plugin is None and controller.photos["items"] == []
 
 
 def test_manual_reconnect_reports_an_unreachable_phone(monkeypatch):
