@@ -430,6 +430,18 @@ class DaemonClient(GObject.Object):
             mutation=True,
         )
 
+    def set_mirror_notification_removals_async(
+        self, enabled: bool, on_ok, on_err
+    ) -> None:
+        self._submit(
+            lambda: self._call_backend(
+                lambda backend: backend.set_mirror_notification_removals(enabled)
+            ),
+            on_ok,
+            on_err,
+            mutation=True,
+        )
+
     def set_media_control_async(self, enabled: bool, on_ok, on_err) -> None:
         self._submit(
             lambda: self._call_backend(

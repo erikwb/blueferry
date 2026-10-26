@@ -10,7 +10,9 @@ import pytest
 from tests.gtk_broadway import run_scenario
 
 
-@pytest.mark.parametrize("scenario", ["categories", "features", "old-daemon", "doctor"])
+@pytest.mark.parametrize(
+    "scenario", ["categories", "features", "old-daemon", "doctor", "mirror-removals"],
+)
 def test_gtk_settings(tmp_path, scenario):
     run_scenario(tmp_path, str(Path(__file__).resolve()), scenario)
 
@@ -58,6 +60,9 @@ class FakeClient:
 
     def restart_backend_async(self, on_ok, on_err):
         self.calls.append(("restart", on_ok, on_err))
+
+    def set_mirror_notification_removals_async(self, enabled, on_ok, on_err):
+        self.calls.append((("mirror", enabled), on_ok, on_err))
 
     def run_doctor_async(self, on_ok, on_err, runner=None):
         self.calls.append(("doctor", on_ok, on_err))
@@ -320,8 +325,31 @@ def _exercise_doctor():
     window.destroy()
 
 
+def _exercise_mirror_removals():
+    from blueferry.models import BackendStatus
+
+    dialog, window, client = _settings()
+    row = dialog._mirror_removals_row
+    assert not row.get_visible()  # older daemons do not report the preference
+    status = BackendStatus.from_dict({"daemon": True, "mirror_iphone_removals": False})
+    dialog._apply_status(status)
+    assert row.get_visible() and not row.get_active() and row.get_sensitive()
+    row.set_active(True)
+    assert not row.get_sensitive()
+    _call, _saved, failed = client.take(("mirror", True))
+    failed("busy")
+    # A failed save shows the daemon's value again.
+    assert not row.get_active() and row.get_sensitive()
+    client.status = BackendStatus.from_dict({"daemon": True, "mirror_iphone_removals": True})
+    row.set_active(True)
+    client.take(("mirror", True))[1](True)
+    assert row.get_active() and row.get_sensitive()
+    window.destroy()
+
+
 if __name__ == "__main__":
     {
+        "mirror-removals": _exercise_mirror_removals,
         "categories": _exercise_categories,
         "features": _exercise_features,
         "old-daemon": _exercise_old_daemon,

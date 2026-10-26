@@ -369,3 +369,17 @@ def test_doctor_work_does_not_wait_for_daemon_reads(monkeypatch) -> None:
         release_read.set()
         assert read_done.wait(3)
         client.stop()
+
+
+def test_notification_sync_preference_uses_mutation_worker(monkeypatch) -> None:
+    class Backend:
+        def set_mirror_notification_removals(self, enabled):
+            return enabled
+
+    client, submitted = _recording_client(monkeypatch, Backend())
+    results = []
+    try:
+        client.set_mirror_notification_removals_async(True, results.append, None)
+    finally:
+        client.stop()
+    assert results == [True] and submitted == ["mutation"]

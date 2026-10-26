@@ -59,6 +59,7 @@ class SettingsDialog(Adw.PreferencesDialog):
         self._applying_notification_policy = False
         self._applying_contacts_only_notifications = False
         self._applying_ancs_actions = False
+        self._applying_mirror_removals = False
         self._applying_saved_switches = False
         self._media_control_choice = SavedChoice()
         self._auto_profile_reset_choice = SavedChoice()
@@ -394,6 +395,18 @@ class SettingsDialog(Adw.PreferencesDialog):
             _("Off: popups name the sender only."),
         ))
         content_group.add(self._ancs_actions_row)
+        # Opt-in; shown only when the daemon reports mirror_iphone_removals.
+        self._mirror_removals_row = Adw.SwitchRow(
+            title=_("Sync Notifications with iPhone"),
+            subtitle=_(
+                "A notification removed or dismissed on the iPhone also closes "
+                "its popup here. Applies to All iPhone Notifications."
+            ),
+            use_markup=False,
+        )
+        self._mirror_removals_row.set_visible(False)
+        self._mirror_removals_row.connect("notify::active", self._mirror_removals_changed)
+        content_group.add(self._mirror_removals_row)
         content_group.add(self.features.row(
             "mark_read_on_dismiss", _("Mark Read When a Popup Is Dismissed"),
         ))
@@ -1293,6 +1306,7 @@ class SettingsDialog(Adw.PreferencesDialog):
         )
         self._applying_contacts_only_notifications = False
         self._apply_ancs_actions(status, reachable)
+        self._apply_mirror_removals(status, reachable)
         self._apply_media_switches(status, reachable)
         self._apply_phone_audio(status, reachable)
         self._apply_connection_switches(status, reachable)
@@ -1438,6 +1452,31 @@ class SettingsDialog(Adw.PreferencesDialog):
         self._client.set_ancs_notification_actions_async(
             enabled, saved, failed
         )
+
+    def _apply_mirror_removals(self, status: BackendStatus, reachable: bool) -> None:
+        preference = status.extra.get("mirror_iphone_removals")
+        self._mirror_removals_row.set_visible(isinstance(preference, bool))
+        self._applying_mirror_removals = True
+        self._mirror_removals_row.set_active(preference is True)
+        self._applying_mirror_removals = False
+        self._mirror_removals_row.set_sensitive(reachable)
+
+    def _mirror_removals_changed(self, row, _property) -> None:
+        if self._applying_mirror_removals:
+            return
+        row.set_sensitive(False)
+
+        def saved(_value: bool) -> None:
+            self._toast(_("Notification sync preference saved"))
+            self._refresh()
+
+        def failed(error: str) -> None:
+            self._toast(
+                _("Could not save notification sync preference: {error}").format(error=error)
+            )
+            self._apply_status(self._last_status)
+
+        self._client.set_mirror_notification_removals_async(row.get_active(), saved, failed)
 
     def _show_saved_choice(self, switch, choice: SavedChoice, reported: bool) -> None:
         """Set ``switch`` for a status reporting ``reported``."""
