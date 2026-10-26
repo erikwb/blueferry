@@ -51,7 +51,8 @@ def test_reload_invoke_and_send_run_on_the_runner(tmp_path) -> None:
     assert model.state()["shareAvailable"] is True
     assert model.state()["targetsLoaded"] is False  # targets start plugins: not yet
     assert cards[0]["items"][0]["actions"][0] == {
-        "id": "open", "label": "Open", "icon": "", "primary": True, "sendTo": ""}
+        "id": "open", "label": "Open", "labelPlain": "Open", "icon": "", "primary": True,
+        "sendTo": ""}
     assert cards[1]["ok"] is False and cards[1]["hint"] == "Unavailable: timeout"
 
     model.invoke("io.example.calendar", "next", "open")
@@ -226,3 +227,5 @@ def test_button_labels_from_plugins_are_escaped_and_titles_stay_plain() -> None:
     assert item["actions"][0]["label"] == (
         "&lt;a href='https://evil.example'&gt;Open&lt;/a&gt;")
     assert item["actions"][1]["label"] == "Tom & Jerry"  # no "<": plain already
+    # The raw label, for buttons that never read markup (GTK).
+    assert item["actions"][0]["labelPlain"] == "<a href='https://evil.example'>Open</a>"

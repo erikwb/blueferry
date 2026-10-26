@@ -74,7 +74,8 @@ def test_reload_invoke_and_send_run_off_the_ui_thread(app, tmp_path, track) -> N
     assert adapter.state()["shareAvailable"] is True
     assert adapter.state()["targetsLoaded"] is False  # targets start plugins: not yet
     assert cards[0]["items"][0]["actions"][0] == {
-        "id": "open", "label": "Open", "icon": "", "primary": True, "sendTo": ""}
+        "id": "open", "label": "Open", "labelPlain": "Open", "icon": "", "primary": True,
+        "sendTo": ""}
     assert cards[1]["ok"] is False and cards[1]["hint"] == "Unavailable: timeout"
 
     adapter.invoke("io.example.calendar", "next", "open")
