@@ -316,9 +316,19 @@ The iPhone phonebook is available through BlueZ's
 
 - Select the main phonebook with `Select("int", "pb")`; this is not MAP's
   `SetFolder` API.
-- Pull it with `PullAll(path, {"MaxCount": ..., "Format": "vcard30"})`.
+- Pull it with `PullAll(path, {"MaxCount": ..., "Format": "vcard30", "Offset": 1})`.
   `MaxListCount` is a MAP option and causes a PBAP transfer to fail or yield a
   zero-byte file.
+- PBAP reserves `telecom/pb/0.vcf` for the owner card and returns the bulk
+  phonebook in ascending index order (PBAP 1.2.3, sections 3.1.5.2 and 4.2).
+  `Offset=1` excludes this entry before parsing or photo budgeting. This
+  prevents iOS's synthetic "My Number" entry from making the real self
+  contact ambiguous, without depending on its localized name. A confirmed
+  empty download after skipping the owner is a valid empty contact list;
+  disappearance of an empty transfer alone does not clear the cache.
+- Subscribe to transfer completion before `PullAll`. BlueZ can emit the
+  terminal signal and remove `Transfer1` before polling observes completion;
+  retain that signal as evidence for valid empty contacts and call histories.
 - vCards contain `FN`, multiple `TEL` values, and `EMAIL` values. Retaining
   emails is necessary for contacts that exist only as Apple-ID destinations.
 - BlueFerry sends no `Fields` filter, and BlueZ then omits the PBAP Filter
@@ -344,7 +354,8 @@ than one address must remain ambiguous.
 
 BlueFerry's opt-in call history relies on the PBAP call-history phonebooks,
 selected with `Select("int", "ich" | "och" | "mch")` and pulled with the same
-`PullAll` filters as the main phonebook.
+`PullAll` format/count filters as the main phonebook. They keep the default
+zero offset: call-history folders have no owner card to skip.
 
 Observed with an iPhone on iOS 27 and BlueZ 5.87 (2026-10-07/08, daemon log
 only, no call content recorded):
