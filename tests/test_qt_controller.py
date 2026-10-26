@@ -11,7 +11,6 @@ pytest.importorskip("PySide6")
 from blueferry.client import BackendError
 from blueferry.conversation_state import ConversationSnapshot
 from blueferry.models import BackendStatus, Thread
-from blueferry.qt import phone_link
 from blueferry.qt.controller import BridgeController
 from blueferry.setup_client import ConfigurationState
 
@@ -1705,17 +1704,6 @@ def test_phone_name_comes_from_the_configured_device():
     controller._configuration = ConfigurationState.from_dict({"configured": True, "mac": "AA"})
     controller._devices = [{"mac": "BB", "name": "Other"}, {"mac": "AA", "name": "Josh's iPhone"}]
     assert controller.phoneName == "Josh's iPhone"
-
-
-@pytest.mark.parametrize(("calls_state", "expected"), [
-    ("connecting", "connecting to the iPhone"),
-    ("searching", "connecting to the iPhone"),
-    ("unavailable", "oFono is not running"),
-    ("ready", "Waiting for battery and signal"),
-])
-def test_phone_status_hint_names_the_hands_free_state(calls_state, expected):
-    hints = phone_link.feature_hints({"calls_enabled": True, "calls_state": calls_state})
-    assert expected in hints["phoneStatus"]
 
 
 def _inline_controller(monkeypatch, backend):

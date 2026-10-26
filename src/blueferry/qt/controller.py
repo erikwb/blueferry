@@ -17,7 +17,13 @@ from PySide6.QtCore import (
 )
 from PySide6.QtDBus import QDBusConnection
 
-from blueferry import __version__, phone_audio_view, phone_overview, photos_view
+from blueferry import (
+    __version__,
+    phone_audio_view,
+    phone_link_view,
+    phone_overview,
+    photos_view,
+)
 from blueferry.backend_lifecycle import ensure_backend_current, restart_backend
 from blueferry.bluetooth_devices import iphone_candidates
 from blueferry.client import BackendClient
@@ -33,7 +39,6 @@ from blueferry.models import BackendStatus, CallsSnapshot
 from blueferry.onboarding import OnboardingState, effective_compatibility
 from blueferry.plugin_api.client import Photo
 from blueferry.protocol import BUS_NAME, EVENTS_IFACE, OBJECT_PATH
-from blueferry.qt import phone_link
 from blueferry.qt.avatars import avatar_url
 from blueferry.qt.companion import CompanionTools
 from blueferry.qt.plugin_settings import PluginSettings
@@ -477,7 +482,7 @@ class BridgeController(QObject):
 
     @Property("QVariantMap", notify=statusChanged)
     def featureHints(self):
-        return phone_link.feature_hints(self._status)
+        return phone_link_view.feature_hints(self._status)
 
     @Property(str, notify=phoneIdentityChanged)
     def phoneName(self) -> str:
@@ -748,7 +753,7 @@ class BridgeController(QObject):
             if not self._notifications_watched:
                 return
             snapshot = value if isinstance(value, dict) else {}
-            self._notifications = phone_link.notification_rows(snapshot.get("notifications"))
+            self._notifications = phone_link_view.notification_rows(snapshot.get("notifications"))
             self._notifications_info = {
                 "enabled": snapshot.get("enabled") is True,
                 "content": snapshot.get("content") is True,
