@@ -22,6 +22,10 @@ from blueferry.i18n import _
 from blueferry.photos_model import PhotosTabModel
 
 THUMBNAIL_SIZE = 256
+# A thumbnail is small; a larger file or canvas is skipped before decoding,
+# so a hostile cache file cannot make the client allocate gigabytes.
+MAX_THUMBNAIL_BYTES = 8 * 1024 * 1024
+MAX_THUMBNAIL_PIXELS = 40_000_000
 CELL_SIZE = 132
 ThumbnailLoader = Callable[[str, Gio.Cancellable, Callable[[Gdk.Texture | None], None]], None]
 FILTERS = ("all", "photos", "videos")
@@ -50,8 +54,18 @@ def placeholder(state: dict, kind: str) -> tuple[str, str]:
 
 def load_thumbnail(uri: str, cancellable: Gio.Cancellable,
                    done: Callable[[Gdk.Texture | None], None]) -> None:
-    """Decode a local thumbnail asynchronously (GIO and GdkPixbuf threads)."""
+    """Decode a local thumbnail asynchronously (GIO and GdkPixbuf threads).
+
+    The file's size and the declared canvas are checked first; anything over
+    :data:`MAX_THUMBNAIL_BYTES` or :data:`MAX_THUMBNAIL_PIXELS` stays a
+    placeholder.
+    """
     if not uri.startswith("file:"):
+        done(None)
+        return
+    file = Gio.File.new_for_uri(uri)
+    path = file.get_path()
+    if path is None:
         done(None)
         return
 
@@ -77,7 +91,32 @@ def load_thumbnail(uri: str, cancellable: Gio.Cancellable,
         GdkPixbuf.Pixbuf.new_from_stream_at_scale_async(
             stream, THUMBNAIL_SIZE, THUMBNAIL_SIZE, True, cancellable, decoded)
 
-    Gio.File.new_for_uri(uri).read_async(GLib.PRIORITY_LOW, cancellable, opened)
+    def measured(_source, result) -> None:
+        try:
+            _format, width, height = GdkPixbuf.Pixbuf.get_file_info_finish(result)
+        except GLib.Error:
+            done(None)
+            return
+        if width <= 0 or height <= 0 or width * height > MAX_THUMBNAIL_PIXELS:
+            done(None)
+            return
+        file.read_async(GLib.PRIORITY_LOW, cancellable, opened)
+
+    def sized(_file: Gio.File, result) -> None:
+        try:
+            info = file.query_info_finish(result)
+        except GLib.Error:
+            done(None)
+            return
+        if info.get_size() > MAX_THUMBNAIL_BYTES:
+            done(None)
+            return
+        GdkPixbuf.Pixbuf.get_file_info_async(path, cancellable, measured)
+
+    file.query_info_async(
+        Gio.FILE_ATTRIBUTE_STANDARD_SIZE, Gio.FileQueryInfoFlags.NONE, GLib.PRIORITY_LOW,
+        cancellable, sized,
+    )
 
 
 def launch_file(parent: Gtk.Widget, path: object) -> None:
