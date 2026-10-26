@@ -397,3 +397,17 @@ def test_battery_warning_preference_uses_mutation_worker(monkeypatch) -> None:
     finally:
         client.stop()
     assert results == [True] and submitted == ["mutation"]
+
+
+def test_manual_reconnect_uses_mutation_worker(monkeypatch) -> None:
+    class Backend:
+        def reconnect_phone(self):
+            return "started"
+
+    client, submitted = _recording_client(monkeypatch, Backend())
+    results = []
+    try:
+        client.reconnect_phone_async(results.append, None)
+    finally:
+        client.stop()
+    assert results == ["started"] and submitted == ["mutation"]

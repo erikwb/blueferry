@@ -13,7 +13,7 @@ from tests.gtk_broadway import run_scenario
 @pytest.mark.parametrize(
     "scenario", [
         "categories", "features", "old-daemon", "doctor", "mirror-removals",
-        "battery-warning",
+        "battery-warning", "reconnect",
     ],
 )
 def test_gtk_settings(tmp_path, scenario):
@@ -69,6 +69,9 @@ class FakeClient:
 
     def set_phone_battery_warning_async(self, enabled, on_ok, on_err):
         self.calls.append((("battery", enabled), on_ok, on_err))
+
+    def reconnect_phone_async(self, on_ok, on_err):
+        self.calls.append(("reconnect", on_ok, on_err))
 
     def run_doctor_async(self, on_ok, on_err, runner=None):
         self.calls.append(("doctor", on_ok, on_err))
@@ -387,8 +390,50 @@ def _exercise_battery_warning():
     window.destroy()
 
 
+def _exercise_reconnect():
+    from blueferry.models import BackendStatus
+    from blueferry.reconnect_view import STARTED_TEXT, UNREACHABLE_TEXT
+
+    dialog, window, client = _settings()
+    row, button = dialog._reconnect_row, dialog._reconnect_button
+    assert not row.get_visible()  # older daemons have no reconnect state
+    toasts = []
+    dialog._toast = toasts.append
+    waiting = {"daemon": True, "phone_reconnect_state": "waiting"}
+    dialog._apply_status(BackendStatus.from_dict(waiting))
+    assert row.get_visible() and button.get_visible()
+    assert row.get_subtitle() == "Reconnecting automatically."
+    button.emit("clicked")
+    assert not button.get_sensitive()
+    client.status = BackendStatus.from_dict({**waiting, "phone_reconnect_state": "connecting"})
+    client.take("reconnect")[1]("started")
+    assert button.get_sensitive() and row.get_subtitle() == STARTED_TEXT
+    # Re-rendering the old status (a failed save elsewhere) keeps the notice.
+    dialog._apply_status(dialog._last_status)
+    assert row.get_subtitle() == STARTED_TEXT
+    # The outcome ends it; an unreachable phone is reported.
+    dialog._apply_status(BackendStatus.from_dict(
+        {**waiting, "phone_reconnect_state": "unreachable"}))
+    assert toasts == [UNREACHABLE_TEXT]
+    assert row.get_subtitle() == "Reconnecting automatically."
+    button.emit("clicked")
+    client.take("reconnect")[1]("unreachable")
+    assert toasts[-1] == UNREACHABLE_TEXT
+    button.emit("clicked")
+    client.take("reconnect")[2]("Too many requests")
+    assert toasts[-1] == "Too many requests" and button.get_sensitive()
+    # Connected: nothing to offer; a hung bluetoothd hides the button.
+    dialog._apply_status(BackendStatus.from_dict(
+        {**waiting, "phone_reconnect_state": "connected"}))
+    assert row.get_visible() and not button.get_visible()
+    dialog._apply_status(BackendStatus.from_dict({**waiting, "bluez_unresponsive": True}))
+    assert not button.get_visible() and "not responding" in row.get_subtitle()
+    window.destroy()
+
+
 if __name__ == "__main__":
     {
+        "reconnect": _exercise_reconnect,
         "battery-warning": _exercise_battery_warning,
         "mirror-removals": _exercise_mirror_removals,
         "categories": _exercise_categories,

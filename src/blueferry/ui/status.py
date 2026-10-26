@@ -18,6 +18,7 @@ from blueferry.onboarding import OnboardingState, ancs_unavailable_detail
 from blueferry.phone_audio_view import phone_audio
 from blueferry.proximity_lock import clamp_grace
 from blueferry.quirks_report import issue_report, issue_url
+from blueferry.reconnect_view import ManualReconnect, reconnect_view
 from blueferry.setup_client import (
     DISCOVERY_SECONDS,
     BluetoothCompatibility,
@@ -330,6 +331,15 @@ class SettingsDialog(Adw.PreferencesDialog):
         daemon_group.add(self._ancs_row)
         self._contacts_row = Adw.ActionRow(title=_("Contact Destinations"))
         daemon_group.add(self._contacts_row)
+        # Manual reconnect: the automatic Classic backoff can wait up to ten
+        # minutes, and a stuck profile needs a device reset.
+        self._manual_reconnect = ManualReconnect()
+        self._reconnect_row = Adw.ActionRow(title=_("iPhone Link"), use_markup=False)
+        self._reconnect_button = Gtk.Button(label=_("Reconnect"), valign=Gtk.Align.CENTER)
+        self._reconnect_button.connect("clicked", self._reconnect_phone)
+        self._reconnect_row.add_suffix(self._reconnect_button)
+        self._reconnect_row.set_visible(False)
+        daemon_group.add(self._reconnect_row)
 
         self.doctor = DoctorSection(client, self, doctor_runner)
         self.doctor.group.add(self._issue_row)
@@ -1234,8 +1244,16 @@ class SettingsDialog(Adw.PreferencesDialog):
         return False
 
     def _apply_status(self, status: BackendStatus) -> bool:
+        # Re-rendering the last status after a failed save is not news: only
+        # a new status can end a manual reconnect.
+        fresh = status is not self._last_status
         self._last_status = status
         values = status.to_dict()
+        if fresh:
+            error = self._manual_reconnect.follow(values)
+            if error:
+                self._toast(error)
+        self._render_reconnect(values)
         reachable = status.daemon
         self._client.record_status(status)
         self.features.set_daemon(reachable)
@@ -1367,6 +1385,31 @@ class SettingsDialog(Adw.PreferencesDialog):
         self._update_onboarding()
         self._refresh_issue_offer()
         return False
+
+    def _render_reconnect(self, values: dict) -> None:
+        view = reconnect_view(values)
+        self._reconnect_row.set_visible(view.available)
+        self._reconnect_row.set_subtitle(self._manual_reconnect.hint(view))
+        self._reconnect_button.set_visible(
+            view.offered and values.get("bluez_unresponsive") is not True
+        )
+
+    def _reconnect_phone(self, button) -> None:
+        button.set_sensitive(False)
+
+        def answered(result: object) -> None:
+            button.set_sensitive(True)
+            error = self._manual_reconnect.answered(result)
+            if error:
+                self._toast(error)
+            self._render_reconnect(self._last_status.to_dict())
+            self._refresh()
+
+        def failed(error: str) -> None:
+            button.set_sensitive(True)
+            self._toast(error)
+
+        self._client.reconnect_phone_async(answered, failed)
 
     def _notification_policy_changed(self, _row, _property) -> None:
         if self._applying_notification_policy:

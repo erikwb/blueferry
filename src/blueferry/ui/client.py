@@ -455,6 +455,15 @@ class DaemonClient(GObject.Object):
             mutation=True,
         )
 
+    def reconnect_phone_async(self, on_ok, on_err) -> None:
+        """Messages1.ReconnectPhone: skip the automatic backoff once."""
+        self._submit(
+            lambda: self._call_backend(lambda backend: backend.reconnect_phone()),
+            on_ok,
+            on_err,
+            mutation=True,
+        )
+
     def set_media_control_async(self, enabled: bool, on_ok, on_err) -> None:
         self._submit(
             lambda: self._call_backend(
