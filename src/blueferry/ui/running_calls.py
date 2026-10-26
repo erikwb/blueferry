@@ -3,10 +3,12 @@
 GTK counterpart of the call cards in the Qt client's ``CallsTab.qml``. The
 calls come from ``Calls1.ListCalls``, read again on ``CallsChanged``, when
 the status reports another ``(calls_enabled, calls_state)`` and after each
-action. They are not private history, so, as in Qt, they are read while
-the window is shown, whichever tab is visible; the duration ticks only
-while the tab is. The wording is ``phone_link_view.call_card``; a failed
-``ListCalls`` reports the calls as unavailable.
+action. They are not private history, so, as in Qt, they are read
+whichever tab is visible; unlike Qt, which reads regardless of
+visibility, the GTK client deliberately reads only while the window is
+shown. The duration ticks only while the tab is visible. The wording is
+``phone_link_view.call_card``; a failed ``ListCalls`` reports the calls as
+unavailable.
 """
 
 from __future__ import annotations

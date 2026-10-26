@@ -124,10 +124,46 @@ def _class_properties() -> dict[tuple[str, str], dict[str, bool]]:
     return {key: collect(key, set()) for key in own}
 
 
+# Method names of Python's own containers (``text.find``, ``rows.insert``)
+# would match GTK methods of the same name added later. The price: such a
+# name is not checked on an Adw/Gtk receiver either (Adw.PreferencesPage
+# .insert is libadwaita 1.8, Gtk.StringList.find GTK 4.16); the scan cannot
+# tell the receiver's type.
 _PYTHON_METHODS = {
     name for kind in (str, bytes, list, dict, set, tuple) for name in dir(kind)
     if not name.startswith("_")
 }
+_CONSTRUCTOR = re.compile(r"\b(Adw|Gtk)\.([A-Z]\w*)\(")
+
+
+def _constructor_calls(source: str) -> list[tuple[str, str, str]]:
+    """``(namespace, class, top-level arguments)`` of each Adw/Gtk constructor
+    call. Nested calls (``title=_("x")``) and string literals are blanked, so
+    only the call's own keywords remain; the nested calls are found on their
+    own."""
+    calls = []
+    for match in _CONSTRUCTOR.finditer(source):
+        depth, quote, top = 1, "", []
+        index = match.end()
+        while index < len(source) and depth:
+            char = source[index]
+            if quote:
+                if char == "\\":
+                    index += 1
+                elif char == quote:
+                    quote = ""
+                char = " "
+            elif char in "'\"":
+                quote, char = char, " "
+            elif char in "([{":
+                depth += 1
+            elif char in ")]}":
+                depth -= 1
+            if depth == 1 and char not in "([{)]}":
+                top.append(char)
+            index += 1
+        calls.append((match[1], match[2], "".join(top)))
+    return calls
 
 
 def _uses(source: str) -> tuple[
@@ -143,16 +179,12 @@ def _uses(source: str) -> tuple[
     """
     top = set(re.findall(r"\b(Adw|Gtk)\.([A-Za-z_]\w*)", source))
     qualified = set(re.findall(r"\b(Adw|Gtk)\.(\w+)\.([A-Z][A-Z0-9_]*)\b", source))
-    # Method names of Python's own containers (``text.find``, ``rows.insert``)
-    # would match GTK methods of the same name added later.
     members = set(re.findall(r"\.([A-Za-z_]\w*)\s*\(", source)) - _PYTHON_METHODS  # calls
     members |= {name.replace("-", "_") for name in re.findall(
         r"""["'](?:notify::)?([a-z][a-z0-9-]*)["']""", source)}  # properties, signals
     # Keyword arguments only inside Adw/Gtk constructor calls, not every assignment.
     keywords = set()
-    for namespace, name, arguments in re.findall(
-        r"\b(Adw|Gtk)\.([A-Z]\w*)\(([^()]*)\)", source,
-    ):
+    for namespace, name, arguments in _constructor_calls(source):
         keywords |= {
             (namespace, name, keyword)
             for keyword in re.findall(r"\b([a-z][a-z0-9_]*)\s*=(?!=)", arguments)
@@ -209,6 +241,9 @@ def test_the_check_sees_newer_symbols(monkeypatch, tmp_path) -> None:
         "box = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)\n"
         "entry = Gtk.Entry(max_length=64)\n"
         "row = Adw.EntryRow(max_length=64)\n"
+        "row = Adw.EntryRow(title=_('Number (mobile)'), max_length=64)\n"
+        "nested = Adw.ActionRow(title=_('x'), child=Adw.EntryRow(text=_('y'), max_length=8))\n"
+        "page = Adw.PreferencesPage(\n    title=_('x'), banner_text='a=b',\n    description_centered=True,\n)\n"
     )
     monkeypatch.setattr(sys.modules[__name__], "SOURCES", [sample])
     found = _found(newer_top, newer_members, _class_properties())
@@ -219,6 +254,14 @@ def test_the_check_sees_newer_symbols(monkeypatch, tmp_path) -> None:
     # had max-length since 4.0, AdwEntryRow only since libadwaita 1.6.
     assert "sample.py: Adw.EntryRow(max_length=)" in found
     assert not any("Gtk.Entry(" in entry for entry in found)
+    # Keywords after a nested call such as _("…") count too, each against
+    # its own constructor.
+    assert found.count("sample.py: Adw.EntryRow(max_length=)") == 1  # a set per file
+    assert not any("ActionRow(max_length" in entry for entry in found)
+    [(_ns, _name, arguments)] = [
+        call for call in _constructor_calls("Adw.PreferencesPage(title=_('x'), text='a=b')")
+        if call[1] == "PreferencesPage"]
+    assert re.findall(r"\b([a-z][a-z0-9_]*)\s*=(?!=)", arguments) == ["title", "text"]
     # Enum members count per type: IconLookupFlags.NONE is GTK 4.18,
     # SelectionMode.NONE is old.
     assert "sample.py: Gtk.IconLookupFlags.NONE" in found

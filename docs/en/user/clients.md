@@ -44,8 +44,8 @@ bottom in a narrow window, and the search button finds any setting:
 The switches that need a restart (below) work as in the KDE client: while a
 change waits for the restart, every page starts with a notice and
 **Restart Service**. The GTK client doesn't have the Photos tab and the
-plugin section of the card yet; use the KDE client or `blueferry photos`
-and `blueferry cards` for those.
+plugin section of the card yet; use the KDE client, or `blueferry photos`
+and `blueferry cards` on the command line, for those.
 
 ## KDE Plasma (Kirigami)
 
