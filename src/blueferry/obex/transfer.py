@@ -53,13 +53,13 @@ def _add_transfer_receiver(callback: Callable[..., None]):
 
 
 class TransferStatusWatch:
-    """Capture terminal signals before PushMessage creates its transfer.
+    """Capture terminal signals before a request creates its transfer.
 
     The main thread's session bus receives signals while the OBEX worker polls.
     Subscribe on that thread and wait for acknowledgement before allowing a
-    push; worker-owned connections deliberately have no GLib dispatcher. Keep
+    transfer; worker-owned connections deliberately have no GLib dispatcher. Keep
     only bounded terminal evidence for this session, including signals that
-    arrive before PushMessage returns the new transfer's path.
+    arrive before the request returns the new transfer's path.
     """
 
     def __init__(self, session_path: str) -> None:

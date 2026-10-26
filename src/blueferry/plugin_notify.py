@@ -8,9 +8,9 @@ processes can read. It shows the popup through its own notification sink,
 so the user's policy applies (``none`` silences plugins too, and without
 ``BLUEFERRY_SHOW_NOTIFICATION_CONTENT`` only the plugin's name is shown).
 A click on the popup's button calls the plugin's
-``Plugin1.InvokeAction("notify", action_id, "{}")`` by its bus name, which
-may start the plugin again (D-Bus activation); an ``open_uri`` in the
-answer is opened only after checking the answering owner's user.
+``Plugin1.InvokeAction("notify", action_id, "{}")`` on a verified unique
+owner, activating the plugin first if needed. An ``open_uri`` in the
+answer is checked before opening it.
 
 The daemon still never loads plugin code: it reads manifests (files only)
 to learn which bus names may ask for popups, checks that the signal's sender
@@ -122,9 +122,8 @@ class PluginPopups:
         self._generation = 0
         self._manifests: list[PluginManifest] = []
         self._manifests_at = float("-inf")
-        # Unique bus names are never reused within a bus session, so a
-        # sender verified once stays that plugin; this also keeps a popup
-        # from a plugin that emits and then idles out right away.
+        # Cache the candidate, not ownership: a live connection can release
+        # a well-known name without losing its unique bus name.
         self._verified: dict[str, PluginManifest] = {}
         self._match = None
 
@@ -168,9 +167,12 @@ class PluginPopups:
             return
         known = self._verified.get(sender)
         if known is not None:
-            if self._enabled(known.id, known.bus_name):
+            if (self._enabled(known.id, known.bus_name)
+                    and self._room(self._recent, known.id, POPUPS_PER_MINUTE)
+                    and self._room(self._fetches, known.id, FETCHES_PER_MINUTE)
+                    and self._admit(self._lookups, sender, FETCHES_PER_MINUTE)):
                 token = self._pending[sender] = object()
-                self._fetch(sender, known, MAX_PENDING_NOTIFICATIONS, token)
+                self._match_owner(sender, [known], token)
             return
         if not self._admit(self._lookups, sender, LOOKUPS_PER_MINUTE):
             log.info("ignoring repeated popups from an unverified sender")
@@ -244,6 +246,7 @@ class PluginPopups:
         if self._pending.get(sender) is not token:
             return
         if not candidates:
+            self._verified.pop(sender, None)
             self._finish(sender, token)
             log.info("ignoring a popup from a sender that is no enabled notify plugin")
             return
@@ -354,8 +357,25 @@ class PluginPopups:
             return
         generation = self._generation
 
+        def current() -> bool:
+            return generation == self._generation and self._enabled(popup.plugin_id, popup.bus_name)
+
+        def failed(error) -> None:
+            name = getattr(error, "get_dbus_name", lambda: "")() or type(error).__name__
+            log.info("plugin popup action failed: %s", name)
+
+        def call(destination, path, interface, method, signature, args, reply, failure=failed,
+                 *, timeout=LOOKUP_TIMEOUT_SEC) -> None:
+            if not current():
+                return
+            try:
+                self._bus.call_async(destination, path, interface, method, signature,
+                                     args, reply, failure, timeout=timeout)
+            except Exception as error:
+                failure(error)
+
         def replied(text) -> None:
-            if generation != self._generation or not self._enabled(popup.plugin_id, popup.bus_name):
+            if not current():
                 return
             if not isinstance(text, str) or len(text.encode("utf-8", "surrogatepass")) > (
                     MAX_REPLY_BYTES):
@@ -371,36 +391,43 @@ class PluginPopups:
                 uid=self._uid,
             )
             if result.ok and uri:
-                # The answer came from whoever owns the name now (activation):
-                # open nothing for a plugin run by another user.
-                self._open_if_own(popup, uri, generation)
+                try:
+                    self._open_uri(uri)
+                except Exception:
+                    log.info("could not open what the plugin asked for")
             elif result.open_uri and not uri:
                 log.info("refused a plugin open_uri outside http(s) and its cache")
 
-        def failed(error) -> None:
-            name = getattr(error, "get_dbus_name", lambda: "")() or type(error).__name__
-            log.info("plugin popup action failed: %s", name)
-
-        self._bus.call_async(
-            popup.bus_name, OBJECT_PATH, SURFACES_INTERFACE, METHOD_INVOKE_ACTION, "sss",
-            (NOTIFY_ITEM_ID, popup.note.action_id, "{}"), replied, failed,
-            timeout=ACTION_TIMEOUT_SEC,
-        )
-
-    def _open_if_own(self, popup: PluginPopup, uri: str, generation: int) -> None:
-        def checked(uid) -> None:
-            if generation != self._generation or not self._enabled(popup.plugin_id, popup.bus_name):
+        def owner_found(owner) -> None:
+            if not current():
                 return
-            if int(uid) != self._uid:
-                log.warning("ignoring a popup action answered by another user")
-                return
-            try:
-                self._open_uri(uri)
-            except Exception:
-                log.info("could not open what the plugin asked for")
+            owner = str(owner)
 
-        self._bus.call_async(
-            *_DBUS, "GetConnectionUnixUser", "s", (popup.bus_name,), checked,
-            lambda _error: log.debug("could not check who answered a popup action"),
-            timeout=LOOKUP_TIMEOUT_SEC,
-        )
+            def checked(uid) -> None:
+                if not current():
+                    return
+                if int(uid) != self._uid:
+                    log.warning("ignoring a popup action for a plugin run by another user")
+                    return
+                # Pin the verified connection for the call and its reply.
+                # A name handover cannot redirect the action or its URI.
+                call(owner, OBJECT_PATH, SURFACES_INTERFACE, METHOD_INVOKE_ACTION, "sss",
+                     (NOTIFY_ITEM_ID, popup.note.action_id, "{}"), replied,
+                     timeout=ACTION_TIMEOUT_SEC)
+
+            call(*_DBUS, "GetConnectionUnixUser", "s", (owner,), checked)
+
+        def lookup(*, activate: bool) -> None:
+            def missing(error) -> None:
+                name = getattr(error, "get_dbus_name", lambda: "")()
+                if activate and name == "org.freedesktop.DBus.Error.NameHasNoOwner":
+                    # Activate without handing over the action payload, then
+                    # resolve and check the resulting owner exactly once.
+                    call(*_DBUS, "StartServiceByName", "su", (popup.bus_name, 0),
+                         lambda _result: lookup(activate=False), timeout=ACTION_TIMEOUT_SEC)
+                else:
+                    failed(error)
+
+            call(*_DBUS, "GetNameOwner", "s", (popup.bus_name,), owner_found, missing)
+
+        lookup(activate=True)

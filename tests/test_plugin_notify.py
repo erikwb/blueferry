@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 
+import dbus
 import pytest
 
 from blueferry import config
@@ -48,7 +49,12 @@ class _Bus:
         self.calls.append((bus_name, interface, method, tuple(args)))
         if method == "GetNameOwner":
             owner = self.owners.get(args[0])
-            return reply(owner) if owner else error(RuntimeError("no owner"))
+            return reply(owner) if owner else error(dbus.exceptions.DBusException(
+                "no owner", name="org.freedesktop.DBus.Error.NameHasNoOwner",
+            ))
+        if method == "StartServiceByName":
+            self.owners[args[0]] = ":1.20"
+            return reply(1)
         if method == "GetConnectionUnixUser":
             return reply(self.uids.get(args[0], self.default_uid))
         if method == "InvokeAction":
@@ -197,7 +203,7 @@ def test_a_click_invokes_the_plugin_and_opens_only_safe_uris(tmp_path, monkeypat
     import os
 
     opened: list[str] = []
-    bus = _Bus()
+    bus = _Bus(owners={CALENDAR.bus_name: ":1.7"})
     bus.default_uid = os.getuid()
     popups = PluginPopups(bus, show=lambda _p: None, plugins=lambda: [CALENDAR],
                           uid=os.getuid(), open_uri=opened.append, disabled=frozenset)
@@ -213,7 +219,7 @@ def test_a_click_invokes_the_plugin_and_opens_only_safe_uris(tmp_path, monkeypat
     popups.invoke(popup)
     assert opened == [ics.resolve().as_uri(), "https://example.org/e"]
     invoke = next(call for call in bus.calls if call[2] == "InvokeAction")
-    assert invoke == (CALENDAR.bus_name, "io.weirdware.BlueFerry.Plugin1", "InvokeAction",
+    assert invoke == (":1.7", "io.weirdware.BlueFerry.Plugin1", "InvokeAction",
                       ("notify", "open", "{}"))
     # A popup without a button never calls the plugin.
     count = len(bus.calls)
@@ -221,31 +227,98 @@ def test_a_click_invokes_the_plugin_and_opens_only_safe_uris(tmp_path, monkeypat
     assert len(bus.calls) == count
 
 
-@pytest.mark.parametrize("phase", ["click", "action-reply", "owner-reply"])
-def test_disabling_blocks_old_popup_actions_and_late_results(phase) -> None:
+@pytest.mark.parametrize("phase", ["click", "name-reply", "uid-reply", "action-reply"])
+@pytest.mark.parametrize("stop", [False, True])
+def test_disabling_or_stopping_blocks_old_popup_actions_and_late_results(phase, stop) -> None:
     disabled = set()
-    bus = _DeferredBus("InvokeAction", "GetConnectionUnixUser")
+    bus = _DeferredBus("GetNameOwner", "InvokeAction", "GetConnectionUnixUser")
     opened = []
     popups = PluginPopups(bus, show=lambda _p: None, plugins=lambda: [CALENDAR],
                           uid=1000, open_uri=opened.append,
                           disabled=lambda: frozenset(disabled))
     popup = PluginPopup(CALENDAR.id, "Calendar", CALENDAR.bus_name,
                         Notification("T", "B", "", "Open", "open"))
+    def block():
+        if stop:
+            popups.stop()
+        else:
+            disabled.add(CALENDAR.id)
+
     if phase == "click":
-        disabled.add(CALENDAR.id)
+        block()
     popups.invoke(popup)
     if phase == "click":
         assert bus.calls == []
     else:
-        if phase == "action-reply":
-            disabled.add(CALENDAR.id)
-        bus.answer("InvokeAction", json.dumps({"ok": True, "open_uri": "https://example.org"}))
-        if phase == "owner-reply":
-            disabled.add(CALENDAR.id)
+        if phase == "name-reply":
+            block()
+        bus.answer("GetNameOwner", ":1.7")
+        if phase != "name-reply":
+            if phase == "uid-reply":
+                block()
             bus.answer("GetConnectionUnixUser", 1000)
+        if phase == "action-reply":
+            block()
+            bus.answer("InvokeAction", json.dumps({"ok": True, "open_uri": "https://example.org"}))
         else:
-            assert [call[2] for call in bus.calls] == ["InvokeAction"]
+            assert not any(call[2] == "InvokeAction" for call in bus.calls)
+        assert not bus.waiting
     assert opened == []
+
+
+def test_popup_action_checks_the_unique_owner_before_sending_any_payload():
+    bus = _Bus(owners={CALENDAR.bus_name: ":1.7"}, uids={":1.7": 0})
+    popups = _popups(bus, [])
+    popups.invoke(_popup())
+    assert [call[2] for call in bus.calls] == ["GetNameOwner", "GetConnectionUnixUser"]
+    assert bus.calls[-1][3] == (":1.7",)
+
+
+def test_popup_action_stays_on_the_verified_connection_during_name_handover():
+    bus = _DeferredBus("GetConnectionUnixUser", owners={CALENDAR.bus_name: ":1.7"})
+    opened = []
+    popups = _popups(bus, [], open_uri=opened.append)
+    bus.invoke = lambda reply, _error: reply(json.dumps({"ok": True, "open_uri": "https://example.org"}))
+    popups.invoke(_popup())
+    bus.owners[CALENDAR.bus_name] = ":1.8"
+    bus.answer("GetConnectionUnixUser", 1000)
+    assert [call[0] for call in bus.calls if call[2] == "InvokeAction"] == [":1.7"]
+    assert opened == ["https://example.org"]
+
+
+def test_popup_action_activates_without_payload_then_checks_the_new_owner():
+    bus = _Bus()
+    popups = _popups(bus, [])
+    bus.invoke = lambda reply, _error: reply('{"ok": true}')
+    popups.invoke(_popup())
+    assert [call[2] for call in bus.calls] == [
+        "GetNameOwner", "StartServiceByName", "GetNameOwner", "GetConnectionUnixUser", "InvokeAction",
+    ]
+    assert bus.calls[1][3] == (CALENDAR.bus_name, 0)
+    assert bus.calls[-2][3] == (":1.20",)
+    assert bus.calls[-1][0] == ":1.20"
+
+
+def test_stopping_during_popup_activation_ignores_the_late_activation_reply():
+    bus = _DeferredBus("StartServiceByName")
+    popups = _popups(bus, [])
+    popups.invoke(_popup())
+    popups.stop()
+    bus.answer("StartServiceByName", 1)
+    assert [call[2] for call in bus.calls] == ["GetNameOwner", "StartServiceByName"]
+
+
+@pytest.mark.parametrize("method", ["GetNameOwner", "GetConnectionUnixUser", "InvokeAction"])
+def test_popup_action_dispatch_failures_do_not_escape(method):
+    class BrokenBus(_Bus):
+        def call_async(self, *args, **kwargs):
+            if args[3] == method:
+                raise RuntimeError("bus disconnected")
+            return super().call_async(*args, **kwargs)
+
+    bus = BrokenBus(owners={CALENDAR.bus_name: ":1.7"})
+    popups = _popups(bus, [])
+    popups.invoke(_popup())
 
 
 def test_notification_bursts_share_pending_lookups_and_fetches() -> None:
@@ -430,7 +503,7 @@ def test_dispatcher_forwards_plugin_popups_and_the_click_hook() -> None:
     assert len(seen) == 1
 
 
-def test_unverified_senders_are_rate_limited_and_verified_ones_remembered() -> None:
+def test_unverified_senders_are_rate_limited_and_cached_owners_are_rechecked() -> None:
     now = [0.0]
     bus = _Bus(owners={CALENDAR.bus_name: ":1.7"})
     shown: list[PluginPopup] = []
@@ -454,11 +527,13 @@ def test_unverified_senders_are_rate_limited_and_verified_ones_remembered() -> N
         return sum(1 for call in bus.calls if call[0] == "org.freedesktop.DBus")
 
     asked = lookups_made()
-    # The plugin idles out; its next popup still counts as verified.
+    # A connection can release the name and remain on the bus. Cached
+    # identity must not authorize fresh popups after it loses ownership.
     bus.owners.clear()
     _emit(bus, "Again", "later")
-    assert [p.note.title for p in shown] == ["Hi", "Again"]
-    assert lookups_made() == asked
+    assert [p.note.title for p in shown] == ["Hi"]
+    assert lookups_made() == asked + 1
+    assert ":1.7" not in popups._verified
 
 
 def test_one_shot_senders_do_not_grow_the_lookup_table() -> None:
@@ -558,20 +633,40 @@ def test_on_the_bus_the_daemon_fetches_and_a_stranger_cannot(owns_daemon_name) -
     plugin_bus.request_name(plugin.bus_name, dbus.bus.NAME_FLAG_DO_NOT_QUEUE)
     if owns_daemon_name:
         daemon_bus.request_name(BUS_NAME, dbus.bus.NAME_FLAG_DO_NOT_QUEUE)
-    service = NotifyService(plugin, plugin_bus, start_worker=lambda work: work())
+    invoked = []
+
+    class Reminders(NotifyService):
+        def invoke_action(self, item_id, action_id, args):
+            invoked.append((item_id, action_id, args))
+            return {"ok": True, "open_uri": "https://example.org/reminder"}
+
+    service = Reminders(plugin, plugin_bus, start_worker=lambda work: work())
     shown: list[PluginPopup] = []
+    opened: list[str] = []
     popups = PluginPopups(daemon_bus, show=shown.append, plugins=lambda: [plugin],
-                          disabled=frozenset, open_uri=lambda _uri: None)
+                          disabled=frozenset, open_uri=opened.append)
     popups.start()
     try:
         # Let the plugin learn the daemon name's owner (or that it has none).
         _run_until(lambda: service._host_owner is not None)
-        service.emit_notify("Reminder", "Dentist")
+        service.emit_notify("Reminder", "Dentist", action_label="Open", action_id="open")
         _run_until(lambda: bool(shown) or not service._pending, 3.0)
         _run_until(lambda: False, 0.2)  # any late fetch has had its chance
         if owns_daemon_name:
             assert [popup.note.title for popup in shown] == ["Reminder"]
             assert not service._pending
+            popups.invoke(shown[0])
+            _run_until(lambda: bool(opened))
+            assert invoked == [("notify", "open", {})]
+            assert opened == ["https://example.org/reminder"]
+
+            # The old connection remains alive after giving up the name.
+            # Its cached identity must not authorize another popup.
+            plugin_bus.release_name(plugin.bus_name)
+            service.emit_notify("No longer the plugin", "Ignore this")
+            _run_until(lambda: plugin_bus.get_unique_name() not in popups._verified)
+            assert plugin_bus.get_unique_name() not in popups._verified
+            assert [popup.note.title for popup in shown] == ["Reminder"]
         else:
             assert shown == []
             assert len(service._pending) == 1  # still waiting for BlueFerry
