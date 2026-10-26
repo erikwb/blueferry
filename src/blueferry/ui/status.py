@@ -80,7 +80,9 @@ class SettingsDialog(Adw.PreferencesDialog):
         self._explicit_pairing_overrides: dict[str, bool] = {}
         self._applying_pairing_mode = False
 
-        self.features = FeatureSwitches(client, self._toast, self._refresh, timer)
+        self.features = FeatureSwitches(
+            client, self._toast, self._refresh, timer, is_open=self.get_mapped,
+        )
         self.pages: dict[str, Adw.PreferencesPage] = {}
         for category in categories():
             page = Adw.PreferencesPage(

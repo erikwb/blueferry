@@ -240,6 +240,10 @@ def _exercise_features():
     dialog.close()
     _settle()
     assert not status_timer.active and not features_timer.active
+    # A restart that ends after the dialog closed arms nothing.
+    dialog.features.restart()
+    client.take("restart")[1](None)
+    assert not status_timer.active and not features_timer.active
 
     # With the real GLib timers, closing removes the armed sources.
     dialog, window, client = _settings()

@@ -33,9 +33,11 @@ class FeatureSwitches:
         toast: Callable[[str], None],
         refresh_status: Callable[[], None],
         timer: TimerFactory | None = None,
+        is_open: Callable[[], bool] = lambda: True,
     ) -> None:
         self._client = client
         self._toast = toast
+        self._is_open = is_open
         self._state: dict[str, Any] = features_view.initial()
         self._rows: dict[str, tuple[Adw.SwitchRow, str]] = {}
         self._notices: list[tuple[Adw.PreferencesGroup, Adw.ActionRow]] = []
@@ -112,8 +114,11 @@ class FeatureSwitches:
             self._restarting = False
             self._state = features_view.with_notice(self._state, "")
             self._render_notices()
-            self._status_timer.start(features_view.RESTART_REFRESH_DELAY_MS)
-            self._features_timer.start(features_view.RESTART_FEATURES_DELAY_MS)
+            # A restart that ends after Settings closed reloads on the next
+            # visit (open() loads the switches) instead of in the background.
+            if self._is_open():
+                self._status_timer.start(features_view.RESTART_REFRESH_DELAY_MS)
+                self._features_timer.start(features_view.RESTART_FEATURES_DELAY_MS)
 
         def failed(message: str) -> None:
             self._restarting = False
