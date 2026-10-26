@@ -21,14 +21,18 @@ class PhotosTabModel:
         self,
         *,
         runner: TaskRunner,
+        open_runner: TaskRunner | None = None,
         url: Callable[[object], str],
         open_file: Callable[[object], None],
         on_change: Callable[[], None] = lambda: None,
     ) -> None:
         """``url`` turns a local path into the client's file URL ("" for
         none); ``open_file`` shows a downloaded original. A failed download
-        goes to the runner's default error handler."""
+        goes to the runner's default error handler. ``open_runner`` (default:
+        ``runner``) fetches originals, so a client can show its busy state
+        during a download but not while the list loads."""
         self._runner = runner
+        self._open_runner = open_runner or runner
         self._url = url
         self._open_file = open_file
         self._on_change = on_change
@@ -93,5 +97,5 @@ class PhotosTabModel:
             self._on_change()
             self._open_file(value)
 
-        self._runner.submit(
+        self._open_runner.submit(
             lambda: photos_view.fetch_current_original(plugin_id, str(photo_id)), completed)

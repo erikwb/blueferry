@@ -1777,18 +1777,23 @@ def test_photos_load_only_while_watched_and_open_the_original(monkeypatch, tmp_p
     controller = BridgeController(
         backend=_Backend(), setup=object(), subscribe=False, autostart=False,
     )
-    monkeypatch.setattr(
-        controller, "_run",
-        lambda operation, on_done=None, *_args, **_kwargs: on_done(operation()),
-    )
+    busy_flags = []
+
+    def run(operation, on_done=None, *_args, busy=True, **_kwargs):
+        busy_flags.append(busy)
+        on_done(operation())
+
+    monkeypatch.setattr(controller, "_run", run)
     controller.refreshPhotos()
     assert controller.photos["loaded"] is False  # not watched: nothing loaded
     controller.watchPhotos(True)
     item = controller.photos["items"][0]
     assert item["video"] is True and item["thumbnail"].endswith("/t.webp")
     assert item["original"] == "" and controller.photos["ready"] is True
+    assert busy_flags == [False]  # the list loads without the busy indicator
     controller.openPhoto("a")
     assert fetched == ["a"] and opened == [str(original)]
+    assert busy_flags == [False, True]  # a download shows it
     assert controller.photos["items"][0]["original"].endswith("/IMG_1.HEIC")
     controller.watchPhotos(False)
     assert controller.photos["items"] == []

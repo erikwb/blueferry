@@ -107,3 +107,24 @@ def test_a_failed_load_stops_the_spinner_and_a_late_load_is_dropped(monkeypatch)
     model.watch(False)  # hidden before the answer
     work.run_tasks()
     assert model.plugin is plugin and model.state["hint"] == "Photos unavailable"
+
+
+def test_originals_are_fetched_on_the_open_runner(monkeypatch, tmp_path) -> None:
+    plugin = manifest()
+    snapshot = photos_view.PhotosSnapshot(True, True, "1 recent items", [
+        Photo("a", "2026-10-06T16:21:00Z", "photo", tmp_path / "t.webp"),
+    ])
+    monkeypatch.setattr(photos_view, "find_plugin", lambda: plugin)
+    monkeypatch.setattr(photos_view, "load_recent", lambda manifest: snapshot)
+    monkeypatch.setattr(photos_view, "fetch_original",
+                        lambda manifest, photo_id: tmp_path / "IMG_1.HEIC")
+    work, downloads = ManualRunner(), ManualRunner()
+    opened: list[object] = []
+    model = PhotosTabModel(runner=work, open_runner=downloads, url=_url,
+                           open_file=opened.append)
+    model.watch(True)
+    work.run_tasks()
+    model.open("a")
+    assert not work.pending and downloads.pending
+    downloads.run_tasks()
+    assert opened == [tmp_path / "IMG_1.HEIC"]

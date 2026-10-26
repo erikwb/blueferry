@@ -71,12 +71,13 @@ AVATAR_RETRY_MAX_SECONDS = 600
 
 class _WorkerRunner:
     """:class:`blueferry.client_tasks.TaskRunner` on the controller's
-    serialized D-Bus worker (``BridgeController._run``), without the busy
-    indicator. ``_run`` is looked up per call, so tests that replace it
+    serialized D-Bus worker (``BridgeController._run``), with or without the
+    busy indicator. ``_run`` is looked up per call, so tests that replace it
     run these tasks inline too."""
 
-    def __init__(self, controller: BridgeController) -> None:
+    def __init__(self, controller: BridgeController, *, busy: bool = False) -> None:
         self._controller = controller
+        self._busy = busy
 
     def submit(
         self,
@@ -87,7 +88,7 @@ class _WorkerRunner:
     ) -> None:
         controller = self._controller
         if on_finished is None:
-            controller._run(operation, on_done, on_error, busy=False)
+            controller._run(operation, on_done, on_error, busy=self._busy)
             return
 
         def done(value: object) -> None:
@@ -99,7 +100,7 @@ class _WorkerRunner:
             (on_error or controller._operation_failed)(message)
             on_finished()
 
-        controller._run(operation, done, failed, busy=False)
+        controller._run(operation, done, failed, busy=self._busy)
 
 
 class BridgeController(QObject):
@@ -248,7 +249,8 @@ class BridgeController(QObject):
         self.configuredChanged.connect(self.phoneIdentityChanged)
         # The Photos tab (a plugin with the photos capability).
         self._photos = PhotosTabModel(
-            runner=_WorkerRunner(self), url=_file_url, open_file=_open_file,
+            runner=_WorkerRunner(self), open_runner=_WorkerRunner(self, busy=True),
+            url=_file_url, open_file=_open_file,
             on_change=self.photosChanged.emit,
         )
         # UxPlay, LocalSend and iPhone photos: client-side, no daemon involved.
