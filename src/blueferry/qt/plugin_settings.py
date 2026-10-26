@@ -64,6 +64,9 @@ class PluginSettings(QObject):
         self._client = client
         self._open = opener
         self._stored: dict[str, object] = {}
+        # Bumped whenever a form opens or closes: a late answer for an older
+        # form must not reopen or change the one shown now.
+        self._form_generation = 0
         # The running browser sign-in: (plugin id, login id, polls left).
         self._login: tuple[str, str, int] | None = None
         self._poll_ms = max(1, poll_ms)
@@ -263,6 +266,9 @@ class PluginSettings(QObject):
             self._update(pending={})
 
     def remove(self, plugin_id: str) -> None:
+        if self._state["config"].get("id") == plugin_id:
+            self.close_config()
+
         def done(removal: Any) -> None:
             text = _("Removed the plugin. Its own settings and keyring entries stay.")
             note = stop_note(removal.stop, restarts=False)
@@ -291,7 +297,11 @@ class PluginSettings(QObject):
         if not keep_status:
             self._stop_login()
 
+        owns = self._owner(plugin_id)
+
         def done(values: Mapping[str, object]) -> None:
+            if not owns():
+                return
             self._stored = dict(values)
             self._update(config={**self._form(manifest, plugin_id, values, loaded=True),
                                  "status": status})
@@ -305,6 +315,16 @@ class PluginSettings(QObject):
         if self._state["config"].get("id") != plugin_id or plugin_id in self._disabled:
             return None
         return self._manifests.get(plugin_id)
+
+    def _owner(self, plugin_id: str) -> Callable[[], bool]:
+        """Whether the form shown now is still the one open at this call."""
+        self._form_generation += 1
+        generation = self._form_generation
+
+        def owns() -> bool:
+            return generation == self._form_generation and self._current(plugin_id) is not None
+
+        return owns
 
     def check_config(self, plugin_id: str, raw: Mapping[str, object]) -> dict[str, Any]:
         """The form's pre-check on every edit; does not change the state."""
@@ -330,11 +350,14 @@ class PluginSettings(QObject):
             return
 
         def done(result: Any) -> None:
+            # Only touch the form while it is still this plugin's.
+            current = self._current(plugin_id) is not None
             if result.ok:
                 self._say(_("Saved the settings of {name}.").format(name=manifest.name))
-                self.close_config()
+                if current:
+                    self.close_config()
                 self._reload()
-            else:
+            elif current:
                 self._update(config={**self._state["config"], "errors": dict(result.errors)})
 
         self._work("config", lambda: self._client(manifest).set_config(values), done)
@@ -351,14 +374,20 @@ class PluginSettings(QObject):
         self._set_status("test", True, _("Testing the connection…"), pending=True)
 
         def done(result: Any) -> None:
+            if self._current(plugin_id) is None:
+                return
             self._update(config={
                 **self._state["config"], "errors": dict(result.errors),
                 "status": {"kind": "test", "ok": result.ok, "text": result.message,
                            "pending": False},
             })
 
+        def failed(text: str) -> None:
+            if self._current(plugin_id) is not None:
+                self._set_status("test", False, text)
+
         self._work("test", lambda: self._client(manifest).test_config(values), done,
-                   on_error=lambda text: self._set_status("test", False, text))
+                   on_error=failed)
 
     def sign_in(self, plugin_id: str, raw: Mapping[str, object]) -> None:
         """"Sign in with …": start the plugin's browser flow and poll it."""
@@ -370,6 +399,12 @@ class PluginSettings(QObject):
         self._set_status("login", True, view.login_text("pending"), pending=True)
 
         def done(step: LoginStep) -> None:
+            if self._current(plugin_id) is None:
+                # Closed or disabled meanwhile: open nothing, end the flow.
+                if step.state == "open":
+                    client = self._client(manifest)
+                    self._start(lambda: client.config_login_cancel(step.login_id))
+                return
             if step.state == "open":
                 self._open(step.open_uri)
                 self._login = (plugin_id, step.login_id,
@@ -380,8 +415,12 @@ class PluginSettings(QObject):
             else:
                 self._login_finished(plugin_id, step)
 
+        def failed(text: str) -> None:
+            if self._current(plugin_id) is not None:
+                self._set_status("login", False, text)
+
         self._work("login", lambda: self._client(manifest).config_login(values), done,
-                   on_error=lambda text: self._set_status("login", False, text))
+                   on_error=failed)
 
     def _poll_login(self) -> None:
         login = self._login
@@ -455,6 +494,7 @@ class PluginSettings(QObject):
         self._work("log", lambda: plugin_logs.find_log(plugin_id), done)
 
     def close_config(self) -> None:
+        self._form_generation += 1
         self._stop_login()
         self._stored = {}
         self._update(config={})

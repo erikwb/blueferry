@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from typing import ClassVar
 
 import pytest
@@ -156,6 +157,19 @@ def test_update_and_remove_say_what_happened_to_the_running_plugin(plugins) -> N
     _wait(lambda: _idle(settings) and "Removed" in settings.state()["message"])
     assert "(process 4242) did not exit" in settings.state()["message"]
     assert settings.state()["messageOk"] is False
+
+
+def test_removing_a_plugin_closes_its_settings_form(plugins) -> None:
+    settings, manager, _runner = plugins
+    manager.commit(manager.prepare(URL))
+    settings.load()
+    _wait(lambda: settings.state()["loaded"] and _idle(settings))
+    settings.load_config("io.example.demo")
+    _wait(lambda: settings.state()["config"].get("loaded"))
+    settings.remove("io.example.demo")
+    assert settings.state()["config"] == {}
+    _wait(lambda: _idle(settings) and "Removed" in settings.state()["message"])
+    assert settings.state()["config"] == {}
 
 
 
@@ -330,3 +344,89 @@ def test_show_log_opens_the_plugin_log_or_explains(app, tmp_path, monkeypatch) -
     _wait(lambda: bool(opened))
     assert opened == [path.as_uri()]
     _settle(settings)
+
+
+class _GatedClient(_GuidedClient):
+    """Holds GetConfig, SetConfig and ConfigLogin until the test releases them."""
+
+    gate: ClassVar[threading.Event] = threading.Event()
+
+    def get_config(self):
+        _GatedClient.gate.wait(5)
+        return super().get_config()
+
+    def set_config(self, values):
+        _GatedClient.gate.wait(5)
+        _GuidedClient.log.append(("save", dict(values)))
+        if values.get("url") == "https://bad.example":
+            return ConfigResult(False, {"url": "not reachable"})
+        return ConfigResult(True, {})
+
+    def config_login(self, values):
+        _GatedClient.gate.wait(5)
+        return super().config_login(values)
+
+
+@pytest.fixture
+def gated(guided):
+    from blueferry.plugin_api.testing import manifest
+
+    settings, opened = guided
+    settings._client = _GatedClient
+    other = manifest("io.example.other", capabilities="card;", api_version="1.3",
+                     extra=GUIDED)
+    settings._manifests[other.id] = other
+    _GatedClient.gate = threading.Event()
+    yield settings, opened
+    _GatedClient.gate.set()
+
+
+def test_a_late_config_answer_does_not_reopen_a_closed_form(gated) -> None:
+    settings, _opened = gated
+    settings.load_config("io.example.cloud")
+    settings.close_config()
+    _GatedClient.gate.set()
+    _wait(lambda: _idle(settings))
+    settings._pool.waitForDone()
+    QCoreApplication.processEvents()
+    assert settings.state()["config"] == {} and settings._stored == {}
+
+
+def test_a_late_sign_in_opens_nothing_after_the_form_closed(gated) -> None:
+    settings, opened = gated
+    _GatedClient.gate.set()
+    settings.load_config("io.example.cloud")
+    _wait(lambda: settings.state()["config"].get("loaded"))
+    _GatedClient.gate.clear()
+    settings.sign_in("io.example.cloud", {"url": "https://cloud.example"})
+    settings.close_config()
+    _GatedClient.gate.set()
+    _wait(lambda: ("cancel", "flow-1") in _GuidedClient.log)
+    assert opened == [] and settings._login is None and settings.state()["config"] == {}
+
+
+def test_a_save_that_ends_later_leaves_another_plugins_form_alone(gated) -> None:
+    settings, _opened = gated
+    _GatedClient.gate.set()
+    settings.load_config("io.example.cloud")
+    _wait(lambda: settings.state()["config"].get("loaded"))
+    _GatedClient.gate.clear()
+    settings.save_config("io.example.cloud", {"url": "https://bad.example", "app_password": "x"})
+    settings.load_config("io.example.other")
+    _GatedClient.gate.set()
+    _wait(lambda: _idle(settings) and settings.state()["config"].get("loaded"))
+    assert settings.state()["config"]["id"] == "io.example.other"
+    assert settings.state()["config"]["errors"] == {}
+
+    settings._reload = lambda: None  # keep the fake manifests
+    _GatedClient.gate.clear()
+    settings.save_config("io.example.other", {"url": "https://b.example", "app_password": "x"})
+    settings.load_config("io.example.cloud")
+    shown: list[object] = []
+    settings.changed.connect(lambda: shown.append(settings.state()["config"].get("id")))
+    _GatedClient.gate.set()
+    _wait(lambda: _idle(settings) and settings.state()["config"].get("loaded"))
+    assert any(entry[0] == "save" and entry[1]["url"] == "https://b.example"
+               for entry in _GuidedClient.log)
+    # The other plugin's success never closed the form shown meanwhile.
+    assert set(shown) == {"io.example.cloud"}
