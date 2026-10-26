@@ -18,6 +18,7 @@ from blueferry.onboarding import OnboardingState, ancs_unavailable_detail
 from blueferry.phone_audio_view import phone_audio
 from blueferry.proximity_lock import clamp_grace
 from blueferry.quirks_report import issue_report, issue_url
+from blueferry.reconnect_view import ManualReconnect, reconnect_view
 from blueferry.setup_client import (
     DISCOVERY_SECONDS,
     BluetoothCompatibility,
@@ -32,6 +33,7 @@ from blueferry.setup_verification import (
 )
 from blueferry.ui.doctor import DoctorSection
 from blueferry.ui.feature_switches import FeatureSwitches
+from blueferry.ui.notification_rules import NotificationRules
 from blueferry.ui.saved_choice import SavedChoice
 from blueferry.ui.settings_presenter import categories, service_state
 from blueferry.ui.setup_runner import SetupRunner
@@ -60,6 +62,7 @@ class SettingsDialog(Adw.PreferencesDialog):
         self._applying_contacts_only_notifications = False
         self._applying_ancs_actions = False
         self._applying_mirror_removals = False
+        self._applying_battery_warning = False
         self._applying_saved_switches = False
         self._media_control_choice = SavedChoice()
         self._auto_profile_reset_choice = SavedChoice()
@@ -80,7 +83,9 @@ class SettingsDialog(Adw.PreferencesDialog):
         self._explicit_pairing_overrides: dict[str, bool] = {}
         self._applying_pairing_mode = False
 
-        self.features = FeatureSwitches(client, self._toast, self._refresh, timer)
+        self.features = FeatureSwitches(
+            client, self._toast, self._refresh, timer, is_open=self.get_mapped,
+        )
         self.pages: dict[str, Adw.PreferencesPage] = {}
         for category in categories():
             page = Adw.PreferencesPage(
@@ -327,6 +332,15 @@ class SettingsDialog(Adw.PreferencesDialog):
         daemon_group.add(self._ancs_row)
         self._contacts_row = Adw.ActionRow(title=_("Contact Destinations"))
         daemon_group.add(self._contacts_row)
+        # Manual reconnect: the automatic Classic backoff can wait up to ten
+        # minutes, and a stuck profile needs a device reset.
+        self._manual_reconnect = ManualReconnect()
+        self._reconnect_row = Adw.ActionRow(title=_("iPhone Link"), use_markup=False)
+        self._reconnect_button = Gtk.Button(label=_("Reconnect"), valign=Gtk.Align.CENTER)
+        self._reconnect_button.connect("clicked", self._reconnect_phone)
+        self._reconnect_row.add_suffix(self._reconnect_button)
+        self._reconnect_row.set_visible(False)
+        daemon_group.add(self._reconnect_row)
 
         self.doctor = DoctorSection(client, self, doctor_runner)
         self.doctor.group.add(self._issue_row)
@@ -387,6 +401,8 @@ class SettingsDialog(Adw.PreferencesDialog):
         )
         self._ancs_actions_row.add_suffix(self._ancs_actions_switch)
         self._ancs_actions_row.set_activatable_widget(self._ancs_actions_switch)
+
+        self.notification_rules = NotificationRules(client, self._toast)
 
         content_group = Adw.PreferencesGroup(title=_("Content and Actions"))
         content_group.add(self.features.row(
@@ -513,6 +529,14 @@ class SettingsDialog(Adw.PreferencesDialog):
             self._missed_call_popups_switch
         )
         self._call_history_group.add(self._missed_call_popups_row)
+
+        self._battery_group = Adw.PreferencesGroup(title=_("Battery"))
+        self._battery_warning_row = Adw.SwitchRow(
+            title=_("Warn When the iPhone's Battery Runs Low"), use_markup=False,
+        )
+        self._battery_warning_row.connect("notify::active", self._battery_warning_changed)
+        self._battery_group.add(self._battery_warning_row)
+        self._battery_group.set_visible(False)
 
         # Shown only when the backend reports the away-lock keys.
         self._proximity_lock_group = Adw.PreferencesGroup(
@@ -661,9 +685,12 @@ class SettingsDialog(Adw.PreferencesDialog):
                 self._iphone_setup_group, daemon_group, self.doctor.group,
                 contacts_group, self._photos_group,
             )),
-            ("notifications", (notification_group, content_group, history_group)),
+            ("notifications", (
+                notification_group, *self.notification_rules.groups, content_group,
+                history_group,
+            )),
             ("calls", (
-                self._calls_group, self._call_history_group,
+                self._calls_group, self._call_history_group, self._battery_group,
                 self._phone_audio_group, self._media_group,
             )),
             ("security", (self._otp_group, self._proximity_lock_group, data_group)),
@@ -1223,8 +1250,16 @@ class SettingsDialog(Adw.PreferencesDialog):
         return False
 
     def _apply_status(self, status: BackendStatus) -> bool:
+        # Re-rendering the last status after a failed save is not news: only
+        # a new status can end a manual reconnect.
+        fresh = status is not self._last_status
         self._last_status = status
         values = status.to_dict()
+        if fresh:
+            error = self._manual_reconnect.follow(values)
+            if error:
+                self._toast(error)
+        self._render_reconnect(values)
         reachable = status.daemon
         self._client.record_status(status)
         self.features.set_daemon(reachable)
@@ -1301,7 +1336,9 @@ class SettingsDialog(Adw.PreferencesDialog):
         )
         self._applying_contacts_only_notifications = False
         self._apply_ancs_actions(status, reachable)
+        self.notification_rules.apply(status, reachable)
         self._apply_mirror_removals(status, reachable)
+        self._apply_battery_warning(status, values, reachable)
         self._apply_media_switches(status, reachable)
         self._apply_phone_audio(status, reachable)
         self._apply_connection_switches(status, reachable)
@@ -1355,6 +1392,31 @@ class SettingsDialog(Adw.PreferencesDialog):
         self._update_onboarding()
         self._refresh_issue_offer()
         return False
+
+    def _render_reconnect(self, values: dict) -> None:
+        view = reconnect_view(values)
+        self._reconnect_row.set_visible(view.available)
+        self._reconnect_row.set_subtitle(self._manual_reconnect.hint(view))
+        self._reconnect_button.set_visible(
+            view.offered and values.get("bluez_unresponsive") is not True
+        )
+
+    def _reconnect_phone(self, button) -> None:
+        button.set_sensitive(False)
+
+        def answered(result: object) -> None:
+            button.set_sensitive(True)
+            error = self._manual_reconnect.answered(result)
+            if error:
+                self._toast(error)
+            self._render_reconnect(self._last_status.to_dict())
+            self._refresh()
+
+        def failed(error: str) -> None:
+            button.set_sensitive(True)
+            self._toast(error)
+
+        self._client.reconnect_phone_async(answered, failed)
 
     def _notification_policy_changed(self, _row, _property) -> None:
         if self._applying_notification_policy:
@@ -1472,6 +1534,37 @@ class SettingsDialog(Adw.PreferencesDialog):
             self._apply_status(self._last_status)
 
         self._client.set_mirror_notification_removals_async(row.get_active(), saved, failed)
+
+    def _apply_battery_warning(self, status: BackendStatus, values: dict, reachable: bool) -> None:
+        # As in the Qt client: shown for daemons that report the key.
+        self._battery_group.set_visible("phone_battery_warning" in values)
+        percent = status.extra.get("phone_battery_warning_percent", 20)
+        self._battery_warning_row.set_subtitle(
+            _("One desktop notification per discharge, at {percent} % or less.").format(
+                percent=percent,
+            )
+        )
+        self._applying_battery_warning = True
+        self._battery_warning_row.set_active(status.phone_battery_warning)
+        self._applying_battery_warning = False
+        self._battery_warning_row.set_sensitive(reachable)
+
+    def _battery_warning_changed(self, row, _property) -> None:
+        if self._applying_battery_warning:
+            return
+        row.set_sensitive(False)
+
+        def saved(_value: bool) -> None:
+            self._toast(_("Battery warning preference saved"))
+            self._refresh()
+
+        def failed(error: str) -> None:
+            self._toast(
+                _("Could not save battery warning preference: {error}").format(error=error)
+            )
+            self._apply_status(self._last_status)
+
+        self._client.set_phone_battery_warning_async(row.get_active(), saved, failed)
 
     def _show_saved_choice(self, switch, choice: SavedChoice, reported: bool) -> None:
         """Set ``switch`` for a status reporting ``reported``."""

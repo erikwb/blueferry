@@ -11,6 +11,7 @@ import os
 import re
 import subprocess  # nosec B404
 import sys
+import threading
 from dataclasses import dataclass
 from typing import Any
 
@@ -19,6 +20,8 @@ from blueferry.i18n import _
 TIMEOUT_SEC = 60.0
 MAX_CHARS = 20_000
 _ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+_running: set[subprocess.Popen] = set()
+_running_lock = threading.Lock()
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,18 +31,51 @@ class DoctorReport:
     text: str
 
 
-def run_doctor(timeout: float = TIMEOUT_SEC) -> DoctorReport:
-    """*Blocking.* ``blueferry doctor`` in a child process."""
+def run_doctor(timeout: float = TIMEOUT_SEC, command: list[str] | None = None) -> DoctorReport:
+    """*Blocking.* ``blueferry doctor`` in a child process.
+
+    The child is registered until it ends, so :func:`terminate_running` can
+    stop it when the client quits instead of waiting for the timeout.
+    """
     try:
-        completed = subprocess.run(  # nosec B603
-            [sys.executable, "-m", "blueferry", "doctor"],
-            capture_output=True, text=True, timeout=timeout, check=False,
-            stdin=subprocess.DEVNULL, env=dict(os.environ, NO_COLOR="1", TERM="dumb"),
+        process = subprocess.Popen(  # nosec B603
+            command or [sys.executable, "-m", "blueferry", "doctor"],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, env=dict(os.environ, NO_COLOR="1", TERM="dumb"),
         )
-    except (OSError, subprocess.TimeoutExpired) as error:
-        reason = type(error).__name__
-        return DoctorReport(False, False, f"blueferry doctor did not finish: {reason}")
-    return parse_output(completed.returncode, completed.stdout + completed.stderr)
+    except OSError as error:
+        return _unfinished(error)
+    with _running_lock:
+        _running.add(process)
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired as error:
+        process.kill()
+        process.communicate()
+        return _unfinished(error)
+    finally:
+        with _running_lock:
+            _running.discard(process)
+    return parse_output(process.returncode, stdout + stderr)
+
+
+def _unfinished(error: Exception) -> DoctorReport:
+    return DoctorReport(False, False, f"blueferry doctor did not finish: {type(error).__name__}")
+
+
+def terminate_running() -> None:
+    """Stop every doctor run of this process, e.g. when the client quits.
+
+    The worker thread waiting in :func:`run_doctor` then returns at once, so
+    interpreter exit does not wait up to the timeout for it.
+    """
+    with _running_lock:
+        processes = list(_running)
+    for process in processes:
+        try:
+            process.terminate()
+        except OSError:
+            pass
 
 
 def parse_output(returncode: int, output: str) -> DoctorReport:

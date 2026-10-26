@@ -14,7 +14,7 @@ from gi.repository import GLib, GObject
 from blueferry.backend_lifecycle import ensure_backend_current, restart_backend
 from blueferry.bus import get_session_bus
 from blueferry.client import BackendClient, CompatibilityCache
-from blueferry.doctor_report import DoctorReport, run_doctor
+from blueferry.doctor_report import DoctorReport, run_doctor, terminate_running
 from blueferry.models import BackendStatus
 from blueferry.protocol import (
     BUS_NAME,
@@ -146,6 +146,9 @@ class DaemonClient(GObject.Object):
         self._read_executor.shutdown(wait=False, cancel_futures=True)
         self._mutation_executor.shutdown(wait=False, cancel_futures=True)
         self._local_executor.shutdown(wait=False, cancel_futures=True)
+        # The interpreter joins the worker at exit: end a doctor run now
+        # instead of waiting for its timeout.
+        terminate_running()
 
     def _call_backend(self, operation: Callable[[BackendClient], T]) -> T:
         """Call the shared backend facade on a worker-owned connection."""
@@ -439,6 +442,56 @@ class DaemonClient(GObject.Object):
         self._submit(
             lambda: self._call_backend(
                 lambda backend: backend.set_mirror_notification_removals(enabled)
+            ),
+            on_ok,
+            on_err,
+            mutation=True,
+        )
+
+    def set_phone_battery_warning_async(self, enabled: bool, on_ok, on_err) -> None:
+        self._submit(
+            lambda: self._call_backend(
+                lambda backend: backend.set_phone_battery_warning(enabled)
+            ),
+            on_ok,
+            on_err,
+            mutation=True,
+        )
+
+    def reconnect_phone_async(self, on_ok, on_err) -> None:
+        """Messages1.ReconnectPhone: skip the automatic backoff once."""
+        self._submit(
+            lambda: self._call_backend(lambda backend: backend.reconnect_phone()),
+            on_ok,
+            on_err,
+            mutation=True,
+        )
+
+    def notification_open_map_async(self, on_ok, on_err=None) -> None:
+        """The notification click rules (Messages1.GetNotificationOpenMap)."""
+        self._submit(
+            lambda: self._call_backend(lambda backend: backend.notification_open_map()),
+            on_ok,
+            on_err,
+        )
+
+    def set_notification_open_target_async(
+        self, bundle_id: str, target: str, on_ok, on_err
+    ) -> None:
+        """Store one click rule; answers with all rules."""
+        self._submit(
+            lambda: self._call_backend(
+                lambda backend: backend.set_notification_open_target(bundle_id, target)
+            ),
+            on_ok,
+            on_err,
+            mutation=True,
+        )
+
+    def remove_notification_open_target_async(self, bundle_id: str, on_ok, on_err) -> None:
+        self._submit(
+            lambda: self._call_backend(
+                lambda backend: backend.remove_notification_open_target(bundle_id)
             ),
             on_ok,
             on_err,

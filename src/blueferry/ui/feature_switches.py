@@ -30,9 +30,11 @@ class FeatureSwitches:
         toast: Callable[[str], None],
         refresh_status: Callable[[], None],
         timer: TimerFactory | None = None,
+        is_open: Callable[[], bool] = lambda: True,
     ) -> None:
         self._client = client
         self._toast = toast
+        self._is_open = is_open
         self._state: dict[str, Any] = features_view.initial()
         self._rows: dict[str, tuple[Adw.SwitchRow, str]] = {}
         self._notices: list[tuple[Adw.PreferencesGroup, Adw.ActionRow]] = []
@@ -61,11 +63,8 @@ class FeatureSwitches:
     def notice_group(self) -> Adw.PreferencesGroup:
         """A "restart required" notice for the top of one settings page."""
         group = Adw.PreferencesGroup()
-        row = Adw.ActionRow(
-            title=features_view.restart_notice(self._state),
-            use_markup=False,
-            icon_name="system-reboot-symbolic",
-        )
+        row = Adw.ActionRow(title=features_view.restart_notice(self._state), use_markup=False)
+        row.add_prefix(Gtk.Image(icon_name="system-reboot-symbolic"))
         row.add_suffix(self.restart_button(suggested=True))
         group.add(row)
         self._notices.append((group, row))
@@ -109,8 +108,11 @@ class FeatureSwitches:
             self._restarting = False
             self._state = features_view.with_notice(self._state, "")
             self._render_notices()
-            self._status_timer.start(features_view.RESTART_REFRESH_DELAY_MS)
-            self._features_timer.start(features_view.RESTART_FEATURES_DELAY_MS)
+            # A restart that ends after Settings closed reloads on the next
+            # visit (open() loads the switches) instead of in the background.
+            if self._is_open():
+                self._status_timer.start(features_view.RESTART_REFRESH_DELAY_MS)
+                self._features_timer.start(features_view.RESTART_FEATURES_DELAY_MS)
 
         def failed(message: str) -> None:
             self._restarting = False
@@ -132,8 +134,11 @@ class FeatureSwitches:
         if self._applying:
             return
         enabled = row.get_active()
+        # Show the choice while it is saved; a failure puts the old state back.
+        previous = self._state
+        self._state = features_view.assume(previous, name, enabled)
         self._saving.add(name)
-        self._render_row(name)
+        self._render()
 
         def saved(value: object) -> None:
             self._saving.discard(name)
@@ -145,6 +150,7 @@ class FeatureSwitches:
 
         def failed(message: str) -> None:
             self._saving.discard(name)
+            self._state = previous
             self._toast(_("Could not save the setting: {error}").format(error=message))
             self._render()
 

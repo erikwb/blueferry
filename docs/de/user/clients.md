@@ -34,21 +34,20 @@ einem schmalen Fenster unten, und der Suchknopf findet jede Einstellung:
 
 | Kategorie | Inhalt |
 | --- | --- |
-| Phone | Kopplung, Verbindungszustand, **Run Diagnostics** (dieselben Prüfungen wie `blueferry doctor`; der Bericht öffnet sich in einem eigenen Dialog mit Kopierknopf), Kopplungsbericht, Kontaktabgleich, Kontaktfotos |
-| Notifications | Welche Ereignisse Popups erzeugen, nur Kontakte, Mitteilungsinhalt, Aktionsknöpfe, Mitteilungen mit dem iPhone abgleichen, beim Wegklicken als gelesen markieren, letzte Mitteilungen behalten |
-| Calls & Audio | Anrufe, Anrufliste, [iPhone-Ton am Computer](phone-audio.md), Mediensteuerung |
+| Phone | Kopplung, Verbindungszustand mit **Reconnect**, **Run Diagnostics** (dieselben Prüfungen wie `blueferry doctor`; der Bericht öffnet sich in einem eigenen Dialog mit Kopierknopf), Kopplungsbericht, Kontaktabgleich, Kontaktfotos |
+| Notifications | Welche Ereignisse Popups erzeugen, nur Kontakte, Klickregeln, Mitteilungsinhalt, Aktionsknöpfe, Mitteilungen mit dem iPhone abgleichen, beim Wegklicken als gelesen markieren, letzte Mitteilungen behalten |
+| Calls & Audio | Anrufe, Anrufliste, Akku-Warnung, [iPhone-Ton am Computer](phone-audio.md), Mediensteuerung |
 | Security | Einmalcodes, Abwesenheitssperre, lokale Daten und ihre Verschlüsselung, Verlauf löschen |
 | About | Version, Hintergrunddienst, About BlueFerry, Tastenkürzel, **Restart Service**, Beenden |
 
 Die Schalter, die einen Neustart brauchen (unten), funktionieren wie im
 KDE-Client: Solange eine Änderung auf den Neustart wartet, beginnt jede
-Seite mit einem Hinweis und **Restart Service**. Die Klickregeln für
-Mitteilungen, die Akku-Warnung, die Plugin-Einstellungen und den Reiter
-Photos hat der GTK-Client noch nicht, und laufende Anrufe zeigt er nicht an
-(annehmen, halten und auflegen am iPhone oder in der Anruf-Mitteilung);
-dafür gibt es den KDE-Client oder `blueferry` auf der Kommandozeile. Die
-Schalter für den Ton und die Abwesenheitssperre liegen unter **Settings**
-statt auf der Karte.
+Seite mit einem Hinweis und **Restart Service**. Die Plugin-Einstellungen
+und den Reiter Photos hat der GTK-Client noch nicht, und laufende Anrufe
+zeigt er nicht an (annehmen, halten und auflegen am iPhone oder in der
+Anruf-Mitteilung); dafür gibt es den KDE-Client oder `blueferry` auf der
+Kommandozeile. Die Schalter für den Ton und die Abwesenheitssperre liegen
+unter **Settings** statt auf der Karte.
 
 ## KDE Plasma (Kirigami)
 

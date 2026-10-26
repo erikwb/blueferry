@@ -11,7 +11,10 @@ from tests.gtk_broadway import run_scenario
 
 
 @pytest.mark.parametrize(
-    "scenario", ["categories", "features", "old-daemon", "doctor", "mirror-removals"],
+    "scenario", [
+        "categories", "features", "old-daemon", "doctor", "mirror-removals",
+        "battery-warning", "reconnect", "notification-rules",
+    ],
 )
 def test_gtk_settings(tmp_path, scenario):
     run_scenario(tmp_path, str(Path(__file__).resolve()), scenario)
@@ -63,6 +66,21 @@ class FakeClient:
 
     def set_mirror_notification_removals_async(self, enabled, on_ok, on_err):
         self.calls.append((("mirror", enabled), on_ok, on_err))
+
+    def set_phone_battery_warning_async(self, enabled, on_ok, on_err):
+        self.calls.append((("battery", enabled), on_ok, on_err))
+
+    def reconnect_phone_async(self, on_ok, on_err):
+        self.calls.append(("reconnect", on_ok, on_err))
+
+    def notification_open_map_async(self, on_ok, on_err=None):
+        self.calls.append(("open_map", on_ok, on_err))
+
+    def set_notification_open_target_async(self, bundle, target, on_ok, on_err):
+        self.calls.append((("set_rule", bundle, target), on_ok, on_err))
+
+    def remove_notification_open_target_async(self, bundle, on_ok, on_err):
+        self.calls.append((("remove_rule", bundle), on_ok, on_err))
 
     def run_doctor_async(self, on_ok, on_err, runner=None):
         self.calls.append(("doctor", on_ok, on_err))
@@ -194,6 +212,8 @@ def _exercise_features():
     assert mark_read.get_active() and not mark_read.get_sensitive()
     _call, saved, _failed = client.take(("set_feature", "mark_read_on_dismiss", True))
     saved("restart-required")
+    # Saved, the reload not answered yet: the switch keeps the choice.
+    assert mark_read.get_active() and mark_read.get_sensitive()
     client.take("features")[1]({**ITEMS, "mark_read_on_dismiss": {
         **ITEMS["mark_read_on_dismiss"], "value": True, "source": "settings",
         "restart_required": True,
@@ -237,6 +257,10 @@ def _exercise_features():
     assert status_timer.active
     dialog.close()
     _settle()
+    assert not status_timer.active and not features_timer.active
+    # A restart that ends after the dialog closed arms nothing.
+    dialog.features.restart()
+    client.take("restart")[1](None)
     assert not status_timer.active and not features_timer.active
 
     # With the real GLib timers, closing removes the armed sources.
@@ -347,8 +371,140 @@ def _exercise_mirror_removals():
     window.destroy()
 
 
+def _exercise_battery_warning():
+    from blueferry.models import BackendStatus
+
+    dialog, window, client = _settings()
+    group, row = dialog._battery_group, dialog._battery_warning_row
+    assert group.get_ancestor(type(dialog.pages["calls"])) is dialog.pages["calls"]
+    dialog._apply_status(BackendStatus.from_dict({
+        "daemon": True, "phone_battery_warning": False, "phone_battery_warning_percent": 15,
+    }))
+    assert group.get_visible() and not row.get_active() and row.get_sensitive()
+    assert row.get_subtitle() == "One desktop notification per discharge, at 15 % or less."
+    toasts = []
+    dialog._toast = toasts.append
+    row.set_active(True)
+    assert not row.get_sensitive()
+    client.take(("battery", True))[2]("busy")
+    assert not row.get_active() and row.get_sensitive()
+    assert toasts == ["Could not save battery warning preference: busy"]
+    client.status = BackendStatus.from_dict({"daemon": True, "phone_battery_warning": True})
+    row.set_active(True)
+    client.take(("battery", True))[1](True)
+    assert row.get_active() and row.get_sensitive()
+    assert row.get_subtitle().endswith("at 20 % or less.")
+    dialog._apply_status(BackendStatus.from_dict({"daemon": False}))
+    assert not row.get_sensitive()
+    window.destroy()
+
+
+def _exercise_reconnect():
+    from blueferry.models import BackendStatus
+    from blueferry.reconnect_view import STARTED_TEXT, UNREACHABLE_TEXT
+
+    dialog, window, client = _settings()
+    row, button = dialog._reconnect_row, dialog._reconnect_button
+    assert not row.get_visible()  # older daemons have no reconnect state
+    toasts = []
+    dialog._toast = toasts.append
+    waiting = {"daemon": True, "phone_reconnect_state": "waiting"}
+    dialog._apply_status(BackendStatus.from_dict(waiting))
+    assert row.get_visible() and button.get_visible()
+    assert row.get_subtitle() == "Reconnecting automatically."
+    button.emit("clicked")
+    assert not button.get_sensitive()
+    client.status = BackendStatus.from_dict({**waiting, "phone_reconnect_state": "connecting"})
+    client.take("reconnect")[1]("started")
+    assert button.get_sensitive() and row.get_subtitle() == STARTED_TEXT
+    # Re-rendering the old status (a failed save elsewhere) keeps the notice.
+    dialog._apply_status(dialog._last_status)
+    assert row.get_subtitle() == STARTED_TEXT
+    # The outcome ends it; an unreachable phone is reported.
+    dialog._apply_status(BackendStatus.from_dict(
+        {**waiting, "phone_reconnect_state": "unreachable"}))
+    assert toasts == [UNREACHABLE_TEXT]
+    assert row.get_subtitle() == "Reconnecting automatically."
+    button.emit("clicked")
+    client.take("reconnect")[1]("unreachable")
+    assert toasts[-1] == UNREACHABLE_TEXT
+    button.emit("clicked")
+    client.take("reconnect")[2]("Too many requests")
+    assert toasts[-1] == "Too many requests" and button.get_sensitive()
+    # Connected: nothing to offer; a hung bluetoothd hides the button.
+    dialog._apply_status(BackendStatus.from_dict(
+        {**waiting, "phone_reconnect_state": "connected"}))
+    assert row.get_visible() and not button.get_visible()
+    dialog._apply_status(BackendStatus.from_dict({**waiting, "bluez_unresponsive": True}))
+    assert not button.get_visible() and "not responding" in row.get_subtitle()
+    window.destroy()
+
+
+def _exercise_notification_rules():
+    from blueferry.models import BackendStatus
+
+    dialog, window, client = _settings()
+    rules = dialog.notification_rules
+    page = dialog.pages["notifications"]
+    assert rules.group.get_ancestor(type(page)) is page
+    assert not rules.group.get_visible() and not rules.form.get_visible()
+
+    def status(**values):
+        return BackendStatus.from_dict({"daemon": True, "notification_policy": "all",
+                                        "notification_open_map_revision": 1, **values})
+
+    # Messages only, or a daemon without the revision: no editor, no read.
+    dialog._apply_status(status(notification_policy="messages"))
+    dialog._apply_status(BackendStatus.from_dict({"daemon": True,
+                                                  "notification_policy": "all"}))
+    assert not rules.group.get_visible() and client.calls == []
+    dialog._apply_status(status())
+    assert rules.group.get_visible() and rules.form.get_visible()
+    client.take("open_map")[1]([])
+    assert rules.empty_row.get_visible()
+    # The same revision again is not reread.
+    dialog._apply_status(status())
+    assert client.calls == []
+
+    assert not rules.add_button.get_sensitive()
+    rules.bundle_entry.set_text("com.apple.mobilemail")
+    rules.target_entry.set_text("javascript:alert(1)")
+    assert not rules.add_button.get_sensitive()
+    assert rules.target_entry.has_css_class("error")
+    rules.target_entry.set_text(" https://mail.example.com/ ")
+    assert rules.add_button.get_sensitive() and not rules.target_entry.has_css_class("error")
+    rules.target_entry.emit("entry-activated")  # Enter in the target field adds
+    _name, updated, failed = client.take(
+        ("set_rule", "com.apple.mobilemail", "https://mail.example.com/"))
+    # A failure keeps the form; an answer without this rule does too.
+    failed("invalid target")
+    updated([{"bundle_id": "org.other", "target": "https://other.example/"}])
+    assert rules.bundle_entry.get_text() == "com.apple.mobilemail"
+    rule = {"bundle_id": "com.apple.mobilemail", "target": "https://mail.example.com/"}
+    updated([rule])
+    assert rules.bundle_entry.get_text() == "" and rules.target_entry.get_text() == ""
+    assert not rules.empty_row.get_visible()
+    rows = [row for row in _descendants(rules.group)
+            if getattr(row, "get_title", None) and row.get_title() == "com.apple.mobilemail"]
+    assert len(rows) == 1 and rows[0].get_subtitle() == "https://mail.example.com/"
+    remove = next(widget for widget in _descendants(rows[0])
+                  if getattr(widget, "get_icon_name", None)
+                  and widget.get_icon_name() == "edit-delete-symbolic")
+    remove.emit("clicked")
+    client.take(("remove_rule", "com.apple.mobilemail"))[1](True)
+    client.take("open_map")[1]([])
+    assert rules.empty_row.get_visible() and rules.rules == []
+    # Another client changed the rules: a new revision rereads them.
+    dialog._apply_status(status(notification_open_map_revision=2))
+    client.take("open_map")
+    window.destroy()
+
+
 if __name__ == "__main__":
     {
+        "notification-rules": _exercise_notification_rules,
+        "reconnect": _exercise_reconnect,
+        "battery-warning": _exercise_battery_warning,
         "mirror-removals": _exercise_mirror_removals,
         "categories": _exercise_categories,
         "features": _exercise_features,
