@@ -21,7 +21,6 @@ src/blueferry/qt/qml/SettingsNotifications.qml
 src/blueferry/qt/qml/SettingsCallsAudio.qml
 src/blueferry/qt/qml/SettingsSecurity.qml
 src/blueferry/qt/qml/SettingsAbout.qml
-src/blueferry/qt/qml/FeatureSwitch.qml
 src/blueferry/qt/qml/PhoneSettingsDialogs.qml
 src/blueferry/qt/qml/NotificationOpenMapEditor.qml
 src/blueferry/qt/qml/MessageBubble.qml
