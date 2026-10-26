@@ -563,8 +563,8 @@ blueferry notifications open-map list
 blueferry notifications open-map remove net.whatsapp.WhatsApp
 ```
 
-The Qt client edits the same rules under **Desktop Notifications** while all
-notifications are shown, and the terminal client in a panel opened with `l`.
+The Qt and GTK clients edit the same rules in their notification settings
+while all notifications are shown, and the terminal client in a panel opened with `l`.
 Rules are stored with the other popup preferences in
 `~/.config/blueferry/settings.json` (owner-only, not encrypted) and take
 effect without restarting the service.
@@ -752,7 +752,7 @@ connection line.
 An optional low-battery warning (off by default) fires once per discharge
 when the battery reaches the threshold, and again only after the phone has
 charged at least 20 % above it (and once more after a BlueFerry restart if
-the phone is still low). Switch it on in the Qt iPhone settings or with
+the phone is still low). Switch it on in the Qt or GTK settings or with
 `blueferry phone-status --warn`; the choice is saved in `settings.json`.
 `BLUEFERRY_PHONE_BATTERY_NOTIFY=true` seeds it and
 `BLUEFERRY_PHONE_BATTERY_LOW_PERCENT=20` (0-80) sets the threshold.

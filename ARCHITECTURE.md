@@ -182,7 +182,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `cli_common.py` | Small CLI presentation helpers. |
 | `cli_proximity.py` | `proximity-lock` status, dry run, enable, and disable. |
 | `cli_reconnect.py` | `reconnect`: manual Classic reconnect that waits for the outcome. |
-| `reconnect_view.py` | Toolkit-neutral texts for the manual reconnect and rate limits (Qt banner and iPhone page, TUI key `b`, CLI). |
+| `reconnect_view.py` | Toolkit-neutral texts for the manual reconnect and rate limits (Qt banner and settings, GTK settings, TUI key `b`, CLI); `ManualReconnect` keeps the notice after Reconnect until the status shows the outcome (Qt and GTK). |
 | `cli_notifications.py` | `notifications open-map` rule editing and `notifications recent`. |
 | `cli_media.py` | `blueferry media` now-playing status, commands, and `enable`/`disable`. |
 | `cli_audio.py` | `blueferry audio [status\|pc\|phone]`. |
@@ -220,6 +220,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `ui/status.py` | GTK settings (`SettingsDialog`, an `AdwPreferencesDialog`): one page per category of the Qt settings (Phone, Notifications, Calls & Audio, Security, About) with setup, health, preferences and maintenance. |
 | `ui/settings_presenter.py` | Pure rules of the settings dialog: categories, Diagnostics rows, switch subtitles. |
 | `ui/feature_switches.py` | GTK rows for the `GetFeatures`/`SetFeature` switches (`features_view.py`) and the restart notice with **Restart Service** on every settings page; cancels its pending reloads when the dialog closes. |
+| `ui/notification_rules.py` | Settings > Notifications: the notification click rules editor (`GetNotificationOpenMap`/`SetNotificationOpenTarget`), reread only when the status revision changes. |
 | `ui/doctor.py` | Settings > Phone > Diagnostics: runs `blueferry doctor` (`doctor_report.py`) on the client's local worker and shows the report as plain text with Copy. |
 | `ui/status_presenter.py` | Pure presentation rules for the status page (including the optional phone battery/signal suffix). |
 | `ui/phone.py` | GTK iPhone dialog: battery/signal/network, opt-in now playing and recent calls; fetches only while open. |
