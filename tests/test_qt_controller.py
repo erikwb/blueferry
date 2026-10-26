@@ -1715,6 +1715,10 @@ def test_phone_card_and_tab_wording_come_from_phone_link_view():
     assert "oFono" in controller.callsHint({"calls_enabled": True}, "unavailable")
     view = controller.notificationsView({"enabled": True, "content": False}, "")
     assert view["title"] == "No Notifications Yet" and view["contentHint"]
+    controller._contact_results = [
+        {"name": "Kim", "address": "0491570156"}, {"name": "Kim", "address": "kim@example.org"},
+    ]
+    assert controller.dialSuggestions == [{"name": "Kim", "address": "0491570156"}]
 
 
 def _inline_controller(monkeypatch, backend):

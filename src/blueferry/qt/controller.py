@@ -281,6 +281,11 @@ class BridgeController(QObject):
     def contactResults(self):
         return self._contact_results
 
+    @Property("QVariantList", notify=contactResultsChanged)
+    def dialSuggestions(self):
+        """The contact matches the Calls tab offers (phone numbers only)."""
+        return phone_link_view.dial_suggestions(self._contact_results)
+
     @Property("QVariantList", notify=phoneCallsChanged)
     def phoneCalls(self):
         return self._phone_calls

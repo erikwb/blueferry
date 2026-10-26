@@ -76,6 +76,19 @@ def dialable(value: object) -> str:
     return _NOT_DIALABLE.sub("", str(value or ""))[:MAX_DIAL_DIGITS]
 
 
+def dial_suggestions(rows: Iterable[Mapping[str, Any]]) -> list[dict[str, str]]:
+    """Contact matches the dial pad offers: phone numbers, shown as stored.
+
+    ``rows`` are ``ConversationState.contact_result_rows()``; email
+    addresses cannot be dialed and are left out.
+    """
+    return [
+        {"name": str(row.get("name") or ""), "address": str(row.get("address") or "")}
+        for row in rows
+        if row.get("address") and "@" not in str(row.get("address"))
+    ]
+
+
 def calls_hint(status: Mapping[str, Any], calls_state: str) -> str:
     """Why the dial pad cannot call yet; empty when calls are ready.
 

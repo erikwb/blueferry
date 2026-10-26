@@ -73,6 +73,18 @@ def test_dial_field_keeps_only_dialable_characters() -> None:
     assert [key for key, _letters in phone_link_view.DIAL_KEYS] == list("123456789*0#")
 
 
+def test_dial_suggestions_keep_phone_numbers_as_stored() -> None:
+    assert phone_link_view.dial_suggestions([
+        {"name": "Pat US", "address": "+15550100123"},
+        {"name": "Kim AU", "address": "0491570156"},
+        {"name": "Mail", "address": "kim@example.org"},
+        {"name": "Nothing", "address": ""},
+    ]) == [
+        {"name": "Pat US", "address": "+15550100123"},
+        {"name": "Kim AU", "address": "0491570156"},
+    ]
+
+
 def test_calls_hint_explains_why_the_dial_pad_cannot_call() -> None:
     hint = phone_link_view.calls_hint
     assert "Enable phone calls through this computer" in hint({}, "ready")

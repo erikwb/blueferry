@@ -192,8 +192,7 @@ GridLayout {
                 Layout.preferredHeight: count > 0 ? Math.min(contentHeight, Kirigami.Units.gridUnit * 8) : 0
                 visible: count > 0 && dialField.text.trim().length >= 2
                 clip: true
-                model: (callsTab.bridge.contactResults || [])
-                    .filter(result => String(result.address).indexOf("@") < 0)
+                model: callsTab.bridge.dialSuggestions || []
                 delegate: ListRow {
                     id: suggestion
                     required property var modelData

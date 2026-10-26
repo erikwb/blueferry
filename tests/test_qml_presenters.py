@@ -759,6 +759,7 @@ def settings_window(qml_engine):
             property var threads: []
             property var devices: []
             property var contactResults: []
+            property var dialSuggestions: []
             property var nowPlaying: ({})
             property var featureHints: ({})
             property var phoneAudio: ({})
@@ -4519,10 +4520,10 @@ def test_dial_suggestions_show_and_dial_contact_numbers_unchanged(qml_engine, se
     bridge.setProperty("callsState", "ready")
     QGuiApplication.processEvents()
     _settings_object(window, "dialPadField").setProperty("text", "Kim")
-    bridge.setProperty("contactResults", [
+    # phone_link_view.dial_suggestions has already left out email addresses.
+    bridge.setProperty("dialSuggestions", [
         {"name": "Pat US", "address": "+15550100123"},
         {"name": "Kim AU", "address": "0491570156"},
-        {"name": "Mail", "address": "kim@example.org"},
     ])
     QGuiApplication.processEvents()
     suggestions = _settings_object(window, "dialSuggestions")
