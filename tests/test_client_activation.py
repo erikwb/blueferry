@@ -131,8 +131,12 @@ def no_clients(monkeypatch, tmp_path):
     monkeypatch.setenv("PATH", str(tmp_path / "empty-path"))
     monkeypatch.setattr(activation, "_SYSTEM_BIN", tmp_path / "usr-bin")
     monkeypatch.setattr(activation.sys, "executable", str(venv / "python"))
-    monkeypatch.setattr(activation.importlib.util, "find_spec", lambda _name: None)
-    return tmp_path
+    toolkits: set[str] = set()
+    monkeypatch.setattr(
+        activation.importlib.util, "find_spec",
+        lambda name: object() if name in toolkits else None,
+    )
+    return SimpleNamespace(root=tmp_path, toolkits=toolkits)
 
 
 def _launcher(directory: Path, key: str) -> Path:
@@ -144,7 +148,8 @@ def _launcher(directory: Path, key: str) -> Path:
 
 
 def test_client_program_finds_a_launcher_on_path(no_clients, monkeypatch):
-    local_bin = no_clients / "home" / ".local" / "bin"
+    no_clients.toolkits.add("gi")
+    local_bin = no_clients.root / "home" / ".local" / "bin"
     gtk = _launcher(local_bin, "gtk")
     monkeypatch.setenv("PATH", str(local_bin))
     assert activation.client_program(activation.GTK_CLIENT) == [str(gtk)]
@@ -154,16 +159,25 @@ def test_client_program_finds_a_launcher_on_path(no_clients, monkeypatch):
 def test_client_program_finds_a_venv_launcher_off_path(no_clients):
     # A D-Bus activated daemon on OpenRC, or systemd's PATH, may not include
     # the virtual environment the daemon and its helper run from.
-    qt = _launcher(no_clients / "venv" / "bin", "qt")
+    no_clients.toolkits.add("PySide6")
+    qt = _launcher(no_clients.root / "venv" / "bin", "qt")
     assert activation.client_program(activation.CLIENTS[1]) == [str(qt)]
 
 
-def test_client_program_falls_back_to_the_installed_module(no_clients, monkeypatch):
-    monkeypatch.setattr(
-        activation.importlib.util, "find_spec",
-        lambda name: object() if name == "PySide6" else None,
-    )
-    python = str(no_clients / "venv" / "bin" / "python")
+def test_launcher_without_its_toolkit_does_not_count(no_clients):
+    # A venv gets both gui-scripts even when PySide6 or gi are missing.
+    no_clients.toolkits.add("gi")
+    venv = no_clients.root / "venv" / "bin"
+    _launcher(venv, "qt")
+    gtk = _launcher(venv, "gtk")
+    assert activation.client_program(activation.CLIENTS[1]) is None
+    assert activation.client_program(activation.GTK_CLIENT) == [str(gtk)]
+    assert activation.select_client([], environment={"XDG_CURRENT_DESKTOP": "KDE"}).key == "gtk"
+
+
+def test_client_program_falls_back_to_the_installed_module(no_clients):
+    no_clients.toolkits.add("PySide6")
+    python = str(no_clients.root / "venv" / "bin" / "python")
     assert activation.client_program(activation.CLIENTS[1]) == [python, "-m", "blueferry.qt.app"]
     assert activation.client_program(activation.GTK_CLIENT) is None  # no gi here
     assert activation.select_client([], environment={}).key == "qt"
@@ -171,8 +185,9 @@ def test_client_program_falls_back_to_the_installed_module(no_clients, monkeypat
 
 @pytest.mark.parametrize("systemd", [False, True])
 def test_open_message_starts_a_venv_client_by_absolute_path(no_clients, monkeypatch, systemd):
-    monkeypatch.setattr(activation.config, "CONFIG_DIR", no_clients / "config")
-    gtk = _launcher(no_clients / "venv" / "bin", "gtk")
+    monkeypatch.setattr(activation.config, "CONFIG_DIR", no_clients.root / "config")
+    no_clients.toolkits.add("gi")
+    gtk = _launcher(no_clients.root / "venv" / "bin", "gtk")
     started = []
     names = ["org.freedesktop.systemd1"] if systemd else []
     monkeypatch.setattr(activation.dbus, "SessionBus", lambda **_kw: SimpleNamespace(
@@ -186,8 +201,31 @@ def test_open_message_starts_a_venv_client_by_absolute_path(no_clients, monkeypa
     assert started == [("unit" if systemd else "spawn", [str(gtk), "--message=handle"])]
 
 
+@pytest.mark.parametrize("module", [False, True])
+def test_transient_unit_passes_the_module_path_only_for_the_module_fallback(
+    no_clients, monkeypatch, module,
+):
+    monkeypatch.setattr(activation.config, "CONFIG_DIR", no_clients.root / "config")
+    monkeypatch.setenv("PYTHONPATH", "/checkout/src")
+    monkeypatch.setenv("VIRTUAL_ENV", "/checkout/.venv")
+    no_clients.toolkits.add("PySide6")
+    if not module:
+        _launcher(no_clients.root / "venv" / "bin", "qt")
+    units = []
+    monkeypatch.setattr(activation.dbus, "SessionBus", lambda **_kw: SimpleNamespace(
+        list_names=lambda: ["org.freedesktop.systemd1"], close=lambda: None,
+    ))
+    monkeypatch.setattr(activation, "start_transient_service",
+                        lambda _bus, _prefix, argv, variables: units.append((argv, variables)))
+    assert activation.open_message("handle", "")
+    argv, variables = units[0]
+    assert (argv[1:3] == ["-m", "blueferry.qt.app"]) is module
+    for assignment in ("PYTHONPATH=/checkout/src", "VIRTUAL_ENV=/checkout/.venv"):
+        assert (assignment in variables) is module, variables
+
+
 def test_open_message_without_any_client_does_nothing(no_clients, monkeypatch):
-    monkeypatch.setattr(activation.config, "CONFIG_DIR", no_clients / "config")
+    monkeypatch.setattr(activation.config, "CONFIG_DIR", no_clients.root / "config")
     monkeypatch.setattr(activation.dbus, "SessionBus", lambda **_kw: SimpleNamespace(
         list_names=lambda: [], close=lambda: None,
     ))

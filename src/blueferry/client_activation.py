@@ -105,20 +105,35 @@ _SYSTEM_BIN = Path("/usr/bin")
 _CLIENT_MODULES = {"gtk": ("blueferry.ui.app", "gi"), "qt": ("blueferry.qt.app", "PySide6")}
 
 
+def _dependency_available(client: DesktopClient) -> bool:
+    """Whether the GTK/Qt toolkit is importable here; nothing is imported.
+
+    A virtual environment always gets both launchers, while the toolkits may
+    come from the distribution, so a launcher alone does not mean it runs.
+    """
+    entry = _CLIENT_MODULES.get(client.key)
+    if entry is None:
+        return True
+    try:
+        return importlib.util.find_spec(entry[1]) is not None
+    except (ImportError, ValueError):
+        return False
+
+
 def _module_program(client: DesktopClient) -> list[str] | None:
-    """``python -m`` for a client shipped in this installation, if it can run."""
+    """``python -m`` for a client shipped in this installation."""
     entry = _CLIENT_MODULES.get(client.key)
     if entry is None:
         return None
-    module, dependency = entry
-    try:
-        if importlib.util.find_spec(dependency) is None:
-            return None
-    except (ImportError, ValueError):
-        return None
+    module = entry[0]
     # Look for the file instead of importing the client's package.
     path = Path(__file__).resolve().parent.joinpath(*module.split(".")[1:]).with_suffix(".py")
     return [sys.executable, "-m", module] if path.is_file() else None
+
+
+def is_module_program(program: Sequence[str]) -> bool:
+    """Whether ``program`` is the ``python -m`` fallback of ``client_program``."""
+    return len(program) == 3 and program[0] == sys.executable and program[1] == "-m"
 
 
 def client_program(client: DesktopClient) -> list[str] | None:
@@ -129,8 +144,11 @@ def client_program(client: DesktopClient) -> list[str] | None:
     on the PATH of whoever started the daemon (a D-Bus activated daemon on
     OpenRC, or the systemd user manager's PATH), and the module fallback a
     client installed in this environment without its launcher. The result is
-    absolute, so the systemd transient unit runs the same file.
+    absolute, so the systemd transient unit runs the same file. GTK and Qt
+    only count when their toolkit is importable.
     """
+    if not _dependency_available(client):
+        return None
     name = client.program_name
     found = shutil.which(name)
     if found:
@@ -228,6 +246,10 @@ def start_transient_service(
         dbus.Array([], signature="(sa(sv))"),
         dbus_interface="org.freedesktop.systemd1.Manager", timeout=3,
     )
+
+
+# What a ``python -m`` client additionally needs to find its modules.
+MODULE_SESSION_KEYS = ("PYTHONPATH", "VIRTUAL_ENV")
 
 
 def transient_unit_environment(
@@ -357,7 +379,11 @@ def open_message(handle: str, token: str) -> bool:
             # the GUI outside the backend's sandbox and cgroup instead.
             start_transient_service(
                 bus, f"app-blueferry-{client.key}", argv,
-                transient_unit_environment(environment, token),
+                transient_unit_environment(
+                    environment, token,
+                    # An uninstalled checkout only imports with its own path.
+                    extra_keys=MODULE_SESSION_KEYS if is_module_program(program) else (),
+                ),
             )
         else:
             # A manually run daemon on a desktop without a systemd user manager.
