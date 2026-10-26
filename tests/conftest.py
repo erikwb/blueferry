@@ -21,6 +21,9 @@ for _variable, _child in (
     ("XDG_CONFIG_HOME", "config"),
     ("XDG_STATE_HOME", "state"),
     ("XDG_RUNTIME_DIR", "runtime"),
+    # Plugin manifests and the plugin cache live under these.
+    ("XDG_DATA_HOME", "data"),
+    ("XDG_CACHE_HOME", "cache"),
 ):
     os.makedirs(os.path.join(_scratch_home, _child), mode=0o700)
     os.environ[_variable] = os.path.join(_scratch_home, _child)

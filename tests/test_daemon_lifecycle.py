@@ -64,7 +64,7 @@ def test_start_publishes_dbus_before_scheduling_bluetooth(make_daemon, monkeypat
     monkeypatch.setattr(instance, "_initialize_storage", lambda: order.append("storage"))
     monkeypatch.setattr(instance, "_retry_storage", lambda: order.append("retry") or True)
     instance.phone_audio = SimpleNamespace(
-        reconcile=lambda **_kwargs: order.append("audio")
+        remove=lambda: order.append("audio")
     )
 
     instance.start()
@@ -392,7 +392,7 @@ def test_missing_bond_never_prepares_or_connects_bluetooth(make_daemon, monkeypa
     instance.recovery = _idle_recovery()
     prepared = []
     audio = []
-    instance.phone_audio = SimpleNamespace(reconcile=lambda **kwargs: audio.append(kwargs))
+    instance.phone_audio = SimpleNamespace(remove=lambda: audio.append("remove"))
     monkeypatch.setattr(daemon_mod, "bond_status", lambda *_args, **_kwargs: False)
     monkeypatch.setattr(
         daemon_mod.bluez_setup,
@@ -404,17 +404,16 @@ def test_missing_bond_never_prepares_or_connects_bluetooth(make_daemon, monkeypa
         instance._initialize_bluetooth()
 
     assert prepared == []
-    assert audio == []
+    assert audio == ["remove"]
 
 
-def test_bonded_start_reconciles_phone_audio_before_adapter_class(make_daemon, monkeypatch):
+def test_bonded_start_removes_old_audio_policy_before_adapter_class(make_daemon, monkeypatch):
     instance = make_daemon()
     instance.recovery = _idle_recovery()
     order = []
-    monkeypatch.setattr(daemon_mod.config, "KEEP_PHONE_AUDIO_ON_PHONE", True)
     monkeypatch.setattr(daemon_mod, "bond_status", lambda *_args, **_kwargs: True)
     instance.phone_audio = SimpleNamespace(
-        reconcile=lambda **kwargs: order.append(("audio", kwargs["enabled"]))
+        remove=lambda: order.append("audio-removed")
     )
     instance.adapter_class = SimpleNamespace(
         start=lambda: order.append("class") or (_ for _ in ()).throw(RuntimeError("stop"))
@@ -423,7 +422,7 @@ def test_bonded_start_reconciles_phone_audio_before_adapter_class(make_daemon, m
     with pytest.raises(RuntimeError, match="stop"):
         instance._initialize_bluetooth()
 
-    assert order == [("audio", True), "class"]
+    assert order == ["audio-removed", "class"]
 
 
 def test_busy_adapter_during_root_start_leaves_repair_to_supervisor(
@@ -434,7 +433,7 @@ def test_busy_adapter_during_root_start_leaves_repair_to_supervisor(
     instance.recovery = _idle_recovery()
     order = []
     monkeypatch.setattr(daemon_mod, "bond_status", lambda *_args, **_kwargs: True)
-    instance.phone_audio = SimpleNamespace(reconcile=lambda **_kwargs: None)
+    instance.phone_audio = SimpleNamespace(remove=lambda: None)
     instance.adapter_class = SimpleNamespace(start=lambda: order.append("class"))
     # The BlueZ ping has its own tests; keep its timer and bus calls inert.
     instance.bluez_health = BluezHealth(

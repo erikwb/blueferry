@@ -34,3 +34,18 @@ def terminal_text(value: object) -> str:
         else:
             output.append(character)
     return "".join(output)
+
+
+def control_text(value: object) -> str:
+    """Untrusted text for a Qt button, menu item, tooltip or link label.
+
+    Those controls show text with automatic format detection: a ``<`` makes
+    Qt read the whole string as rich text, so a plugin could style or link
+    it. Text with ``<`` is escaped, which Qt then shows literally; text
+    without it is plain already and stays as it is (escaping ``&`` there
+    would show ``&amp;``).
+    """
+    text = str(value or "")
+    if "<" not in text:
+        return text
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")

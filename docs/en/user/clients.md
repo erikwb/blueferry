@@ -51,8 +51,8 @@ own with **All Settings** to go back.
 ### Switches that need a restart
 
 A few on/off settings used to need an edit of `~/.config/blueferry/local.env`:
-showing notification content, marking a message read when you dismiss its
-popup, and keeping iPhone sound on the iPhone. The settings page and
+showing notification content and marking a message read when you dismiss
+its popup. The settings page and
 `blueferry features` now store them in `~/.config/blueferry/settings.json`,
 where they override `local.env`. They apply after the background service
 restarts; the page says so and offers **Restart Service**. A variable set in
@@ -60,7 +60,7 @@ the service's own environment still wins, and the switch then says so.
 
 ```bash
 blueferry features                                 # every switch, its value and source
-blueferry features off keep_phone_audio_on_phone   # applies after a restart
+blueferry features off mark_read_on_dismiss        # applies after a restart
 ```
 
 ### System tray item
