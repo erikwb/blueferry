@@ -499,6 +499,30 @@ def _exercise_recent_calls():
     client.answer_status({**CALLS_READY, "call_history_enabled": True, "phone_battery_level": 9})
     assert ("calls", 200) not in client.names()
     assert _rows(calls.recent_list)[0] is rows[0]
+
+    # Readiness from a ListCalls answer: the call-back buttons follow it,
+    # and an answer that changes nothing does not rebuild the rows.
+    from blueferry.models import CallsSnapshot
+
+    def call_back_sensitive():
+        return [b.get_sensitive() for b in _descendants(calls.recent_list)
+                if isinstance(b, type(calls.call_button)) and b.get_tooltip_text() in (
+                    "Call back", "Calls are not ready.")]
+
+    while "list-calls" in client.names():
+        client.take("list-calls")[1](CallsSnapshot.from_dict({"state": "ready", "calls": []}))
+    rows = _rows(calls.recent_list)
+    assert all(call_back_sensitive())
+    client.emit("calls-changed")
+    client.take("list-calls")[1](CallsSnapshot.from_dict({"state": "ready", "calls": []}))
+    assert _rows(calls.recent_list)[0] is rows[0]
+    client.emit("calls-changed")
+    client.take("list-calls")[2]("Timed out")
+    assert calls.hint_banner.get_revealed() and not calls.call_button.get_sensitive()
+    assert call_back_sensitive() and not any(call_back_sensitive())
+    client.emit("calls-changed")
+    client.take("list-calls")[1](CallsSnapshot.from_dict({"state": "ready", "calls": []}))
+    assert all(call_back_sensitive())
     assert rows[0].has_css_class("error")
     calls.missed_filter.set_active(True)
     assert [row.get_title() for row in _rows(calls.recent_list)] == ["<b>Anna</b> (2)"]

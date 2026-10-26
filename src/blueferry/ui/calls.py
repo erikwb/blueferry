@@ -66,6 +66,8 @@ class CallsPage(Gtk.Box):
         self._syncing = False
         self._contacts = ConversationState(select_first=False)
         self._typed = True  # entry changes come from the keyboard
+        # The readiness hint the recent-call rows were built with.
+        self._rows_hint: str | None = None
         self._search_timer = (timer or glib_timer)(self._search_contacts)
         self._calls_read = CoalescedRead(
             lambda ok, err: client.call_history_async(MAX_CALLS, ok, err),
@@ -75,7 +77,7 @@ class CallsPage(Gtk.Box):
 
         # Running calls first, as in Qt; they also report the Calls1 state.
         self.running = RunningCalls(
-            client, toast, on_state=self._render_dial_state, timer=timer,
+            client, toast, on_state=self._running_state_changed, timer=timer,
         )
         self.append(self.running)
 
@@ -228,7 +230,6 @@ class CallsPage(Gtk.Box):
         its scroll position.
         """
         was_enabled = overview.call_history_enabled(self._status)
-        hint = self.calls_hint
         self._status = status
         self.running.apply_status(status)
         enabled = overview.call_history_enabled(status)
@@ -237,8 +238,14 @@ class CallsPage(Gtk.Box):
             self._forget_calls()
             self._calls_read.refresh()
             self._render_calls()
-        elif hint != self.calls_hint:
+        elif self.calls_hint != self._rows_hint:
             self._render_calls()  # the call-back buttons follow readiness
+
+    def _running_state_changed(self) -> None:
+        """A ListCalls answer may change readiness without a status read."""
+        self._render_dial_state()
+        if self.calls_hint != self._rows_hint:
+            self._render_calls()
 
     def set_shown(self, shown: bool) -> None:
         """The window became visible or hidden: running calls follow it."""
@@ -391,6 +398,7 @@ class CallsPage(Gtk.Box):
         self.suggestions.set_visible(bool(rows) and len(text) >= 2)
 
     def _render_calls(self) -> None:
+        self._rows_hint = self.calls_hint
         enabled = overview.call_history_enabled(self._status)
         self.recent_header.set_visible(enabled)
         self.sync_button.set_sensitive(enabled and not self._syncing)
@@ -417,7 +425,7 @@ class CallsPage(Gtk.Box):
             self.recent_placeholder.set_description(GLib.markup_escape_text(text) or None)
             self.recent_stack.set_visible_child_name("placeholder")
             return
-        ready = not self.calls_hint
+        ready = not self._rows_hint
         group: Adw.PreferencesGroup | None = None
         day = None
         for item in groups:
