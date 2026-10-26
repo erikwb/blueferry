@@ -22,6 +22,7 @@ from blueferry.adapter_class_supervisor import AdapterClassSupervisor
 from blueferry.ams.client import AmsClient, AmsNotifySessions
 from blueferry.ams.constants import RemoteCommandID
 from blueferry.ancs.client import ACTION_DISCONNECTED, AncsClient
+from blueferry.audio_activity import audio_activity
 from blueferry.backend_lifecycle import installed_release
 from blueferry.backend_operations import BackendDependencies
 from blueferry.bearer_supervisor import BearerSupervisor
@@ -90,7 +91,9 @@ from blueferry.obex.worker import ObexWorker
 from blueferry.otp_context import OtpMetadata
 from blueferry.otp_settings import OtpSettings
 from blueferry.pair_setup import bond_status
+from blueferry.phone_audio_preference import PhoneAudioPreference
 from blueferry.phone_audio_route import PhoneAudioRoute, ResumePlayback
+from blueferry.phone_audio_settings import PhoneAudioSettings
 from blueferry.phone_battery import BatteryWarningSettings, PhoneBattery
 from blueferry.plugin_notify import PluginPopup, PluginPopups
 from blueferry.profile_reset import (
@@ -120,7 +123,7 @@ from blueferry.solicitation_supervisor import SolicitationSupervisor
 from blueferry.starred_threads import StarredThreadsStore
 from blueferry.storage_preparation import PreparedStorage, prepare_storage
 from blueferry.storage_security import StorageSecurity
-from blueferry.wireplumber_policy import WirePlumberPhoneAudioPolicy
+from blueferry.wireplumber_policy import LegacyPhoneAudioPolicy, PhoneAudioAutoConnectPolicy
 
 if TYPE_CHECKING:
     from blueferry.mpris import MprisPlayer, NameClaim
@@ -262,13 +265,8 @@ class Daemon:
             ),
         )
         self.solicitation = SolicitationSupervisor(config.ADAPTER)
-        # The saved phone-calls opt-in decides both the call controller and
-        # whether the WirePlumber fragment keeps the hands-free roles.
         self.calls_settings = CallsSettings()
-        self.phone_audio = WirePlumberPhoneAudioPolicy(
-            allow_calls=self.calls_settings.enabled,
-        )
-        self._phone_audio_lock = threading.Lock()
+        self.phone_audio = LegacyPhoneAudioPolicy()
         # None until looked up, "" when it could not be determined.
         self._bluez_version: str | None = None
         self._bluez_version_requested = False
@@ -345,12 +343,11 @@ class Daemon:
             on_powered_failed=self.profile_reset.hfp_powered_failed,
             on_powered=self.profile_reset.hfp_powered,
         )
-        # Where the iPhone's media playback goes. Only offered when the
-        # WirePlumber policy does not strip the A2DP sink role.
+        # Where the iPhone's media playback goes, using the desktop's roles.
         self.phone_audio_route = PhoneAudioRoute(
             GioDBus(gio_system_bus),
             device_path,
-            allowed=not config.KEEP_PHONE_AUDIO_ON_PHONE,
+            allowed=True,
             on_changed=self._emit_status_soon,
             schedule=GLib.timeout_add_seconds,
             cancel=GLib.source_remove,
@@ -360,6 +357,24 @@ class Daemon:
                 not self.bearers.can_change_profiles or self.recovery.active
             ),
             bluez_blocked=lambda: self.bluez_health.unresponsive,
+        )
+        self.audio_autoconnect = PhoneAudioAutoConnectPolicy()
+        self.audio_preference = PhoneAudioPreference(
+            self.phone_audio_route, PhoneAudioSettings(config.IPHONE_MAC),
+            configure=self._configure_phone_audio_policy,
+            connected=lambda: self.bearers.bredr_state,
+            safe=lambda: (
+                not self._initializing and not self.recovery.active
+                and not self.bearers.busy and not self.bluez_health.unresponsive
+                and not self.calls.in_call
+            ),
+            automatic_ready=lambda: (
+                self.bearers.can_change_profiles and self.profiles.ready
+                and (not config.ANCS_ENABLED or bool(self.ancs and self.ancs.connected))
+            ),
+            schedule=GLib.timeout_add_seconds, cancel=GLib.source_remove,
+            on_changed=self._emit_status_soon,
+            policy_present=self.audio_autoconnect.path.exists(),
         )
         # The phone's battery over LE (GATT Battery Service or BlueZ's
         # Battery1), independent of calls and HFP. Construction does no I/O.
@@ -504,6 +519,7 @@ class Daemon:
         self.proximity.inhibit(INHIBIT_RECOVERY, False)
 
     def _emit_status(self) -> None:
+        self.audio_preference.poke()
         emit = getattr(self._dbus_service, "emit_status", None)
         if emit is not None:
             emit()
@@ -547,6 +563,7 @@ class Daemon:
         }
 
     def _bearer_status_changed(self) -> None:
+        self.audio_preference.connection_changed()
         if getattr(self.bearers, "bredr_state", None) is False:
             self.profile_reset.peer_lost()
         self.proximity.bearer_changed()
@@ -561,6 +578,27 @@ class Daemon:
         self._observe_low_battery(fields)
         self._published_phone = fields
         self._emit_status()
+
+    def _configure_phone_audio_policy(
+        self, enabled: bool, done: Callable[[str | Exception], None],
+    ) -> None:
+        def apply() -> None:
+            result: str | Exception
+            try:
+                with audio_activity(blocking=False):
+                    result = self.audio_autoconnect.configure(
+                        config.IPHONE_MAC if enabled else None,
+                    )
+            except Exception as error:
+                result = error
+
+            def finished() -> bool:
+                done(result)
+                return False
+
+            self._idle_add(finished)
+
+        _in_background(apply, "blueferry-phone-audio-policy")
 
     def _proximity_presence(self) -> bool | None:
         return presence_from_bearers(self.bearers.bredr_state, self.bearers.le_state)
@@ -579,7 +617,6 @@ class Daemon:
         selected = self.calls_settings.set(enabled)
         self.calls.set_enabled(selected)
         log.info("phone calls %s", "enabled" if selected else "disabled")
-        self._apply_phone_audio_roles()
         self._emit_status()
         return self.calls.snapshot()
 
@@ -590,27 +627,6 @@ class Daemon:
         log.info("one-time code auto-copy %s", "enabled" if selected else "disabled")
         self._emit_status()
         return {"otp_autocopy": selected}
-
-    def _apply_phone_audio_roles(self) -> None:
-        """Rewrite the WirePlumber fragment off the main loop.
-
-        Reconciling may run ``wireplumber --version`` and restart WirePlumber
-        (bounded, but seconds), which must not stall D-Bus replies. Threads
-        of quick successive toggles take the lock in any order, so each
-        writes the setting saved at that moment, not the one it was started
-        for: whichever runs last leaves the fragment matching the setting.
-        """
-        if not config.KEEP_PHONE_AUDIO_ON_PHONE:
-            return
-
-        def apply() -> None:
-            with self._phone_audio_lock:
-                self.phone_audio = WirePlumberPhoneAudioPolicy(
-                    allow_calls=self.calls_settings.enabled,
-                )
-                self.phone_audio.reconcile(enabled=True)
-
-        _in_background(apply, "blueferry-phone-audio")
 
     def _emit_status_soon(self) -> None:
         """Emit one StatusChanged for everything changed in this iteration."""
@@ -866,13 +882,14 @@ class Daemon:
                 set_phone_battery_warning=self._set_battery_warning,
                 set_auto_profile_reset=self._set_auto_profile_reset,
                 set_media_mpris=self._set_media_mpris,
-                phone_audio=self.phone_audio_route,
+                phone_audio=self.audio_preference,
                 contact_photos=self._contact_photos_enabled,
                 set_contact_photos=self._set_contact_photos,
                 set_otp_autocopy=self._set_otp_autocopy,
             ),
         )
         self.events.set_dbus_service(self._dbus_service)
+        self.audio_preference.start()
         self._publish_media()
         self._initialize_storage()
         log.info("DBus service ready: %s", BUS_NAME)
@@ -1228,15 +1245,15 @@ class Daemon:
             self.recovery.start()
         if self.recovery.active or self.recovery.adapter.restore_pending:
             return
+        # Upgrade cleanup must also run without a bond: the old policy
+        # prevents that user from pairing in the first place.
+        self.phone_audio.remove()
         if bond_status(
             config.IPHONE_MAC, config.ADAPTER, timeout=BOND_CHECK_TIMEOUT_SEC,
         ) is not True:
             raise PairingRequiredError(
                 "the saved iPhone is not currently paired; open a client to pair it"
             )
-
-        with self._phone_audio_lock:
-            self.phone_audio.reconcile(enabled=config.KEEP_PHONE_AUDIO_ON_PHONE)
 
         # Class-of-Device is controller state, not durable configuration.
         # Repair it before opening either bearer and continue supervising it
@@ -1376,6 +1393,7 @@ class Daemon:
         self._bluez_owner_generation += 1
         generation = self._bluez_owner_generation
         self.phone_audio_route.bluez_owner_changed(bool(new_owner))
+        self.audio_preference.bluez_restarted()
         # Invalidate before discovery or advertising can dispatch more D-Bus
         # work. An interrupted power restoration keeps ordinary reconnects
         # paused until the recovery controller explicitly resumes them.
@@ -1846,6 +1864,7 @@ class Daemon:
             "storage_detail": self.storage.status.detail,
             **self._media_status(),
             **self.phone_audio_route.snapshot(),
+            **self.audio_preference.snapshot(),
             **self._controller_identity(),
             **self.connectivity.snapshot(),
         }
@@ -2011,6 +2030,7 @@ class Daemon:
         self.recovery.stop()
         self.calls.stop()
         self.phone_battery.stop()
+        self.audio_preference.stop()
         self.phone_audio_route.stop()
         if self._phone_emit_id is not None:
             try:

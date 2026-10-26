@@ -43,6 +43,7 @@ from blueferry.protocol import (
     MESSAGES_IFACE,
     OBEX_CALL_TIMEOUT_SEC,
     OBJECT_PATH,
+    PHONE_AUDIO_CALL_TIMEOUT_SEC,
     POLICY_CALL_TIMEOUT_SEC,
     PRESENCE_IFACE,
     SNAPSHOT_CALL_TIMEOUT_SEC,
@@ -197,7 +198,7 @@ class BackendClient:
         """Move iPhone media playback to ``pc`` or back to the ``phone``."""
         try:
             return str(self._media_iface().SetPhoneAudioRoute(
-                route, timeout=MEDIA_CALL_TIMEOUT_SEC + 10,
+                route, timeout=PHONE_AUDIO_CALL_TIMEOUT_SEC,
             ))
         except dbus.exceptions.DBusException as error:
             raise self._media_error(error) from error

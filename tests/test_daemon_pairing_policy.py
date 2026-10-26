@@ -117,8 +117,10 @@ def _daemon(make_daemon, calls):
     value.adapter_class = _AdapterClass(calls)
     value.solicitation = _Solicitation(calls)
     value.phone_audio = type(
-        "Audio", (), {"reconcile": lambda self, **_kwargs: False}
+        "Audio", (), {"remove": lambda self: False}
     )()
+    # Audio transport watches have their own tests and need a real bus.
+    value.phone_audio_route.start = lambda: None
     # logind and adapter power watches need the real system bus.
     value._watch_sleep_resume = lambda: calls.append("sleep-watch")
     # The asynchronous adapter-state read for the proximity lock is covered

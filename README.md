@@ -306,7 +306,6 @@ The common retention settings live in `~/.config/blueferry/local.env`:
 
 ```bash
 BLUEFERRY_SHOW_NOTIFICATION_CONTENT=false
-BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE=true
 BLUEFERRY_NOTIFICATION_TIMEOUT_MS=8000
 BLUEFERRY_MARK_READ_ON_DISMISS=false
 BLUEFERRY_HISTORY_RETENTION_DAYS=30
@@ -556,18 +555,18 @@ an app's ID with `ls /usr/share/applications ~/.local/share/applications
 /var/lib/flatpak/exports/share/applications`. Apps without a rule, and Apple
 Messages, keep their normal behaviour.
 
-When WirePlumber 0.5 or newer is installed, BlueFerry keeps calls and music on
-the iPhone by writing
-`~/.config/wireplumber/wireplumber.conf.d/99-blueferry-keep-phone-audio.conf`
-before pairing and waiting for WirePlumber to reload it. The fragment removes
-the adapter roles that make this computer an A2DP/HFP sink, and disables
-auto-connect on phone cards so a later `bluetooth-a2dp-autoconnect` rule cannot
-steal the stream. A failed pairing attempt removes a fragment that attempt
-installed. After a successful bond the daemon keeps reconciling the same
-file. Set `BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE=false` to remove BlueFerry's
-fragment only. With the optional phone calls enabled, the fragment keeps the
-hands-free roles (`hfp_hf`, `hsp_hs`) and still removes `a2dp_sink`: music
-stays on the iPhone, calls can come to this computer.
+BlueFerry leaves Bluetooth audio roles to the desktop's audio configuration.
+The adapter-wide keep-audio-on-the-iPhone policy has been removed because it
+prevented normal pairing and ANCS setup. Existing BlueFerry `90-` and `99-`
+phone-audio fragments are removed on backend startup or before pairing;
+WirePlumber is restarted only when cleanup changes a file. The former
+`BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE` setting is ignored. Audio may follow the
+computer's normal Bluetooth routing; use the iPhone's output picker or
+`blueferry audio phone` to send media playback back to the phone. Explicit
+PC/phone choices in BlueFerry are now remembered for the selected iPhone;
+`blueferry audio auto` clears that choice. With WirePlumber 0.5+, BlueFerry
+uses a phone-specific auto-connect rule while remembering a route, leaving
+the adapter's audio roles available for pairing. See [iPhone sound](docs/en/user/phone-audio.md).
 
 ## Phone calls (optional, experimental)
 
@@ -621,11 +620,8 @@ Requirements:
   }
   ```
 
-  Do not set roles there: BlueFerry's `99-` phone-audio fragment (above)
-  overrides `bluez5.roles` and, with calls enabled, keeps `hfp_hf` and
-  `hsp_hs` while still removing `a2dp_sink`. If you set
-  `BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE=false`, BlueFerry manages no roles and
-  your own `bluez5.roles` must include `hfp_hf`.
+  If your own configuration restricts `bluez5.roles`, include `hfp_hf` for
+  phone calls. BlueFerry no longer overrides those roles.
 
 Switch it on with **Enable phone calls through this computer** in the iPhone
 settings of the Qt, GTK or Quickshell client, or with `blueferry calls enable`
@@ -987,15 +983,14 @@ controller could make the iPhone route its audio to this computer.
 
 ### iPhone sound on this computer (optional)
 
-With `BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE=false` in `local.env` (backend
-restart needed), this computer keeps the Bluetooth audio sink role and
-BlueFerry can move the iPhone's media playback here and back, without
-touching PipeWire:
+When this computer offers the Bluetooth audio sink role, BlueFerry can move
+the iPhone's media playback here and back, without touching PipeWire:
 
 ```bash
 blueferry audio            # where the sound goes and where it plays
 blueferry audio pc         # play the iPhone's sound on this computer
 blueferry audio phone      # back to the iPhone
+blueferry audio auto       # clear the remembered choice; use desktop routing
 ```
 
 The Qt, GTK and Quickshell clients show the same switch as **iPhone Sound**
@@ -1022,7 +1017,7 @@ blueferry contact-photos enable                     # opt in; disable / status
 blueferry contacts-photo Alice --output alice.jpg   # needs contact photos on
 blueferry call-history --missed   # after `blueferry call-history enable`
 blueferry media status
-blueferry audio            # with BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE=false
+blueferry audio            # inspect the iPhone audio route
 blueferry history-clear
 blueferry otp status
 blueferry notifications open-map list
