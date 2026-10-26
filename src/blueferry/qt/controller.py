@@ -1406,7 +1406,7 @@ class BridgeController(QObject):
 
     @Property("QVariantMap", notify=featuresChanged)
     def features(self):
-        return self._features
+        return features_view.view(self._features)
 
     @Slot()
     def loadFeatures(self) -> None:
@@ -1433,7 +1433,7 @@ class BridgeController(QObject):
 
     @Property("QVariantMap", notify=doctorChanged)
     def doctor(self):
-        return self._doctor
+        return doctor_report.view(self._doctor)
 
     @Slot()
     def runDoctor(self) -> None:

@@ -59,9 +59,12 @@ def test_controller_features_and_doctor(app, monkeypatch) -> None:
     controller.setFeature("mark_read_on_dismiss", False)
     assert backend.feature == ("mark_read_on_dismiss", False)
     assert "Restart" in controller.features["notice"]
+    assert controller.features["restart_pending"] is True
+    assert controller.features["switches"]["mark_read_on_dismiss"]["editable"] is True
     controller.runDoctor()
     _wait(lambda: controller.doctor["ran"])
     assert controller.doctor["warnings"] is True and controller.doctor["text"] == "WARNING something"
+    assert controller.doctor["level"] == "warning"
 
 
 def test_older_daemon_without_features_falls_back_to_hints(app, monkeypatch) -> None:
@@ -83,6 +86,7 @@ def test_older_daemon_without_features_falls_back_to_hints(app, monkeypatch) -> 
     )
     controller.loadFeatures()
     assert controller.features["loaded"] is True and controller.features["available"] is False
+    assert controller.features["switches"]["mark_read_on_dismiss"]["usable"] is False
 
 
 def _capture(operation):

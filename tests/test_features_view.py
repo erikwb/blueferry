@@ -41,3 +41,46 @@ def test_doctor_output_is_plain_text() -> None:
     report = parse_output(1, "\x1b[31mERROR\x1b[0m bad\x07\n")
     assert report.text == "ERROR bad" and not report.ok
     assert parse_output(0, "WARNING doctor: Adapter CoD").warnings is True
+
+
+def test_switch_rows_explain_every_source_and_old_daemons() -> None:
+    items = {
+        "mark_read_on_dismiss": {"value": True, "source": "settings",
+                                 "variable": "BLUEFERRY_MARK_READ_ON_DISMISS",
+                                 "restart_required": True},
+        "show_notification_content": {"value": True, "source": "environment",
+                                      "variable": "BLUEFERRY_SHOW_NOTIFICATION_CONTENT",
+                                      "restart_required": False},
+    }
+    view = features_view.view(features_view.loaded(features_view.initial(), items))
+    switches = view["switches"]
+    assert switches["mark_read_on_dismiss"] == {
+        "usable": True, "active": True, "editable": True,
+        "note": "Applies after the service restarts."}
+    pinned = switches["show_notification_content"]
+    assert pinned["editable"] is False and pinned["active"] is True
+    assert "BLUEFERRY_SHOW_NOTIFICATION_CONTENT" in pinned["note"]
+    # A switch this daemon does not report names its local.env variable.
+    missing = switches["notification_history"]
+    assert missing["usable"] is False and missing["editable"] is False
+    assert "BLUEFERRY_NOTIFICATION_HISTORY=true or false" in missing["note"]
+    assert view["restart_pending"] is True
+    assert view["restart_notice"] == "Some changes apply after the BlueFerry service restarts."
+    noticed = features_view.view(features_view.with_notice(view, "Restart now"))
+    assert noticed["restart_notice"] == "Restart now"
+    # Older daemons without GetFeatures: every switch falls back to the hint.
+    old = features_view.view(features_view.unavailable(features_view.initial(), "no"))
+    assert old["restart_pending"] is False
+    assert all(not row["usable"] and "local.env" in row["note"]
+               for row in old["switches"].values())
+    assert set(old["switches"]) == {
+        "show_notification_content", "mark_read_on_dismiss", "notification_history"}
+
+
+def test_doctor_summary_names_the_worst_outcome() -> None:
+    done = {"running": False, "ran": True, "ok": True, "warnings": False, "text": ""}
+    assert doctor_report.view(done)["level"] == "ok"
+    assert doctor_report.view(done)["summary"] == "All checks passed."
+    assert doctor_report.summary({**done, "warnings": True})[0] == "warning"
+    assert doctor_report.summary(doctor_report.failed_state("boom")) == (
+        "error", "One or more checks failed.")

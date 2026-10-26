@@ -14,6 +14,8 @@ import sys
 from dataclasses import dataclass
 from typing import Any
 
+from blueferry.i18n import _
+
 TIMEOUT_SEC = 60.0
 MAX_CHARS = 20_000
 _ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
@@ -71,3 +73,19 @@ def finished_state(state: dict[str, Any], report: object) -> dict[str, Any]:
 
 def failed_state(message: str) -> dict[str, Any]:
     return {"running": False, "ran": True, "ok": False, "warnings": False, "text": message}
+
+
+def summary(state: dict[str, Any]) -> tuple[str, str]:
+    """``(level, text)`` for a finished run; level is ``error``, ``warning``
+    or ``ok``."""
+    if state.get("ok") is not True:
+        return "error", _("One or more checks failed.")
+    if state.get("warnings") is True:
+        return "warning", _("Checks completed with warnings.")
+    return "ok", _("All checks passed.")
+
+
+def view(state: dict[str, Any]) -> dict[str, Any]:
+    """``state`` plus the ``level`` and ``summary`` of :func:`summary`."""
+    level, text = summary(state)
+    return {**state, "level": level, "summary": text}
