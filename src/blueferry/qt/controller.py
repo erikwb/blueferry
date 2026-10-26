@@ -579,6 +579,10 @@ class BridgeController(QObject):
             self._plugin_set = current
             if known:
                 self._plugin_surfaces.schedule_reload()
+                # The photo plugin may be gone or disabled now: forget it
+                # until the next load finds it again.
+                self._photos_plugin = None
+                self.refreshPhotos()
 
     @Property("QVariantMap", notify=pluginSurfacesChanged)
     def pluginSurfaces(self):
@@ -668,10 +672,20 @@ class BridgeController(QObject):
         if manifest is None:
             return
 
+        def fetch() -> object:
+            # Disabled or removed since the list loaded: never call it (a call
+            # would start a disabled plugin again by D-Bus activation).
+            current = photos_view.find_plugin()
+            if current is None or current.id != manifest.id:  # type: ignore[attr-defined]
+                return None
+            return photos_view.fetch_original(current, str(photo_id))
+
         def completed(value: object) -> None:
             from PySide6.QtCore import QUrl
             from PySide6.QtGui import QDesktopServices
 
+            if value is None:
+                return
             url = QUrl.fromLocalFile(str(value))
             items = [
                 {**item, "original": url.toString()} if item["id"] == photo_id else item
@@ -681,10 +695,7 @@ class BridgeController(QObject):
             self.photosChanged.emit()
             QDesktopServices.openUrl(url)
 
-        self._run(
-            lambda: photos_view.fetch_original(manifest, str(photo_id)),  # type: ignore[arg-type]
-            completed,
-        )
+        self._run(fetch, completed)
 
     @Property("QVariantList", notify=notificationsChanged)
     def notifications(self):

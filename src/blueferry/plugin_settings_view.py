@@ -142,6 +142,13 @@ def summary_rows(prepared: PreparedInstall) -> list[dict[str, str]]:
     return rows
 
 
+INT32_MIN, INT32_MAX = -2_147_483_648, 2_147_483_647
+
+
+def _spin_bound(bound: int | None, default: int) -> int:
+    return default if bound is None else min(max(bound, INT32_MIN), INT32_MAX)
+
+
 def form_fields(manifest: PluginManifest, values: Mapping[str, object]) -> list[dict[str, Any]]:
     """One row per ``[Config …]`` field, with the current (masked) value."""
     rows = []
@@ -155,8 +162,9 @@ def form_fields(manifest: PluginManifest, values: Mapping[str, object]) -> list[
             "required": field.required,
             "help": field.help,
             "choices": list(field.choices),
-            "minimum": field.minimum if field.minimum is not None else -2_147_483_648,
-            "maximum": field.maximum if field.maximum is not None else 2_147_483_647,
+            # A SpinBox holds 32-bit ints only; wider bounds would wrap around.
+            "minimum": _spin_bound(field.minimum, INT32_MIN),
+            "maximum": _spin_bound(field.maximum, INT32_MAX),
             # A stored secret is never shown, only whether one exists.
             "value": "" if field.secret else value,
             "stored": field.secret and value == SECRET_MASK,

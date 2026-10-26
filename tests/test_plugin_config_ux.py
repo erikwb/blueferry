@@ -489,3 +489,12 @@ def test_plugin_rows_escape_link_and_tooltip_texts() -> None:
     assert row["sourceText"] == "https://git.example.org/&lt;b&gt;x&lt;/b&gt;"
     field = view.form_fields(plugin, {})[0]
     assert field["helpUrlText"] == "https://docs.example.org/&lt;i&gt;y&lt;/i&gt;"
+
+
+def test_int_bounds_beyond_32_bits_are_clamped_for_the_spin_box() -> None:
+    from blueferry import plugin_settings_view as view
+
+    plugin = manifest(extra="[Config big]\nLabel=Big\nType=int\nMin=-2147483649\n"
+                            "Max=2147483648\nDefault=0\n")
+    field = view.form_fields(plugin, {})[0]
+    assert (field["minimum"], field["maximum"]) == (-2_147_483_648, 2_147_483_647)
