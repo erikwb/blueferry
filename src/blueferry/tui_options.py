@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 from typing import Any, ClassVar, Protocol
 
 from rich.text import Text
-from textual import on
+from textual import events, on
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, Vertical, VerticalScroll
@@ -392,6 +392,26 @@ _STORAGE = {
 }
 
 
+class PolicySelect(Select[str]):
+    """The popup policy. Select announces its initial value with a Changed
+    message from its own Mount handler; that is not a user choice, so it is
+    held back here. Every later Changed comes from the user, because the
+    screen renders the daemon's value inside ``prevent(Select.Changed)``."""
+
+    def _on_mount(self, event: events.Mount) -> None:
+        with self.prevent(Select.Changed):
+            super()._on_mount(event)
+
+
+class RestartState:
+    """Whether "Restart Service" runs. Owned by the app and shared by every
+    Options screen, so closing and reopening Options during a restart cannot
+    start a second one."""
+
+    def __init__(self) -> None:
+        self.running = False
+
+
 def _one_line(value: object) -> str:
     return terminal_text(value).replace("\n", " ")
 
@@ -420,18 +440,19 @@ class OptionsScreen(ModalScreen[None]):
         category: str = "phone",
         restart: Callable[[], None] | None = None,
         doctor: Callable[[], DoctorReport] = run_doctor,
+        restart_state: RestartState | None = None,
     ) -> None:
         super().__init__()
         self.client = client
+        self._restart_state = restart_state or RestartState()
         self.category = category if category in {c.key for c in categories()} else "phone"
         self._restart = restart or restart_backend
         self._doctor = doctor
         self.values: dict[str, Any] | None = None
-        # Saved switches being stored, with the user's choice until the answer.
-        self.pending: dict[str, bool] = {}
+        # Settings being stored, with the user's choice until the answer.
+        self.pending: dict[str, Any] = {}
         self.features: dict[str, Any] = features_view.initial()
         self.saving_features: set[str] = set()
-        self.restarting = False
         # The last failed action; a failed status read is kept apart so a
         # reload after a failed save does not hide the save's error.
         self.error = ""
@@ -501,7 +522,9 @@ class OptionsScreen(ModalScreen[None]):
                 yield Button(_("Sync"), id="options-sync-contacts")
         elif name == "policy":
             yield Static(_("Show Popups"), classes="options-label")
-            yield Select(_POLICIES, allow_blank=False, value="messages", id="options-policy")
+            yield PolicySelect(
+                _POLICIES, allow_blank=False, value="messages", id="options-policy",
+            )
         elif name == "click-rules":
             with Horizontal(classes="options-action"):
                 yield Static(
@@ -523,6 +546,10 @@ class OptionsScreen(ModalScreen[None]):
                 yield Static(_("All keys of the terminal client"),
                              classes="options-action-text")
                 yield Button(_("Keyboard Shortcuts"), id="options-help")
+
+    @property
+    def restarting(self) -> bool:
+        return self._restart_state.running
 
     # ---- loading --------------------------------------------------------
 
@@ -639,7 +666,9 @@ class OptionsScreen(ModalScreen[None]):
         self.query_one("#options-reconnect", Button).display = (
             view.offered and values.get("bluez_unresponsive") is not True
         )
-        policy = str(values.get("notification_policy") or "messages")
+        policy = str(
+            self.pending.get("policy") or values.get("notification_policy") or "messages"
+        )
         select = self.query_one("#options-policy", Select)
         with self.prevent(Select.Changed):
             select.value = policy if policy in {p for _l, p in _POLICIES} else "messages"
@@ -660,8 +689,6 @@ class OptionsScreen(ModalScreen[None]):
     @on(Checkbox.Changed)
     def checkbox_changed(self, event: Checkbox.Changed) -> None:
         checkbox_id = event.checkbox.id or ""
-        if event.value != event.checkbox.value:
-            return  # superseded by a later toggle or render
         if checkbox_id.startswith("opt-"):
             self._save_switch(checkbox_id.removeprefix("opt-"), event.value)
         elif checkbox_id.startswith("feature-"):
@@ -697,17 +724,11 @@ class OptionsScreen(ModalScreen[None]):
     @on(Select.Changed, "#options-policy")
     def policy_changed(self, event: Select.Changed) -> None:
         policy = event.value
-        # Select posts Changed after the fact, also for its initial value and
-        # for values set while rendering the daemon's state: only a choice
-        # still shown counts.
-        if (
-            self.values is None or "policy" in self.pending or not isinstance(policy, str)
-            or policy != event.select.value
-        ):
+        if self.values is None or "policy" in self.pending or not isinstance(policy, str):
             return
         if policy == self.values.get("notification_policy"):
             return
-        self.pending["policy"] = True
+        self.pending["policy"] = policy
 
         def saved(result: object) -> None:
             if self.values is not None:
@@ -761,20 +782,22 @@ class OptionsScreen(ModalScreen[None]):
     def restart_service(self) -> None:
         if self.restarting:
             return
-        self.restarting = True
+        state = self._restart_state
+        state.running = True
         self._render_state()
+
+        def open_screens() -> list[OptionsScreen]:
+            # This screen, or one opened again while the restart ran.
+            return [
+                screen for screen in self.app.screen_stack
+                if isinstance(screen, OptionsScreen) and not screen._closed
+            ]
 
         def restarted(_value: object) -> None:
             self.app.notify(_("BlueFerry service restarted"), markup=False)
-            # A restart that ends after Options closed reloads on the next
-            # visit (opening loads everything) instead of in the background.
-            if self._closed:
-                return
-            self.features = features_view.with_notice(self.features, "")
-            # First the status, then the switches, once the restarted daemon
-            # is likely to answer (as in the Qt and GTK clients).
-            self._status_timer.start(features_view.RESTART_REFRESH_DELAY_MS)
-            self._features_timer.start(features_view.RESTART_FEATURES_DELAY_MS)
+            # Options closed meanwhile reload when opened again.
+            for screen in open_screens():
+                screen.service_restarted()
 
         def failed(message: str) -> None:
             self.app.notify(
@@ -783,15 +806,22 @@ class OptionsScreen(ModalScreen[None]):
             )
 
         def finished() -> None:
-            self.restarting = False
-            if not self._closed:
-                self._render_state()
+            state.running = False
+            for screen in open_screens():
+                screen._render_state()
 
         # On the app, not this screen: closing Options must not swallow the
         # outcome of a restart that is already running.
         TextualTaskRunner(self.app, group="options-restart").submit(
             self._restart, restarted, failed, finished,
         )
+
+    def service_restarted(self) -> None:
+        self.features = features_view.with_notice(self.features, "")
+        # First the status, then the switches, once the restarted daemon is
+        # likely to answer (as in the Qt and GTK clients).
+        self._status_timer.start(features_view.RESTART_REFRESH_DELAY_MS)
+        self._features_timer.start(features_view.RESTART_FEATURES_DELAY_MS)
 
     @on(Button.Pressed, "#options-restart-button")
     @on(Button.Pressed, "#options-service-restart")

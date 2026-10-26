@@ -63,7 +63,7 @@ from blueferry.time_display import format_message_timestamp
 from blueferry.tui_calls import CallsScreen
 from blueferry.tui_doctor import DoctorScreen
 from blueferry.tui_notification_rules import REVISION_KEY, NotificationRulesScreen
-from blueferry.tui_options import OptionsScreen, categories
+from blueferry.tui_options import OptionsScreen, RestartState, categories
 from blueferry.tui_phone import RecentCallsScreen, now_playing_text
 
 _REFRESH_SECONDS = 15.0
@@ -700,6 +700,7 @@ class BlueFerryApp(App[None]):
         # Seams for tests; None keeps OptionsScreen's restart_backend.
         self._restart = restart
         self._doctor = doctor
+        self._restart_state = RestartState()
         self._monitor_factory = monitor_factory
         self._monitor: _Monitor | None = None
         self._pending_open_handle: str | None = None
@@ -1215,11 +1216,18 @@ class BlueFerryApp(App[None]):
         ))
 
     def action_options(self, category: str = "phone") -> None:
-        focused = self.focused
-        if isinstance(focused, Input | TextArea) or isinstance(self.screen, OptionsScreen):
+        # The guard keeps typing "o" in search or the composer from opening
+        # Options; the command palette opens it whatever has the focus.
+        if isinstance(self.focused, Input | TextArea):
+            return
+        self._push_options(category)
+
+    def _push_options(self, category: str) -> None:
+        if isinstance(self.screen, OptionsScreen):
             return
         self.push_screen(OptionsScreen(
-            self.state.client, category=category, restart=self._restart, doctor=self._doctor,
+            self.state.client, category=category, restart=self._restart,
+            doctor=self._doctor, restart_state=self._restart_state,
         ))
 
     def action_diagnostics(self) -> None:
@@ -1246,7 +1254,7 @@ class BlueFerryApp(App[None]):
         if isinstance(self.screen, OptionsScreen):
             self.screen.query_one("#options-tabs", TabbedContent).active = f"options-{category}"
             return
-        self.action_options(category)
+        self._push_options(category)
 
     def action_new_message(self) -> None:
         self.push_screen(NewMessageScreen(), self._new_message_ready)

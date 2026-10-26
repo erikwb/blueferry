@@ -612,3 +612,98 @@ def test_a_failed_diagnostics_run_says_so() -> None:
             assert "no python" in doctor.query_one("#doctor-report", TextArea).text
 
     asyncio.run(scenario())
+
+
+def test_a_toggle_survives_a_status_render_before_its_handler() -> None:
+    async def scenario() -> None:
+        backend = _OptionsBackend()
+        app = _app(backend)
+        async with app.run_test(size=(120, 40)) as pilot:
+            screen = await _open(app, pilot, "calls")
+            checkbox = screen.query_one("#opt-phone_battery_warning", Checkbox)
+            checkbox.toggle()
+            # The 15 s poll or StatusChanged renders the daemon's (old) value
+            # before the Changed message is handled.
+            screen.status_changed(backend.status())
+            await _until(pilot, lambda: ("battery", True) in backend.calls)
+            await _until(pilot, lambda: not screen.pending)
+            assert checkbox.value is True
+
+    asyncio.run(scenario())
+
+
+def test_a_policy_choice_survives_a_status_render_and_stays_shown_while_saving() -> None:
+    async def scenario() -> None:
+        release = threading.Event()
+        backend = _OptionsBackend(policy="all")
+        original = backend.set_notification_policy
+
+        def slow(policy: str) -> str:
+            release.wait(5)
+            return original(policy)
+
+        backend.set_notification_policy = slow  # type: ignore[method-assign]
+        app = _app(backend)
+        async with app.run_test(size=(120, 40)) as pilot:
+            screen = await _open(app, pilot, "notifications")
+            select = screen.query_one("#options-policy", Select)
+            select.value = "none"
+            screen.status_changed(backend.status())
+            await _until(pilot, lambda: screen.pending.get("policy") == "none")
+            # A render while saving keeps the user's choice.
+            screen.status_changed(backend.status())
+            await pilot.pause(0.05)
+            assert select.value == "none"
+            release.set()
+            await _until(pilot, lambda: ("policy", "none") in backend.calls)
+            await _until(pilot, lambda: "policy" not in screen.pending)
+            assert select.value == "none"
+
+    asyncio.run(scenario())
+
+
+def test_the_palette_opens_options_while_search_has_the_focus() -> None:
+    async def scenario() -> None:
+        app = _app(_OptionsBackend())
+        async with app.run_test(size=(120, 40)) as pilot:
+            app.query_one("#thread-search").focus()
+            await pilot.pause(0.05)
+            # Typing "o" in search stays text.
+            await pilot.press("o")
+            await pilot.pause(0.1)
+            assert not isinstance(app.screen, OptionsScreen)
+            commands = {command.title: command for command in app.get_system_commands(app.screen)}
+            commands["Options: Security"].callback()
+            screen = await _mounted(pilot, app, OptionsScreen)
+            assert screen.query_one("#options-tabs", TabbedContent).active == "options-security"
+
+    asyncio.run(scenario())
+
+
+def test_reopening_options_during_a_restart_cannot_start_a_second_one() -> None:
+    async def scenario() -> None:
+        release = threading.Event()
+        restarts: list[str] = []
+
+        def restart() -> None:
+            restarts.append("restart")
+            release.wait(5)
+
+        app = _app(_OptionsBackend(features={}), restart=restart)
+        async with app.run_test(size=(120, 40)) as pilot:
+            first = await _open(app, pilot, "about")
+            first.restart_service()
+            await _until(pilot, lambda: restarts == ["restart"])
+            first.dismiss(None)
+            await _until(pilot, lambda: not isinstance(app.screen, OptionsScreen))
+            second = await _open(app, pilot, "about")
+            assert second.restarting
+            assert second.query_one("#options-service-restart", Button).disabled
+            second.restart_service()
+            release.set()
+            await _until(pilot, lambda: not second.restarting)
+            await pilot.pause(0.1)
+            assert restarts == ["restart"]
+            assert not second.query_one("#options-service-restart", Button).disabled
+
+    asyncio.run(scenario())
