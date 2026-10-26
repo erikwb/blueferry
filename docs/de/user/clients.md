@@ -47,7 +47,8 @@ Die Schalter, die einen Neustart brauchen (unten), funktionieren wie im
 KDE-Client: Solange eine Änderung auf den Neustart wartet, beginnt jede
 Seite mit einem Hinweis und **Restart Service**. Die Plugin-Einstellungen
 und den Reiter Photos hat der GTK-Client noch nicht; dafür gibt es den
-KDE-Client oder `blueferry plugins`.
+KDE-Client oder auf der Kommandozeile `blueferry plugins` und
+`blueferry photos`.
 
 ## KDE Plasma (Kirigami)
 
