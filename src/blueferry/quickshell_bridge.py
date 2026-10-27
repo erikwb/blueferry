@@ -122,6 +122,15 @@ class QuickshellBridge:
     def emit_event(self, name: str, data: object = None) -> None:
         self.emit({"event": name, "data": data})
 
+    def activation_requested(self, handle: str, _token: str) -> None:
+        """Show the shell, opening ``handle`` unless it is empty.
+
+        The activation token stays unused: the window lives in the qs
+        process, and QML cannot hand Qt Wayland a token (it only reads
+        XDG_ACTIVATION_TOKEN from its own environment).
+        """
+        self.emit_event("open-message", handle)
+
     def dispatch(self, method: str, args: Mapping[str, Any]) -> object:
         if method == "client_active" and self.desktop_client:
             record_client_use("quickshell")
@@ -353,9 +362,7 @@ def main() -> int:
     if desktop_client:
         from blueferry.glib_client_activation import ClientActivation
 
-        activation = ClientActivation(
-            "quickshell", lambda handle, _token: bridge.emit_event("open-message", handle),
-        )
+        activation = ClientActivation("quickshell", bridge.activation_requested)
         record_client_use("quickshell")
     workers = _RequestWorkers(bridge)
     signal_matches = _install_signal_receivers(bridge)
