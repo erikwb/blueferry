@@ -179,6 +179,7 @@ class RunningCalls(Gtk.ListBox):
         root = self.get_root()
         focus = root.get_focus() if root is not None else None
         typing = self.tones is not None and focus is not None and focus.is_ancestor(self.tones)
+        cursor = self.tones.get_position() if typing and self.tones is not None else -1
         self.remove_all()
         self.rows = []
         self.tones = self.tones_button = None
@@ -194,7 +195,7 @@ class RunningCalls(Gtk.ListBox):
             self._tones_draft = ""  # no active call any more
         elif typing:
             self.tones.grab_focus()
-            self.tones.set_position(-1)
+            self.tones.set_position(cursor if 0 <= cursor <= len(self._tones_draft) else -1)
         if self.calls:
             self.append(self.sound.row)
         self.set_visible(bool(self.calls))
@@ -250,8 +251,10 @@ class RunningCalls(Gtk.ListBox):
         text = row.get_text()
         cleaned = phone_link_view.dial_tones(text)
         if cleaned != text:
+            # Keep the cursor where it was, minus the characters dropped before it.
+            position = len(phone_link_view.dial_tones(text[:row.get_position()]))
             row.set_text(cleaned)  # runs this handler again with the clean text
-            row.set_position(-1)
+            row.set_position(position)
             return
         self._tones_draft = cleaned
         self._render_sensitivity()
