@@ -5660,3 +5660,21 @@ Item {
     log = result.stdout + result.stderr
     assert result.returncode == 0 and "BLUEFERRY_QS1_OK" in log, log
     assert "ReferenceError" not in log and "TypeError" not in log, log
+
+
+def test_quickshell_empty_activation_only_presents_the_window(qml_engine) -> None:
+    source = (ROOT / "data/quickshell/shell.qml").read_text()
+    functions = _qml_functions(source, ("openMessage",))
+    script = '''(function() {
+        var calls = [];
+        var pendingMessageHandle = "earlier";
+        function presentWindow() { calls.push("present"); }
+        function selectMessage(handle) { calls.push("select:" + handle); return false; }
+        function reload() { calls.push("reload"); }
+    ''' + functions + '''
+        openMessage("");
+        if (pendingMessageHandle !== "earlier") throw new Error("pending handle replaced");
+        openMessage("m1");
+        return JSON.stringify(calls);
+    })()'''
+    assert _evaluate(qml_engine, script) == '["present","present","select:m1","reload"]'

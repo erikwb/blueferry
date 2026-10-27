@@ -257,7 +257,9 @@ recent app notifications, read only while open.
 `blueferry-tray` ships with the Qt client: a small separate process for the
 system tray (a StatusNotifierItem under KDE Plasma). Its phone icon carries
 the number of unread messages; the tooltip shows the connection, battery,
-signal, and network. Left-click opens the Qt client (or raises it). The tray
+signal, and network. Left-click opens the BlueFerry client you use, or
+raises it: a running one first, otherwise the one you used last, otherwise
+the one that suits your desktop. **Quit Tray Icon** closes only the tray item. The tray
 only talks to a running backend and never starts or restarts the daemon.
 While it runs, `blueferry-qt` leaves out its own tray icon.
 

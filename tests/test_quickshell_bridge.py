@@ -25,6 +25,14 @@ def test_only_the_desktop_bridge_can_change_the_preferred_client(monkeypatch):
     assert active == ["quickshell"]
 
 
+@pytest.mark.parametrize("handle", ["", "message-7"])
+def test_activation_forwards_the_handle_but_never_the_token(handle):
+    output = io.StringIO()
+    bridge = QuickshellBridge(FakeClient(), output, desktop_client=True)
+    bridge.activation_requested(handle, "single-use-token")
+    assert json.loads(output.getvalue()) == {"event": "open-message", "data": handle}
+
+
 class FakeClient:
     def __init__(self) -> None:
         self.calls: list[tuple[object, ...]] = []

@@ -110,7 +110,9 @@ blueferry features off mark_read_on_dismiss        # gilt nach einem Neustart
 Systemabschnitt der Kontrollleiste (unter KDE Plasma ein
 StatusNotifierItem). Das Symbol zeigt die Zahl der ungelesenen Nachrichten,
 der Tooltip die Verbindung, den Akku, den Empfang und das Netz. Ein Klick
-öffnet BlueFerry oder holt ein offenes Fenster nach vorne.
+öffnet BlueFerry oder holt ein offenes Fenster nach vorne. Dabei nimmt es
+den Client, den du benutzt: zuerst ein laufendes BlueFerry-Fenster, sonst den
+zuletzt benutzten Client, sonst den, der zu deinem Desktop passt.
 
 Starte es im Anwendungsmenü als **BlueFerry Tray**. Beim Anmelden startet es
 nur, wenn du das willst: Hake im Menü des Symbols **Start at login** an, oder
@@ -126,7 +128,8 @@ dieselbe Datei, die auch die Autostart-Einstellungen des Desktops anzeigen.
 Das Symbol folgt nur einem laufenden Hintergrunddienst und startet ihn nie
 selbst. Ohne eingerichtetes BlueFerry bleibt es ausgeblendet. Solange es
 läuft, verzichtet `blueferry-qt` auf sein eigenes Symbol und beendet sich,
-wenn du sein Fenster schließt; das Symbol öffnet es wieder.
+wenn du sein Fenster schließt; das Symbol öffnet es wieder. **Quit Tray Icon**
+im Menü entfernt nur das Symbol; BlueFerry und offene Fenster laufen weiter.
 
 ## Quickshell
 
