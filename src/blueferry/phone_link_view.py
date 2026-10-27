@@ -3,8 +3,10 @@
 The rules live in :mod:`blueferry.phone_overview`; this module adapts them
 to what the clients show: the Qt client binds the dictionaries in QML, the
 GTK client reads them in ``ui/phone_card.py``, ``ui/calls.py`` and
-``ui/notifications.py``. Every string returned here is plain text; QML
-renders it with Text.PlainText and GTK sets it without markup.
+``ui/notifications.py``, the terminal client in ``tui_phone.py``,
+``tui_calls.py`` and ``tui_notifications.py``. Every string returned here is
+plain text; QML renders it with Text.PlainText, GTK sets it without markup
+and the terminal client renders it as Rich ``Text``.
 """
 from __future__ import annotations
 

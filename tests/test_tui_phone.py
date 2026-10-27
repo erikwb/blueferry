@@ -1,11 +1,22 @@
 """Opt-in now playing and recent calls in the Textual client (fakes only)."""
 from __future__ import annotations
 
+import threading
+
+from textual.widgets import Button, Input, Static
+
 from blueferry import phone_overview as overview
 from blueferry.client import BackendError
-from blueferry.models import BackendStatus, CallHistoryEntry
-from blueferry.tui import BlueFerryApp, TuiState
-from blueferry.tui_phone import RecentCallsScreen, now_playing_text
+from blueferry.models import BackendStatus, CallHistoryEntry, CallsSnapshot
+from blueferry.tui import BlueFerryApp, NewMessageScreen, TuiState
+from blueferry.tui_calls import CallsScreen, DialConfirmScreen
+from blueferry.tui_notifications import NotificationsScreen
+from blueferry.tui_phone import (
+    CallGroupItem,
+    PhoneOverviewScreen,
+    RecentCallsScreen,
+    now_playing_text,
+)
 from tests.test_tui import _Backend, _run_headless
 
 
@@ -179,15 +190,20 @@ def test_recent_calls_screen_lists_calls_as_plain_text() -> None:
             await _until(pilot, lambda: app.state.status.extra.get("call_history_enabled"))
             await pilot.press("h")
             assert isinstance(app.screen, RecentCallsScreen)
-            body = app.screen.query_one("#recent-calls-list")
-            await _until(pilot, lambda: "Ana" in body.render().plain)
-            plain = body.render().plain
+            screen = app.screen
+            await _until(pilot, lambda: "Ana" in screen.body_text)
+            plain = screen.body_text
             assert "[@click=app.quit]Ana[/]  Missed · +41790000000" in plain
             assert "+41790000001  Outgoing" in plain
+            # Day sections from call_groups; rows carry the direction label.
+            assert screen.groups[0]["day"] in plain.splitlines()
+            rows = list(screen.query(CallGroupItem))
+            assert str(rows[0].tooltip).startswith("Missed, [@click=app.quit]Ana[/], ")
             assert backend.history_calls == [100]
 
             await pilot.press("m")
-            assert "+41790000001" not in body.render().plain
+            await _until(pilot, lambda: "+41790000001" not in screen.body_text)
+            assert "Ana" in screen.body_text
             await pilot.press("escape")
             assert not isinstance(app.screen, RecentCallsScreen)
 
@@ -268,5 +284,175 @@ def test_disabling_call_history_closes_the_open_history_screen() -> None:
             backend.extra["call_history_enabled"] = False
             app._load_data()
             await _until(pilot, lambda: not isinstance(app.screen, RecentCallsScreen))
+
+    _run_headless(scenario())
+
+
+class _CallingBackend(_PhoneBackend):
+    def __init__(self, **extra) -> None:
+        super().__init__(**extra)
+        self.dialed: list[str] = []
+
+    def calls(self) -> CallsSnapshot:
+        return CallsSnapshot(state="ready")
+
+    def dial(self, number: str) -> str:
+        self.dialed.append(number)
+        return "voicecall01"
+
+    def find_contacts(self, query: str) -> list[tuple[str, str]]:
+        return []
+
+    def notifications(self, limit: int = 50) -> dict:
+        return {"enabled": False, "content": False, "notifications": []}
+
+
+def _overview_shown(app) -> bool:
+    screen = app.screen
+    return isinstance(screen, PhoneOverviewScreen) and bool(screen.query("#phone-overview-name"))
+
+
+def _overview_text(screen) -> str:
+    return "\n".join(
+        str(screen.query_one(selector, Static).render())
+        for selector in (
+            "#phone-overview-name", "#phone-overview-connection",
+            "#phone-overview-status", "#phone-overview-media", "#phone-overview-hints",
+        )
+    )
+
+
+def test_overview_shows_the_phone_card_and_names_the_settings() -> None:
+    backend = _CallingBackend(
+        phone_battery_level=80, phone_network_name="Swiss[b]com[/b]",
+        media_control_enabled=True,
+    )
+
+    async def scenario() -> None:
+        app = BlueFerryApp(
+            TuiState(backend), monitor_factory=lambda: None,
+            phone_name=lambda: "[@click=app.quit]Josh's iPhone[/]",
+        )
+        async with app.run_test(size=(120, 40)) as pilot:
+            await _until(pilot, lambda: app.now_playing.visible)
+            app.action_phone_overview()
+            await _until(pilot, lambda: _overview_shown(app))
+            screen = app.screen
+            await _until(pilot, lambda: "Josh" in _overview_text(screen))
+            text = _overview_text(screen)
+            assert "[@click=app.quit]Josh's iPhone[/]" in text
+            assert "Connected" in text
+            assert "Battery 80 %" in text and "Network Swiss[b]com[/b]" in text
+            assert "[b]Song[/b] — Band" in text
+            # Off features name the switch and the settings category.
+            assert "Phone calls: Turn on" in text and "Calls & Audio" in text
+            assert "Recent calls: Turn on" in text
+            assert "Notification list: Turn on" in text
+            assert screen.query_one("#phone-overview-calls", Button).disabled
+            assert screen.query_one("#phone-overview-recent", Button).disabled
+
+            # A status update while it is open: calls and history switched on.
+            backend.extra.update(calls_enabled=True, call_history_enabled=True)
+            app._load_data()
+            await _until(pilot, lambda: "Phone calls:" not in _overview_text(screen))
+            assert not screen.query_one("#phone-overview-calls", Button).disabled
+            assert "Recent calls:" not in _overview_text(screen)
+
+            screen.query_one("#phone-overview-notifications", Button).press()
+            await _until(pilot, lambda: isinstance(app.screen, NotificationsScreen))
+            app.screen.action_close()
+            await _until(pilot, lambda: not isinstance(app.screen, NotificationsScreen))
+
+            # The name is read once and kept.
+            app.action_phone_overview()
+            await _until(pilot, lambda: _overview_shown(app))
+            await _until(pilot, lambda: "Josh" in _overview_text(app.screen))
+
+    _run_headless(scenario())
+
+
+def test_a_late_phone_name_after_closing_the_overview_is_dropped() -> None:
+    backend = _CallingBackend()
+    release = threading.Event()
+    started = threading.Event()
+
+    def slow_name() -> str:
+        started.set()
+        release.wait(5)
+        return "Late"
+
+    async def scenario() -> None:
+        app = BlueFerryApp(TuiState(backend), monitor_factory=lambda: None, phone_name=slow_name)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause(0.2)
+            app.action_phone_overview()
+            await _until(pilot, started.is_set)
+            screen = app.screen
+            screen.action_close()
+            await _until(pilot, lambda: not screen.is_attached)
+            release.set()
+            await pilot.pause(0.3)
+            assert app.is_running
+            assert screen.phone_name == "iPhone"
+
+    _run_headless(scenario())
+
+
+def test_call_back_confirms_and_message_prefills_the_recipient() -> None:
+    backend = _CallingBackend(
+        call_history_enabled=True, calls_enabled=True, calls_state="ready",
+    )
+
+    async def scenario() -> None:
+        app = BlueFerryApp(TuiState(backend), monitor_factory=lambda: None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await _until(pilot, lambda: app.state.status.extra.get("call_history_enabled"))
+            await pilot.press("h")
+            screen = app.screen
+            await _until(pilot, lambda: bool(list(screen.query(CallGroupItem))))
+            await _until(
+                pilot, lambda: not screen.query_one("#recent-calls-call", Button).disabled,
+            )
+            screen.call_back()
+            await _until(pilot, lambda: isinstance(app.screen, DialConfirmScreen)
+                         and bool(app.screen.query("#calls-confirm-call")))
+            assert app.screen.number == "+41790000000"
+            app.screen.call_button()
+            await _until(pilot, lambda: backend.dialed == ["+41790000000"])
+            assert isinstance(app.screen, CallsScreen)
+            app.screen.action_close()
+
+            await pilot.press("h")
+            screen = app.screen
+            await _until(pilot, lambda: bool(list(screen.query(CallGroupItem))))
+            await _until(
+                pilot, lambda: not screen.query_one("#recent-calls-message", Button).disabled,
+            )
+            screen.message()
+            await _until(pilot, lambda: isinstance(app.screen, NewMessageScreen))
+            await pilot.pause(0.1)
+            assert app.screen.query_one("#new-recipient", Input).value == "+41790000000"
+
+    _run_headless(scenario())
+
+
+def test_call_back_waits_for_calls_to_be_ready() -> None:
+    backend = _CallingBackend(call_history_enabled=True)
+
+    async def scenario() -> None:
+        app = BlueFerryApp(TuiState(backend), monitor_factory=lambda: None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await _until(pilot, lambda: app.state.status.extra.get("call_history_enabled"))
+            await pilot.press("h")
+            screen = app.screen
+            await _until(pilot, lambda: bool(list(screen.query(CallGroupItem))))
+            await pilot.pause(0.1)
+            button = screen.query_one("#recent-calls-call", Button)
+            assert button.disabled
+            assert "Calls & Audio" in str(button.tooltip)
+            screen.call_back()
+            await pilot.pause(0.1)
+            assert isinstance(app.screen, RecentCallsScreen)
+            assert backend.dialed == []
 
     _run_headless(scenario())
