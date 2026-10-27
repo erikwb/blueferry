@@ -7,13 +7,16 @@ are local cache files the plugin client already checked and are decoded off
 the GTK thread. Without a plugin, or before its setup, the tab says why. A
 click downloads the original (a spinner in the header shows the download)
 and opens it in the default viewer; a downloaded original can be dragged
-into other apps. Labels are plain text.
+into other apps. A thumbnail whose format GdkPixbuf has no loader for
+(Immich sends WebP) reveals a banner naming the missing loader instead of
+leaving silent placeholders. Labels are plain text.
 """
 
 from __future__ import annotations
 
+import functools
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Protocol
 
 from gi.repository import Adw, Gdk, GdkPixbuf, Gio, GLib, Gtk, Pango
 
@@ -27,8 +30,53 @@ THUMBNAIL_SIZE = 256
 MAX_THUMBNAIL_BYTES = 8 * 1024 * 1024
 MAX_THUMBNAIL_PIXELS = 40_000_000
 CELL_SIZE = 132
-ThumbnailLoader = Callable[[str, Gio.Cancellable, Callable[[Gdk.Texture | None], None]], None]
 FILTERS = ("all", "photos", "videos")
+# Enough of a file to tell WebP (RIFF....WEBP) and AVIF/HEIF (....ftypBRND).
+SNIFF_BYTES = 16
+_HEIF_BRANDS = {b"heic", b"heix", b"hevc", b"hevx", b"heim", b"heis", b"hevm", b"hevs",
+                b"mif1", b"msf1"}
+
+
+class ThumbnailDone(Protocol):
+    def __call__(self, texture: Gdk.Texture | None, missing: str = "") -> None:
+        """``texture``, or ``None`` and the name of the GdkPixbuf format
+        whose loader is missing ("" when the file is corrupt or too large)."""
+
+
+ThumbnailLoader = Callable[[str, Gio.Cancellable, ThumbnailDone], None]
+
+
+@functools.cache
+def supported_formats() -> frozenset[str]:
+    """The names of the formats the installed GdkPixbuf loaders read (once)."""
+    return frozenset(str(fmt.get_name()) for fmt in GdkPixbuf.Pixbuf.get_formats())
+
+
+def sniffed_format(head: bytes) -> str:
+    """The GdkPixbuf format name of a WebP, AVIF or HEIF header ("" otherwise)."""
+    if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        return "webp"
+    if head[4:8] == b"ftyp":
+        brand = head[8:12]
+        if brand in (b"avif", b"avis"):
+            return "avif"
+        if brand in _HEIF_BRANDS:
+            return "heif"
+    return ""
+
+
+def missing_loader(head: bytes) -> str:
+    """The format of an undecodable thumbnail whose loader is not installed
+    ("" when GdkPixbuf has one, so the file itself is broken)."""
+    kind = sniffed_format(head)
+    return kind if kind and kind not in supported_formats() else ""
+
+
+def missing_loader_text(kind: str) -> str:
+    if kind == "webp":
+        return _("Thumbnails need the WebP image loader (webp-pixbuf-loader)")
+    return _("Thumbnails need the {format} image loader for GdkPixbuf").format(
+        format=kind.upper())
 
 
 def file_url(path: object) -> str:
@@ -52,13 +100,13 @@ def placeholder(state: dict, kind: str) -> tuple[str, str]:
     return title, str(state.get("hint") or "")
 
 
-def load_thumbnail(uri: str, cancellable: Gio.Cancellable,
-                   done: Callable[[Gdk.Texture | None], None]) -> None:
+def load_thumbnail(uri: str, cancellable: Gio.Cancellable, done: ThumbnailDone) -> None:
     """Decode a local thumbnail asynchronously (GIO and GdkPixbuf threads).
 
     The file's size and the declared canvas are checked first; anything over
     :data:`MAX_THUMBNAIL_BYTES` or :data:`MAX_THUMBNAIL_PIXELS` stays a
-    placeholder.
+    placeholder. A file GdkPixbuf cannot read is sniffed (its first
+    :data:`SNIFF_BYTES`) to tell a missing loader from a broken file.
     """
     if not uri.startswith("file:"):
         done(None)
@@ -69,11 +117,34 @@ def load_thumbnail(uri: str, cancellable: Gio.Cancellable,
         done(None)
         return
 
+    def sniffed(stream: Gio.InputStream, result) -> None:
+        try:
+            head = stream.read_bytes_finish(result).get_data() or b""
+        except GLib.Error:
+            head = b""
+        stream.close_async(GLib.PRIORITY_LOW, None, None)
+        done(None, missing_loader(head))
+
+    def opened_for_sniff(file: Gio.File, result) -> None:
+        try:
+            stream = file.read_finish(result)
+        except GLib.Error:
+            done(None)
+            return
+        stream.read_bytes_async(SNIFF_BYTES, GLib.PRIORITY_LOW, cancellable, sniffed)
+
+    def unreadable() -> None:
+        """GdkPixbuf refused the file: a missing loader, or a broken file?"""
+        if cancellable.is_cancelled():
+            done(None)
+            return
+        file.read_async(GLib.PRIORITY_LOW, cancellable, opened_for_sniff)
+
     def decoded(_source, result) -> None:
         try:
             pixbuf = GdkPixbuf.Pixbuf.new_from_stream_finish(result)
         except GLib.Error:
-            done(None)
+            unreadable()
             return
         memory = (Gdk.MemoryFormat.R8G8B8A8 if pixbuf.get_has_alpha()
                   else Gdk.MemoryFormat.R8G8B8)
@@ -93,9 +164,12 @@ def load_thumbnail(uri: str, cancellable: Gio.Cancellable,
 
     def measured(_source, result) -> None:
         try:
-            _format, width, height = GdkPixbuf.Pixbuf.get_file_info_finish(result)
+            found, width, height = GdkPixbuf.Pixbuf.get_file_info_finish(result)
         except GLib.Error:
-            done(None)
+            unreadable()
+            return
+        if found is None:  # no loader recognized the header
+            unreadable()
             return
         if width <= 0 or height <= 0 or width * height > MAX_THUMBNAIL_PIXELS:
             done(None)
@@ -205,6 +279,11 @@ class PhotosPage(Gtk.Box):
         self.refresh_button.connect("clicked", lambda _b: self.model.refresh())
         header.append(self.refresh_button)
         self.append(header)
+
+        # Sticky: GdkPixbuf reads its loaders once, so only a restart after
+        # installing the loader can help.
+        self.loader_banner = Adw.Banner(use_markup=False, revealed=False)
+        self.append(self.loader_banner)
 
         self.summary = Gtk.Label(
             xalign=0, ellipsize=Pango.EllipsizeMode.END, use_markup=False,
@@ -354,15 +433,22 @@ class PhotosPage(Gtk.Box):
             self._update_cell(item)
             video = item.get("video") is True
 
-            def loaded(texture, ident=photo_id, mark=badge, video=video) -> None:
+            def loaded(texture, missing="", ident=photo_id, mark=badge, video=video) -> None:
                 if cancellable.is_cancelled() or ident not in self.pictures:
                     return
+                if missing:
+                    self._loader_missing(missing)
                 if texture is not None:
                     self.pictures[ident].set_paintable(texture)
                     mark.set_visible(video)
 
             if item.get("thumbnail"):
                 self._thumbnails(str(item["thumbnail"]), cancellable, loaded)
+
+    def _loader_missing(self, kind: str) -> None:
+        if not self.loader_banner.get_revealed():
+            self.loader_banner.set_title(missing_loader_text(kind))
+            self.loader_banner.set_revealed(True)
 
     def _update_cell(self, item: dict) -> None:
         child = self.cells.get(str(item["id"]))

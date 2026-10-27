@@ -539,6 +539,26 @@ def _photos_scenario(tmp, answers):
     assert page.cells["a"].get_tooltip_text() == \
         "Click to open, or drag the file into another app"
     assert page._drag("a") is not None and page._drag("b") is None
+    assert not page.loader_banner.get_revealed()
+
+    # A WebP thumbnail without the WebP loader: one banner names it.
+    from unittest.mock import patch
+
+    from blueferry.ui import photos as photos_ui
+    from tests.test_photo_thumbnails import webp_lossless
+
+    (tmp / "d.webp").write_bytes(webp_lossless(8, 8))
+    answers["list"] = (plugin, photos_view.PhotosSnapshot(
+        True, True, "4 recent items", [*photos, Photo("d", "", "image", tmp / "d.webp")]))
+    with patch.object(photos_ui, "supported_formats", lambda: frozenset({"png", "jpeg"})):
+        page.model.refresh()
+        list_work.run_tasks()
+        deadline = time.monotonic() + 3
+        while not page.loader_banner.get_revealed():
+            assert time.monotonic() < deadline, "no banner for the missing loader"
+            _settle()
+    assert "webp-pixbuf-loader" in page.loader_banner.get_title()
+    assert page.pictures["d"].get_paintable() is None
 
     # Hidden: forgotten. Without a plugin, the hint says why (plain text).
     window.show_tab("messages")
