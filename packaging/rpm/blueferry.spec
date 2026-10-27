@@ -67,6 +67,8 @@ Requires:       %{name} = %{version}-%{release}
 Requires:       gtk4
 Requires:       libadwaita
 Requires:       python3-gobject
+# Photos thumbnails are WebP. Fedora's gdk-pixbuf2 decodes them through glycin
+# and obsoletes webp-pixbuf-loader, so no separate loader is required.
 
 %description -n blueferry-gtk
 BlueFerry's GTK4 graphical client for GNOME and other GTK-based desktops.
@@ -77,6 +79,7 @@ Requires:       %{name} = %{version}-%{release}
 Requires:       kf6-kirigami
 Requires:       kf6-qqc2-desktop-style
 Requires:       python3-pyside6
+Requires:       qt6-qtimageformats
 
 %description -n blueferry-qt
 BlueFerry's Qt 6 and Kirigami graphical client for KDE Plasma and other

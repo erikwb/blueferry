@@ -183,6 +183,7 @@ package_blueferry-gtk() {
     'gtk4'
     'libadwaita>=1.5'
     'python-gobject'
+    'webp-pixbuf-loader'
   )
 
   cd "$pkgbase-$pkgver"
@@ -203,6 +204,7 @@ package_blueferry-qt() {
     'kirigami'
     'pyside6'
     'qqc2-desktop-style'
+    'qt6-imageformats'
   )
 
   cd "$pkgbase-$pkgver"

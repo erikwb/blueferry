@@ -61,6 +61,7 @@ Depends:
  gir1.2-adw-1,
  gir1.2-gtk-4.0,
  python3-gi,
+ webp-pixbuf-loader,
 Description: GTK4/libadwaita client for BlueFerry
  This package contains BlueFerry's GTK4 graphical client for GNOME and other
  GTK-based desktops.
@@ -84,6 +85,7 @@ Depends:
  qml6-module-qtquick,
  qml6-module-qtquick-controls,
  qml6-module-qtquick-layouts,
+ qt6-image-formats-plugins,
 Description: Qt/Kirigami client for BlueFerry
  This package contains BlueFerry's Qt 6 and Kirigami graphical client for KDE
  Plasma and other Qt-based desktops.
