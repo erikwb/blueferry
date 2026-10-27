@@ -19,17 +19,8 @@ Controls.ScrollView {
     readonly property var hints: card.bridge.featureHints || ({})
     readonly property var audio: card.bridge.phoneAudio || ({})
     readonly property var nowPlaying: card.bridge.nowPlaying || ({})
-    readonly property bool connected: card.status.map === true
     readonly property bool hasPhoneStatus: typeof card.status.phone_battery_level === "number"
         || typeof card.status.phone_signal_strength === "number"
-
-    function connectionText() {
-        if (card.status.daemon !== true)
-            return qsTr("BlueFerry service is not running")
-        if (card.status.initializing === true)
-            return qsTr("Connecting…")
-        return card.connected ? qsTr("Connected") : qsTr("Not connected")
-    }
 
     contentWidth: availableWidth
     Controls.ScrollBar.horizontal.policy: Controls.ScrollBar.AlwaysOff
@@ -63,7 +54,7 @@ Controls.ScrollView {
                 Controls.Label {
                     objectName: "phoneCardConnection"
                     Layout.fillWidth: true
-                    text: card.connectionText()
+                    text: card.bridge.phoneConnection || ""
                     textFormat: Text.PlainText
                     color: Kirigami.Theme.disabledTextColor
                     elide: Text.ElideRight

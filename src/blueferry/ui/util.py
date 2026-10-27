@@ -1,7 +1,17 @@
 """Small shared helpers for the UI pages."""
 from __future__ import annotations
 
+from collections.abc import Callable
+
+from gi.repository import GLib
+
+from blueferry.client_tasks import ScheduledTimer, Timer
 from blueferry.time_display import format_message_timestamp
+
+
+def glib_timer(callback: Callable[[], None]) -> Timer:
+    """A ``client_tasks.TimerFactory`` over the default GLib main context."""
+    return ScheduledTimer(GLib.timeout_add, GLib.source_remove, callback)
 
 
 def format_ts(value: str | None) -> str:
