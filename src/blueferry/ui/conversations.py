@@ -473,6 +473,13 @@ class ConversationsPage(Gtk.Box):
         self._new_message_dialog.present(self.get_root())
         self._new_recipient.grab_focus()
 
+    def compose_to(self, address: str) -> None:
+        """Open New Message addressed to ``address`` (from the Calls tab)."""
+        self._open_new_message(None)
+        self._new_recipient.set_text(address)
+        self._new_destination = address
+        self._new_body.grab_focus()
+
     def _on_contact_search_changed(self, entry) -> None:
         query = entry.get_text().strip()
         self._new_destination = None

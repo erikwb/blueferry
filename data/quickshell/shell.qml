@@ -51,6 +51,22 @@ ShellRoot {
   readonly property SavedChoice missedCallPopups: SavedChoice {}
   readonly property SavedChoice contactPhotos: SavedChoice {}
   readonly property SavedChoice otpAutocopy: SavedChoice {}
+  readonly property SavedChoice batteryWarning: SavedChoice {}
+  readonly property SavedChoice mirrorRemovals: SavedChoice {}
+  // local.env switches: the bridge's features view, and a
+  // choice being saved (name → value) until SetFeature answers.
+  property var features: ({})
+  property var featurePending: ({})
+  property bool restartBusy: false
+  property bool reconnectBusy: false
+  property bool syncContactsBusy: false
+  property string contactsSyncNotice: ""
+  property var doctor: ({})
+  // Recent iPhone notifications: private, read only while the settings
+  // page shows the list in a visible window, forgotten otherwise.
+  property var notificationList: ({})
+  readonly property bool notificationListWatched: window.visible && root.phoneSettingsVisible
+    && phoneSettingsPage.notificationsExpanded
   property bool storagePolicyBusy: false
   property bool storageUnlockBusy: false
 
@@ -151,6 +167,41 @@ ShellRoot {
 
   onSelectedThreadKeyChanged: root.markSelectedThreadRead()
   onPhoneSettingsVisibleChanged: root.markSelectedThreadRead()
+  // Read the switches when Settings opens, or once setup finishes while it
+  // is open; configurationUpdated repeats every refresh and would poll.
+  readonly property bool featuresWanted: setupController.configured && root.phoneSettingsVisible
+  onFeaturesWantedChanged: if (root.featuresWanted) root.loadFeatures()
+  onNotificationListWatchedChanged: root.refreshNotificationList()
+
+  function loadFeatures() {
+    if (setupController.configured) backendBridge.requestLatest("features", {})
+  }
+
+  // Event-driven like the other clients: on showing, on NotificationsChanged
+  // and when the list is switched on or off; never on a timer.
+  function refreshNotificationList() {
+    if (root.notificationListWatched) {
+      backendBridge.requestLatest("notifications", {})
+    } else {
+      backendBridge.cancelLatest("notifications")
+      root.notificationList = ({})
+    }
+  }
+
+  function applyFeatures(result) {
+    root.features = typeof result === "object" && result !== null ? result : ({})
+    root.featurePending = ({})
+  }
+
+  Timer {
+    id: restartFollowUp
+    // features_view.RESTART_FEATURES_DELAY_MS: once the restarted service answers.
+    interval: 1200
+    onTriggered: {
+      root.reload()
+      root.loadFeatures()
+    }
+  }
 
   function selectMessage(handle) {
     const thread = conversationLogic.threadForMessage(threads, handle)
@@ -260,7 +311,13 @@ ShellRoot {
           root.markStatusUnavailable("BlueFerry backend returned invalid status data")
           return
         }
+        const historyChanged = result.notification_history_enabled
+          !== root.backendStatus.notification_history_enabled
+        // The service came back: the switches read while it was away are
+        // only the local.env fallback.
+        const daemonReturned = result.daemon === true && root.backendStatus.daemon !== true
         root.backendStatus = result
+        if (daemonReturned && root.featuresWanted) root.loadFeatures()
         if (typeof result.bluetooth_restart_command === "string")
           root.bluetoothRestartCommand = result.bluetooth_restart_command
         var policy = result.notification_policy || "messages"
@@ -277,6 +334,11 @@ ShellRoot {
         root.missedCallPopups.reported(result.missed_call_notifications !== false)
         root.contactPhotos.reported(result.contact_photos === true)
         root.otpAutocopy.reported(result.otp_autocopy === true)
+        root.batteryWarning.reported(result.phone_battery_warning === true)
+        root.mirrorRemovals.reported(result.mirror_iphone_removals === true)
+        if (result.reconnect_view && result.reconnect_view.error)
+          root.errorText = String(result.reconnect_view.error)
+        if (historyChanged && root.notificationListWatched) root.refreshNotificationList()
         var storagePolicy = result.storage_policy || "encrypted"
         root.storagePolicy = ["encrypted", "plaintext", "none"].indexOf(storagePolicy) >= 0
           ? storagePolicy : "encrypted"
@@ -415,6 +477,36 @@ ShellRoot {
           root.storageDetail = result.storage_detail || root.storageDetail
         }
         root.reload()
+      } else if (method === "set_phone_battery_warning") {
+        root.batteryWarning.saved(result === true, root.statusBusy)
+        root.reload()
+      } else if (method === "set_mirror_notification_removals") {
+        root.mirrorRemovals.saved(result === true, root.statusBusy)
+        root.reload()
+      } else if (method === "reconnect_phone") {
+        root.reconnectBusy = false
+        if (typeof result === "object" && result !== null && result.error)
+          root.errorText = String(result.error)
+        root.reload()
+      } else if (method === "sync_contacts") {
+        root.syncContactsBusy = false
+        root.contactsSyncNotice = typeof result === "object" && result !== null
+          ? String(result.text || "") : ""
+        root.reload()
+      } else if (method === "features") {
+        root.applyFeatures(result)
+      } else if (method === "set_feature") {
+        root.applyFeatures(result)
+      } else if (method === "restart_backend") {
+        root.restartBusy = false
+        root.features = Object.assign({}, root.features, {notice: ""})
+        restartFollowUp.restart()
+      } else if (method === "doctor") {
+        root.doctor = typeof result === "object" && result !== null
+          ? result : ({running: false})
+      } else if (method === "notifications") {
+        if (root.notificationListWatched)
+          root.notificationList = typeof result === "object" && result !== null ? result : ({})
       }
     }
 
@@ -506,6 +598,38 @@ ShellRoot {
       } else if (method === "unlock_storage") {
         root.storageUnlockBusy = false
         root.errorText = message
+      } else if (method === "set_phone_battery_warning") {
+        root.batteryWarning.failed(root.backendStatus.phone_battery_warning === true)
+        root.errorText = message || "Could not save the battery warning preference"
+        root.reload()
+      } else if (method === "set_mirror_notification_removals") {
+        root.mirrorRemovals.failed(root.backendStatus.mirror_iphone_removals === true)
+        root.errorText = message || "Could not save the notification sync preference"
+        root.reload()
+      } else if (method === "reconnect_phone") {
+        root.reconnectBusy = false
+        root.errorText = message || "The reconnect request failed."
+      } else if (method === "sync_contacts") {
+        root.syncContactsBusy = false
+        root.contactsSyncNotice = ""
+        root.errorText = "Contact sync failed: " + (message || "BlueFerry is unavailable")
+      } else if (method === "features") {
+        root.features = ({})
+      } else if (method === "set_feature") {
+        root.featurePending = ({})
+        root.errorText = message || "Could not save the setting"
+        root.loadFeatures()
+      } else if (method === "restart_backend") {
+        root.restartBusy = false
+        root.errorText = message || "Could not restart the BlueFerry service"
+      } else if (method === "doctor") {
+        root.doctor = {running: false, ran: true, ok: false, level: "error",
+                       summary: "One or more checks failed.", text: message}
+      } else if (method === "notifications") {
+        if (root.notificationListWatched)
+          root.notificationList = {rows: [], failed: true,
+            title: "Notifications Are Unavailable",
+            explanation: message || "Notifications are unavailable"}
       } else {
         avatars.disconnected()
         root.statusBusy = false
@@ -539,6 +663,15 @@ ShellRoot {
           root.otpAutocopy.failed(root.backendStatus.otp_autocopy === true)
         root.storagePolicyBusy = false
         root.storageUnlockBusy = false
+        if (root.batteryWarning.busy)
+          root.batteryWarning.failed(root.backendStatus.phone_battery_warning === true)
+        if (root.mirrorRemovals.busy)
+          root.mirrorRemovals.failed(root.backendStatus.mirror_iphone_removals === true)
+        root.featurePending = ({})
+        root.restartBusy = false
+        root.reconnectBusy = false
+        root.syncContactsBusy = false
+        if (root.doctor.running === true) root.doctor = ({})
         root.errorText = message
       }
     }
@@ -548,6 +681,8 @@ ShellRoot {
       if (name === "open-message") root.openMessage(String(data || ""))
       else if (name === "history-changed" || name === "status-changed") root.reload()
       else if (name === "now-playing-changed") root.refreshNowPlaying()
+      else if (name === "notifications-changed" && root.notificationListWatched)
+        root.refreshNotificationList()
       else if (name === "host" && data && typeof data.bluetooth_restart_command === "string")
         root.bluetoothRestartCommand = data.bluetooth_restart_command
     }
@@ -1208,7 +1343,16 @@ ShellRoot {
             contact_photos: root.contactPhotos.value
           }, root.backendStatus.otp_autocopy === undefined ? {} : {
             otp_autocopy: root.otpAutocopy.value
+          }, root.backendStatus.phone_battery_warning === undefined ? {} : {
+            phone_battery_warning: root.batteryWarning.value
+          }, typeof root.backendStatus.mirror_iphone_removals !== "boolean" ? {} : {
+            mirror_iphone_removals: root.mirrorRemovals.value
           })
+          features: root.features
+          featurePending: root.featurePending
+          doctor: root.doctor
+          notificationList: root.notificationList
+          contactsSyncNotice: root.contactsSyncNotice
           busy: ({notifications: root.notificationPolicyBusy,
                   contactsOnly: root.contactsOnlyNotificationsBusy,
                   ancsActions: root.ancsActionsBusy,
@@ -1221,6 +1365,12 @@ ShellRoot {
                   callHistory: root.callHistory.busy || root.missedCallPopups.busy,
                   photos: root.contactPhotos.busy,
                   otp: root.otpAutocopy.busy,
+                  batteryWarning: root.batteryWarning.busy,
+                  mirrorRemovals: root.mirrorRemovals.busy,
+                  reconnect: root.reconnectBusy,
+                  syncContacts: root.syncContactsBusy,
+                  features: Object.keys(root.featurePending).length > 0,
+                  restart: root.restartBusy,
                   storage: root.storagePolicyBusy})
           visible: root.phoneSettingsVisible
           Layout.fillWidth: true
@@ -1233,6 +1383,23 @@ ShellRoot {
             if (method === "set_notification_policy") root.notificationPolicyBusy = true
             if (method === "set_contact_photos") root.contactPhotos.request(args.enabled)
             if (method === "set_otp_autocopy") root.otpAutocopy.request(args.enabled)
+            if (method === "set_phone_battery_warning") root.batteryWarning.request(args.enabled)
+            if (method === "set_mirror_notification_removals") root.mirrorRemovals.request(args.enabled)
+            if (method === "reconnect_phone") root.reconnectBusy = true
+            if (method === "sync_contacts") {
+              root.contactsSyncNotice = ""
+              root.syncContactsBusy = true
+            }
+            if (method === "set_feature") {
+              const pending = Object.assign({}, root.featurePending)
+              pending[args.name] = args.enabled === true
+              root.featurePending = pending
+            }
+            if (method === "restart_backend") root.restartBusy = true
+            if (method === "doctor") {
+              if (root.doctor.running === true) return
+              root.doctor = Object.assign({}, root.doctor, {running: true})
+            }
             if (method === "set_contacts_only_notifications") {
               root.contactsOnlyNotifications = args.enabled
               root.contactsOnlyNotificationsBusy = true

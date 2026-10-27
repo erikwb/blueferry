@@ -136,3 +136,41 @@ def result_text(result: str) -> str:
         "bluez-kernel": BLUEZ_HUNG_TEXT,
         "bluez-unresponsive": BLUEZ_UNRESPONSIVE_TEXT,
     }.get(result, UNREACHABLE_TEXT)
+
+
+class ManualReconnect:
+    """The line a client shows after the user pressed Reconnect.
+
+    Shared by the Qt and GTK clients: the ``ReconnectPhone()`` answer sets a
+    notice that replaces the status hint until the status shows the outcome
+    (connected, unreachable or waiting again). Both methods return an error
+    text for the client's error display, or ``""``.
+    """
+
+    def __init__(self) -> None:
+        self.pending = False
+        self.notice = ""
+
+    def answered(self, result: object) -> str:
+        result = str(result)
+        if result == "unreachable":
+            self.pending = False
+            self.notice = ""
+            return UNREACHABLE_TEXT
+        self.pending = result in ("started", "profile-reset")
+        self.notice = result_text(result)
+        return ""
+
+    def follow(self, status: Mapping[str, Any] | None) -> str:
+        """Turn the status outcome of a manual attempt into a clear message."""
+        if not self.pending:
+            self.notice = ""
+            return ""
+        state = None if status is None else status.get("phone_reconnect_state")
+        if state in ("connected", "unreachable", "waiting"):
+            self.pending = False
+            self.notice = ""
+        return UNREACHABLE_TEXT if state == "unreachable" else ""
+
+    def hint(self, view: ReconnectView) -> str:
+        return self.notice or view.hint

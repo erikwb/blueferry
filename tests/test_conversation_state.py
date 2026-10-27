@@ -285,9 +285,10 @@ def test_stale_contact_results_cannot_replace_current_query() -> None:
         current, [("Alice", "+15552222222")]
     ) is True
     assert state.contact_results == [("Alice", "+15552222222")]
+    assert state.contact_result_rows() == [{"name": "Alice", "address": "+15552222222"}]
 
     assert state.begin_contact_search("  ") is None
-    assert state.contact_results == []
+    assert state.contact_results == [] and state.contact_result_rows() == []
 
 
 def test_reply_sent_rejects_blocked_plan() -> None:

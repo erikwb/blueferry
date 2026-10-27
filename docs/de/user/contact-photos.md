@@ -31,9 +31,9 @@ Setze in den iPhone-Einstellungen eines beliebigen Clients den Haken bei
 | Client | Wo |
 | --- | --- |
 | Qt (KDE) | iPhone-Einstellungen, „Kontaktfotos“ |
-| GTK | iPhone-Seite, „Kontaktfotos“ |
+| GTK | Settings → Phone, „Contact Photos“ |
 | Quickshell | iPhone-Einstellungen, „Kontaktfotos“ |
-| Terminal (TUI) | `o` für Optionen |
+| Terminal (TUI) | `o` für Einstellungen (Settings) |
 | CLI | `blueferry contact-photos enable` (`disable`, `status`) |
 
 Das Backend speichert die Wahl in `~/.config/blueferry/settings.json`,

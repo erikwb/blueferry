@@ -37,9 +37,10 @@ sequenceDiagram
   drei auf einmal werden zusammengefasst; Anrufe, die älter als 12 Stunden
   sind, werden nie gemeldet. Mit **All iPhone notifications** wird die eigene
   Mitteilung des iPhones über den verpassten Anruf nicht wiederholt.
-- Zeigt die Liste mit `blueferry call-history`, unter **Recent Calls** im
-  Menü des KDE-Clients, im Dialog **iPhone** des GTK-Clients (Hauptmenü,
-  `Strg+I`) und im Terminal-Client mit `h` (`m` zeigt nur verpasste Anrufe).
+- Zeigt die Liste mit `blueferry call-history`, im Reiter **Calls** des
+  KDE- und des GTK-Clients (nach Tagen gruppiert) und im Terminal-Client mit
+  `h` (nach Tagen gruppiert; `m` zeigt nur verpasste Anrufe, `s` oder
+  **Refresh from iPhone** liest die Liste des iPhones neu ein).
 
 ## Einschalten
 
@@ -92,8 +93,8 @@ Koppeln eines anderen iPhones wird außerdem die Liste des bisherigen gelöscht.
 - Liste und Mitteilungen brauchen gespeicherte lokale Daten. Bei gesperrter
   Brieftasche (Wallet) oder mit **Do not retain local data** funktionieren
   sie nicht.
-- Quickshell zeigt die Liste noch nicht, und der Terminal-Client hat keinen
-  Schalter dafür; dort die Kommandozeile verwenden.
+- Quickshell zeigt die Liste noch nicht. Der Schalter des Terminal-Clients
+  liegt in Settings › Calls & Audio.
 
 ## Datenschutz
 
@@ -103,8 +104,8 @@ Koppeln eines anderen iPhones wird außerdem die Liste des bisherigen gelöscht.
   ein Wechsel des Speichermodus und das Abschalten löschen sie sofort.
 - Clients bekommen die Einträge nur über die authentifizierte,
   ratenbegrenzte Methode `ListCallHistory`. Das verteilte Signal enthält
-  nichts. Qt-, GTK- und Terminal-Client holen sie nur, solange ihre Liste
-  offen ist.
+  nichts. Qt- und GTK-Client holen sie nur, solange der Reiter **Calls** offen
+  ist, der Terminal-Client nur, solange seine Liste offen ist.
 - Mitteilungen folgen deinen Einstellungen für Nachrichtenmitteilungen:
   **No notifications** schaltet sie ab, **Only from contacts** überspringt
   unbekannte Anrufer, und `BLUEFERRY_SHOW_NOTIFICATION_CONTENT=false`
