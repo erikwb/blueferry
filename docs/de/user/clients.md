@@ -217,8 +217,9 @@ wirkt auf den naheliegenden Anruf: **Answer** nimmt den klingelnden an,
 **Hold** bzw. **Resume** hält den verbundenen oder holt ihn zurück, **Hang
 Up** (oder **Decline**) beendet zuerst den aktiven; ein Anruf, der wartet,
 während ein anderer verbunden ist, bekommt ein eigenes **Decline**. Während eines aktiven
-Anrufs sendet das Tastentonfeld 0–9, `*` und `#`, etwa an ein
-Telefonmenü. Wer im Nummernfeld einen Namen tippt, bekommt die
+Anrufs gehen die Tasten 0–9, `*` und `#` sofort als Tastentöne hinaus, etwa
+an ein Telefonmenü, ausser ein Textfeld hat den Fokus; das Panel zeigt sie
+als „Sent: …“. Das Tastentonfeld sendet eine ganze Folge wie eine PIN. Wer im Nummernfeld einen Namen tippt, bekommt die
 Telefonnummern passender Kontakte vorgeschlagen. Jeder Anruf wird zuerst
 bestätigt.
 
