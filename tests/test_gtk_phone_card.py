@@ -89,7 +89,16 @@ class FakeClient:
 
     # TaskRunner for NotificationHistory
     def submit(self, operation, on_done=None, on_error=None, on_finished=None):
-        self.calls.append(("notifications", on_done, on_error))
+        # Like the real runner: on_finished follows either answer.
+        def answered(callback):
+            def deliver(value):
+                if callback is not None:
+                    callback(value)
+                if on_finished is not None:
+                    on_finished()
+            return deliver
+
+        self.calls.append(("notifications", answered(on_done), answered(on_error)))
 
     def notifications(self, limit):
         raise AssertionError("only called through submit")
