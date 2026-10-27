@@ -184,6 +184,11 @@ ShellRoot {
   }
 
   function openMessage(handle) {
+    // An empty handle (the tray, a plain activation) only shows the window.
+    if (!handle) {
+      presentWindow()
+      return
+    }
     pendingMessageHandle = handle
     presentWindow()
     if (!selectMessage(handle)) reload()
