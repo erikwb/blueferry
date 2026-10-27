@@ -39,6 +39,10 @@ class NotificationHistory:
         self._rows: list[dict] = []
         self._info: dict[str, Any] = {"enabled": False, "content": False, "error": ""}
         self._watched = False
+        # One ListNotifications at a time: runners may run work in parallel,
+        # so an older reply could otherwise land after a newer one.
+        self._loading = False
+        self._again = False
         self._timer = timer(self.refresh)
 
     @property
@@ -61,6 +65,7 @@ class NotificationHistory:
             self.refresh()
             return
         self._timer.stop()
+        self._again = False
         if self._rows:
             self._rows = []
             self._on_change()
@@ -71,11 +76,17 @@ class NotificationHistory:
             self._timer.start(REFRESH_DELAY_MS)
 
     def refresh(self) -> None:
+        """Read the list now; while a read runs, read once more after it."""
         if not self._watched:
             return
+        if self._loading:
+            self._again = True
+            return
+        self._loading = True
 
         def completed(value: object) -> None:
-            if not self._watched:
+            # Hidden meanwhile, or superseded by a newer request.
+            if not self._watched or self._again:
                 return
             snapshot = value if isinstance(value, dict) else {}
             self._rows = phone_link_view.notification_rows(snapshot.get("notifications"))
@@ -87,10 +98,18 @@ class NotificationHistory:
             self._on_change()
 
         def failed(message: str) -> None:
+            if not self._watched or self._again:
+                return
             self._rows = []
             self._info = {
                 **self._info, "error": message or _("Notifications are unavailable"),
             }
             self._on_change()
 
-        self._runner.submit(lambda: self._fetch(LIMIT), completed, failed)
+        def finished() -> None:
+            self._loading = False
+            if self._again:
+                self._again = False
+                self.refresh()
+
+        self._runner.submit(lambda: self._fetch(LIMIT), completed, failed, finished)

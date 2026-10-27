@@ -16,7 +16,7 @@ from datetime import datetime
 from typing import Any
 
 from blueferry import phone_overview
-from blueferry.calls.model import MAX_DIAL_DIGITS
+from blueferry.calls.model import MAX_DIAL_DIGITS, MAX_DTMF_TONES
 from blueferry.i18n import _
 from blueferry.time_display import format_message_timestamp
 
@@ -51,6 +51,7 @@ DIAL_KEYS: tuple[tuple[str, str], ...] = (
     ("*", ""), ("0", "+"), ("#", ""),
 )
 _NOT_DIALABLE = re.compile(r"[^0-9+*#]")
+_NOT_TONE = re.compile(r"[^0-9*#]")
 
 
 def phone_name(devices: Iterable[Mapping[str, Any]], mac: str) -> str:
@@ -77,6 +78,12 @@ def dialable(value: object) -> str:
     daemon refuses ``*`` and ``#`` codes and emergency numbers itself.
     """
     return _NOT_DIALABLE.sub("", str(value or ""))[:MAX_DIAL_DIGITS]
+
+
+def dial_tones(value: object) -> str:
+    """What a keypad-tone field keeps: 0-9, ``*`` and ``#``, as many as the
+    daemon takes (``Calls1.SendTones``, see ``calls.model.validate_dtmf``)."""
+    return _NOT_TONE.sub("", str(value or ""))[:MAX_DTMF_TONES]
 
 
 def dial_suggestions(rows: Iterable[Mapping[str, Any]]) -> list[dict[str, str]]:

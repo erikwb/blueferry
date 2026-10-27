@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import threading
 
+from rich.text import Text
 from textual.widgets import Button, Input, Static
 
 from blueferry import phone_overview as overview
@@ -394,6 +395,7 @@ def test_a_late_phone_name_after_closing_the_overview_is_dropped() -> None:
             await pilot.pause(0.3)
             assert app.is_running
             assert screen.phone_name == "iPhone"
+            assert app._phone_name == ""  # read again next time
 
     _run_headless(scenario())
 
@@ -454,5 +456,79 @@ def test_call_back_waits_for_calls_to_be_ready() -> None:
             await pilot.pause(0.1)
             assert isinstance(app.screen, RecentCallsScreen)
             assert backend.dialed == []
+
+    _run_headless(scenario())
+
+
+def test_hostile_caller_names_in_row_tooltips_are_plain_text() -> None:
+    backend = _CallingBackend(call_history_enabled=True)
+    backend.history = [
+        CallHistoryEntry("missed", "2026-10-01T10:00:00+02:00", "+41790000000",
+                         name="Bob [/nope]"),
+        CallHistoryEntry("incoming", "2026-10-01T09:00:00+02:00", "+41790000001",
+                         name="[@click=app.quit]Ana[/]"),
+    ]
+
+    async def scenario() -> None:
+        app = BlueFerryApp(TuiState(backend), monitor_factory=lambda: None)
+        async with app.run_test(size=(120, 40), tooltips=True) as pilot:
+            await _until(pilot, lambda: app.state.status.extra.get("call_history_enabled"))
+            await pilot.press("h")
+            screen = app.screen
+            await _until(pilot, lambda: len(list(screen.query(CallGroupItem))) == 2)
+            for item in screen.query(CallGroupItem):
+                assert isinstance(item.tooltip, Text)
+                await pilot.hover(item)
+                await pilot.pause(0.8)
+                assert app.is_running
+                tooltip = app.screen.query_one("#textual-tooltip")
+                rendered = tooltip.render()
+                plain = getattr(rendered, "plain", str(rendered))
+                assert ("Bob [/nope]" in plain) or ("[@click=app.quit]Ana[/]" in plain)
+                spans = getattr(rendered, "spans", [])
+                assert all("@click" not in str(span) for span in spans)
+            assert isinstance(app.screen, RecentCallsScreen)
+
+    _run_headless(scenario())
+
+
+def test_refresh_from_iphone_syncs_once_and_reports_failures_as_plain_text() -> None:
+    backend = _CallingBackend(call_history_enabled=True)
+    release = threading.Event()
+    syncs: list[int] = []
+
+    def sync() -> int:
+        syncs.append(1)
+        release.wait(5)
+        if len(syncs) > 1:
+            raise BackendError("[@click=app.quit]boom[/]")
+        return 3
+
+    backend.sync_call_history = sync
+
+    async def scenario() -> None:
+        app = BlueFerryApp(TuiState(backend), monitor_factory=lambda: None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await _until(pilot, lambda: app.state.status.extra.get("call_history_enabled"))
+            await pilot.press("h")
+            screen = app.screen
+            await _until(pilot, lambda: screen.loaded)
+            button = screen.query_one("#recent-calls-sync", Button)
+            await pilot.press("s")
+            screen.sync_button()  # a second press while syncing does nothing
+            await _until(pilot, lambda: button.disabled)
+            assert "Reading" in str(screen.query_one("#recent-calls-sync-state", Static).render())
+            release.set()
+            await _until(pilot, lambda: not button.disabled)
+            assert syncs == [1]
+            await _until(pilot, lambda: len(backend.history_calls) >= 2)
+            assert backend.starred == []  # "s" did not star a conversation
+
+            screen.action_sync()
+            await _until(pilot, lambda: bool(screen.sync_error))
+            await _until(pilot, lambda: not button.disabled)
+            state = screen.query_one("#recent-calls-sync-state", Static).render()
+            assert "Call history sync failed: [@click=app.quit]boom[/]" in str(state)
+            assert app.is_running
 
     _run_headless(scenario())

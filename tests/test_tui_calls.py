@@ -18,7 +18,6 @@ from blueferry.tui_calls import (
     hold_target,
     ringing_call,
     state_text,
-    tones,
 )
 
 
@@ -57,8 +56,11 @@ def test_state_text_follows_calls_hint_and_keeps_special_states() -> None:
 
 
 def test_tone_field_keeps_only_keypad_characters() -> None:
-    assert tones("1a2*#b ") == "12*#"
-    assert len(tones("1" * 50)) == 32
+    from blueferry.phone_link_view import dial_tones
+
+    assert dial_tones("1a2*#b +") == "12*#"
+    assert len(dial_tones("1" * 50)) == 32
+    assert dial_tones(None) == ""
 
 
 def test_hang_up_prefers_the_active_call_and_never_hangs_up_all() -> None:
@@ -455,5 +457,31 @@ def test_calls_disabled_hint_names_the_setting() -> None:
             await pilot.pause(0.1)
             assert seen and "Calls & Audio" in seen[-1][0]
             assert seen[-1][1].get("markup") is False
+
+    _run(scenario())
+
+
+def test_a_waiting_call_can_be_declined_while_another_is_active() -> None:
+    async def scenario() -> None:
+        backend = _Backend()
+        backend.snapshot = _snapshot(
+            ("voicecall01", "active", "Alice"), ("voicecall02", "waiting", "Bob"),
+        )
+        app = BlueFerryApp(TuiState(backend), monitor_factory=lambda: None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            screen = await _open_calls(app, pilot)
+            decline = screen.query_one("#calls-decline", Button)
+            await _until(pilot, lambda: decline.display and not decline.disabled)
+            assert str(decline.label) == "Decline"
+            assert str(screen.query_one("#calls-hangup", Button).label) == "Hang Up"
+            screen.decline()
+            await _until(pilot, lambda: ("hangup", "voicecall02") in backend.requests)
+            assert ("hangup", "voicecall01") not in backend.requests
+
+            # Only one ringing call and nothing connected: Hang Up declines it.
+            backend.snapshot = _snapshot(("voicecall02", "incoming", "Bob"))
+            screen.refresh_calls()
+            await _until(pilot, lambda: not decline.display)
+            assert str(screen.query_one("#calls-hangup", Button).label) == "Decline"
 
     _run(scenario())

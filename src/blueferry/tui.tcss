@@ -706,7 +706,11 @@ ModalScreen {
 }
 
 #recent-calls-dialog {
-    width: 84;
+    width: 100;
+}
+
+#recent-calls-dialog .dialog-actions Button {
+    min-width: 8;
 }
 
 #recent-calls-body {

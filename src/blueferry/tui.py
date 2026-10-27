@@ -152,6 +152,8 @@ class _Client(Protocol):
 
     def call_history(self, limit: int = 200) -> list[CallHistoryEntry]: ...
 
+    def sync_call_history(self) -> int: ...
+
 
 class _Monitor(Protocol):
     def pump(self) -> tuple[bool, str | None]: ...
@@ -660,7 +662,7 @@ class HelpScreen(ModalScreen[None]):
             self.phone_audio
         ) else ""
         if self.call_history:
-            calls_line += "[bold #7dd3fc]Recent calls[/]  h\n"
+            calls_line += "[bold #7dd3fc]Recent calls · refresh from iPhone[/]  h · s\n"
         if self.media_control:
             calls_line += "[bold #7dd3fc]iPhone play/pause · previous · next[/]  p \\[ ]\n"
         help_text = Text.from_markup(
@@ -1090,15 +1092,15 @@ class BlueFerryApp(App[None]):
         if extras:
             summary = "  ·  ".join([summary, *extras])
         connection = self.query_one("#connection-summary", Static)
-        connection.update(summary)
+        connection.update(Text(_one_line(summary)))
         connection.set_classes(summary_class)
-        self.query_one("#release", Static).update(f"backend {status.backend_release}")
+        self.query_one("#release", Static).update(Text(_one_line(f"backend {status.backend_release}")))
         self._set_pill("#map-status", "MESSAGES", status.map)
         self._set_pill("#pbap-status", "CONTACTS", status.pbap)
         self._set_pill("#ancs-status", "NOTIFICATIONS", status.ancs)
         storage_ok = status.storage_state in {"ready", "unlocked", "plaintext"}
         storage = self.query_one("#storage-status", Static)
-        storage.update(f"STORAGE  {status.storage_state.upper()}")
+        storage.update(Text(_one_line(f"STORAGE  {status.storage_state.upper()}")))
         storage.set_classes(f"status-pill {'ok' if storage_ok else 'warn'}")
         # NowPlayingChanged covers track and player changes. Fetch here only
         # when there is nothing to have signalled yet: the first status, the
@@ -1125,10 +1127,11 @@ class BlueFerryApp(App[None]):
         except NoMatches:
             return
         if self.state.error:
-            notice.update(f"!  {self.state.error}")
+            # Backend errors may quote phone or contact text: never markup.
+            notice.update(Text(_one_line(f"!  {self.state.error}")))
             notice.set_classes("error")
         elif self.state.notice:
-            notice.update(f"✓  {self.state.notice}")
+            notice.update(Text(_one_line(f"✓  {self.state.notice}")))
             notice.set_classes("success")
         elif self.state.status.extra.get("le_bond_suspect") is True:
             notice.update(
@@ -1145,12 +1148,12 @@ class BlueFerryApp(App[None]):
             and not self.state.status.ancs
         ):
             limited = self.state.status.ancs_limited_controller
-            notice.update(
+            notice.update(Text(_one_line(
                 ancs_unavailable_detail(
                     limited=limited,
                     vendor=self.state.status.controller_vendor,
                 )
-            )
+            )))
             notice.set_classes("success" if limited else "warn")
         else:
             notice.update("Ready  ·  Ctrl+P: Help")
@@ -1352,15 +1355,14 @@ class BlueFerryApp(App[None]):
             return
         screen = PhoneOverviewScreen(
             self.state.status.to_dict(), self.now_playing, self._phone_name,
-            load_name=None if self._phone_name else self._load_phone_name,
+            load_name=None if self._phone_name else self._phone_name_loader,
+            on_name=self._remember_phone_name,
         )
         self.push_screen(screen, self._overview_closed)
 
-    def _load_phone_name(self) -> str:
-        """Runs on a worker; the name is kept for the next overview."""
-        name = self._phone_name_loader() or "iPhone"
+    def _remember_phone_name(self, name: str) -> None:
+        """On the UI thread: keep the name for the next overview."""
         self._phone_name = name
-        return name
 
     def _overview_closed(self, choice: str | None) -> None:
         if choice == "notifications":
@@ -1712,8 +1714,8 @@ class BlueFerryApp(App[None]):
         self._update_notice()
         if not succeeded:
             self.notify(
-                self.state.error or "Could not delete conversation",
-                severity="error",
+                _one_line(self.state.error or "Could not delete conversation"),
+                severity="error", markup=False,
             )
 
     def _schedule_roster_finished(self, succeeded: bool) -> None:
@@ -1732,8 +1734,8 @@ class BlueFerryApp(App[None]):
             thread = self.state.selected
             if thread is not None:
                 self.notify(
-                    self.state.error or "Could not save group participants",
-                    severity="error",
+                    _one_line(self.state.error or "Could not save group participants"),
+                    severity="error", markup=False,
                 )
                 self._open_roster_editor(thread)
 

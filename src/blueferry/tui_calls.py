@@ -16,7 +16,6 @@ numbers and errors are rendered as Rich ``Text`` after ``terminal_text``.
 """
 from __future__ import annotations
 
-import re
 import time
 from collections.abc import Callable, Mapping
 from typing import Any, ClassVar, Protocol
@@ -44,7 +43,6 @@ _TICK_SECONDS = 1.0
 # The dial field's length, as in the Qt and GTK clients.
 MAX_QUERY = 64
 _RINGING = frozenset({"incoming", "waiting"})
-_NOT_TONE = re.compile(r"[^0-9*#]")
 # calls_hint covers these states; others (bluez_conflict) keep their own text.
 _HINTED_STATES = frozenset({"ready", "connecting", "searching", "unavailable", "disabled"})
 
@@ -67,11 +65,6 @@ class CallsClient(Protocol):
 
 def _plain(value: object) -> str:
     return terminal_text(value).replace("\n", " ")
-
-
-def tones(value: object) -> str:
-    """What the tone field keeps: 0-9, ``*`` and ``#``, as the daemon takes."""
-    return _NOT_TONE.sub("", str(value or ""))[:MAX_DTMF_TONES]
 
 
 def calls_text(snapshot: CallsSnapshot, now: float) -> Text:
@@ -131,6 +124,17 @@ def hold_target(snapshot: CallsSnapshot) -> CallInfo | None:
             if call.state == state:
                 return call
     return None
+
+
+def decline_target(snapshot: CallsSnapshot) -> CallInfo | None:
+    """A ringing call the hang-up button does not reach (a call waiting
+    while another is connected): it gets its own Decline button, as each
+    call has its own in Qt and GTK."""
+    ringing = ringing_call(snapshot)
+    target = hangup_target(snapshot)
+    if ringing is None or (target is not None and target.call_id == ringing):
+        return None
+    return next((call for call in snapshot.calls if call.call_id == ringing), None)
 
 
 def active_call(snapshot: CallsSnapshot) -> CallInfo | None:
@@ -232,6 +236,7 @@ class CallsScreen(ModalScreen[None]):
             with Horizontal(classes="dialog-actions"):
                 yield Button(_("Close"), id="calls-close")
                 yield Button(_("Hang Up"), variant="error", id="calls-hangup")
+                yield Button(_("Decline"), variant="error", id="calls-decline")
                 yield Button(_("Hold"), id="calls-hold")
                 yield Button(_("Answer"), variant="success", id="calls-answer")
                 yield Button(_("Call"), variant="primary", id="calls-dial")
@@ -321,6 +326,12 @@ class CallsScreen(ModalScreen[None]):
             phone_link_view.call_card(target.to_dict(), now)["hangup"]
             if target is not None else _("Hang Up")
         )
+        waiting = decline_target(snapshot)
+        decline = self.query_one("#calls-decline", Button)
+        decline.display = waiting is not None
+        decline.disabled = busy or waiting is None
+        if waiting is not None:
+            decline.label = phone_link_view.call_card(waiting.to_dict(), now)["hangup"]
         held = hold_target(snapshot)
         hold = self.query_one("#calls-hold", Button)
         hold.disabled = busy or held is None
@@ -402,11 +413,19 @@ class CallsScreen(ModalScreen[None]):
         done = _("Declined") if target.ringing else _("Hung up")
         self._act(lambda: self._client.hangup_call(call_id), done)
 
+    @on(Button.Pressed, "#calls-decline")
+    def decline(self) -> None:
+        target = decline_target(self.snapshot)
+        if target is None:
+            return
+        call_id = target.call_id
+        self._act(lambda: self._client.hangup_call(call_id), _("Declined"))
+
     @on(Button.Pressed, "#calls-tones-send")
     @on(Input.Submitted, "#calls-tones")
     def send_tones(self) -> None:
         field = self.query_one("#calls-tones", Input)
-        selected = tones(field.value)
+        selected = phone_link_view.dial_tones(field.value)
         target = active_call(self.snapshot)
         if not selected or target is None:
             return

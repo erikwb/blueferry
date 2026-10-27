@@ -7,7 +7,7 @@
   connection, battery, signal, network and now playing, and for each opt-in
   feature that is off the setting that turns it on
   (``phone_link_view.feature_hints``). Its buttons open the notification
-  list, the recent calls, the calls panel and Options.
+  list, the recent calls, the calls panel and Settings.
 - :class:`RecentCallsScreen` (``h``) lists the iPhone's recent calls grouped
   by day (``phone_overview.call_groups``), with call back and message.
 
@@ -40,6 +40,9 @@ MAX_CALLS = 100
 
 class CallHistoryClient(Protocol):
     def call_history(self, limit: int = 200) -> list[CallHistoryEntry]: ...
+
+    # CallHistory1.SyncCallHistory: read the iPhone's list again.
+    def sync_call_history(self) -> int: ...
 
 
 def _plain(value: object) -> str:
@@ -141,6 +144,7 @@ class PhoneOverviewScreen(ModalScreen[str | None]):
         name: str = "",
         *,
         load_name: Callable[[], str] | None = None,
+        on_name: Callable[[str], None] | None = None,
     ) -> None:
         super().__init__()
         self._shown = False  # composed and mounted; widgets exist
@@ -148,6 +152,7 @@ class PhoneOverviewScreen(ModalScreen[str | None]):
         self.now_playing = now_playing
         self.phone_name = name or "iPhone"
         self._load_name = load_name
+        self._on_name = on_name
 
     def compose(self) -> ComposeResult:
         with Vertical(id="phone-overview-dialog", classes="dialog"):
@@ -159,7 +164,7 @@ class PhoneOverviewScreen(ModalScreen[str | None]):
             yield Static("", id="phone-overview-hints", classes="phone-overview-hint")
             with Horizontal(classes="dialog-actions"):
                 yield Button(_("Close"), id="phone-overview-close")
-                yield Button(_("Options"), id="phone-overview-options")
+                yield Button(_("Settings"), id="phone-overview-options")
                 yield Button(_("Notifications"), id="phone-overview-notifications")
                 yield Button(_("Recent Calls"), id="phone-overview-recent")
                 yield Button(_("Calls"), variant="primary", id="phone-overview-calls")
@@ -171,7 +176,7 @@ class PhoneOverviewScreen(ModalScreen[str | None]):
         if self._load_name is not None:
             # A reply after the dialog closed is dropped with the dialog.
             TextualTaskRunner(self, group="phone-name").submit(
-                self._load_name, lambda name: self.name_loaded(str(name or "")),
+                self._load_name, self._name_read,
             )
 
     def status_changed(self, status: Mapping[str, Any]) -> None:
@@ -181,6 +186,12 @@ class PhoneOverviewScreen(ModalScreen[str | None]):
     def now_playing_changed(self, view: overview.NowPlaying) -> None:
         self.now_playing = view
         self._update_view()
+
+    def _name_read(self, value: object) -> None:
+        name = str(value or "") or "iPhone"
+        if self._on_name is not None:
+            self._on_name(name)
+        self.name_loaded(name)
 
     def name_loaded(self, name: str) -> None:
         self.phone_name = name or "iPhone"
@@ -248,9 +259,11 @@ class CallGroupItem(ListItem):
     def __init__(self, row: Mapping[str, Any]) -> None:
         self.row = dict(row)
         super().__init__(Static(call_group_text(row)), classes="recent-calls-row")
-        self.tooltip = _plain(
+        # A Text, never a str: Textual parses a str tooltip as markup, and
+        # the caller's name comes from the phone.
+        self.tooltip = Text(_plain(
             f"{row['direction_label']}, {row['caller']}, {row['clock']}"
-        )
+        ))
 
 
 class DayItem(ListItem):
@@ -272,6 +285,9 @@ class RecentCallsScreen(ModalScreen[RecentCallsResult]):
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape,h", "close", "Close", show=False),
         Binding("m", "toggle_missed", "Missed only", show=False),
+        # Screen bindings win over the app's while this screen is open, so
+        # "s" refreshes here and stars a conversation elsewhere.
+        Binding("s", "sync", "Refresh from iPhone", show=False),
     ]
 
     def __init__(
@@ -288,17 +304,22 @@ class RecentCallsScreen(ModalScreen[RecentCallsResult]):
         self.missed_only = False
         self.error = ""
         self.loaded = False
+        self.syncing = False
+        self.sync_error = ""
         self._loading = False
         self._again = False
         self._runner = TextualTaskRunner(self, group="recent-calls")
+        self._sync_runner = TextualTaskRunner(self, group="recent-calls-sync")
 
     def compose(self) -> ComposeResult:
         with Vertical(id="recent-calls-dialog", classes="dialog"):
             yield Static(_("Recent calls"), classes="dialog-title")
+            yield Static("", id="recent-calls-sync-state", classes="dialog-copy")
             yield Static(_("Loading…"), id="recent-calls-state", classes="dialog-copy")
             yield ListView(id="recent-calls-list")
             with Horizontal(classes="dialog-actions"):
                 yield Button(_("Missed only  m"), id="recent-calls-missed")
+                yield Button(_("Refresh from iPhone  s"), id="recent-calls-sync")
                 yield Button(_("Send a Message"), id="recent-calls-message")
                 yield Button(_("Call Back"), id="recent-calls-call")
                 yield Button(_("Close"), variant="primary", id="recent-calls-close")
@@ -403,10 +424,17 @@ class RecentCallsScreen(ModalScreen[RecentCallsResult]):
             return
         row = self._selected() if self.groups else None
         address = str(row.get("address") or "") if row else ""
+        self.query_one("#recent-calls-sync", Button).disabled = self.syncing
+        sync_state = self.query_one("#recent-calls-sync-state", Static)
+        if self.syncing:
+            sync_state.update(_("Reading the call history from the iPhone…"))
+        else:
+            sync_state.update(Text(_plain(self.sync_error)))
+        sync_state.display = self.syncing or bool(self.sync_error)
         self.query_one("#recent-calls-message", Button).disabled = not address
         call = self.query_one("#recent-calls-call", Button)
         call.disabled = not address or bool(self.calls_hint)
-        call.tooltip = _plain(self.calls_hint) or None
+        call.tooltip = Text(_plain(self.calls_hint)) if self.calls_hint else None
 
     @on(ListView.Highlighted, "#recent-calls-list")
     def row_highlighted(self) -> None:
@@ -434,6 +462,35 @@ class RecentCallsScreen(ModalScreen[RecentCallsResult]):
         address = str(row.get("address") or "") if row else ""
         if address:
             self.dismiss(("message", address))
+
+    @on(Button.Pressed, "#recent-calls-sync")
+    def sync_button(self) -> None:
+        self.action_sync()
+
+    def action_sync(self) -> None:
+        """Have the daemon read the iPhone's call history again.
+
+        ``CallHistoryChanged`` reloads the list; a successful sync also
+        reloads it here in case the list did not change.
+        """
+        if self.syncing:
+            return
+        self.syncing, self.sync_error = True, ""
+        self._render_buttons()
+
+        def failed(message: str) -> None:
+            self.sync_error = _("Call history sync failed: {error}").format(
+                error=message or _("unknown error"),
+            )
+
+        def finished() -> None:
+            self.syncing = False
+            self._render_buttons()
+
+        self._sync_runner.submit(
+            self._client.sync_call_history,
+            lambda _count: self.refresh_calls(), failed, finished,
+        )
 
     @on(Button.Pressed, "#recent-calls-missed")
     def missed_button(self) -> None:
