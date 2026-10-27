@@ -67,7 +67,7 @@ def test_store_install_is_confirmed_before_pip_runs(plugins) -> None:
     _wait(lambda: settings.state()["pending"] != {})
     rows = {row["label"]: row["value"] for row in settings.state()["pending"]["rows"]}
     assert rows["Source"] == URL and rows["Capabilities"] == "photos"
-    assert not any("pip" in " ".join(call) for call in runner.calls)
+    assert not any("pip" in call for call in runner.calls)
     settings.confirm_install()
     _wait(lambda: _idle(settings) and settings.state()["plugins"])
     assert "Installed Demo photos v0.1.0" in settings.state()["message"]
