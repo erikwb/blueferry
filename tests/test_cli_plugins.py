@@ -83,7 +83,7 @@ def test_install_asks_first_and_shows_source_ref_and_capabilities(managed) -> No
     assert result.exit_code == 1 and "Cancelled" in result.output
     assert "Source:" in result.output and "v0.1.0" in result.output
     assert "Capabilities: photos" in result.output and "blueferry-demo serve" in result.output
-    assert not any("pip" in " ".join(call) for call in runner.calls)
+    assert not any("pip" in call for call in runner.calls)
     assert manager.records() == {}
     # "No" throws the checkout away: nothing of the plugin stays on disk.
     assert not list((manager.root / "src").glob(".staging-*"))
@@ -261,3 +261,51 @@ def test_config_test_and_browser_sign_in(hooks, monkeypatch) -> None:
     assert "Connected as anna" in result.output and "token = (stored)" in result.output
     assert ("login", {"url": "https://good.example"}) in calls
     assert not any(call[0] == "set" for call in calls)
+
+
+def test_config_action_runs_a_settings_button(hooks, monkeypatch) -> None:
+    from blueferry.plugin_api.surfaces import ActionResult
+
+    state, _executed = hooks
+    plugin = manifest(api_version="1.6", extra=(
+        "[Config port]\nLabel=Port\nType=int\n"
+        "[ConfigAction setup_iphone]\nLabel=Set up iPhone\nHelp=Shows a QR code.\n"
+        "[ConfigAction approve]\nLabel=Approve this network\n"
+    ))
+    state["discovery"] = Discovery((plugin,))
+    ran: list[str] = []
+
+    class Client:
+        def __init__(self, _manifest) -> None:
+            pass
+
+        def run_config_action(self, action_id):
+            ran.append(action_id)
+            if action_id == "approve":
+                return ActionResult(False, "No network to approve.")
+            return ActionResult(True, None, "http://127.0.0.1:4711/abc/")
+
+        def get_config(self):
+            return {"port": 47801}
+
+    opened: list[str] = []
+    monkeypatch.setitem(cli_plugins._hooks, "client", Client)
+    monkeypatch.setitem(cli_plugins._hooks, "open_uri", opened.append)
+    result = CliRunner().invoke(app, ["plugins", "config", "io.example.photos"])
+    assert result.exit_code == 0, result.output
+    assert "--action setup_iphone  # Set up iPhone: Shows a QR code." in result.output
+    result = CliRunner().invoke(app, ["plugins", "config", "io.example.photos",
+                                      "--action", "setup_iphone"])
+    assert result.exit_code == 0, result.output
+    assert "Done." in result.output and opened == ["http://127.0.0.1:4711/abc/"]
+    result = CliRunner().invoke(app, ["plugins", "config", "io.example.photos",
+                                      "--action", "approve"])
+    assert result.exit_code == 1 and "No network to approve." in result.output
+    result = CliRunner().invoke(app, ["plugins", "config", "io.example.photos",
+                                      "--action", "nope"])
+    assert result.exit_code == 2 and "it offers: setup_iphone, approve" in result.output
+    # The action uses the saved settings: never together with changes.
+    result = CliRunner().invoke(app, ["plugins", "config", "io.example.photos",
+                                      "--set", "port=1", "--action", "setup_iphone"])
+    assert result.exit_code == 2
+    assert ran == ["setup_iphone", "approve"]

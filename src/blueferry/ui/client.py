@@ -11,9 +11,10 @@ import dbus
 import dbus.mainloop
 from gi.repository import GLib, GObject
 
-from blueferry.backend_lifecycle import ensure_backend_current
+from blueferry.backend_lifecycle import ensure_backend_current, restart_backend
 from blueferry.bus import get_session_bus
 from blueferry.client import BackendClient, CompatibilityCache
+from blueferry.doctor_report import DoctorReport, run_doctor, terminate_running
 from blueferry.models import BackendStatus
 from blueferry.protocol import (
     BUS_NAME,
@@ -21,6 +22,7 @@ from blueferry.protocol import (
     OBJECT_PATH,
 )
 from blueferry.setup_client import SetupClient
+from blueferry.ui.tasks import WorkerRunner
 
 log = logging.getLogger(__name__)
 T = TypeVar("T")
@@ -54,9 +56,13 @@ class DaemonClient(GObject.Object):
         "status-invalidated": (GObject.SignalFlags.RUN_FIRST, None, ()),
         "availability-changed": (GObject.SignalFlags.RUN_FIRST, None, (bool,)),
         "open-message-requested": (GObject.SignalFlags.RUN_FIRST, None, (str,)),
-        # Content-free invalidations of the opt-in media and call history.
+        # Content-free invalidations of the opt-in media, call history and
+        # notification list.
         "now-playing-changed": (GObject.SignalFlags.RUN_FIRST, None, ()),
         "call-history-changed": (GObject.SignalFlags.RUN_FIRST, None, ()),
+        "notifications-changed": (GObject.SignalFlags.RUN_FIRST, None, ()),
+        # Running phone calls changed (Calls1); clients call ListCalls.
+        "calls-changed": (GObject.SignalFlags.RUN_FIRST, None, ()),
     }
 
     def __init__(self) -> None:
@@ -71,9 +77,17 @@ class DaemonClient(GObject.Object):
             max_workers=1,
             thread_name_prefix="blueferry-gtk-mutation",
         )
+        # Local work that does not talk to the daemon and may take long
+        # (``blueferry doctor``), so it never holds up reads or mutations.
+        self._local_executor = ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix="blueferry-gtk-local",
+        )
         # Each call opens a private connection, but all share one session bus,
         # so a verified daemon owner stays verified across calls.
         self._compatibility = CompatibilityCache()
+        # Worker pools of the shared client models (plugins, photos, tools).
+        self._runners: dict[str, WorkerRunner] = {}
         self._stopped = False
         self.available = False  # is the daemon reachable on D-Bus?
         self.healthy = False  # is the MAP session up?
@@ -114,6 +128,8 @@ class DaemonClient(GObject.Object):
         for signal_name, gobject_signal in (
             ("NowPlayingChanged", "now-playing-changed"),
             ("CallHistoryChanged", "call-history-changed"),
+            ("NotificationsChanged", "notifications-changed"),
+            ("CallsChanged", "calls-changed"),
         ):
             self._matches.append(
                 self._bus.add_signal_receiver(
@@ -135,6 +151,12 @@ class DaemonClient(GObject.Object):
         self._matches = []
         self._read_executor.shutdown(wait=False, cancel_futures=True)
         self._mutation_executor.shutdown(wait=False, cancel_futures=True)
+        self._local_executor.shutdown(wait=False, cancel_futures=True)
+        for runner in self._runners.values():
+            runner.stop()
+        # The interpreter joins the worker at exit: end a doctor run now
+        # instead of waiting for its timeout.
+        terminate_running()
 
     def _call_backend(self, operation: Callable[[BackendClient], T]) -> T:
         """Call the shared backend facade on a worker-owned connection."""
@@ -160,8 +182,13 @@ class DaemonClient(GObject.Object):
         on_err=None,
         *,
         mutation: bool = False,
+        local: bool = False,
     ) -> Future:
-        executor = self._mutation_executor if mutation else self._read_executor
+        executor = (
+            self._local_executor if local
+            else self._mutation_executor if mutation
+            else self._read_executor
+        )
         future = executor.submit(operation)
 
         def completed(result: Future) -> None:
@@ -417,6 +444,68 @@ class DaemonClient(GObject.Object):
             mutation=True,
         )
 
+    def set_mirror_notification_removals_async(
+        self, enabled: bool, on_ok, on_err
+    ) -> None:
+        self._submit(
+            lambda: self._call_backend(
+                lambda backend: backend.set_mirror_notification_removals(enabled)
+            ),
+            on_ok,
+            on_err,
+            mutation=True,
+        )
+
+    def set_phone_battery_warning_async(self, enabled: bool, on_ok, on_err) -> None:
+        self._submit(
+            lambda: self._call_backend(
+                lambda backend: backend.set_phone_battery_warning(enabled)
+            ),
+            on_ok,
+            on_err,
+            mutation=True,
+        )
+
+    def reconnect_phone_async(self, on_ok, on_err) -> None:
+        """Messages1.ReconnectPhone: skip the automatic backoff once."""
+        self._submit(
+            lambda: self._call_backend(lambda backend: backend.reconnect_phone()),
+            on_ok,
+            on_err,
+            mutation=True,
+        )
+
+    def notification_open_map_async(self, on_ok, on_err=None) -> None:
+        """The notification click rules (Messages1.GetNotificationOpenMap)."""
+        self._submit(
+            lambda: self._call_backend(lambda backend: backend.notification_open_map()),
+            on_ok,
+            on_err,
+        )
+
+    def set_notification_open_target_async(
+        self, bundle_id: str, target: str, on_ok, on_err
+    ) -> None:
+        """Store one click rule; answers with all rules."""
+        self._submit(
+            lambda: self._call_backend(
+                lambda backend: backend.set_notification_open_target(bundle_id, target)
+            ),
+            on_ok,
+            on_err,
+            mutation=True,
+        )
+
+    def remove_notification_open_target_async(self, bundle_id: str, on_ok, on_err) -> None:
+        self._submit(
+            lambda: self._call_backend(
+                lambda backend: backend.remove_notification_open_target(bundle_id)
+            ),
+            on_ok,
+            on_err,
+            mutation=True,
+        )
+
     def set_media_control_async(self, enabled: bool, on_ok, on_err) -> None:
         self._submit(
             lambda: self._call_backend(
@@ -504,6 +593,39 @@ class DaemonClient(GObject.Object):
             mutation=True,
         )
 
+    def calls_async(self, on_ok, on_err=None) -> None:
+        """Calls1.ListCalls: the running calls as a ``CallsSnapshot``."""
+        self._submit(
+            lambda: self._call_backend(lambda backend: backend.calls()),
+            on_ok,
+            on_err,
+        )
+
+    def answer_call_async(self, call_id: str, on_ok, on_err) -> None:
+        self._submit(
+            lambda: self._call_backend(lambda backend: backend.answer_call(call_id)),
+            on_ok,
+            on_err,
+            mutation=True,
+        )
+
+    def hangup_call_async(self, call_id: str, on_ok, on_err) -> None:
+        self._submit(
+            lambda: self._call_backend(lambda backend: backend.hangup_call(call_id)),
+            on_ok,
+            on_err,
+            mutation=True,
+        )
+
+    def swap_calls_async(self, on_ok, on_err) -> None:
+        """Hold the active call or resume the held one (AT+CHLD=2)."""
+        self._submit(
+            lambda: self._call_backend(lambda backend: backend.swap_calls()),
+            on_ok,
+            on_err,
+            mutation=True,
+        )
+
     def set_contact_photos_async(self, enabled: bool, on_ok, on_err) -> None:
         self._submit(
             lambda: self._call_backend(lambda backend: backend.set_contact_photos(enabled)),
@@ -563,3 +685,83 @@ class DaemonClient(GObject.Object):
             on_ok,
             on_err,
         )
+
+    def sync_call_history_async(self, on_ok, on_err) -> None:
+        """Ask the daemon to read the iPhone's call history again now."""
+        self._submit(
+            lambda: self._call_backend(lambda backend: backend.sync_call_history()),
+            on_ok,
+            on_err,
+            mutation=True,
+        )
+
+    # ---- shared client models (blueferry.client_tasks) -------------------
+
+    def submit(self, operation, on_done=None, on_error=None, on_finished=None) -> None:
+        """:class:`blueferry.client_tasks.TaskRunner` on the read worker.
+
+        The shared models (``notification_history``) hand in blocking work
+        such as :meth:`notifications`; the callbacks run on the GTK thread.
+        """
+        def done(value) -> None:
+            if on_done is not None:
+                on_done(value)
+            if on_finished is not None:
+                on_finished()
+
+        def failed(message: str) -> None:
+            if on_error is not None:
+                on_error(message)
+            if on_finished is not None:
+                on_finished()
+
+        self._submit(operation, done, failed)
+
+    def task_runner(self, name: str, workers: int = 1) -> WorkerRunner:
+        """A :class:`blueferry.client_tasks.TaskRunner` with its own pool.
+
+        The plugin models call plugins, git and pip, which may take long;
+        on their own pool they never hold up the daemon's reads and
+        mutations. One pool per ``name``, stopped with the client.
+        """
+        runner = self._runners.get(name)
+        if runner is None:
+            runner = self._runners[name] = WorkerRunner(name, workers)
+            if self._stopped:
+                runner.stop()
+        return runner
+
+    def notifications(self, limit: int) -> dict:
+        """ListNotifications; blocking, so only for work passed to :meth:`submit`."""
+        return self._call_backend(lambda backend: backend.notifications(limit))
+
+    # ---- settings: feature switches, service restart, doctor -------------
+
+    def features_async(self, on_ok, on_err=None) -> None:
+        """Messages1.GetFeatures; older daemons without it report an error."""
+        self._submit(
+            lambda: self._call_backend(lambda backend: backend.features()),
+            on_ok,
+            on_err,
+        )
+
+    def set_feature_async(self, name: str, enabled: bool, on_ok, on_err) -> None:
+        """Messages1.SetFeature: ``active``, ``restart-required`` or ``environment``."""
+        self._submit(
+            lambda: self._call_backend(
+                lambda backend: backend.set_feature(name, enabled)
+            ),
+            on_ok,
+            on_err,
+            mutation=True,
+        )
+
+    def restart_backend_async(self, on_ok, on_err) -> None:
+        """Restart the user's BlueFerry service, after queued mutations."""
+        self._submit(restart_backend, on_ok, on_err, mutation=True)
+
+    def run_doctor_async(
+        self, on_ok, on_err, runner: Callable[[], DoctorReport] = run_doctor,
+    ) -> None:
+        """Run ``blueferry doctor`` in a child process off the GTK thread."""
+        self._submit(runner, on_ok, on_err, local=True)
