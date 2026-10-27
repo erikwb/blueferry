@@ -233,6 +233,31 @@ Kirigami.ApplicationWindow {
         onActivated: shortcutsDialog.open()
     }
 
+    // During an active call, 0-9, * and # (number pad included) are keypad
+    // tones. Text fields claim printable keys first (ShortcutOverride), so
+    // typing a message, a search or a number is unaffected.
+    component ToneShortcut: Shortcut {
+        required property string key
+        sequences: root.toneSequences(key)
+        enabled: (root.bridge.activeCallId || "") !== ""
+        onActivated: root.bridge.pressCallTone(key)
+    }
+    function toneSequences(key: string): var {
+        return key === "#" ? [key] : [key, "Num+" + key]
+    }
+    ToneShortcut { key: "1" }
+    ToneShortcut { key: "2" }
+    ToneShortcut { key: "3" }
+    ToneShortcut { key: "4" }
+    ToneShortcut { key: "5" }
+    ToneShortcut { key: "6" }
+    ToneShortcut { key: "7" }
+    ToneShortcut { key: "8" }
+    ToneShortcut { key: "9" }
+    ToneShortcut { key: "0" }
+    ToneShortcut { key: "*" }
+    ToneShortcut { key: "#" }
+
     pageStack.initialPage: messagesPage
 
     Kirigami.PromptDialog {

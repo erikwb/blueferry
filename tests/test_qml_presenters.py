@@ -857,6 +857,12 @@ def settings_window(qml_engine):
             function setPhoneAudioRoute(route) { record("setPhoneAudioRoute", [route]); }
             function swapCalls() { record("swapCalls", []); }
             property string callTonesDraft: ""
+            property string activeCallId: ""
+            property string callTonesSent: ""
+            function pressCallTone(key) {
+                if (activeCallId === "") return false;
+                record("pressCallTone", [key]); return true;
+            }
             function setCallTonesDraft(text) { callTonesDraft = text; }
             function sendCallTones(callId, tones) {
                 record("sendCallTones", [callId, tones]); callTonesDraft = "";
@@ -4732,7 +4738,7 @@ def test_keypad_tones_go_to_the_active_call_and_survive_a_refresh(qml_engine, se
     assert send.property("enabled") is True
     bridge.setProperty("busy", True)
     QGuiApplication.processEvents()
-    assert send.property("enabled") is False
+    assert send.property("enabled") is True, "tones queue up; busy does not block them"
     bridge.setProperty("busy", False)
     # A refreshed list rebuilds the card; the draft comes back.
     bridge.setProperty("phoneCalls", [dict(active)])
@@ -4747,6 +4753,63 @@ def test_keypad_tones_go_to_the_active_call_and_survive_a_refresh(qml_engine, se
     }
     assert field.property("text") == ""
     bridge.setProperty("phoneCalls", [])
+    QGuiApplication.processEvents()
+
+
+def _recorded_calls(engine):
+    calls = _evaluate(engine, "testBridge.calls")
+    return calls.toVariant() if hasattr(calls, "toVariant") else calls
+
+
+def test_keypad_and_keyboard_send_tones_during_an_active_call(qml_engine, settings_window):
+    window, bridge = settings_window
+    _evaluate(qml_engine, "testWindow.currentTab = testWindow.callsTab")
+    bridge.setProperty("status", {"calls_enabled": True})
+    bridge.setProperty("callsState", "ready")
+    QGuiApplication.processEvents()
+    field = _visual_find(window.contentItem(), "dialPadField", qml_engine)
+    one = _visual_find(window.contentItem(), "dialKey1", qml_engine)
+    # No call: the pad dials, and digit keys are not taken.
+    QMetaObject.invokeMethod(one, "clicked")
+    QGuiApplication.processEvents()
+    assert field.property("text") == "1"
+    field.setProperty("text", "")
+    field.forceActiveFocus()
+    active = {"call_id": "voicecall01", "state": "active", "ringing": False,
+              "display_peer": "Alice", "number": "+41790000001", "first_seen": ""}
+    bridge.setProperty("phoneCalls", [active])
+    bridge.setProperty("activeCallId", "voicecall01")
+    QGuiApplication.processEvents()
+    assert field.property("activeFocus") is False, "the empty number field kept the focus"
+    QMetaObject.invokeMethod(one, "clicked")
+    QMetaObject.invokeMethod(_visual_find(window.contentItem(), "dialKey#", qml_engine), "clicked")
+    zero = _visual_find(window.contentItem(), "dialKey0", qml_engine)
+    QMetaObject.invokeMethod(zero, "pressAndHold")
+    QMetaObject.invokeMethod(zero, "clicked")  # the release after the long press
+    QGuiApplication.processEvents()
+    assert field.property("text") == ""
+    tones = [c["args"][0] for c in _recorded_calls(qml_engine) if c["method"] == "pressCallTone"]
+    assert tones == ["1", "#", "0"]
+    # The keyboard, number pad included, outside text fields.
+    window.contentItem().forceActiveFocus()
+    QTest.keyClick(window, Qt.Key_5)
+    QTest.keyClick(window, Qt.Key_7, Qt.KeypadModifier)
+    QGuiApplication.processEvents()
+    tones = [c["args"][0] for c in _recorded_calls(qml_engine) if c["method"] == "pressCallTone"]
+    assert tones[-2:] == ["5", "7"]
+    card = _visual_find(window.contentItem(), "activeCallCard", qml_engine)
+    _visual_find(card, "callTonesField").forceActiveFocus()
+    QTest.keyClick(window, Qt.Key_9)
+    QGuiApplication.processEvents()
+    assert _visual_find(card, "callTonesField").property("text") == "9", "the field keeps its keys"
+    assert "9" not in [c["args"][0] for c in _recorded_calls(qml_engine)
+                       if c["method"] == "pressCallTone"]
+    bridge.setProperty("callTonesSent", "Sent: 1 # 0")
+    QGuiApplication.processEvents()
+    sent = _visual_find(card, "callTonesSent")
+    assert sent.property("visible") is True and sent.property("text") == "Sent: 1 # 0"
+    bridge.setProperty("phoneCalls", [])
+    bridge.setProperty("activeCallId", "")
     QGuiApplication.processEvents()
 
 

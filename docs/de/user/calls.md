@@ -31,7 +31,10 @@ flowchart LR
   und **Decline**. Sie schließt sich, sobald es nicht mehr klingelt.
 - Der Qt- und der GTK-Client zeigen laufende Anrufe als Karten im Tab
   **Calls** (annehmen, halten/fortsetzen, auflegen und, solange ein Anruf
-  aktiv ist, ein Feld für Tastentöne mit **Send Tones**), der
+  aktiv ist, Tastentöne: jede Taste des Wählfelds und jede außerhalb eines
+  Textfelds getippte 0–9, `*`, `#` geht sofort hinaus und erscheint als
+  „Sent: …“; ein Feld für Tastentöne mit **Send Tones** nimmt ganze Folgen
+  wie eine PIN), der
   Terminal-Client ein Anruf-Panel (`c`: annehmen, halten/fortsetzen, auflegen, Tastentöne,
   Kontaktvorschläge) und die CLI die Befehlsgruppe `calls`:
 

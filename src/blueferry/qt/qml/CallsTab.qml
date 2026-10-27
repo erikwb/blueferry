@@ -21,6 +21,14 @@ GridLayout {
     readonly property var phoneCalls: callsTab.bridge.phoneCalls || []
     readonly property var audio: callsTab.bridge.phoneAudio || ({})
     readonly property string dialText: callsTab.dialable(dialField.text)
+    // The call keypad tones go to (phone_link_view.active_call_id).
+    readonly property string activeCall: callsTab.bridge.activeCallId || ""
+    // A call just connected: an empty number field must not swallow the
+    // keyboard's keypad keys meant for the call's menu.
+    onActiveCallChanged: {
+        if (callsTab.activeCall !== "" && dialField.activeFocus && dialField.text === "")
+            dialField.focus = false
+    }
 
     // What the field keeps: digits, +, * and # (phone_link_view.dialable).
     function dialable(value: string): string {
@@ -29,6 +37,12 @@ GridLayout {
 
     function append(key: string): void {
         dialField.text = callsTab.dialable(dialField.text + key)
+    }
+
+    // A pad key: a tone for the active call, else part of the number.
+    function padKey(key: string): void {
+        if (callsTab.activeCall === "" || !callsTab.bridge.pressCallTone(key))
+            callsTab.append(key)
     }
 
     function dial(): void {
@@ -131,13 +145,24 @@ GridLayout {
                         objectName: "callTonesSend"
                         text: activeCall.card.send_tones || ""
                         icon.name: "input-dialpad"
-                        enabled: tonesField.text !== "" && !callsTab.bridge.busy
+                        // Tones queue up on their own; other actions do not block them.
+                        enabled: tonesField.text !== ""
                         onClicked: activeCall.sendTones()
                     }
                 }
                 function sendTones(): void {
-                    if (tonesField.text !== "" && !callsTab.bridge.busy)
+                    if (tonesField.text !== "")
                         callsTab.bridge.sendCallTones(activeCall.modelData.call_id, tonesField.text)
+                }
+                // The tones sent so far ("Sent: 1 2"), from the pad, the
+                // keyboard or the field above.
+                Controls.Label {
+                    objectName: "callTonesSent"
+                    Layout.fillWidth: true
+                    visible: activeCall.card.active === true && text !== ""
+                    text: callsTab.bridge.callTonesSent || ""
+                    textFormat: Text.PlainText
+                    opacity: 0.7
                 }
                 Controls.Switch {
                     objectName: "callsAudioSwitch"
@@ -276,18 +301,21 @@ GridLayout {
                             }
                             Item { Layout.fillHeight: true }
                         }
-                        // A long press on 0 dials "+".
+                        // A long press on 0 dials "+"; during a call it is just 0.
                         onPressAndHold: {
                             if (key.modelData[0] === "0") {
                                 key.held = true
-                                callsTab.append("+")
+                                if (callsTab.activeCall !== "")
+                                    callsTab.padKey("0")
+                                else
+                                    callsTab.append("+")
                             }
                         }
                         onClicked: {
                             if (key.held)
                                 key.held = false
                             else
-                                callsTab.append(key.modelData[0])
+                                callsTab.padKey(key.modelData[0])
                         }
                     }
                 }

@@ -64,6 +64,12 @@ class RunningCalls(Gtk.ListBox):
         self.tones_button: Gtk.Button | None = None
         self._tones_call = ""
         self._tones_draft = ""
+        # Keypad, keyboard and tone field all go through one ordered queue
+        # (phone_link_view.KeypadTones, shared with Qt and the terminal).
+        self.keypad = phone_link_view.KeypadTones(
+            self._send_tones, on_changed=self._render_tones_sent, on_error=toast,
+        )
+        self.tones_sent = Adw.ActionRow(use_markup=False, css_classes=["dim-label"])
         self._read = CoalescedRead(
             client.calls_async, self._loaded, self._failed,
             active=lambda: self._shown and self._status.get("calls_enabled") is True,
@@ -144,17 +150,29 @@ class RunningCalls(Gtk.ListBox):
     def hangup(self, call_id: str) -> None:
         self._act(lambda done, failed: self._client.hangup_call_async(call_id, done, failed))
 
+    @property
+    def active_call_id(self) -> str:
+        """The call keypad tones go to; "" while no call is connected."""
+        return phone_link_view.active_call_id(self.calls)
+
+    def press_tone(self, key: str) -> bool:
+        """A keypad click or key press during an active call: send it now."""
+        return self.keypad.press(self.active_call_id, key)
+
     def send_tones(self) -> None:
         """Send the typed keypad tones to the active call, then clear them."""
-        tones = phone_link_view.dial_tones(self._tones_draft)
-        call_id = self._tones_call
-        if not tones or not call_id or self._busy:
-            return
-        self._tones_draft = ""
-        if self.tones is not None:
-            self.tones.set_text("")
-        self._act(lambda done, failed: self._client.send_call_tones_async(
-            call_id, tones, done, failed))
+        if self.keypad.press(self._tones_call, self._tones_draft):
+            self._tones_draft = ""
+            if self.tones is not None:
+                self.tones.set_text("")
+
+    def _send_tones(self, call_id: str, tones: str, done, failed) -> None:
+        self._client.send_call_tones_async(call_id, tones, done, failed)
+
+    def _render_tones_sent(self) -> None:
+        text = phone_link_view.tones_feedback(self.keypad.sent)
+        self.tones_sent.set_title(text)
+        self.tones_sent.set_visible(bool(text))
 
     def _act(self, request) -> None:
         if self._busy:
@@ -191,6 +209,9 @@ class RunningCalls(Gtk.ListBox):
             if card["active"] and self.tones is None:
                 self._tones_call = str(call.get("call_id") or "")
                 self.append(self._tones_row(card))
+                self.append(self.tones_sent)
+        self.keypad.follow(self._tones_call)
+        self._render_tones_sent()
         if self.tones is None:
             self._tones_draft = ""  # no active call any more
         elif typing:
@@ -274,7 +295,8 @@ class RunningCalls(Gtk.ListBox):
             for button in buttons:
                 button.set_sensitive(not self._busy)
         if self.tones_button is not None:
-            self.tones_button.set_sensitive(not self._busy and bool(self._tones_draft))
+            # Tones queue up on their own; other actions do not block them.
+            self.tones_button.set_sensitive(bool(self._tones_draft))
 
     def _refresh_avatars(self) -> None:
         for _row, call, avatar, _buttons in self.rows:
