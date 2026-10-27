@@ -121,7 +121,7 @@ def setup(tmp_path):
 
 
 def _ran(runner, word):
-    return [call for call in runner.calls if word in " ".join(call)]
+    return [call for call in runner.calls if word in call]
 
 
 @pytest.mark.parametrize("prepare_before_install", [False, True])
