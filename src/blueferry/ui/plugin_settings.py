@@ -473,7 +473,7 @@ class PluginSettingsPage:
         state = self.model.state()
         busy = bool(state["busy"])
         # A step that failed ends a pending toggle: show the real state again.
-        failed = not busy and bool(state["message"]) and state["messageOk"] is False
+        failed = not busy and state.get("failedStep") == "enable"
         self._syncing = True
         try:
             rows = {plugin["id"]: plugin for plugin in state["plugins"]}
