@@ -31,3 +31,13 @@ def test_an_unreadable_file_reads_as_empty(tmp_path) -> None:
     UiState(work, path).load(loaded.append)
     work.run_tasks()
     assert loaded == [{}]
+
+
+def test_a_failed_write_is_logged(tmp_path, caplog) -> None:
+    blocked = tmp_path / "gtk-ui.json"
+    blocked.mkdir()  # a directory where the file should be
+    work = ManualRunner()
+    UiState(work, blocked).save(**{EXTRAS_EXPANDED: False})
+    with caplog.at_level("WARNING", logger="blueferry.ui.ui_state"):
+        work.run_tasks()
+    assert "could not save the window state" in caplog.text

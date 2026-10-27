@@ -10,6 +10,7 @@ touches the disk; one worker keeps the writes in order.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,7 @@ from blueferry import config
 from blueferry.client_tasks import TaskRunner
 from blueferry.settings_store import SettingsStore
 
+log = logging.getLogger(__name__)
 EXTRAS_EXPANDED = "plugins_tools_expanded"
 
 
@@ -39,4 +41,7 @@ class UiState:
         )
 
     def save(self, **values: Any) -> None:
-        self._runner.submit(lambda: self._store.update(**values))
+        self._runner.submit(
+            lambda: self._store.update(**values), None,
+            lambda message: log.warning("could not save the window state: %s", message),
+        )
