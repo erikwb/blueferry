@@ -1094,7 +1094,9 @@ class BlueFerryApp(App[None]):
         connection = self.query_one("#connection-summary", Static)
         connection.update(Text(_one_line(summary)))
         connection.set_classes(summary_class)
-        self.query_one("#release", Static).update(Text(_one_line(f"backend {status.backend_release}")))
+        self.query_one("#release", Static).update(
+            Text(_one_line(f"backend {status.backend_release}"))
+        )
         self._set_pill("#map-status", "MESSAGES", status.map)
         self._set_pill("#pbap-status", "CONTACTS", status.pbap)
         self._set_pill("#ancs-status", "NOTIFICATIONS", status.ancs)
