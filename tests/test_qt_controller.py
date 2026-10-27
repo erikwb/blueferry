@@ -1772,11 +1772,18 @@ def test_photos_load_only_while_watched_and_open_the_original(monkeypatch, tmp_p
     from blueferry.plugin_api.client import Photo
     from blueferry.plugin_api.testing import manifest
 
+    from .photo_fixtures import png
+    from .test_photo_thumbnails import png_bomb
+
     plugin = manifest()
     thumb = tmp_path / "t.webp"
+    thumb.write_bytes(png(2, 2))
+    bomb = tmp_path / "bomb.png"
+    bomb.write_bytes(png_bomb(100_000, 100_000))
     original = tmp_path / "IMG_1.HEIC"
     snapshot = photos_view.PhotosSnapshot(True, True, "1 recent items", [
         Photo("a", "2026-10-06T16:21:00Z", "video", thumb),
+        Photo("b", "2026-10-06T16:22:00Z", "image", bomb),
     ])
     monkeypatch.setattr(photos_view, "find_plugin", lambda: plugin)
     monkeypatch.setattr(photos_view, "load_recent", lambda manifest: snapshot)
@@ -1799,6 +1806,8 @@ def test_photos_load_only_while_watched_and_open_the_original(monkeypatch, tmp_p
     item = controller.photos["items"][0]
     assert item["video"] is True and item["thumbnail"].endswith("/t.webp")
     assert item["original"] == "" and controller.photos["ready"] is True
+    # A thumbnail declaring 10 gigapixels never reaches QML's image loader.
+    assert controller.photos["items"][1]["thumbnail"] == ""
     controller.openPhoto("a")
     assert fetched == ["a"] and opened == [str(original)]
     assert controller.photos["items"][0]["original"].endswith("/IMG_1.HEIC")

@@ -639,7 +639,9 @@ class BridgeController(QObject):
 
         def load():
             manifest = photos_view.find_plugin()
-            return manifest, photos_view.load_recent(manifest)
+            # Oversized or unreadable thumbnails become placeholders here, off
+            # the UI thread and before QML's image loader ever sees them.
+            return manifest, photos_view.with_safe_thumbnails(photos_view.load_recent(manifest))
 
         def completed(value: object) -> None:
             manifest, snapshot = value  # type: ignore[misc]
