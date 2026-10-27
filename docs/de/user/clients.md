@@ -20,6 +20,53 @@ Linux Mint 22.3 und Pop!_OS 24.04 gibt es sie nicht.
 
 ![KDE-Client](../../images/qt.png)
 
+Das Fenster ist eine Telefon-Übersicht. Links zeigt eine Karte Name,
+Verbindung, Akku und Empfang des iPhones, was gerade läuft (mit zurück,
+Wiedergabe/Pause und weiter) und Schnellschalter für [den
+Ton](phone-audio.md) und die [Abwesenheitssperre](proximity-lock.md).
+Ausgeschaltete Funktionen bleiben sichtbar, aber ausgegraut, mit der
+Einstellung, die sie einschaltet. Rechts gibt es drei Reiter:
+
+- **Messages**: Unterhaltungen mit den Filtern All, Unread und Starred und
+  der Chat.
+- **Calls**: [Anrufe](calls.md) mit Wählfeld und laufenden Anrufen als
+  Karten (annehmen, halten, auflegen) und die [Anrufliste](call-history.md)
+  nach Tagen gruppiert, mit All und Missed.
+- **Notifications**: die [letzten iPhone-Mitteilungen](notification-history.md)
+  anderer Apps.
+
+In einem schmalen Fenster klappt die Karte hinter den Telefon-Knopf in der
+Kopfzeile.
+
+**Settings** (das Zahnrad in der Kopfzeile) hat links Kategorien, wie KDEs
+Systemeinstellungen:
+
+| Kategorie | Inhalt |
+| --- | --- |
+| Phone | Kopplung, Verbindungszustand, **Run Diagnostics** (dieselben Prüfungen wie `blueferry doctor`, im Fenster angezeigt), Kontaktabgleich, Kontaktfotos |
+| Notifications | Welche Ereignisse Popups erzeugen, nur Kontakte, Klickregeln, Mitteilungsinhalt, Aktionsknöpfe, Mitteilungen mit dem iPhone abgleichen, beim Wegklicken als gelesen markieren |
+| Calls & Audio | Anrufe, Anrufliste, Akku-Warnung, [iPhone-Ton am Computer](phone-audio.md), Mediensteuerung |
+| Security | Einmalcodes, Abwesenheitssperre, lokale Daten und ihre Verschlüsselung, Verlauf löschen |
+| About | Version, Hintergrunddienst, Tastenkürzel, Beenden |
+
+In einem schmalen Fenster werden die Kategorien zur Liste; eine Kategorie
+öffnet sich einzeln, **All Settings** führt zurück.
+
+### Schalter, die einen Neustart brauchen
+
+Einige Ein/Aus-Einstellungen brauchten bisher eine Änderung in
+`~/.config/blueferry/local.env`: Mitteilungsinhalt anzeigen und eine Nachricht
+beim Wegklicken des Popups als gelesen markieren. Die Einstellungsseite und `blueferry features` speichern sie
+jetzt in `~/.config/blueferry/settings.json`, wo sie `local.env`
+überschreiben. Sie gelten nach einem Neustart des Hintergrunddienstes; die
+Seite sagt das und bietet **Restart Service** an. Eine Variable aus der
+Umgebung des Dienstes gewinnt weiterhin, der Schalter sagt dann das.
+
+```bash
+blueferry features                                 # alle Schalter mit Wert und Quelle
+blueferry features off mark_read_on_dismiss        # gilt nach einem Neustart
+```
+
 ### Symbol im Systemabschnitt der Kontrollleiste
 
 `blueferry-tray` kommt mit `blueferry-qt` und legt ein Telefon-Symbol in den
