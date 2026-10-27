@@ -209,12 +209,13 @@ All paths are relative to `src/blueferry/` unless noted.
 | `cli_otp.py` | `blueferry otp status`, `enable`, `disable` and `check` for one-time code auto-copy (`otp-status` and `otp-check` stay as aliases). |
 | `tui.py` | Textual terminal client. |
 | `tui_launcher.py` | Launches the TUI with the package-private Textual bundle when present. |
-| `tui_calls.py` | Optional Textual calls panel. |
+| `tui_calls.py` | Optional Textual calls panel (`c`): `call_card` wording, one action row (answer, hold/resume via `SwapCalls`, hang up/decline), keypad tones for the active call, dial suggestions (`dial_suggestions`), confirmation before every call; work through `TextualTaskRunner`. |
+| `tui_notifications.py` | Textual "iPhone Notifications" screen over the shared `NotificationHistory` (`notifications_view` wording); read only while open, forgotten on close, `NotificationsChanged` coalesced. |
 | `tui_options.py` | Textual "Options" screen (`o`): the Qt/GTK settings categories as tabs, saved preferences from `GetStatus`, `local.env` feature switches via `features_view` with "Restart Service", buttons for the per-key actions. |
 | `tui_doctor.py` | Textual diagnostics report: `blueferry doctor` on a worker, plain-text report with Copy. |
 | `tui_tasks.py` | Textual `TaskRunner`/`Timer` adapters for `client_tasks` (thread workers, results via `call_from_thread`, `set_timer`). |
 | `tui_notification_rules.py` | Textual editor for notification click rules. |
-| `tui_phone.py` | Opt-in Textual now-playing line and read-only recent-calls screen. |
+| `tui_phone.py` | Textual "iPhone Overview" (the phone card: name, connection, battery/signal/network, now playing, `feature_hints`), the opt-in now-playing line, and the recent-calls screen (`call_groups`, call back, message). |
 | `phone_overview.py` | Toolkit-free now-playing and recent-call rules shared by the GTK, TUI and Quickshell clients (mirrors the Qt QML rules). |
 | `ui/app.py` | GTK4/libadwaita application entry point. |
 | `ui/window.py` | Main GTK window: the phone card above an `AdwViewStack` with the Messages, Calls and Notifications tabs (switcher in the header, a bottom bar below 650 px); only the visible tab of a shown window reads (`set_watched`), closing stops every read; `add_tab` is where further tabs (Photos) go. Opens the settings dialog on a category and confirms every call (`dial_presenter.py`). |

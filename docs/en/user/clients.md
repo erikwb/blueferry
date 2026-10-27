@@ -184,6 +184,33 @@ The command palette (`Ctrl+P`) also has **Options: Phone** … **Options:
 About** and **Run Diagnostics**. Pairing stays with `blueferry pair-setup`
 or a graphical client; the terminal client has no plugin settings yet.
 
+### iPhone, calls and notifications
+
+**iPhone Overview** in the command palette is the terminal's phone card:
+the iPhone's name, the connection, battery, signal and network, what is
+playing, and for each optional feature that is off the switch that turns it
+on and its Options category. Its buttons open the notification list, the
+recent calls, the calls panel and Options.
+
+**iPhone Notifications** (in the palette and the overview) lists the recent
+iPhone app notifications that **Keep recent iPhone notifications** keeps:
+the app, the time and, if allowed, title and text. It is read only while it
+is open, follows new notifications, and is forgotten when you close it.
+When the list is off, empty or unavailable, it says why; **Open
+Notification Settings** goes to Options › Notifications.
+
+The calls panel (`c`, or **Phone Calls** in the palette) words each call
+like Qt and GTK (incoming, on hold, the duration). Its one row of buttons
+acts on the obvious call: **Answer** the ringing one, **Hold** or
+**Resume** the connected one, **Hang Up** (or **Decline**) the active one
+first. During an active call, the keypad tone field sends 0-9, `*` and `#`,
+for example to a phone menu. Typing a name in the number field suggests the
+phone numbers of matching contacts. A call is always confirmed first.
+
+**Recent calls** (`h`) are grouped by day; `m` shows only missed calls.
+Enter or **Call Back** calls the selected number after the confirmation,
+**Send a Message** starts a new message to it.
+
 ## Command line
 
 The `blueferry` command is useful for diagnostics and scripts:

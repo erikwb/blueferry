@@ -30,7 +30,8 @@ flowchart LR
 - Zeigt bei einem eingehenden Anruf eine Desktop-Mitteilung mit **Answer**
   und **Decline**. Sie schließt sich, sobald es nicht mehr klingelt.
 - Der Qt-Client bekommt einen Dialog **Phone Calls**, der Terminal-Client
-  ein Anruf-Panel (`c`) und die CLI die Befehlsgruppe `calls`:
+  ein Anruf-Panel (`c`: annehmen, halten/fortsetzen, auflegen, Tastentöne,
+  Kontaktvorschläge) und die CLI die Befehlsgruppe `calls`:
 
   ```bash
   blueferry calls                 # Zustand und laufende Anrufe

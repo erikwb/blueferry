@@ -195,6 +195,36 @@ About** und **Run Diagnostics**. Die Kopplung bleibt bei `blueferry
 pair-setup` oder einem grafischen Client; Plugin-Einstellungen hat der
 Terminal-Client noch nicht.
 
+### iPhone, Anrufe und Mitteilungen
+
+**iPhone Overview** in der Befehlspalette ist die Telefon-Karte des
+Terminals: der Name des iPhones, die Verbindung, Akku, Empfang und Netz, was
+gerade läuft, und für jede ausgeschaltete optionale Funktion der Schalter,
+der sie einschaltet, samt seiner Kategorie in Options. Die Knöpfe öffnen die
+Mitteilungsliste, die letzten Anrufe, das Anruf-Panel und Options.
+
+**iPhone Notifications** (in der Palette und in der Übersicht) listet die
+letzten Mitteilungen von iPhone-Apps, die **Keep recent iPhone
+notifications** behält: App, Zeit und, wenn erlaubt, Titel und Text. Die
+Liste wird nur gelesen, solange sie offen ist, folgt neuen Mitteilungen und
+wird beim Schließen vergessen. Ist sie ausgeschaltet, leer oder nicht
+verfügbar, sagt sie warum; **Open Notification Settings** führt zu
+Options › Notifications.
+
+Das Anruf-Panel (`c` oder **Phone Calls** in der Palette) beschreibt jeden
+Anruf wie Qt und GTK (eingehend, gehalten, die Dauer). Seine eine Knopfreihe
+wirkt auf den naheliegenden Anruf: **Answer** nimmt den klingelnden an,
+**Hold** bzw. **Resume** hält den verbundenen oder holt ihn zurück, **Hang
+Up** (oder **Decline**) beendet zuerst den aktiven. Während eines aktiven
+Anrufs sendet das Tastentonfeld 0–9, `*` und `#`, etwa an ein
+Telefonmenü. Wer im Nummernfeld einen Namen tippt, bekommt die
+Telefonnummern passender Kontakte vorgeschlagen. Jeder Anruf wird zuerst
+bestätigt.
+
+**Recent calls** (`h`) sind nach Tagen gruppiert; `m` zeigt nur verpasste
+Anrufe. Enter oder **Call Back** ruft die gewählte Nummer nach der
+Bestätigung an, **Send a Message** beginnt eine neue Nachricht an sie.
+
 ## Kommandozeile
 
 Der Befehl `blueferry` hilft bei der Diagnose und in Skripten:

@@ -27,7 +27,8 @@ flowchart LR
 - Shows a desktop popup for an incoming call with **Answer** and
   **Decline**. It closes itself when the call stops ringing.
 - The Qt client gets a **Phone Calls** dialog, the terminal client a calls
-  panel (`c`), and the CLI a `calls` command group:
+  panel (`c`: answer, hold/resume, hang up, keypad tones, contact
+  suggestions), and the CLI a `calls` command group:
 
   ```bash
   blueferry calls                 # state and current calls

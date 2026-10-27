@@ -27,7 +27,8 @@ Notifications** under **Show Popups**.
 ## Use it
 
 The **Notifications** tab lists the newest first, with the app, the time
-and, if allowed, title and text. From a terminal:
+and, if allowed, title and text; the terminal client shows the same list
+under **iPhone Notifications** in its command palette. From a terminal:
 
 ```bash
 blueferry notifications recent             # the last 20
@@ -49,5 +50,6 @@ blueferry notifications recent --limit 100
 ## Privacy
 
 The list is only handed out through BlueFerry's authenticated, rate-limited
-D-Bus method; the change signal carries no content. Nothing about these
+D-Bus method; the change signal carries no content. The clients read it only
+while their list is shown and forget it when it is hidden. Nothing about these
 notifications is stored in BlueFerry's history, which keeps only Messages.

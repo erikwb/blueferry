@@ -247,7 +247,10 @@ that adapts to narrow terminals.
 (Phone, Notifications, Calls & Audio, Security, About): the saved
 preferences the backend offers, the restart-required feature switches with
 **Restart Service**, and **Run Diagnostics** (`blueferry doctor` with a
-copyable report).
+copyable report). The command palette's **iPhone Overview** is the phone
+card (name, connection, battery, signal, network, now playing, and which
+setting turns on a feature that is off), and **iPhone Notifications** the
+recent app notifications, read only while open.
 
 ## System tray item
 
@@ -543,7 +546,8 @@ terminal client does not show photos.
 `BLUEFERRY_NOTIFICATION_HISTORY=true` (or **Keep recent iPhone notifications**
 in the Qt or GTK settings, or `blueferry features on notification_history`, after a
 service restart) keeps the last 200 non-Messages iPhone app notifications in
-the daemon's memory so the Notifications tab of the Qt and GTK clients and
+the daemon's memory so the Notifications tab of the Qt and GTK clients, the
+terminal client's **iPhone Notifications** and
 `blueferry notifications recent` can list them. Nothing is written to disk: BlueFerry's
 history deliberately retains only Messages records, so the list starts empty
 after every backend restart. Titles and bodies are kept only with
@@ -685,7 +689,8 @@ What happens then:
   **Decline** (without the caller when
   `BLUEFERRY_SHOW_NOTIFICATION_CONTENT=false`; the contacts-only notification
   setting deliberately does not apply to calls). The Qt client has a
-  **Phone Calls** dialog, the terminal client a calls panel (`c`) and an
+  **Phone Calls** dialog, the terminal client a calls panel (`c`: answer,
+  hold/resume, hang up, keypad tones, contact suggestions) and an
   "Incoming call" notice, and the CLI a `calls` command group:
 
   ```bash
@@ -753,7 +758,8 @@ blueferry phone-status --warn   # or --no-warn
 The Qt client shows a small battery and signal indicator next to
 "Conversations" (hover for the network name), the GTK client shows battery,
 signal and network on its phone card; the terminal client and the
-Quickshell header add battery and signal to their connection line.
+Quickshell header add battery and signal to their connection line, and the
+terminal client's **iPhone Overview** also shows the network.
 
 An optional low-battery warning (off by default) fires once per discharge
 when the battery reaches the threshold, and again only after the phone has
