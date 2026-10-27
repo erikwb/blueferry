@@ -274,7 +274,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `qt/qml/CallHistorySettings.qml` | Call-history opt-in checkboxes in the iPhone settings. |
 | `qt/qml/NowPlayingBar.qml` | Opt-in iPhone now-playing bar with transport buttons. |
 | `qt/qml/MediaControlSettings.qml` | Media-control opt-in checkbox and state; loaded only for daemons that report it. |
-| `quickshell_bridge.py` | Persistent stdin/stdout JSON bridge from Quickshell to the session D-Bus API. |
+| `quickshell_bridge.py` | Persistent stdin/stdout JSON bridge from Quickshell to the session D-Bus API. Replies carry no arrays QML would have to convert (Qt 6.12, #213): lists such as the feature switches and recent notifications are indexed maps (`count`, `item0`, …) built on the shared `features_view`, `phone_link_view.notifications_view`, `reconnect_view` and `doctor_report` helpers; content-free D-Bus signals become events (`status-changed`, `now-playing-changed`, `notifications-changed`, …). |
 
 ### Quickshell client (`data/quickshell/`)
 
@@ -287,7 +287,10 @@ All paths are relative to `src/blueferry/` unless noted.
 | `SetupController.qml` | Pure setup state; emits requests with monotonic IDs. |
 | `SetupTransport.qml` | Creates one `SetupJob` per request and routes tagged output. |
 | `SetupJob.qml` | One `pairing-*` helper process with a deadline. |
-| `PhoneSettingsPage.qml` | Setup and preferences view. |
+| `PhoneSettingsPage.qml` | Setup and preferences view, in the shared categories (Phone, Notifications, Calls & Audio, Security, About). |
+| `FerryCategoryHeading.qml` | Category heading of the settings page. |
+| `FerryFeatureSwitch.qml` | One restart-required `local.env` switch from the bridge's indexed features view; names the variable for older daemons. |
+| `QuickshellNotificationList.qml` | Compact, read-only recent iPhone notifications; `shell.qml` reads them only while shown and forgets them when hidden. |
 | `Theme.qml` | Reads public Omarchy theme files. |
 | `ThemePalette.qml` | Pure color/geometry tokens with a system-palette fallback. |
 | `Ferry*.qml` | Styled controls (button, check box, combo box, label, text field, composer, section label, info row). |

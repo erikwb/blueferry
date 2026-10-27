@@ -151,6 +151,50 @@ Aktiviere es unter **Setup → Plugins** und füge es deiner Leiste hinzu.
 Kopplung, Nachrichten und Einstellungen erledigt weiterhin der vollständige
 Quickshell-Client.
 
+### Einstellungen
+
+**iPhone settings** hat dieselben Kategorien wie die Einstellungen des Qt-,
+GTK- und Terminal-Clients, untereinander angeordnet. Eine Einstellung
+erscheint nur, wenn der laufende Hintergrunddienst sie anbietet.
+
+| Kategorie | Was du dort findest |
+|---|---|
+| Phone | Kopplung, Verbindungszustand mit **Reconnect**, automatisches Zurücksetzen einer hängenden Verbindung, **Run Diagnostics**, Kontaktabgleich (**Sync Contacts**), Kontaktfotos |
+| Notifications | Welche Ereignisse Popups erzeugen, nur Kontakte, Mitteilungsinhalt, Aktionsknöpfe, Mitteilungen mit dem iPhone abgleichen, beim Wegklicken als gelesen markieren, letzte Mitteilungen behalten und die Liste dieser Mitteilungen |
+| Calls & Audio | Telefonanrufe, Anrufliste und Popups für verpasste Anrufe, Akku-Warnung, iPhone-Ton auf diesem Computer, Mediensteuerung und MPRIS |
+| Security | Einmalcodes, Abwesenheitssperre, die lokale Speicherung |
+| About | Der Hintergrunddienst, seine Version und **Restart Service** |
+
+Schalter, die einen Neustart brauchen, zeigen oben auf der Seite den
+Neustart-Hinweis mit **Restart Service**. Ein älterer Dienst, der sie noch
+nicht kennt, zeigt jeden Schalter ausgegraut mit der Variablen, die du
+stattdessen in `local.env` setzt.
+
+**Show Recent Notifications** listet die letzten 30 Mitteilungen, die
+**Keep recent iPhone notifications** behält: App, Uhrzeit und, falls
+erlaubt, Titel und Text. Die Liste wird nur gelesen, solange sie sichtbar
+ist, folgt neuen Mitteilungen und wird vergessen, sobald du sie
+ausblendest oder die Seite verlässt. Ist sie aus, leer oder nicht
+verfügbar, sagt sie, warum.
+
+### Was das Panel weglässt
+
+Quickshell ist ein kompaktes Panel, deshalb bleiben einige Teile bei den
+anderen Clients:
+
+| Weggelassen | Warum | Stattdessen |
+|---|---|---|
+| Plugin-Verwaltung und Plugin-Einstellungen | Plugin-Formulare sind Listen von Feldern, und die Brücke des Panels gibt QML bewusst keine Arrays (sie gehen unter Qt 6.12 kaputt) | Qt- oder GTK-Einstellungen, `blueferry plugins` |
+| **Send to…** und der Tab **Photos** (Plugin-Funktionen) | Send to braucht eine Dateiauswahl oder Drag & Drop, die das Panel nicht hat; beides kommt von Plugins, die das Panel nicht verwaltet | Qt-Client (Photos), Qt- oder GTK-Client (Send to), `blueferry send`, `blueferry photos` |
+| Begleitwerkzeuge | Desktop-Helfer richtet man einmal ein; das ist keine Aufgabe für ein Panel | Qt- oder GTK-Einstellungen, `blueferry tools` |
+| Nachrichtenverlauf löschen | Bietet auch der Terminal-Client nicht an | `blueferry history-clear` |
+| Click Rules, letzte Anrufe, das Anruf-Panel | Noch nicht im Quickshell-Client | Qt-, GTK- oder Terminal-Client |
+
+Das Panel lädt keinen Übersetzungskatalog, seine eigenen Beschriftungen
+sind deshalb englisch. Texte aus dem gemeinsamen BlueFerry-Code, etwa der
+Hinweis zum Wiederverbinden, der Neustart-Hinweis oder der Platzhalter der
+Mitteilungsliste, folgen deiner Sprache.
+
 ## Terminal (TUI)
 
 Der Terminal-Client ist auf jeder Distribution Teil von `blueferry-backend`.
