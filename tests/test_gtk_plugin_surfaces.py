@@ -446,13 +446,18 @@ def _photo_files(tmp):
 
 def _thumbnail_limits(tmp):
     """Oversized files and canvases are never decoded."""
-    from gi.repository import Gio
+    from gi.repository import GdkPixbuf, Gio
 
-    from blueferry.ui.photos import MAX_THUMBNAIL_BYTES, load_thumbnail
-    from tests.photo_fixtures import png, png_header
+    from blueferry.ui.photos import MAX_THUMBNAIL_BYTES, MAX_THUMBNAIL_PIXELS, load_thumbnail
+    from tests.photo_fixtures import png, png_canvas
 
     (tmp / "small.png").write_bytes(png(8, 8))
-    (tmp / "canvas.png").write_bytes(png_header(30000, 30000))
+    (tmp / "canvas.png").write_bytes(png_canvas(30000, 30000))
+    # A real PNG header: only the canvas cap can refuse it, not a parse error.
+    info = GdkPixbuf.Pixbuf.get_file_info(str(tmp / "canvas.png"))
+    assert info[0] is not None and info[0].get_name() == "png"
+    assert (info[1], info[2]) == (30000, 30000) and 30000 * 30000 > MAX_THUMBNAIL_PIXELS
+    assert (tmp / "canvas.png").stat().st_size < MAX_THUMBNAIL_BYTES
     (tmp / "large.png").write_bytes(png(8, 8) + b"\0" * (MAX_THUMBNAIL_BYTES + 1))
     results: dict = {}
     for name in ("small", "canvas", "large"):
