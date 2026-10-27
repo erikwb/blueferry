@@ -5373,6 +5373,10 @@ def test_quickshell_shows_why_the_switches_fall_back(qml_engine, quickshell_setu
         features_view.unavailable(features_view.initial(), "<b>BlueFerry</b> is not running"),
     ))
     QGuiApplication.processEvents()
+    # An older daemon without GetFeatures: the rows' notes explain it.
+    assert label.property("visible") is False
+    page.setProperty("status", {"daemon": False})
+    QGuiApplication.processEvents()
     assert label.property("visible") is True
     assert label.property("text") == (
         "Could not read the service's switches: <b>BlueFerry</b> is not running"

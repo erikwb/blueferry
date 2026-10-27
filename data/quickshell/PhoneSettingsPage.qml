@@ -531,12 +531,14 @@ Rectangle {
           ferryTheme: root.theme
           text: "Content and actions"
         }
-        // Why the switches below fall back to their local.env variables.
+        // Why the switches below fall back to their local.env variables. Only
+        // while the service is away: an older daemon without GetFeatures is
+        // explained by each row's note, as in the Qt and GTK clients.
         FerryLabel {
           objectName: "featuresError"
           ferryTheme: root.theme
           Layout.fillWidth: true
-          visible: text !== ""
+          visible: text !== "" && root.status.daemon !== true
           wrapMode: Text.Wrap
           color: root.theme.warning
           text: root.features.error ? "Could not read the service's switches: " + String(root.features.error) : ""
