@@ -400,6 +400,33 @@ def test_a_late_phone_name_after_closing_the_overview_is_dropped() -> None:
     _run_headless(scenario())
 
 
+def test_a_failed_phone_name_read_is_tried_again_next_time() -> None:
+    backend = _CallingBackend()
+    answers = ["", "Josh's iPhone"]
+    reads = []
+
+    def name() -> str:
+        reads.append(1)
+        return answers[len(reads) - 1]
+
+    async def scenario() -> None:
+        app = BlueFerryApp(TuiState(backend), monitor_factory=lambda: None, phone_name=name)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause(0.2)
+            app.action_phone_overview()
+            await _until(pilot, lambda: _overview_shown(app) and len(reads) == 1)
+            await pilot.pause(0.2)
+            assert app.screen.phone_name == "iPhone" and app._phone_name == ""
+            app.screen.action_close()
+            await _until(pilot, lambda: not _overview_shown(app))
+            app.action_phone_overview()
+            await _until(pilot, lambda: _overview_shown(app))
+            await _until(pilot, lambda: "Josh" in _overview_text(app.screen))
+            assert len(reads) == 2 and app._phone_name == "Josh's iPhone"
+
+    _run_headless(scenario())
+
+
 def test_call_back_confirms_and_message_prefills_the_recipient() -> None:
     backend = _CallingBackend(
         call_history_enabled=True, calls_enabled=True, calls_state="ready",

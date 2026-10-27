@@ -50,7 +50,10 @@ def _plain(value: object) -> str:
 
 
 def load_phone_name() -> str:
-    """The configured iPhone's Bluetooth name (blocking; run off the UI thread)."""
+    """The configured iPhone's Bluetooth name, "" if it cannot be read.
+
+    Blocking; run off the UI thread.
+    """
     from blueferry.setup_client import SetupClient
 
     try:
@@ -58,7 +61,7 @@ def load_phone_name() -> str:
         mac = setup.configuration().mac
         devices = [device.to_dict() for device in setup.devices()]
     except Exception:
-        return "iPhone"
+        return ""
     return phone_link_view.phone_name(devices, mac)
 
 
@@ -188,8 +191,10 @@ class PhoneOverviewScreen(ModalScreen[str | None]):
         self._update_view()
 
     def _name_read(self, value: object) -> None:
-        name = str(value or "") or "iPhone"
-        if self._on_name is not None:
+        name = str(value or "")
+        # Only a name that was really read is kept for the next overview;
+        # after a failed read the next one tries again.
+        if name and self._on_name is not None:
             self._on_name(name)
         self.name_loaded(name)
 
