@@ -21,7 +21,7 @@ from collections.abc import Callable, Mapping
 from typing import Any, ClassVar, Protocol
 
 from rich.text import Text
-from textual import on
+from textual import events, on
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, Vertical
@@ -214,6 +214,16 @@ class CallsScreen(ModalScreen[None]):
         self._suggestions: list[str] = []
         self._runner = TextualTaskRunner(self, group="calls")
         self._search_runner = TextualTaskRunner(self, group="calls-search")
+        # Keypad tones: one SendTones at a time, keys pressed meanwhile follow
+        # in order (phone_link_view.KeypadTones, shared with Qt and GTK).
+        self._tones_runner = TextualTaskRunner(self, group="calls-tones")
+        self._tones = phone_link_view.KeypadTones(
+            self._send_tones, on_changed=self._render_tones_sent,
+            on_error=lambda message: self.notify(
+                _plain(message), severity="error", markup=False,
+            ),
+        )
+        self._active_call = ""
         self._search_timer = TextualTimer(self, self._search_contacts)
 
     def compose(self) -> ComposeResult:
@@ -227,6 +237,7 @@ class CallsScreen(ModalScreen[None]):
                     max_length=MAX_DTMF_TONES, restrict=r"[0-9*#]*",
                 )
                 yield Button(_("Send Tones"), id="calls-tones-send")
+            yield Static("", id="calls-tones-sent", classes="dialog-copy")
             yield Static(_("Number or name"), classes="field-label")
             yield Input(
                 value=self._initial_number, placeholder="+1 555 123 4567",
@@ -312,7 +323,29 @@ class CallsScreen(ModalScreen[None]):
             state.update(Text(_plain(error or self.hint)))
             list_view.update(calls_text(snapshot, self._clock()))
         state.display = bool(error or self.hint) or not self.loaded
+        self._follow_active_call()
         self._render_buttons(failed=bool(error))
+
+    def _follow_active_call(self) -> None:
+        active = active_call(self.snapshot)
+        call_id = active.call_id if active is not None else ""
+        if call_id and call_id != self._active_call:
+            # A call just connected: an empty number field must not swallow
+            # the keypad keys meant for the call's menu.
+            number = self.query_one("#calls-number", Input)
+            if self.focused is number and not number.value:
+                self.set_focus(None)
+        self._active_call = call_id
+        self._tones.follow(call_id)
+        self._render_tones_sent()
+
+    def _render_tones_sent(self) -> None:
+        if not self._shown or not self.is_attached:
+            return
+        text = phone_link_view.tones_feedback(self._tones.sent)
+        sent = self.query_one("#calls-tones-sent", Static)
+        sent.update(Text(text))
+        sent.display = bool(text) and bool(self._active_call)
 
     def _render_buttons(self, *, failed: bool = False) -> None:
         snapshot, busy = self.snapshot, self.busy or failed
@@ -341,7 +374,8 @@ class CallsScreen(ModalScreen[None]):
         )
         active = active_call(snapshot)
         self.query_one("#calls-tones-row").display = active is not None
-        self.query_one("#calls-tones-send", Button).disabled = busy or active is None
+        # Tones queue up behind a running request, so busy does not block them.
+        self.query_one("#calls-tones-send", Button).disabled = failed or active is None
         self.query_one("#calls-dial", Button).disabled = busy or bool(self.hint)
 
     def _tick(self) -> None:
@@ -425,15 +459,23 @@ class CallsScreen(ModalScreen[None]):
     @on(Input.Submitted, "#calls-tones")
     def send_tones(self) -> None:
         field = self.query_one("#calls-tones", Input)
-        selected = phone_link_view.dial_tones(field.value)
         target = active_call(self.snapshot)
-        if not selected or target is None:
+        if target is not None and self._tones.press(target.call_id, field.value):
+            field.value = ""
+
+    def on_key(self, event: events.Key) -> None:
+        """During an active call, 0-9, * and # are keypad tones, unless a
+        text field has the focus (as in the Qt and GTK clients)."""
+        if event.character not in phone_link_view.TONE_KEYS or isinstance(self.focused, Input):
             return
-        call_id = target.call_id
-        field.value = ""
-        self._act(
-            lambda: self._client.send_call_tones(call_id, selected),
-            _("Sent tones {tones}").format(tones=selected),
+        target = active_call(self.snapshot)
+        if target is not None and self._tones.press(target.call_id, event.character):
+            event.stop()
+            event.prevent_default()
+
+    def _send_tones(self, call_id: str, tones: str, done, failed) -> None:
+        self._tones_runner.submit(
+            lambda: self._client.send_call_tones(call_id, tones), done, failed,
         )
 
     # ---- contact suggestions -------------------------------------------
