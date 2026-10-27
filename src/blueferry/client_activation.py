@@ -11,7 +11,6 @@ import argparse
 import importlib.util
 import logging
 import os
-import shutil
 import subprocess  # nosec B404
 import sys
 import threading
@@ -101,7 +100,7 @@ def is_live(client: DesktopClient, running: Sequence[str]) -> bool:
 
 _SYSTEM_BIN = Path("/usr/bin")
 # Clients that can also run from this Python installation, and the module
-# their own interpreter-independent dependency lives in.
+# dependency lives in for this interpreter.
 _CLIENT_MODULES = {"gtk": ("blueferry.ui.app", "gi"), "qt": ("blueferry.qt.app", "PySide6")}
 
 
@@ -144,20 +143,21 @@ def client_program(client: DesktopClient) -> list[str] | None:
     on the PATH of whoever started the daemon (a D-Bus activated daemon on
     OpenRC, or the systemd user manager's PATH), and the module fallback a
     client installed in this environment without its launcher. The result is
-    absolute, so the systemd transient unit runs the same file. GTK and Qt
-    only count when their toolkit is importable.
+    absolute, so the systemd transient unit runs the same file. Launchers
+    beside this interpreter and module fallbacks need its toolkit. External
+    launchers use their own interpreter, which may have different packages.
     """
-    if not _dependency_available(client):
-        return None
     name = client.program_name
-    found = shutil.which(name)
-    if found:
-        return [os.path.abspath(found)]
-    for directory in (Path(sys.executable).parent, _SYSTEM_BIN):
+    interpreter_dir = Path(os.path.abspath(sys.executable)).parent
+    directories = [Path(os.path.abspath(path)) for path in os.get_exec_path()]
+    directories.extend((interpreter_dir, Path(os.path.abspath(_SYSTEM_BIN))))
+    for directory in dict.fromkeys(directories):
         candidate = directory / name
         if candidate.is_file() and os.access(candidate, os.X_OK):
+            if directory == interpreter_dir and not _dependency_available(client):
+                continue
             return [str(candidate)]
-    return _module_program(client)
+    return _module_program(client) if _dependency_available(client) else None
 
 
 def _installed(client: DesktopClient) -> bool:
@@ -211,6 +211,20 @@ def activation_environment(token: str) -> dict[str, str]:
 
 
 _activation_environment = activation_environment
+
+
+def client_environment(program: Sequence[str], token: str) -> dict[str, str]:
+    """Keep a module fallback importable when the user manager changes cwd."""
+    environment = activation_environment(token)
+    if is_module_program(program):
+        paths = [str(Path(__file__).resolve().parent.parent)]
+        if "PYTHONPATH" in environment:
+            paths.extend(
+                os.path.abspath(path) for path in environment["PYTHONPATH"].split(os.pathsep)
+            )
+        environment["PYTHONPATH"] = os.pathsep.join(dict.fromkeys(paths))
+    return environment
+
 
 # Session variables a GUI started by the systemd user manager needs; the
 # manager's own environment may predate the graphical session.
@@ -372,7 +386,7 @@ def open_message(handle: str, token: str) -> bool:
             log.warning("the %s client is no longer installed", client.key)
             return False
         argv = [*program, f"--message={handle}"]
-        environment = _activation_environment(token)
+        environment = client_environment(program, token)
         if "org.freedesktop.systemd1" in running:
             # A child of blueferry.service inherits PrivateDevices/PrivateTmp
             # and dies when the backend restarts. Let the user manager create

@@ -337,10 +337,14 @@ _OPEN_SETUP = textwrap.dedent("""
     app = QApplication([])
     calls, launches, failing = [], [], set()
     names, replies = [":1.7"], {}
+    deferred, waiting = set(), {}
 
     class FakeBusTray(TrayController):
         def _call(self, service, interface, method, args, reply, error, **kwargs):
             calls.append((service, interface, method, args, kwargs.get("path")))
+            if method in deferred:
+                waiting[method] = (reply, error)
+                return
             if method == "ListNames" and "ListNames" not in replies:
                 reply([names])
                 return
@@ -432,6 +436,29 @@ _OPEN_CASES = {
         replies["OpenMessage"] = (False, "org.freedesktop.DBus.Error.NoReply")
         replies["NameHasOwner"] = (True, [True])
         tray.open_app()
+        assert launches == [], launches
+    """),
+    "closed_before_click": ("gtk", """
+        tray.close()
+        tray.open_app()
+        assert calls == [] and launches == [], (calls, launches)
+    """),
+    "closed_during_activation": ("gtk", """
+        names.append(GTK.bus_name)
+        deferred.add("OpenMessage")
+        tray.open_app()
+        tray.close()
+        waiting.pop("OpenMessage")[1]("org.freedesktop.DBus.Error.ServiceUnknown")
+        assert launches == [], launches
+        assert not any(call[2] == "NameHasOwner" for call in calls), calls
+    """),
+    "closed_during_owner_check": ("gtk", """
+        names.append(GTK.bus_name)
+        replies["OpenMessage"] = (False, "org.freedesktop.DBus.Error.ServiceUnknown")
+        deferred.add("NameHasOwner")
+        tray.open_app()
+        tray.close()
+        waiting.pop("NameHasOwner")[0]([False])
         assert launches == [], launches
     """),
     # Qt maps SNI Activate to Trigger, SecondaryActivate to MiddleClick and

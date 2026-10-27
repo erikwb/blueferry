@@ -47,7 +47,7 @@ from blueferry.client_activation import (
     ACTIVATION_PATH,
     TRAY_BUS_NAME,
     DesktopClient,
-    activation_environment,
+    client_environment,
     client_program,
     is_live,
     ranked_clients,
@@ -438,6 +438,8 @@ class TrayController(QObject):
         The same choice as notifications and phone links: a running client
         first, then the most recently used one, then the desktop's own.
         """
+        if self._closed:
+            return
         # On Wayland a window may only take focus with the activation token
         # the panel handed to the tray for this click. It is single-use.
         token = take_activation_token()
@@ -479,6 +481,8 @@ class TrayController(QObject):
             args = [platform_data]
 
         def failed(_error: str) -> None:
+            if self._closed:
+                return
             # The window may have closed since ListNames. Only start the
             # client again when its name is gone: a slow reply must not
             # open a second, competing window.
@@ -494,6 +498,8 @@ class TrayController(QObject):
 
     def _launch_first(self, candidates: list[DesktopClient], token: str) -> None:
         """Start the first client that launches; skip ones that cannot."""
+        if self._closed:
+            return
         for client in candidates:
             if self._launch(client, token):
                 return
@@ -524,7 +530,7 @@ def launch_client(client: DesktopClient, token: str) -> bool:
     process.setProgram(command[0])
     process.setArguments(command[1:])
     environment = QProcessEnvironment()
-    for name, value in activation_environment(token).items():
+    for name, value in client_environment(command, token).items():
         environment.insert(name, value)
     process.setProcessEnvironment(environment)
     # PySide6 returns a bare bool here; some bindings return (ok, pid).
