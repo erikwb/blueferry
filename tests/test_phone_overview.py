@@ -264,3 +264,42 @@ def test_call_rows_match_the_qt_recent_calls_page() -> None:
 def test_phone_status_hint_names_the_hands_free_state(calls_state, expected):
     hints = feature_hints({"calls_enabled": True, "calls_state": calls_state})
     assert expected in hints["phoneStatus"]
+
+
+def test_active_call_id_skips_ringing_and_held_calls() -> None:
+    calls = [{"call_id": "a", "state": "held"}, {"call_id": "b", "state": "incoming",
+             "ringing": True}, {"call_id": "c", "state": "active"}]
+    assert phone_link_view.active_call_id(calls) == "c"
+    assert phone_link_view.active_call_id(calls[:2]) == ""
+    assert phone_link_view.tones_feedback("12#") == "Sent: 1 2 #"
+    assert phone_link_view.tones_feedback("") == ""
+
+
+def test_keypad_tones_keep_order_and_lose_nothing_while_a_send_runs() -> None:
+    requests, errors, changes = [], [], []
+    tones = phone_link_view.KeypadTones(
+        lambda call, keys, done, failed: requests.append((call, keys, done, failed)),
+        on_changed=lambda: changes.append(1), on_error=errors.append,
+    )
+    assert not tones.press("", "1") and not tones.press("c", "x+")
+    assert tones.press("c", "1")
+    assert tones.press("c", "2")
+    assert tones.press("c", "3#")
+    assert [r[1] for r in requests] == ["1"] and tones.busy
+    requests.pop(0)[2](None)
+    assert tones.sent == "1"
+    assert [r[1] for r in requests] == ["23#"]  # pressed meanwhile: together, in order
+    requests.pop(0)[2](None)
+    assert tones.sent == "123#" and not tones.busy
+
+    tones.press("c", "4")
+    tones.press("c", "5")
+    requests.pop(0)[3]("no call")
+    assert errors == ["no call"] and requests == [] and tones.sent == "123#"
+
+    tones.press("d", "9")  # another call: a fresh line
+    assert tones.sent == ""
+    requests.pop(0)[2](None)
+    assert tones.sent == "9"
+    tones.follow("")
+    assert tones.sent == ""

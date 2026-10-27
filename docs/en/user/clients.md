@@ -205,8 +205,10 @@ like Qt and GTK (incoming, on hold, the duration). Its one row of buttons
 acts on the obvious call: **Answer** the ringing one, **Hold** or
 **Resume** the connected one, **Hang Up** (or **Decline**) the active one
 first; a call waiting while another is connected gets its own **Decline**.
-During an active call, the keypad tone field sends 0-9, `*` and `#`,
-for example to a phone menu. Typing a name in the number field suggests the
+During an active call, the keys 0-9, `*` and `#` are sent at once as
+keypad tones, for example to a phone menu, unless a text field has the
+focus; the panel shows them as "Sent: …". The keypad tone field sends a
+whole sequence such as a PIN. Typing a name in the number field suggests the
 phone numbers of matching contacts. A call is always confirmed first.
 
 **Recent calls** (`h`) are grouped by day; `m` shows only missed calls and

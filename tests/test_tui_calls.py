@@ -364,8 +364,10 @@ def test_buttons_stay_disabled_while_an_action_runs_even_if_status_changes() -> 
             screen.status_changed(app.state.status.to_dict())
             screen.refresh_calls()
             await pilot.pause(0.2)
-            for selector in ("#calls-hangup", "#calls-hold", "#calls-tones-send", "#calls-dial"):
+            for selector in ("#calls-hangup", "#calls-hold", "#calls-dial"):
                 assert screen.query_one(selector, Button).disabled, selector
+            # Keypad tones queue up on their own and stay usable.
+            assert not screen.query_one("#calls-tones-send", Button).disabled
             screen.hangup()  # ignored while busy
             release.set()
             await _until(pilot, lambda: not screen.busy)
@@ -483,5 +485,53 @@ def test_a_waiting_call_can_be_declined_while_another_is_active() -> None:
             screen.refresh_calls()
             await _until(pilot, lambda: not decline.display)
             assert str(screen.query_one("#calls-hangup", Button).label) == "Decline"
+
+    _run(scenario())
+
+
+def test_keypad_keys_send_tones_to_the_active_call_unless_a_field_has_focus() -> None:
+    async def scenario() -> None:
+        backend = _Backend()
+        backend.snapshot = _snapshot(("voicecall01", "active", "Alice"))
+        release = threading.Event()
+        original = backend.send_call_tones
+
+        def slow_tones(call_id: str, tones: str) -> None:
+            release.wait(5)
+            original(call_id, tones)
+
+        backend.send_call_tones = slow_tones
+        app = BlueFerryApp(TuiState(backend), monitor_factory=lambda: None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            screen = await _open_calls(app, pilot)
+            # The empty number field gave up the focus when the call connected.
+            assert not isinstance(screen.focused, Input)
+            await pilot.press("1", "2", "#")
+            release.set()
+            await _until(pilot, lambda: [r for r in backend.requests if r[0] == "tones"] == [
+                ("tones", "voicecall01", "1"), ("tones", "voicecall01", "2#"),
+            ])
+            await _until(pilot, lambda: "Sent: 1 2 #" in str(
+                screen.query_one("#calls-tones-sent", Static).render()))
+
+            screen.query_one("#calls-number", Input).focus()
+            await pilot.press("5")
+            await pilot.pause(0.2)
+            assert screen.query_one("#calls-number", Input).value == "5"
+            assert ("tones", "voicecall01", "5") not in backend.requests
+
+    _run(scenario())
+
+
+def test_keypad_keys_dial_while_no_call_is_active() -> None:
+    async def scenario() -> None:
+        backend = _Backend()  # one ringing call only
+        app = BlueFerryApp(TuiState(backend), monitor_factory=lambda: None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            screen = await _open_calls(app, pilot)
+            await pilot.press("4")
+            await pilot.pause(0.2)
+            assert screen.query_one("#calls-number", Input).value == "4"
+            assert not [r for r in backend.requests if r[0] == "tones"]
 
     _run(scenario())
