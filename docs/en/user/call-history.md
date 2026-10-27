@@ -38,7 +38,8 @@ sequenceDiagram
   popup is not repeated.
 - Shows the list with `blueferry call-history`, in the KDE client's
   and the GTK client's **Calls** tab (grouped by day), and in the terminal
-  client with `h` (grouped by day; `m` shows only missed calls).
+  client with `h` (grouped by day; `m` shows only missed calls, `s` or
+  **Refresh from iPhone** reads the iPhone's list again).
 
 ## How to turn it on
 
@@ -90,7 +91,7 @@ previous phone's list.
 - The list and missed-call popups need stored local data. They don't work
   while the wallet is locked or with **Do not retain local data**.
 - Quickshell doesn't show the list yet. The terminal client's switch is in
-  Options › Calls & Audio.
+  Settings › Calls & Audio.
 
 ## Privacy
 

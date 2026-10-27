@@ -39,7 +39,8 @@ sequenceDiagram
   Mitteilung des iPhones über den verpassten Anruf nicht wiederholt.
 - Zeigt die Liste mit `blueferry call-history`, im Reiter **Calls** des
   KDE- und des GTK-Clients (nach Tagen gruppiert) und im Terminal-Client mit
-  `h` (nach Tagen gruppiert; `m` zeigt nur verpasste Anrufe).
+  `h` (nach Tagen gruppiert; `m` zeigt nur verpasste Anrufe, `s` oder
+  **Refresh from iPhone** liest die Liste des iPhones neu ein).
 
 ## Einschalten
 
@@ -93,7 +94,7 @@ Koppeln eines anderen iPhones wird außerdem die Liste des bisherigen gelöscht.
   Brieftasche (Wallet) oder mit **Do not retain local data** funktionieren
   sie nicht.
 - Quickshell zeigt die Liste noch nicht. Der Schalter des Terminal-Clients
-  liegt in Options › Calls & Audio.
+  liegt in Settings › Calls & Audio.
 
 ## Datenschutz
 
