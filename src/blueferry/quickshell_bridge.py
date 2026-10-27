@@ -9,23 +9,32 @@ from __future__ import annotations
 import base64
 import json
 import queue
+import re
 import sys
 import threading
 from collections.abc import Callable, Mapping
 from typing import Any, TextIO
 
-from blueferry import phone_overview
+from blueferry import doctor_report, features_view, phone_link_view, phone_overview
+from blueferry.backend_lifecycle import restart_backend
 from blueferry.bus import get_session_bus
-from blueferry.client import BackendClient
+from blueferry.client import BackendClient, BackendError
 from blueferry.client_activation import record_client_use
+from blueferry.config import FEATURE_SWITCHES
 from blueferry.contact_photos import image_type, valid_photo
+from blueferry.i18n import _
 from blueferry.phone_audio_view import phone_audio
 from blueferry.protocol import BUS_NAME, EVENTS_IFACE, OBJECT_PATH
+from blueferry.reconnect_view import ManualReconnect, reconnect_view
 from blueferry.service_manager import bluetooth_restart_command
 
 MAX_REQUEST_CHARS = 1_048_576
 MAX_PENDING_REQUESTS = 32
 REQUEST_WORKERS = 4
+# The panel's notification list is compact; the other clients keep 100.
+NOTIFICATION_LIMIT = 30
+_FEATURE_NAME = re.compile(r"[a-z][a-z0-9_]{0,63}")
+_FEATURE_VARIABLES = {name: variable for name, variable, _default in FEATURE_SWITCHES}
 
 
 class RequestError(ValueError):
@@ -57,6 +66,74 @@ def _boolean(args: Mapping[str, Any], name: str) -> bool:
     if not isinstance(value, bool):
         raise RequestError(f"{name} must be a boolean")
     return value
+
+
+def indexed(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """A list as ``{"count": n, "item0": {...}, ...}`` for the shell.
+
+    Nothing the bridge hands to QML is an array, so no row depends on how a
+    Qt version converts arrays in a ``var`` signal argument (#213).
+    """
+    return {"count": len(rows), **{f"item{index}": row for index, row in enumerate(rows)}}
+
+
+def features_reply(state: dict[str, Any]) -> dict[str, Any]:
+    """``features_view.view`` without arrays: one indexed row per switch.
+
+    Each row carries the switch ``name`` and ``variable``; the shell words
+    the label itself (it loads no translation catalog) and shows the shared
+    ``note``, e.g. the ``local.env`` variable an older daemon needs.
+    """
+    view = features_view.view(state)
+    switches = view["switches"]
+    items = state.get("items") or {}
+    rows = []
+    for name, row in switches.items():
+        info = items.get(name)
+        variable = info.get("variable") if isinstance(info, dict) else None
+        rows.append({
+            "name": name,
+            "variable": str(variable or _FEATURE_VARIABLES.get(name, "")),
+            **row,
+        })
+    return {
+        "loaded": view["loaded"] is True,
+        "available": view["available"] is True,
+        "error": str(view["error"] or ""),
+        "notice": str(view["notice"] or ""),
+        "restart_pending": view["restart_pending"] is True,
+        "restart_notice": str(view["restart_notice"]),
+        **indexed(rows),
+    }
+
+
+def notifications_reply(snapshot: object, opt_in_hint: str, error: str = "") -> dict[str, Any]:
+    """The Notifications list as the panel shows it, without arrays.
+
+    ``snapshot`` is ``ListNotifications``; the placeholder and the content
+    notice come from ``phone_link_view.notifications_view`` like in the
+    other clients. Rows are plain text taken verbatim from the iPhone.
+    """
+    value = snapshot if isinstance(snapshot, Mapping) else {}
+    info = {
+        "enabled": value.get("enabled") is True,
+        "content": value.get("content") is True,
+        "error": error,
+    }
+    rows = [] if error or opt_in_hint else phone_link_view.notification_rows(
+        value.get("notifications")
+    )[:NOTIFICATION_LIMIT]
+    view = phone_link_view.notifications_view(info, opt_in_hint)
+    return {
+        "off": bool(opt_in_hint),
+        "failed": bool(error) and not opt_in_hint,
+        "title": view["title"],
+        "explanation": view["explanation"],
+        "content_hint": view["contentHint"],
+        **indexed([
+            {key: row[key] for key in ("app", "time", "summary", "body")} for row in rows
+        ]),
+    }
 
 
 def now_playing_view(snapshot: object) -> dict[str, Any]:
@@ -107,10 +184,50 @@ class QuickshellBridge:
         # Host fact, not daemon state: the command that restarts BlueZ on this
         # init system, or "" when unknown. It cannot change while running.
         self.bluetooth_restart_command = bluetooth_restart_command() or ""
+        # The notice after "Reconnect", shared with Qt and GTK; it lasts
+        # until a status shows the outcome. Workers run in parallel.
+        self._manual_reconnect = ManualReconnect()
+        self._reconnect_lock = threading.Lock()
 
     def host_info(self) -> dict[str, str]:
         """Return daemon-independent facts sent to the shell at startup."""
         return {"bluetooth_restart_command": self.bluetooth_restart_command}
+
+    def _reconnect_view(self, status: Mapping[str, Any]) -> dict[str, Any]:
+        """Manual reconnect row: shared texts, the outcome of a pressed button."""
+        view = reconnect_view(status)
+        with self._reconnect_lock:
+            error = self._manual_reconnect.follow(status)
+            hint = self._manual_reconnect.hint(view)
+        return {
+            "available": view.available,
+            # Qt and GTK hide the button while bluetoothd does not answer.
+            "offered": view.offered and status.get("bluez_unresponsive") is not True,
+            "attention": view.attention,
+            "hint": hint,
+            "error": error,
+        }
+
+    def _features(self) -> dict[str, Any]:
+        try:
+            value = self.client.features()
+        except BackendError as error:
+            # Older daemons: every switch names its local.env variable.
+            return features_view.unavailable(features_view.initial(), str(error))
+        return features_view.loaded(features_view.initial(), value)
+
+    def _notifications(self) -> dict[str, Any]:
+        hint = phone_link_view.feature_hints(self.client.status().to_dict()).get(
+            "notifications", ""
+        )
+        if hint:
+            # Switched off: nothing private to read.
+            return notifications_reply({}, hint)
+        try:
+            snapshot = self.client.notifications(NOTIFICATION_LIMIT)
+        except BackendError as error:
+            return notifications_reply({}, "", str(error) or _("Notifications are unavailable"))
+        return notifications_reply(snapshot, "")
 
     def emit(self, payload: Mapping[str, Any]) -> None:
         line = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
@@ -131,6 +248,9 @@ class QuickshellBridge:
             if "phone_audio_route" in status:
                 # Quickshell has no gettext; it shows the shared wording.
                 status["phone_audio_view"] = phone_audio(status)
+            if "phone_reconnect_state" in status:
+                # Older daemons cannot reconnect on request: no row.
+                status["reconnect_view"] = self._reconnect_view(status)
             return status | self.host_info()
         if method == "threads":
             limit = args.get("limit", 200)
@@ -227,6 +347,43 @@ class QuickshellBridge:
             return self.client.set_storage_policy(_text(args, "policy"))
         if method == "unlock_storage":
             return self.client.unlock_storage()
+        if method == "set_phone_battery_warning":
+            return self.client.set_phone_battery_warning(_boolean(args, "enabled"))
+        if method == "set_mirror_notification_removals":
+            return self.client.set_mirror_notification_removals(_boolean(args, "enabled"))
+        if method == "reconnect_phone":
+            result = str(self.client.reconnect_phone())
+            with self._reconnect_lock:
+                error = self._manual_reconnect.answered(result)
+                notice = self._manual_reconnect.notice
+            return {"result": result, "error": error, "notice": notice}
+        if method == "sync_contacts":
+            count = int(self.client.sync_contacts())
+            return {
+                "count": count,
+                "text": _("Synced {count} contact destinations").format(count=count),
+            }
+        if method == "features":
+            return features_reply(self._features())
+        if method == "set_feature":
+            name = _text(args, "name")
+            if not _FEATURE_NAME.fullmatch(name):
+                raise RequestError("name must be a feature name")
+            result = self.client.set_feature(name, _boolean(args, "enabled"))
+            state = features_view.with_notice(
+                self._features(), features_view.set_notice(result)
+            )
+            return {"result": str(result), **features_reply(state)}
+        if method == "restart_backend":
+            restart_backend()
+            return None
+        if method == "doctor":
+            report = doctor_report.run_doctor()
+            return doctor_report.view(
+                doctor_report.finished_state(doctor_report.idle_state(), report)
+            )
+        if method == "notifications":
+            return self._notifications()
         raise RequestError(f"unsupported method: {method}")
 
     def handle_line(self, line: str) -> None:
@@ -323,6 +480,12 @@ def _install_signal_receivers(bridge: QuickshellBridge) -> list[object]:
             signal_name="NowPlayingChanged",
             **common,
         ),
+        # Content-free; the shell rereads only while its list is shown.
+        bus.add_signal_receiver(
+            lambda: bridge.emit_event("notifications-changed"),
+            signal_name="NotificationsChanged",
+            **common,
+        ),
     ]
 
 
@@ -371,6 +534,8 @@ def main() -> int:
     try:
         loop.run()
     finally:
+        # A running diagnostics child would otherwise outlive the shell.
+        doctor_report.terminate_running()
         if activation is not None:
             activation.close()
         for match in signal_matches:

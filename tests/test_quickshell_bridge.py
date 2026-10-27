@@ -675,3 +675,278 @@ def test_bridge_saves_the_one_time_code_opt_in() -> None:
         assert str(error) == "enabled must be a boolean"
     else:
         raise AssertionError("non-boolean preference was accepted")
+
+
+# ---- QS-1: settings parity (features, reconnect, sync, notifications) -------
+
+
+def _no_arrays(value: object) -> bool:
+    """Nothing the bridge hands to QML may be an array (#213)."""
+    if isinstance(value, list | tuple):
+        return False
+    if isinstance(value, dict):
+        return all(_no_arrays(item) for item in value.values())
+    return True
+
+
+class SettingsClient(FakeClient):
+    def __init__(self, status: dict | None = None) -> None:
+        super().__init__()
+        self.status_value = {"daemon": True, **(status or {})}
+        self.feature_values: object = {
+            "show_notification_content": {
+                "value": True, "running": True, "source": "default",
+                "variable": "BLUEFERRY_SHOW_NOTIFICATION_CONTENT", "restart_required": False,
+            },
+            "mark_read_on_dismiss": {
+                "value": True, "running": False, "source": "settings",
+                "variable": "BLUEFERRY_MARK_READ_ON_DISMISS", "restart_required": True,
+            },
+            "notification_history": {
+                "value": False, "running": False, "source": "environment",
+                "variable": "BLUEFERRY_NOTIFICATION_HISTORY", "restart_required": False,
+            },
+        }
+        self.notification_snapshot: object = {"enabled": True, "content": True, "notifications": []}
+        self.reconnect_result = "started"
+
+    def status(self):
+        return SimpleNamespace(to_dict=lambda: dict(self.status_value))
+
+    def features(self):
+        self.calls.append(("features",))
+        if isinstance(self.feature_values, Exception):
+            raise self.feature_values
+        return self.feature_values
+
+    def set_feature(self, name, enabled):
+        self.calls.append(("set_feature", name, enabled))
+        return "restart-required"
+
+    def set_phone_battery_warning(self, enabled):
+        self.calls.append(("set_phone_battery_warning", enabled))
+        return enabled
+
+    def set_mirror_notification_removals(self, enabled):
+        self.calls.append(("set_mirror_notification_removals", enabled))
+        return enabled
+
+    def reconnect_phone(self):
+        self.calls.append(("reconnect_phone",))
+        return self.reconnect_result
+
+    def sync_contacts(self):
+        self.calls.append(("sync_contacts",))
+        return 42
+
+    def notifications(self, limit=50):
+        self.calls.append(("notifications", limit))
+        if isinstance(self.notification_snapshot, Exception):
+            raise self.notification_snapshot
+        return self.notification_snapshot
+
+
+def test_bridge_flattens_the_feature_switches_without_arrays() -> None:
+    reply = QuickshellBridge(SettingsClient()).dispatch("features", {})  # type: ignore[arg-type]
+    assert _no_arrays(reply)
+    assert reply["available"] is True and reply["count"] == 3
+    rows = {reply[f"item{index}"]["name"]: reply[f"item{index}"] for index in range(3)}
+    assert rows["show_notification_content"] == {
+        "name": "show_notification_content",
+        "variable": "BLUEFERRY_SHOW_NOTIFICATION_CONTENT",
+        "usable": True, "active": True, "editable": True, "note": "",
+    }
+    assert rows["mark_read_on_dismiss"]["note"] == "Applies after the service restarts."
+    assert rows["notification_history"]["editable"] is False
+    assert "BLUEFERRY_NOTIFICATION_HISTORY" in rows["notification_history"]["note"]
+    assert reply["restart_pending"] is True
+    assert reply["restart_notice"] == "Some changes apply after the BlueFerry service restarts."
+
+
+def test_bridge_names_the_local_env_variable_for_an_older_daemon() -> None:
+    from blueferry.client import BackendError
+
+    client = SettingsClient()
+    client.feature_values = BackendError("No such method 'GetFeatures'")
+    reply = QuickshellBridge(client).dispatch("features", {})  # type: ignore[arg-type]
+    assert _no_arrays(reply)
+    assert reply["available"] is False and reply["error"] == "No such method 'GetFeatures'"
+    assert reply["count"] == 3
+    for index in range(3):
+        row = reply[f"item{index}"]
+        assert row["usable"] is False and row["editable"] is False
+        assert row["variable"] in row["note"] and "local.env" in row["note"]
+    assert reply["restart_pending"] is False
+
+
+def test_bridge_saves_a_feature_and_returns_the_notice_with_the_reloaded_view() -> None:
+    client = SettingsClient()
+    reply = QuickshellBridge(client).dispatch(  # type: ignore[arg-type]
+        "set_feature", {"name": "mark_read_on_dismiss", "enabled": True},
+    )
+    assert client.calls == [("set_feature", "mark_read_on_dismiss", True), ("features",)]
+    assert _no_arrays(reply)
+    assert reply["result"] == "restart-required"
+    assert reply["notice"] == "Restart the BlueFerry service to apply the change."
+    assert reply["restart_notice"] == reply["notice"]
+
+
+@pytest.mark.parametrize(("args", "message"), [
+    ({"enabled": True}, "name must be a string"),
+    ({"name": 3, "enabled": True}, "name must be a string"),
+    ({"name": "Mark Read", "enabled": True}, "name must be a feature name"),
+    ({"name": "x" * 65, "enabled": True}, "name must be a feature name"),
+    ({"name": "mark_read_on_dismiss", "enabled": "true"}, "enabled must be a boolean"),
+    ({"name": "mark_read_on_dismiss"}, "enabled must be a boolean"),
+])
+def test_bridge_rejects_malformed_feature_requests(args, message) -> None:
+    client = SettingsClient()
+    with pytest.raises(RequestError, match=message):
+        QuickshellBridge(client).dispatch("set_feature", args)  # type: ignore[arg-type]
+    assert client.calls == []
+
+
+def test_bridge_restarts_the_service(monkeypatch) -> None:
+    restarted = []
+    monkeypatch.setattr(
+        "blueferry.quickshell_bridge.restart_backend", lambda: restarted.append(True),
+    )
+    assert QuickshellBridge(SettingsClient()).dispatch(  # type: ignore[arg-type]
+        "restart_backend", {},
+    ) is None
+    assert restarted == [True]
+
+
+@pytest.mark.parametrize(("method", "status_key"), [
+    ("set_phone_battery_warning", "phone_battery_warning"),
+    ("set_mirror_notification_removals", "mirror_iphone_removals"),
+])
+def test_bridge_saves_battery_warning_and_notification_sync(method, status_key) -> None:
+    client = SettingsClient()
+    bridge = QuickshellBridge(client)  # type: ignore[arg-type]
+    assert bridge.dispatch(method, {"enabled": True}) is True
+    assert client.calls == [(method, True)]
+    for bad in ({}, {"enabled": 1}, {"enabled": "false"}):
+        with pytest.raises(RequestError, match="enabled must be a boolean"):
+            bridge.dispatch(method, bad)
+    assert client.calls == [(method, True)]
+
+
+def test_bridge_reconnects_with_the_shared_texts_until_the_status_shows_the_outcome() -> None:
+    from blueferry import reconnect_view
+
+    client = SettingsClient({"phone_reconnect_state": "waiting"})
+    bridge = QuickshellBridge(client)  # type: ignore[arg-type]
+    # Older daemons without the reconnect keys get no row at all.
+    assert "reconnect_view" not in QuickshellBridge(SettingsClient()).dispatch(  # type: ignore[arg-type]
+        "status", {},
+    )
+    assert bridge.dispatch("status", {})["reconnect_view"] == {
+        "available": True, "offered": True, "attention": False,
+        "hint": "Reconnecting automatically.", "error": "",
+    }
+    client.reconnect_result = "started"
+    assert bridge.dispatch("reconnect_phone", {}) == {
+        "result": "started", "error": "", "notice": reconnect_view.STARTED_TEXT,
+    }
+    client.status_value["phone_reconnect_state"] = "connecting"
+    assert bridge.dispatch("status", {})["reconnect_view"]["hint"] == reconnect_view.STARTED_TEXT
+    # The status shows the outcome once: an unreachable phone is an error.
+    client.status_value["phone_reconnect_state"] = "unreachable"
+    view = bridge.dispatch("status", {})["reconnect_view"]
+    assert view["error"] == reconnect_view.UNREACHABLE_TEXT
+    assert bridge.dispatch("status", {})["reconnect_view"]["error"] == ""
+    client.reconnect_result = "unreachable"
+    assert bridge.dispatch("reconnect_phone", {})["error"] == reconnect_view.UNREACHABLE_TEXT
+
+
+def test_bridge_hides_the_reconnect_button_while_bluetoothd_hangs() -> None:
+    client = SettingsClient({"phone_reconnect_state": "waiting", "bluez_unresponsive": True})
+    view = QuickshellBridge(client).dispatch("status", {})["reconnect_view"]  # type: ignore[arg-type]
+    assert view["available"] is True and view["offered"] is False
+    assert view["attention"] is True
+
+
+def test_bridge_syncs_contacts_and_words_the_count() -> None:
+    client = SettingsClient()
+    assert QuickshellBridge(client).dispatch("sync_contacts", {}) == {  # type: ignore[arg-type]
+        "count": 42, "text": "Synced 42 contact destinations",
+    }
+
+
+def test_bridge_does_not_read_notifications_while_the_list_is_off() -> None:
+    client = SettingsClient({"notification_history_enabled": False})
+    reply = QuickshellBridge(client).dispatch("notifications", {})  # type: ignore[arg-type]
+    assert ("notifications", 30) not in client.calls
+    assert _no_arrays(reply)
+    assert reply["off"] is True and reply["count"] == 0
+    assert reply["title"] == "Notification List Is Off"
+    assert "Keep recent iPhone notifications" in reply["explanation"]
+
+
+def test_bridge_flattens_the_newest_notifications_and_caps_them() -> None:
+    client = SettingsClient({"notification_history_enabled": True})
+    client.notification_snapshot = {
+        "enabled": True, "content": False,
+        "notifications": [
+            {"app_name": "<b>Mail</b>", "title": f"T{index}", "subtitle": "S",
+             "body": "line\nnext", "time": ""}
+            for index in range(40)
+        ],
+    }
+    reply = QuickshellBridge(client).dispatch("notifications", {})  # type: ignore[arg-type]
+    assert client.calls[-1] == ("notifications", 30)
+    assert _no_arrays(reply)
+    assert reply["count"] == 30 and "item30" not in reply
+    # Verbatim, never markup: the shell shows it as plain text.
+    assert reply["item0"] == {"app": "<b>Mail</b>", "time": "", "summary": "T0 · S",
+                              "body": "line\nnext"}
+    assert reply["off"] is False and reply["failed"] is False
+    assert "Only app names and times" in reply["content_hint"]
+
+
+def test_bridge_explains_an_empty_or_failing_notification_list() -> None:
+    from blueferry.client import BackendError
+
+    client = SettingsClient({"notification_history_enabled": True})
+    empty = QuickshellBridge(client).dispatch("notifications", {})  # type: ignore[arg-type]
+    assert empty["title"] == "No Notifications Yet" and empty["count"] == 0
+    assert empty["content_hint"] == ""
+    client.notification_snapshot = BackendError("ListNotifications failed")
+    failing = QuickshellBridge(client).dispatch("notifications", {})  # type: ignore[arg-type]
+    assert failing["failed"] is True and failing["count"] == 0
+    assert failing["title"] == "Notifications Are Unavailable"
+    assert failing["explanation"] == "ListNotifications failed"
+
+
+def test_bridge_runs_diagnostics_with_the_shared_summary(monkeypatch) -> None:
+    from blueferry import doctor_report
+
+    monkeypatch.setattr(
+        doctor_report, "run_doctor",
+        lambda: doctor_report.DoctorReport(True, True, "WARNING: ancs"),
+    )
+    reply = QuickshellBridge(SettingsClient()).dispatch("doctor", {})  # type: ignore[arg-type]
+    assert reply == {
+        "running": False, "ran": True, "ok": True, "warnings": True,
+        "text": "WARNING: ancs", "level": "warning",
+        "summary": "Checks completed with warnings.",
+    }
+
+
+def test_bridge_forwards_the_content_free_notifications_signal(monkeypatch) -> None:
+    from blueferry import quickshell_bridge
+
+    receivers = {}
+
+    class Bus:
+        def add_signal_receiver(self, handler, signal_name, **_kwargs):
+            receivers[signal_name] = handler
+            return SimpleNamespace(remove=lambda: None)
+
+    monkeypatch.setattr(quickshell_bridge, "get_session_bus", lambda: Bus())
+    output = io.StringIO()
+    bridge = QuickshellBridge(FakeClient(), output)  # type: ignore[arg-type]
+    quickshell_bridge._install_signal_receivers(bridge)
+    receivers["NotificationsChanged"]()
+    assert json.loads(output.getvalue()) == {"event": "notifications-changed", "data": None}
