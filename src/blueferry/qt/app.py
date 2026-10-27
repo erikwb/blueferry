@@ -15,6 +15,7 @@ from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
 from blueferry.client_activation import TRAY_BUS_NAME, record_client_use
+from blueferry.doctor_report import terminate_running
 from blueferry.qt.activation import ClientActivation
 from blueferry.qt.avatars import AVATAR_PROVIDER, AvatarImageProvider
 from blueferry.qt.controller import BridgeController
@@ -425,6 +426,8 @@ def main() -> int:
     system_tray = _create_system_tray(application, window)
     terminal_signal_timer = _install_terminal_signal_handlers(application)
     exit_code = application.exec()
+    # A running doctor check must not keep the process alive after quitting.
+    terminate_running()
     terminal_signal_timer.stop()
     activation.close()
     if system_tray is not None:

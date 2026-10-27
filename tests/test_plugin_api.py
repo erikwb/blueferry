@@ -450,6 +450,8 @@ def test_manifest_reads_the_settings_schema_in_order() -> None:
     ("[Config a]\nLabel=x\nType=secret\nDefault=hunter2\n", "secret cannot"),
     ("[Config a]\nLabel=x\nType=choice\n", "Choices"),
     ("[Config a]\nLabel=x\nType=int\nMin=a\n", "integers"),
+    ("[Config a]\nLabel=x\nType=int\nMax=2147483648\n", "32 bits"),
+    ("[Config a]\nLabel=x\nType=int\nMin=-2147483648\n", "32 bits"),
     ("[Config a]\nLabel=x\nType=int\nMax=3\nDefault=9\n", "invalid Default"),
     ("[Config a]\nLabel=x\nType=bool\nRequired=maybe\n", "Required"),
     ("[Config a]\nLabel=x\nType=string\n[Config a]\nLabel=y\nType=string\n", "duplicate"),
