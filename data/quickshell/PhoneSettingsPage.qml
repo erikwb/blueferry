@@ -10,7 +10,7 @@ Rectangle {
   required property var setup
   required property var status
   property var busy: ({})
-  // The bridge's array-free features view, a choice being saved, the
+  // The bridge's features view, a choice being saved, the
   // diagnostics run and the recent-notification list (see shell.qml).
   property var features: ({})
   property var featurePending: ({})
@@ -531,6 +531,16 @@ Rectangle {
           ferryTheme: root.theme
           text: "Content and actions"
         }
+        // Why the switches below fall back to their local.env variables.
+        FerryLabel {
+          objectName: "featuresError"
+          ferryTheme: root.theme
+          Layout.fillWidth: true
+          visible: text !== ""
+          wrapMode: Text.Wrap
+          color: root.theme.warning
+          text: root.features.error ? "Could not read the service's switches: " + String(root.features.error) : ""
+        }
         FerryFeatureSwitch {
           ferryTheme: root.theme
           features: root.features
@@ -603,10 +613,11 @@ Rectangle {
         // Switches a newer service reports that this shell has no wording for.
         Repeater {
           objectName: "otherFeatureSwitches"
-          model: Number(root.features.count) || 0
+          model: root.features.switches && root.features.switches.length !== undefined
+            ? Array.prototype.slice.call(root.features.switches) : []
           delegate: FerryFeatureSwitch {
-            required property int index
-            readonly property var row: root.features["item" + index] || ({})
+            required property var modelData
+            readonly property var row: modelData || ({})
             ferryTheme: root.theme
             features: root.features
             pending: root.featurePending

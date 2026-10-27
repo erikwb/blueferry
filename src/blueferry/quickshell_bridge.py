@@ -10,6 +10,7 @@ import base64
 import json
 import queue
 import re
+import signal
 import sys
 import threading
 from collections.abc import Callable, Mapping
@@ -68,19 +69,12 @@ def _boolean(args: Mapping[str, Any], name: str) -> bool:
     return value
 
 
-def indexed(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    """A list as ``{"count": n, "item0": {...}, ...}`` for the shell.
-
-    Nothing the bridge hands to QML is an array, so no row depends on how a
-    Qt version converts arrays in a ``var`` signal argument (#213).
-    """
-    return {"count": len(rows), **{f"item{index}": row for index, row in enumerate(rows)}}
-
-
 def features_reply(state: dict[str, Any]) -> dict[str, Any]:
-    """``features_view.view`` without arrays: one indexed row per switch.
+    """``features_view.view`` with the switches as a list of rows.
 
-    Each row carries the switch ``name`` and ``variable``; the shell words
+    Like the thread list, the rows are a plain array; shell.qml's
+    ``plainValue`` turns it back into a JavaScript array under Qt 6.12
+    (#213). Each row carries the switch ``name`` and ``variable``; the shell words
     the label itself (it loads no translation catalog) and shows the shared
     ``note``, e.g. the ``local.env`` variable an older daemon needs.
     """
@@ -103,12 +97,12 @@ def features_reply(state: dict[str, Any]) -> dict[str, Any]:
         "notice": str(view["notice"] or ""),
         "restart_pending": view["restart_pending"] is True,
         "restart_notice": str(view["restart_notice"]),
-        **indexed(rows),
+        "switches": rows,
     }
 
 
 def notifications_reply(snapshot: object, opt_in_hint: str, error: str = "") -> dict[str, Any]:
-    """The Notifications list as the panel shows it, without arrays.
+    """The Notifications list as the panel shows it.
 
     ``snapshot`` is ``ListNotifications``; the placeholder and the content
     notice come from ``phone_link_view.notifications_view`` like in the
@@ -130,9 +124,9 @@ def notifications_reply(snapshot: object, opt_in_hint: str, error: str = "") -> 
         "title": view["title"],
         "explanation": view["explanation"],
         "content_hint": view["contentHint"],
-        **indexed([
+        "rows": [
             {key: row[key] for key in ("app", "time", "summary", "body")} for row in rows
-        ]),
+        ],
     }
 
 
@@ -503,6 +497,30 @@ def _read_requests(stream: TextIO, submit: Callable[[str], None]) -> None:
         submit(line)
 
 
+def _quit_on_signals(loop: Any) -> list[int]:
+    """End ``loop`` on SIGTERM and SIGHUP, as when Quickshell stops the bridge.
+
+    Without this the default action kills the process before ``main``'s
+    cleanup, and a running diagnostics child would outlive the bridge.
+    """
+    from gi.repository import GLib
+
+    def quit_loop() -> bool:
+        loop.quit()
+        return GLib.SOURCE_CONTINUE  # main removes the sources
+
+    try:  # PyGObject 3.52+ moved it and deprecated the old name.
+        from gi.repository import GLibUnix
+
+        signal_add: Callable[..., int] = GLibUnix.signal_add
+    except ImportError:
+        signal_add = GLib.unix_signal_add
+    return [
+        signal_add(GLib.PRIORITY_HIGH, number, quit_loop)
+        for number in (signal.SIGTERM, signal.SIGHUP)
+    ]
+
+
 def main() -> int:
     from dbus.mainloop.glib import DBusGMainLoop
     from gi.repository import GLib
@@ -531,9 +549,15 @@ def main() -> int:
         GLib.idle_add(loop.quit)
 
     threading.Thread(target=read_requests, name="blueferry-stdin", daemon=True).start()
+    signal_sources = _quit_on_signals(loop)
     try:
         loop.run()
     finally:
+        context = GLib.MainContext.default()
+        for source_id in signal_sources:
+            source = context.find_source_by_id(source_id)
+            if source is not None:
+                source.destroy()
         # A running diagnostics child would otherwise outlive the shell.
         doctor_report.terminate_running()
         if activation is not None:

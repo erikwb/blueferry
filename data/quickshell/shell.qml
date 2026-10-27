@@ -53,7 +53,7 @@ ShellRoot {
   readonly property SavedChoice otpAutocopy: SavedChoice {}
   readonly property SavedChoice batteryWarning: SavedChoice {}
   readonly property SavedChoice mirrorRemovals: SavedChoice {}
-  // local.env switches: the bridge's array-free features view, and a
+  // local.env switches: the bridge's features view, and a
   // choice being saved (name → value) until SetFeature answers.
   property var features: ({})
   property var featurePending: ({})
@@ -308,7 +308,11 @@ ShellRoot {
         }
         const historyChanged = result.notification_history_enabled
           !== root.backendStatus.notification_history_enabled
+        // The service came back: the switches read while it was away are
+        // only the local.env fallback.
+        const daemonReturned = result.daemon === true && root.backendStatus.daemon !== true
         root.backendStatus = result
+        if (daemonReturned && root.featuresWanted) root.loadFeatures()
         if (typeof result.bluetooth_restart_command === "string")
           root.bluetoothRestartCommand = result.bluetooth_restart_command
         var policy = result.notification_policy || "messages"
@@ -618,7 +622,7 @@ ShellRoot {
                        summary: "One or more checks failed.", text: message}
       } else if (method === "notifications") {
         if (root.notificationListWatched)
-          root.notificationList = {count: 0, failed: true,
+          root.notificationList = {rows: [], failed: true,
             title: "Notifications Are Unavailable",
             explanation: message || "Notifications are unavailable"}
       } else {

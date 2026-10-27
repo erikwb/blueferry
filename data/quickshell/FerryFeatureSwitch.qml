@@ -4,9 +4,9 @@ import QtQuick
 import QtQuick.Layouts
 
 // One local.env switch (Messages1.GetFeatures/SetFeature), like the Qt
-// FeatureSwitch. `features` is the bridge's array-free features view:
-// `count` rows `item0`, `item1`, … with name, variable, usable, active,
-// editable and note (shared features_view wording). Older daemons report
+// FeatureSwitch. `features` is the bridge's features view: `switches`
+// rows with name, variable, usable, active, editable and note (shared
+// features_view wording). Older daemons report
 // no switches; the row is then disabled and its note names the local.env
 // variable. `pending` holds a choice that is being saved, so the box does
 // not jump back before the bridge answers.
@@ -23,12 +23,9 @@ ColumnLayout {
   signal toggledTo(string feature, bool enabled)
 
   function lookup() {
-    const count = Number(control.features.count) || 0
-    for (let index = 0; index < count; ++index) {
-      const row = control.features["item" + index]
-      if (row && row.name === control.feature) return row
-    }
-    return ({})
+    const value = control.features.switches
+    const rows = value && value.length !== undefined ? Array.prototype.slice.call(value) : []
+    return rows.find(row => row && row.name === control.feature) || ({})
   }
 
   spacing: control.ferryTheme.scaled(2)

@@ -5357,6 +5357,30 @@ def test_quickshell_feature_switches_name_the_variable_for_an_older_daemon(
     close()
 
 
+def test_quickshell_shows_why_the_switches_fall_back(qml_engine, quickshell_setup):
+    from blueferry.quickshell_bridge import features_reply
+
+    page, _calls, close = _quickshell_settings_page(
+        qml_engine, quickshell_setup, {"daemon": True},
+    )
+    label = page.findChild(QObject, "featuresError")
+    page.setProperty("features", _quickshell_features(
+        mark_read_on_dismiss=(False, False, "default"),
+    ))
+    QGuiApplication.processEvents()
+    assert label.property("visible") is False
+    page.setProperty("features", features_reply(
+        features_view.unavailable(features_view.initial(), "<b>BlueFerry</b> is not running"),
+    ))
+    QGuiApplication.processEvents()
+    assert label.property("visible") is True
+    assert label.property("text") == (
+        "Could not read the service's switches: <b>BlueFerry</b> is not running"
+    )
+    assert _plain_text_format(qml_engine, label)
+    close()
+
+
 def test_quickshell_lists_switches_it_has_no_wording_for(qml_engine, quickshell_setup):
     page, calls, close = _quickshell_settings_page(
         qml_engine, quickshell_setup, {"daemon": True},
@@ -5566,13 +5590,18 @@ Item {
         check(backendBridge.take("latest:features") === 1, "features not read on opening")
         setupController.configurationUpdated(true)
         check(backendBridge.take("latest:features") === 0, "features polled on refresh")
+        root.markStatusUnavailable("gone")
+        backendBridge.response("status", 20, {daemon: true})
+        check(backendBridge.take("latest:features") === 1, "returning service not reread")
+        backendBridge.response("status", 21, {daemon: true})
+        check(backendBridge.take("latest:features") === 0, "running service reread")
         check(backendBridge.take("latest:notifications") === 0, "list read before shown")
         backendBridge.eventReceived("notifications-changed", null)
         check(backendBridge.take("latest:notifications") === 0, "hidden list reread")
         phoneSettingsPage.notificationsExpanded = true
         check(backendBridge.take("latest:notifications") === 1, "shown list not read")
-        backendBridge.response("notifications", 1, {count: 1, item0: {app: "Mail"}})
-        check(root.notificationList.count === 1, "list reply ignored")
+        backendBridge.response("notifications", 1, {rows: [{app: "Mail"}]})
+        check(root.notificationList.rows.length === 1, "list reply ignored")
         backendBridge.eventReceived("notifications-changed", null)
         check(backendBridge.take("latest:notifications") === 1, "event did not reread")
         backendBridge.response("status", 2, {daemon: true, notification_history_enabled: false})
@@ -5583,16 +5612,16 @@ Item {
         check(backendBridge.take("latest:notifications") === 0, "unchanged status reread")
         root.phoneSettingsVisible = false
         check(backendBridge.take("cancel:notifications") === 1, "hidden list not cancelled")
-        check(root.notificationList.count === undefined, "hidden list not forgotten")
+        check(root.notificationList.rows === undefined, "hidden list not forgotten")
         check(phoneSettingsPage.notificationsExpanded === false, "list stays expanded")
-        backendBridge.response("notifications", 5, {count: 1, item0: {app: "Late"}})
-        check(root.notificationList.count === undefined, "late reply shown while hidden")
+        backendBridge.response("notifications", 5, {rows: [{app: "Late"}]})
+        check(root.notificationList.rows === undefined, "late reply shown while hidden")
 
         // A switch: kept while saved, replaced by the reloaded view.
         root.phoneSettingsVisible = true
         phoneSettingsPage.operationRequested("set_feature", {name: "mark_read_on_dismiss", enabled: true})
         check(root.featurePending.mark_read_on_dismiss === true, "choice not kept")
-        backendBridge.response("set_feature", 6, {count: 0, restart_pending: true, notice: "n"})
+        backendBridge.response("set_feature", 6, {switches: [], restart_pending: true, notice: "n"})
         check(Object.keys(root.featurePending).length === 0, "pending choice stuck")
         check(root.features.restart_pending === true, "reloaded view ignored")
         backendBridge.take("")

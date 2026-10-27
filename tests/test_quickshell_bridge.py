@@ -680,15 +680,6 @@ def test_bridge_saves_the_one_time_code_opt_in() -> None:
 # ---- QS-1: settings parity (features, reconnect, sync, notifications) -------
 
 
-def _no_arrays(value: object) -> bool:
-    """Nothing the bridge hands to QML may be an array (#213)."""
-    if isinstance(value, list | tuple):
-        return False
-    if isinstance(value, dict):
-        return all(_no_arrays(item) for item in value.values())
-    return True
-
-
 class SettingsClient(FakeClient):
     def __init__(self, status: dict | None = None) -> None:
         super().__init__()
@@ -746,11 +737,11 @@ class SettingsClient(FakeClient):
         return self.notification_snapshot
 
 
-def test_bridge_flattens_the_feature_switches_without_arrays() -> None:
+def test_bridge_lists_the_feature_switches_with_the_shared_notes() -> None:
     reply = QuickshellBridge(SettingsClient()).dispatch("features", {})  # type: ignore[arg-type]
-    assert _no_arrays(reply)
-    assert reply["available"] is True and reply["count"] == 3
-    rows = {reply[f"item{index}"]["name"]: reply[f"item{index}"] for index in range(3)}
+    assert reply["available"] is True and len(reply["switches"]) == 3
+    assert json.loads(json.dumps(reply)) == reply
+    rows = {row["name"]: row for row in reply["switches"]}
     assert rows["show_notification_content"] == {
         "name": "show_notification_content",
         "variable": "BLUEFERRY_SHOW_NOTIFICATION_CONTENT",
@@ -769,11 +760,9 @@ def test_bridge_names_the_local_env_variable_for_an_older_daemon() -> None:
     client = SettingsClient()
     client.feature_values = BackendError("No such method 'GetFeatures'")
     reply = QuickshellBridge(client).dispatch("features", {})  # type: ignore[arg-type]
-    assert _no_arrays(reply)
     assert reply["available"] is False and reply["error"] == "No such method 'GetFeatures'"
-    assert reply["count"] == 3
-    for index in range(3):
-        row = reply[f"item{index}"]
+    assert len(reply["switches"]) == 3
+    for row in reply["switches"]:
         assert row["usable"] is False and row["editable"] is False
         assert row["variable"] in row["note"] and "local.env" in row["note"]
     assert reply["restart_pending"] is False
@@ -785,7 +774,6 @@ def test_bridge_saves_a_feature_and_returns_the_notice_with_the_reloaded_view() 
         "set_feature", {"name": "mark_read_on_dismiss", "enabled": True},
     )
     assert client.calls == [("set_feature", "mark_read_on_dismiss", True), ("features",)]
-    assert _no_arrays(reply)
     assert reply["result"] == "restart-required"
     assert reply["notice"] == "Restart the BlueFerry service to apply the change."
     assert reply["restart_notice"] == reply["notice"]
@@ -878,13 +866,12 @@ def test_bridge_does_not_read_notifications_while_the_list_is_off() -> None:
     client = SettingsClient({"notification_history_enabled": False})
     reply = QuickshellBridge(client).dispatch("notifications", {})  # type: ignore[arg-type]
     assert ("notifications", 30) not in client.calls
-    assert _no_arrays(reply)
-    assert reply["off"] is True and reply["count"] == 0
+    assert reply["off"] is True and reply["rows"] == []
     assert reply["title"] == "Notification List Is Off"
     assert "Keep recent iPhone notifications" in reply["explanation"]
 
 
-def test_bridge_flattens_the_newest_notifications_and_caps_them() -> None:
+def test_bridge_lists_the_newest_notifications_and_caps_them() -> None:
     client = SettingsClient({"notification_history_enabled": True})
     client.notification_snapshot = {
         "enabled": True, "content": False,
@@ -896,10 +883,9 @@ def test_bridge_flattens_the_newest_notifications_and_caps_them() -> None:
     }
     reply = QuickshellBridge(client).dispatch("notifications", {})  # type: ignore[arg-type]
     assert client.calls[-1] == ("notifications", 30)
-    assert _no_arrays(reply)
-    assert reply["count"] == 30 and "item30" not in reply
+    assert len(reply["rows"]) == 30
     # Verbatim, never markup: the shell shows it as plain text.
-    assert reply["item0"] == {"app": "<b>Mail</b>", "time": "", "summary": "T0 · S",
+    assert reply["rows"][0] == {"app": "<b>Mail</b>", "time": "", "summary": "T0 · S",
                               "body": "line\nnext"}
     assert reply["off"] is False and reply["failed"] is False
     assert "Only app names and times" in reply["content_hint"]
@@ -910,11 +896,11 @@ def test_bridge_explains_an_empty_or_failing_notification_list() -> None:
 
     client = SettingsClient({"notification_history_enabled": True})
     empty = QuickshellBridge(client).dispatch("notifications", {})  # type: ignore[arg-type]
-    assert empty["title"] == "No Notifications Yet" and empty["count"] == 0
+    assert empty["title"] == "No Notifications Yet" and empty["rows"] == []
     assert empty["content_hint"] == ""
     client.notification_snapshot = BackendError("ListNotifications failed")
     failing = QuickshellBridge(client).dispatch("notifications", {})  # type: ignore[arg-type]
-    assert failing["failed"] is True and failing["count"] == 0
+    assert failing["failed"] is True and failing["rows"] == []
     assert failing["title"] == "Notifications Are Unavailable"
     assert failing["explanation"] == "ListNotifications failed"
 
@@ -950,3 +936,59 @@ def test_bridge_forwards_the_content_free_notifications_signal(monkeypatch) -> N
     quickshell_bridge._install_signal_receivers(bridge)
     receivers["NotificationsChanged"]()
     assert json.loads(output.getvalue()) == {"event": "notifications-changed", "data": None}
+
+
+@pytest.mark.real_glib_sources
+@pytest.mark.parametrize("number", ["SIGTERM", "SIGHUP"])
+def test_bridge_stops_diagnostics_when_quickshell_terminates_it(monkeypatch, number) -> None:
+    """A signal ends the loop through main's cleanup, which stops a doctor child."""
+    import os
+    import signal
+
+    from gi.repository import GLib
+
+    from blueferry import doctor_report, quickshell_bridge
+
+    stopped, timed_out = [], []
+
+    class IteratingLoop:
+        """GLib.MainLoop.run would arm and remove its own SIGINT source."""
+
+        def __init__(self) -> None:
+            self.running = False
+
+        def run(self) -> None:
+            self.running = True
+            context = GLib.MainContext.default()
+            while self.running:
+                context.iteration(True)
+
+        def quit(self) -> None:
+            self.running = False
+
+    def guard() -> bool:
+        timed_out.append(True)
+        os.kill(os.getpid(), signal.SIGTERM)  # end a loop the signal did not
+        return False
+
+    read_end, write_end = os.pipe()
+    monkeypatch.setattr(quickshell_bridge, "BackendClient", FakeClient)
+    monkeypatch.setattr(quickshell_bridge, "_install_signal_receivers", lambda _bridge: [])
+    monkeypatch.setattr(doctor_report, "terminate_running", lambda: stopped.append(True))
+    monkeypatch.setattr(GLib, "MainLoop", IteratingLoop)
+    monkeypatch.setattr("sys.argv", ["blueferry-quickshell-bridge"])
+    monkeypatch.setattr("sys.stdout", io.StringIO())
+    stdin = os.fdopen(read_end, "r")  # never written: the reader keeps waiting
+    monkeypatch.setattr("sys.stdin", stdin)
+    kill = GLib.timeout_add(50, lambda: os.kill(os.getpid(), getattr(signal, number)) or False)
+    guard_source = GLib.timeout_add(5000, guard)
+    try:
+        assert quickshell_bridge.main() == 0
+    finally:
+        for source_id in (kill, guard_source):
+            source = GLib.MainContext.default().find_source_by_id(source_id)
+            if source is not None:
+                source.destroy()
+        os.close(write_end)
+    assert timed_out == []
+    assert stopped == [True]

@@ -184,7 +184,7 @@ anderen Clients:
 
 | Weggelassen | Warum | Stattdessen |
 |---|---|---|
-| Plugin-Verwaltung und Plugin-Einstellungen | Plugin-Formulare sind Listen von Feldern, und die Brücke des Panels gibt QML bewusst keine Arrays (sie gehen unter Qt 6.12 kaputt) | Qt- oder GTK-Einstellungen, `blueferry plugins` |
+| Plugin-Verwaltung und Plugin-Einstellungen | Jedes Plugin bringt sein eigenes Einstellungsformular mit Geheimnissen, Knöpfen und Protokoll mit, dazu kommt der Store mit installierbaren Plugins; das ist zu viel und zu unterschiedlich für ein kompaktes Panel | Qt- oder GTK-Einstellungen, `blueferry plugins` |
 | **Send to…** und der Tab **Photos** (Plugin-Funktionen) | Send to braucht eine Dateiauswahl oder Drag & Drop, die das Panel nicht hat; beides kommt von Plugins, die das Panel nicht verwaltet | Qt-Client (Photos), Qt- oder GTK-Client (Send to), `blueferry send`, `blueferry photos` |
 | Begleitwerkzeuge | Desktop-Helfer richtet man einmal ein; das ist keine Aufgabe für ein Panel | Qt- oder GTK-Einstellungen, `blueferry tools` |
 | Nachrichtenverlauf löschen | Bietet auch der Terminal-Client nicht an | `blueferry history-clear` |

@@ -173,7 +173,7 @@ Quickshell is a compact panel, so some parts stay with the other clients:
 
 | Left out | Why | Use instead |
 |---|---|---|
-| Plugin management and plugin settings | Plugin forms are lists of fields, and the panel's bridge deliberately passes no arrays to QML (they break under Qt 6.12) | Qt or GTK settings, `blueferry plugins` |
+| Plugin management and plugin settings | Each plugin brings its own settings form, secrets, buttons and log, and the store lists plugins to install; that is too much, and too varied, for a compact panel | Qt or GTK settings, `blueferry plugins` |
 | **Send to…** and the **Photos** tab (plugin features) | Send to needs a file picker or file drop, which the panel does not have; both come from plugins, which the panel does not manage | Qt client (Photos), Qt or GTK client (Send to), `blueferry send`, `blueferry photos` |
 | Companion tools | Setting up desktop helpers is a one-time job, not a panel task | Qt or GTK settings, `blueferry tools` |
 | Clearing the message history | Not offered by the terminal client either | `blueferry history-clear` |
