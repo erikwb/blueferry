@@ -116,7 +116,7 @@ class BlueFerryApp(Adw.Application):
             body=_(
                 "Ctrl+W  Close Window\n"
                 "Ctrl+Q  Quit\n"
-                "Ctrl+,  iPhone Settings\n"
+                "Ctrl+,  Settings\n"
                 "Ctrl+I  iPhone\n"
                 "Ctrl+?  Keyboard Shortcuts\n"
                 "Enter   Send Message"

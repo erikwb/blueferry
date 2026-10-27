@@ -56,6 +56,18 @@ style dependencies fail this check even when CLI/TUI startup still succeeds.
   context. The defaults are bound at import time, so patching `GLib` does
   not replace them. `tests/test_glib_source_guard.py` finds these classes by
   scanning the source and checks every test construction.
+- The toolkit-neutral client models (`client_tasks.py` seams) are tested
+  without Qt or GTK on `tests/client_fakes.py`: a `ManualRunner` queues the
+  work and runs it, with its callbacks, only when the test drains it, and its
+  timers fire only on request. Late answers are produced by holding work
+  back, not by thread gates. The Qt adapter tests keep only the pool, timer
+  and signal wiring.
+- The Textual adapters (`tui_tasks.py`) are tested in a headless
+  `App.run_test()`: callbacks arrive on the UI thread, done or error before
+  finished, a removed screen gets no late answer, and timers restart and
+  stop. Textual screens such as Options take their slow seams (service
+  restart, `blueferry doctor`) as constructor arguments, so tests never
+  restart a service or start a child process.
 - Unit tests never arm real GLib timer or idle sources. The autouse
   `glib_source_guard` in `tests/conftest.py` refuses such a call on the
   test's thread with an `AssertionError` at the call site, and also fails
@@ -164,6 +176,16 @@ perform I/O. They exercise first-run navigation, repeated page reopening,
 device selection and busy state, storage-status recovery, and confirmation
 across refreshes or settings closure. Binding warnings fail these tests;
 pairing and storage actions must reach the recorder only after confirmation.
+GTK widget tests run each scenario in a child process on a private
+Broadway display (`tests/gtk_broadway.py`; they skip without
+`gtk4-broadwayd`). The settings scenarios build the real dialog with a fake
+client that queues every daemon call, so the test answers late, fails or
+never answers on purpose: the category pages, feature switches with the
+restart notice and the fallback for daemons without `GetFeatures`, and the
+doctor report with Copy. Closing the dialog must disarm its reload timers.
+`tests/test_gtk_min_versions.py` keeps the GTK sources on libadwaita 1.5
+and GTK 4.14 by reading the symbol versions from the installed GIR files,
+with a fixed list of newer libadwaita symbols where those are missing.
 
 Quickshell setup tests load the real controller without a transport and inject
 helper replies. They cover first install, adapter changes, cancellation, failed
