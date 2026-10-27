@@ -293,6 +293,7 @@ def _exercise_installed():
     class Manager(_OneManager):
         enabled = True
         refuse = False
+        stop = None
         removed: list[str] = []  # noqa: RUF012
 
         def entries(self):
@@ -307,6 +308,7 @@ def _exercise_installed():
             if Manager.refuse:
                 raise InstallError("settings file is read-only")
             Manager.enabled = enabled
+            return Manager.stop
 
         def remove(self, plugin_id):
             from types import SimpleNamespace
@@ -359,6 +361,17 @@ def _exercise_installed():
     work.run_tasks()
     assert "read-only" in plugins.message_row.get_title()
     assert not widgets["switch"].get_active()
+    # A plugin that keeps running is a warning, not a failed change: the
+    # switch stays where the user put it until the list is read again.
+    from blueferry.plugin_stopper import STILL_RUNNING, StopOutcome
+
+    Manager.refuse, Manager.stop = False, StopOutcome(STILL_RUNNING, 4242)
+    widgets["switch"].set_active(True)
+    work.run_next()
+    assert plugins.model.state()["messageOk"] is False
+    assert widgets["switch"].get_active()
+    work.run_tasks()
+    assert plugins._plugin_widgets["io.example.cloud"]["switch"].get_active()
     assert opened == []
     dialog.close()
     _settle()
