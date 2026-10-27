@@ -148,9 +148,9 @@ Themes und ein Layout, das sich schmalen Terminals anpasst.
 
 ![Terminal-Client](../../images/terminal.png)
 
-### Optionen
+### Einstellungen
 
-`o` öffnet **Options** mit denselben Kategorien wie die Einstellungen von Qt
+`o` öffnet **Settings** mit denselben Kategorien wie die Einstellungen von Qt
 und GTK, als Reiter. Eine Einstellung erscheint nur, wenn der laufende
 Hintergrunddienst sie anbietet.
 
@@ -163,7 +163,7 @@ Hintergrunddienst sie anbietet.
 | About | Version, der Hintergrunddienst mit **Restart Service**, die Tastenbelegung |
 
 Die Schalter, die einen Neustart brauchen (siehe oben), zeigen den Hinweis
-oben in Options mit **Restart Service**. Ein Dienst, der sie noch nicht kennt,
+oben in Settings mit **Restart Service**. Ein Dienst, der sie noch nicht kennt,
 zeigt jeden Schalter ausgegraut mit der `local.env`-Variable, die stattdessen
 zu setzen ist.
 
@@ -171,7 +171,7 @@ zu setzen ist.
 **Copy Report** legt ihn über das Terminal (OSC 52) in die Zwischenablage;
 reicht das Terminal das nicht weiter, markiere den Text mit der Maus.
 
-Die Befehlspalette (`Strg+P`) kennt außerdem **Options: Phone** … **Options:
+Die Befehlspalette (`Strg+P`) kennt außerdem **Settings: Phone** … **Settings:
 About** und **Run Diagnostics**. Die Kopplung bleibt bei `blueferry
 pair-setup` oder einem grafischen Client; Plugin-Einstellungen hat der
 Terminal-Client noch nicht.

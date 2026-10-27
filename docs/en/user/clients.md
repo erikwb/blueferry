@@ -140,9 +140,9 @@ that adapts to narrow terminals.
 
 ![Terminal client](../../images/terminal.png)
 
-### Options
+### Settings
 
-`o` opens **Options**, with the same categories as the Qt and GTK settings as
+`o` opens **Settings**, with the same categories as the Qt and GTK settings as
 tabs. A setting appears only when the running background service offers it.
 
 | Category | What you find there |
@@ -154,14 +154,14 @@ tabs. A setting appears only when the running background service offers it.
 | About | Version, the background service with **Restart Service**, the keyboard map |
 
 The switches that need a restart (see above) show the restart notice at the
-top of Options with **Restart Service**. A service that predates them shows
+top of Settings with **Restart Service**. A service that predates them shows
 each switch greyed out with the `local.env` variable to set instead.
 
 **Run Diagnostics** runs `blueferry doctor` and shows its report. **Copy
 Report** puts it on the clipboard through the terminal (OSC 52); where the
 terminal does not pass that on, select the text with the mouse instead.
 
-The command palette (`Ctrl+P`) also has **Options: Phone** … **Options:
+The command palette (`Ctrl+P`) also has **Settings: Phone** … **Settings:
 About** and **Run Diagnostics**. Pairing stays with `blueferry pair-setup`
 or a graphical client; the terminal client has no plugin settings yet.
 

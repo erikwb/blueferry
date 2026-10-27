@@ -1,6 +1,6 @@
-"""The terminal client's Options screen (``o``), in the settings categories
-of the Qt and GTK clients: Phone, Notifications, Calls & Audio, Security and
-About.
+"""The terminal client's Settings screen (``o``; ``OptionsScreen`` in code),
+in the settings categories of the Qt and GTK clients: Phone, Notifications,
+Calls & Audio, Security and About.
 
 - Saved preferences the daemon reports in ``GetStatus`` are checkboxes
   (:data:`SAVED_SWITCHES`). Each one is shown only when the daemon reports
@@ -471,7 +471,7 @@ class OptionsScreen(ModalScreen[None]):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="options-dialog", classes="dialog"):
-            yield Static(_("Options"), classes="dialog-title")
+            yield Static(_("Settings"), classes="dialog-title")
             with Horizontal(id="options-restart"):
                 yield Static("", id="options-restart-notice")
                 yield Button(

@@ -1,4 +1,4 @@
-"""Options > Phone > Diagnostics: ``blueferry doctor`` inside the terminal client.
+"""Settings > Phone > Diagnostics: ``blueferry doctor`` inside the terminal client.
 
 The check runs in a child process on a Textual thread worker, never on the
 UI thread. Its state and summary come from :mod:`blueferry.doctor_report`,

@@ -535,13 +535,13 @@ def test_the_command_palette_opens_a_category_and_the_diagnostics() -> None:
         app = _app(backend, doctor=lambda: report)
         async with app.run_test(size=(120, 40)) as pilot:
             commands = {command.title: command for command in app.get_system_commands(app.screen)}
-            assert "Options: Security" in commands and "Run Diagnostics" in commands
-            commands["Options: Calls & Audio"].callback()
+            assert "Settings: Security" in commands and "Run Diagnostics" in commands
+            commands["Settings: Calls & Audio"].callback()
             await _mounted(pilot, app, OptionsScreen)
             tabs = app.screen.query_one("#options-tabs", TabbedContent)
             assert tabs.active == "options-calls"
             # From within Options the palette switches the tab.
-            commands["Options: About"].callback()
+            commands["Settings: About"].callback()
             await _until(pilot, lambda: tabs.active == "options-about")
             commands["Run Diagnostics"].callback()
             await _mounted(pilot, app, DoctorScreen)
@@ -673,7 +673,7 @@ def test_the_palette_opens_options_while_search_has_the_focus() -> None:
             await pilot.pause(0.1)
             assert not isinstance(app.screen, OptionsScreen)
             commands = {command.title: command for command in app.get_system_commands(app.screen)}
-            commands["Options: Security"].callback()
+            commands["Settings: Security"].callback()
             screen = await _mounted(pilot, app, OptionsScreen)
             assert screen.query_one("#options-tabs", TabbedContent).active == "options-security"
 
