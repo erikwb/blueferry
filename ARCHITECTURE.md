@@ -187,7 +187,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `cli_media.py` | `blueferry media` now-playing status, commands, and `enable`/`disable`. |
 | `cli_audio.py` | `blueferry audio [status\|pc\|phone]`. |
 | `cli_features.py` | `blueferry features [on\|off NAME]`. |
-| `features_view.py` | Toolkit-neutral state of the `GetFeatures`/`SetFeature` switches in Settings, shared by Qt, GTK and the terminal Options: loaded or fallback for older daemons, the restart/environment notice after a change, and (`view()`) each switch row's state and note and whether a restart is pending. |
+| `features_view.py` | Toolkit-neutral state of the `GetFeatures`/`SetFeature` switches in Settings, shared by Qt, GTK and the terminal Settings screen: loaded or fallback for older daemons, the restart/environment notice after a change, and (`view()`) each switch row's state and note and whether a restart is pending. |
 | `plugin_api/` | Plugin contract: manifest parser and discovery, settings schema (`config.py`, with groups, a pre-check, `ShowIf` and the form's `[ConfigAction]` buttons), `TestConfig`/`ConfigLogin` replies (`config_flow.py`), surfaces (`card`, `share`, content-free `notify`) with checked `open_uri`, the standard log file, a validating `PluginClient`, `PluginService`/`PhotosService` bases (bounded worker pool, per-caller budget) and a test harness (`FakeHost`). Imports nothing else from `blueferry`. A symlink to `plugin-api/src/blueferry/plugin_api`, which `plugin-api/pyproject.toml` also builds as the distribution `blueferry-plugin-api` for plugins in their own repositories. |
 | `plugin_manager.py` | Installs plugins from https Git URLs: pinned ref, clone, confirmation, own venv, manifest and D-Bus service file; update, remove, enable/disable under a `flock`; validates `installs.json` on every read. |
 | `plugin_stopper.py` | After an update, removal or disabling, SIGTERMs the owner of the plugin's bus name if it runs as the user from the plugin's old venv (pidfd, never SIGKILL, never BlueFerry itself); blocking, worker thread or CLI only. |
@@ -209,9 +209,9 @@ All paths are relative to `src/blueferry/` unless noted.
 | `cli_otp.py` | `blueferry otp status`, `enable`, `disable` and `check` for one-time code auto-copy (`otp-status` and `otp-check` stay as aliases). |
 | `tui.py` | Textual terminal client. |
 | `tui_launcher.py` | Launches the TUI with the package-private Textual bundle when present. |
-| `tui_calls.py` | Optional Textual calls panel (`c`): `call_card` wording, one action row (answer, hold/resume via `SwapCalls`, hang up/decline), keypad tones for the active call, dial suggestions (`dial_suggestions`), confirmation before every call; work through `TextualTaskRunner`. |
+| `tui_calls.py` | Optional Textual calls panel (`c`): `call_card` wording, one action row (answer, hold/resume via `SwapCalls`, hang up/decline, Decline for a waiting call), keypad tones for the active call, dial suggestions (`dial_suggestions`), confirmation before every call; work through `TextualTaskRunner`. |
 | `tui_notifications.py` | Textual "iPhone Notifications" screen over the shared `NotificationHistory` (`notifications_view` wording); read only while open, forgotten on close, `NotificationsChanged` coalesced. |
-| `tui_options.py` | Textual "Options" screen (`o`): the Qt/GTK settings categories as tabs, saved preferences from `GetStatus`, `local.env` feature switches via `features_view` with "Restart Service", buttons for the per-key actions. |
+| `tui_options.py` | Textual "Settings" screen (`o`, `OptionsScreen`): the Qt/GTK settings categories as tabs, saved preferences from `GetStatus`, `local.env` feature switches via `features_view` with "Restart Service", buttons for the per-key actions. |
 | `tui_doctor.py` | Textual diagnostics report: `blueferry doctor` on a worker, plain-text report with Copy. |
 | `tui_tasks.py` | Textual `TaskRunner`/`Timer` adapters for `client_tasks` (thread workers, results via `call_from_thread`, `set_timer`). |
 | `tui_notification_rules.py` | Textual editor for notification click rules. |

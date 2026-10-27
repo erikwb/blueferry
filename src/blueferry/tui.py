@@ -675,7 +675,7 @@ class HelpScreen(ModalScreen[None]):
             "[bold #7dd3fc]Star conversation[/]  s\n"
             "[bold #7dd3fc]Delete conversation[/]  Delete\n"
             f"{calls_line}"
-            "[bold #7dd3fc]Options · diagnostics · restart service[/]  o\n"
+            "[bold #7dd3fc]Settings · diagnostics · restart service[/]  o\n"
             "[bold #7dd3fc]Notification click rules[/]  l\n"
             "[bold #7dd3fc]iPhone overview · iPhone notifications[/]  Ctrl+P\n"
             f"{audio_line}"
@@ -715,7 +715,7 @@ class BlueFerryApp(App[None]):
         Binding("s", "toggle_star", "Star"),
         Binding("delete", "delete_thread", "Delete"),
         Binding("c", "calls", "Calls", show=False),
-        Binding("o", "options", "Options"),
+        Binding("o", "options", "Settings"),
         Binding("l", "click_rules", "Click rules", show=False),
         Binding("a", "phone_audio", "Sound", show=False),
         Binding("b", "reconnect", "Reconnect iPhone", show=False),
@@ -1294,11 +1294,11 @@ class BlueFerryApp(App[None]):
 
     def get_system_commands(self, screen: Screen) -> Iterable[SystemCommand]:
         yield from super().get_system_commands(screen)
-        # The settings live in Options (o); the palette (Ctrl+P) jumps
+        # The settings live in the Settings screen (o); the palette (Ctrl+P) jumps
         # straight to a category, so no new single-letter keys are needed.
         for category in categories():
             yield SystemCommand(
-                _("Options: {category}").format(category=category.title),
+                _("Settings: {category}").format(category=category.title),
                 _("Open the {category} settings").format(category=category.title),
                 partial(self._open_options_from_palette, category.key),
             )

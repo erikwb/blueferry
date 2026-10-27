@@ -243,7 +243,7 @@ Press `?` for the keyboard map or `Ctrl+P` for the command palette. The TUI has
 conversation search, a multiline composer, mouse support, themes, and a layout
 that adapts to narrow terminals.
 
-`o` opens Options with the settings categories of the Qt and GTK clients
+`o` opens Settings with the settings categories of the Qt and GTK clients
 (Phone, Notifications, Calls & Audio, Security, About): the saved
 preferences the backend offers, the restart-required feature switches with
 **Restart Service**, and **Run Diagnostics** (`blueferry doctor` with a
@@ -358,7 +358,7 @@ BlueFerry can copy verification codes (2FA/OTP) from newly received SMS and
 iMessages to the clipboard. This is off by default because it changes the
 clipboard without you doing anything. Turn it on with the "Copy one-time
 codes to the clipboard" checkbox in the Qt, GTK or Quickshell iPhone
-settings, the terminal client's Options (`o`), or `blueferry otp enable`.
+settings, the terminal client's Settings (`o`), or `blueferry otp enable`.
 The choice is saved in `settings.json` and applies at once;
 `BLUEFERRY_OTP_AUTOCOPY=true` in `local.env` still works as the starting
 value until a client changes it. The clear timer stays in `local.env`:
@@ -510,7 +510,7 @@ After upgrading from a version that removed `+` during import, run
 Contact photos are off by default. To show the iPhone's contact pictures as
 avatars in the GTK, Qt and Quickshell conversation lists and headers and as
 desktop notification icons, tick "Show contact photos from the iPhone" in
-the Qt, GTK or Quickshell iPhone settings or the terminal client's Options
+the Qt, GTK or Quickshell iPhone settings or the terminal client's Settings
 (`o`), or run `blueferry contact-photos enable`. The choice is saved in
 `settings.json` and applies at once, starting a contact sync that brings the
 photos; `BLUEFERRY_CONTACT_PHOTOS=true` in `local.env` still works as the
