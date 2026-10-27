@@ -95,7 +95,8 @@ class PluginCardSection(Gtk.Box):
         self.watcher = CardChangeWatcher(self._card_changed, bus)
         self._cards_key = ""
         self._on_new_items = on_new_items
-        self._seen_items: set[tuple[str, str]] = set()
+        # None until the first load: what is there at start is not "new".
+        self._seen_items: set[tuple[str, str]] | None = None
         self._targets_key = ""
         self._item_rows: list[Gtk.Widget] = []
         self._buttons: list[Gtk.Widget] = []
@@ -213,10 +214,11 @@ class PluginCardSection(Gtk.Box):
         cards = state["cards"]
         targets = state["targets"]
         can_share = state["shareAvailable"] is True or bool(targets)
-        key = json.dumps(cards, sort_keys=True)
+        loaded = state["loaded"] is True
+        key = json.dumps([cards, loaded], sort_keys=True)
         if key != self._cards_key:
             self._cards_key = key
-            self._build(cards)
+            self._build(cards, loaded)
         self.send_row.set_visible(can_share)
         self.send_row.set_subtitle(
             ", ".join(target["label"] for target in targets) if targets
@@ -237,11 +239,12 @@ class PluginCardSection(Gtk.Box):
             widget.set_sensitive(not busy)
         self.set_visible(bool(cards) or can_share or bool(message))
 
-    def _build(self, cards: list[dict]) -> None:
+    def _build(self, cards: list[dict], loaded: bool) -> None:
         items = {(str(card["pluginId"]), str(item["id"]))
                  for card in cards for item in card.get("items") or []}
-        fresh = bool(items - self._seen_items)
-        self._seen_items = items
+        fresh = self._seen_items is not None and bool(items - self._seen_items)
+        if loaded:
+            self._seen_items = items
         self._build_rows(cards)
         if fresh:
             # Something new, such as a running transfer: never hidden.

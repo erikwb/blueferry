@@ -109,6 +109,9 @@ class RecordingBus:
         return Subscription()
 
 
+EXTRA_ITEMS: list = []  # items a scenario adds to the calendar plugin later
+
+
 def _cards():
     from blueferry import plugin_surfaces as surfaces
     from blueferry.plugin_api.surfaces import Action, CardItem
@@ -117,6 +120,7 @@ def _cards():
         surfaces.PluginCard("io.example.calendar", "<b>Calendar</b>", True, "", [
             CardItem("next", "<i>Dentist</i>", icon="x-office-calendar", subtitle="10:00", actions=[
                 Action("open", "Open", kind="primary"), Action("snooze", "Snooze <b>5</b>")]),
+            *EXTRA_ITEMS,
         ]),
         surfaces.PluginCard("io.example.ls", "LocalSend", True, "", [
             CardItem("phone", "iPhone", icon="../evil", actions=[
@@ -248,19 +252,30 @@ def _exercise_cards():
 
     t = _window()
     window, section = t.window, t.window.plugin_cards
-    # Folded by default; the card plugins load once, like the Qt card, and
-    # new items unfold the panel without changing the remembered choice.
+    # Folded by default and after the first card load, like the remembered
+    # choice says; only a new item later unfolds the panel, without
+    # changing that choice.
+    from blueferry.plugin_api.surfaces import CardItem
+
     assert not window.extras.get_reveal_child()
     assert len(t.work.pending) >= 1
     t.work.run_tasks()
     _settle()
-    assert window.extras.get_reveal_child() and section.get_visible()
-    assert t.ui_state.saved == []
-    window.extras_button.set_active(False)
-    assert t.ui_state.saved == [{"plugins_tools_expanded": False}]
+    assert not window.extras.get_reveal_child(), "what is there at start is not new"
     section.model.reload()
     t.work.run_tasks()
     assert not window.extras.get_reveal_child(), "the same items again: stays folded"
+    EXTRA_ITEMS.append(CardItem("transfer", "Sending 2 files", icon="document-send"))
+    section.model.reload()
+    t.work.run_tasks()
+    _settle()
+    assert window.extras.get_reveal_child() and section.get_visible()
+    assert t.ui_state.saved == []
+    EXTRA_ITEMS.clear()
+    section.model.reload()
+    t.work.run_tasks()
+    window.extras_button.set_active(False)
+    assert t.ui_state.saved == [{"plugins_tools_expanded": False}]
     window.extras_button.set_active(True)
     assert t.ui_state.saved[-1] == {"plugins_tools_expanded": True}
     # Only the card plugins' owners may say CardChanged.
