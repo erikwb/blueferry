@@ -1878,3 +1878,64 @@ def test_phone_links_only_ask_for_confirmation():
     assert backend.dialed == []
     assert controller.contactNameForNumber("+15550100000") == "Test Contact"
     assert controller.contactNameForNumber("+15550100009") == ""
+
+
+@pytest.mark.parametrize("read_outcome", ["success", "error", "unsupported"])
+def test_tether_read_completion_cannot_release_pending_command(read_outcome):
+    import threading
+    import time
+
+    from PySide6.QtGui import QGuiApplication
+
+    read_started, release_read = threading.Event(), threading.Event()
+    command_started, release_command = threading.Event(), threading.Event()
+    delivered = threading.Event()
+    commands = []
+
+    class Backend:
+        def tether_state(self):
+            read_started.set()
+            assert release_read.wait(5)
+            if read_outcome == "error":
+                raise BackendError("status timed out")
+            if read_outcome == "unsupported":
+                raise TetherUnsupportedError("older daemon")
+            return TetherStatus(enabled=True)
+
+        def tether_configure(self, enabled, automatic):
+            commands.append((enabled, automatic))
+            command_started.set()
+            assert release_command.wait(5)
+            return TetherStatus(enabled=enabled, autoconnect=automatic)
+
+    application = QGuiApplication.instance() or QGuiApplication([])
+    controller = _tether_controller(Backend())
+    controller._apply_tether(TetherStatus(enabled=False))
+    try:
+        controller.refreshTether()
+        assert read_started.wait(2)
+        controller.setTethering(True, True)
+        assert controller.tether["pending"] is True
+        controller.tetherChanged.connect(delivered.set)
+        controller.errorTextChanged.connect(delivered.set)
+        release_read.set()
+        assert command_started.wait(2)
+        deadline = time.monotonic() + 2
+        while not delivered.is_set() and time.monotonic() < deadline:
+            application.processEvents()
+        assert delivered.is_set()
+        if read_outcome == "unsupported":
+            assert controller.tether["available"] is False
+        else:
+            assert controller.tether["pending"] is True
+        # Even an unsupported read must not release the outstanding command.
+        controller.setTethering(False, False)
+    finally:
+        release_read.set()
+        release_command.set()
+        controller._pool.waitForDone(5000)
+        application.processEvents()
+    assert commands == [(True, True)]
+    assert controller.tether["enabled"] is True
+    assert controller.tether["autoconnect"] is True
+    assert controller.tether["pending"] is False

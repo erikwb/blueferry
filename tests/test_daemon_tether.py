@@ -244,6 +244,7 @@ def test_an_explicit_off_survives_a_daemon_restart(make_daemon) -> None:
 
     restarted = make_daemon()
     _ready_for_autoconnect(restarted, chosen)
+    restarted.tether.observe_link(False, "")
     restarted.tether.maybe_autoconnect()
     assert chosen == []
 
@@ -253,6 +254,7 @@ def test_an_explicit_off_survives_a_daemon_restart(make_daemon) -> None:
     assert json.loads(config.SETTINGS_JSON.read_text())["tether_auto_suppressed"] is False
     again = make_daemon()
     _ready_for_autoconnect(again, chosen)
+    again.tether.observe_link(False, "")
     again.tether.maybe_autoconnect()
     assert len(chosen) == 2
 
@@ -265,6 +267,7 @@ def test_turning_automatic_tethering_on_again_lifts_a_saved_pause(make_daemon) -
     instance.tether._link_watch = None
     chosen: list = []
     _ready_for_autoconnect(instance, chosen)
+    instance.tether.observe_link(False, "")
 
     instance._set_tethering(True, True)
 

@@ -172,6 +172,7 @@ class BridgeController(QObject):
         self._now_playing_timer.setInterval(150)
         self._now_playing_timer.timeout.connect(self.refreshNowPlaying)
         self._tether: dict = {"available": False}
+        self._tether_pending = False
         self._tether_timer = QTimer(self)
         self._tether_timer.setSingleShot(True)
         self._tether_timer.setInterval(100)
@@ -1329,12 +1330,12 @@ class BridgeController(QObject):
 
     # ---- opt-in tethering --------------------------------------------------
 
-    def _apply_tether(self, value: object, *, pending: bool = False) -> None:
+    def _apply_tether(self, value: object) -> None:
         if not isinstance(value, TetherStatus):
             return
         self._tether = {
             "available": True,
-            "pending": pending,
+            "pending": self._tether_pending,
             "state": value.state,
             "interface": value.interface,
             "backend": value.backend,
@@ -1358,9 +1359,6 @@ class BridgeController(QObject):
         self._apply_tether(value)
 
     def _tether_failed(self, message: str) -> None:
-        if self._tether.get("pending") is True:
-            self._tether = {**self._tether, "pending": False}
-            self.tetherChanged.emit()
         self._operation_failed(message)
 
     def _tether_request(self, request: Callable[[], object]) -> Callable[[], object]:
@@ -1381,16 +1379,24 @@ class BridgeController(QObject):
         )
 
     def _tether_command(self, request: Callable[[], object]) -> None:
-        if self._tether.get("pending") is True:
+        if self._tether_pending:
             return
+        self._tether_pending = True
         self._tether = {**self._tether, "pending": True}
         self.tetherChanged.emit()
 
+        def completed(value: object) -> None:
+            self._tether_pending = False
+            self._tether_result(value)
+
         def failed(message: str) -> None:
+            self._tether_pending = False
+            self._tether = {**self._tether, "pending": False}
+            self.tetherChanged.emit()
             self._tether_failed(message)
             self._tether_timer.start()
 
-        self._run(self._tether_request(request), self._tether_result, failed, busy=False)
+        self._run(self._tether_request(request), completed, failed, busy=False)
 
     @Slot(bool)
     def setTetherConnected(self, connected: bool) -> None:

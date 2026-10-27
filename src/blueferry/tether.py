@@ -567,9 +567,10 @@ class TetherController:
         # switched on again. The daemon saves it, so a restart keeps it.
         self._auto_suppressed = bool(auto_suppressed)
         self._on_auto_suppressed = on_auto_suppressed
-        # Enabling with autoconnect waits for the watch's first report, so a
-        # link another tool already holds is adopted, never claimed as ours.
-        self._autoconnect_after_probe = False
+        # Every automatic entry point waits for the watch's first definite
+        # report, including startup and a later MAP/PBAP readiness callback.
+        # Otherwise an existing applet-owned link could be claimed as ours.
+        self._initial_probe_pending = link_watch is not None
         self._running = False
         self._watching = False
 
@@ -669,9 +670,11 @@ class TetherController:
         if self._watching or not self._running or self._link_watch is None:
             return
         self._watching = True
+        self._initial_probe_pending = True
         self._link_watch.start()
 
     def _stop_watch(self) -> None:
+        self._initial_probe_pending = self._link_watch is not None
         if not self._watching or self._link_watch is None:
             self._watching = False
             return
@@ -700,12 +703,8 @@ class TetherController:
             # Turning automatic tethering on is an explicit user decision.
             self._suppress_auto(False)
             self._auto_failures = 0
-            if not was_enabled and self._link_watch is not None:
-                self._autoconnect_after_probe = True
-            else:
-                self.maybe_autoconnect()
+            self.maybe_autoconnect()
         elif not autoconnect:
-            self._autoconnect_after_probe = False
             self._cancel_retry()
         if (enabled, autoconnect) != (was_enabled, was_auto):
             self._publish()
@@ -713,7 +712,6 @@ class TetherController:
 
     def _disable(self) -> None:
         self._cancel_retry()
-        self._autoconnect_after_probe = False
         awaiting_link_down = self._awaiting_link_down
         if self._state in (CONNECTING, CONNECTED) and not self._external:
             log.info("Bluetooth tethering disabled; stopping its link")
@@ -854,6 +852,7 @@ class TetherController:
         if (
             not self._enabled or not self._autoconnect or self._auto_suppressed
             or not self._running
+            or self._initial_probe_pending
             or self._state not in (OFF, FAILED) or self._retry_id is not None
         ):
             return
@@ -957,7 +956,13 @@ class TetherController:
             return
         token = token if token in ERROR_TOKENS else GENERIC_ERROR
         log.warning("could not stop Bluetooth tethering: %s", token)
-        self._set(FAILED, error=token, interface="")
+        if self._connected_at is not None:
+            # A failed stop does not prove a confirmed link ended. Preserve
+            # its interface, ownership and original trust deadline, even if
+            # the follow-up read also fails. Another Disconnect can retry.
+            self._set(CONNECTED, error=token)
+        else:
+            self._set(FAILED, error=token, interface="")
         # The link watch corrects the state if the link is actually still up.
         if self._link_watch is not None and self._watching:
             self._link_watch.probe()
@@ -974,12 +979,12 @@ class TetherController:
                 self._awaiting_link_down = False
                 self._cancel_confirm()
                 self._external = True
-                self._connected_at = self._clock()
                 self._set(CONNECTED, error=GENERIC_ERROR)
             return
+        initial_probe = self._initial_probe_pending
+        self._initial_probe_pending = False
         self._observe_link(connected, interface)
-        if self._autoconnect_after_probe:
-            self._autoconnect_after_probe = False
+        if initial_probe:
             self.maybe_autoconnect()
 
     def _observe_link(self, connected: bool, interface: str) -> None:
@@ -1000,7 +1005,7 @@ class TetherController:
             # Keep the generation: a NetworkManager "user disconnected" report
             # for this same session may still arrive and must win.
             external = self._external
-            if external and self._error == GENERIC_ERROR:
+            if self._error and self._auto_suppressed:
                 # The stop whose result could not be confirmed (or which left
                 # the link up for a moment) has taken effect after all. That
                 # is what the user asked for, not a lost link.
@@ -1057,7 +1062,9 @@ class TetherController:
     def _set(self, state: str, *, error: str | None = None, interface: str | None = None) -> None:
         changed = state != self._state
         self._state = state
-        if state != CONNECTED:
+        # A pending stop has not disproved the last confirmed link. Keep its
+        # original timestamp so failed stops cannot renew the trust budget.
+        if state not in (CONNECTED, DISCONNECTING):
             self._connected_at = None
         if error is not None and error != self._error:
             self._error = error

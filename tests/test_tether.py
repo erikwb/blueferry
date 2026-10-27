@@ -279,8 +279,9 @@ def test_failed_disconnect_is_reported_and_rechecks_the_link() -> None:
     value.disconnect()
     chooser.backend.disconnects[0][1](tether.PERMISSION_DENIED)
 
-    assert value.snapshot()["state"] == FAILED
+    assert value.snapshot()["state"] == CONNECTED
     assert value.snapshot()["error"] == tether.PERMISSION_DENIED
+    assert value.link_alive()
     assert probes == [True]
 
 
@@ -989,6 +990,7 @@ def test_disabling_cancels_a_pending_automatic_retry() -> None:
     chooser = Chooser(fail=tether.HOTSPOT_REFUSED)
     value, timers, *_ = controller(chooser, autoconnect=True, link=Link())
     value.start()
+    value.observe_link(False, "")
     value.maybe_autoconnect()
     assert value.state == FAILED
     assert timers.pending
@@ -1005,6 +1007,7 @@ def test_turning_on_automatic_tethering_tries_once_when_ready() -> None:
     backend = Backend()
     value, *_ = controller(Chooser(backend), link=Link())
     value.start()
+    value.observe_link(False, "")
     value.disconnect()  # an earlier explicit "off" pauses automatic attempts
 
     snapshot = value.configure(True, True)
@@ -1021,6 +1024,8 @@ def test_enabling_with_automatic_tethering_waits_for_readiness() -> None:
     value.start()
     value.configure(True, True)
     assert backend.connects == []
+    value.observe_link(False, "")
+    assert backend.connects == []  # the probe alone does not make MAP/PBAP ready
     flags["ready"] = True
     value.maybe_autoconnect()
     assert len(backend.connects) == 1
@@ -1331,3 +1336,106 @@ def test_two_unknown_bnep_links_are_ambiguous(tmp_path) -> None:
     value = _renamed_tether(tmp_path)
 
     assert value.link_alive() is False
+
+
+@pytest.mark.parametrize("entry", ["startup", "enable", "automatic"])
+@pytest.mark.parametrize("existing_link", [True, False])
+def test_automatic_entry_points_wait_for_initial_link_probe(entry, existing_link):
+    backend = Backend()
+    value, *_ = controller(
+        Chooser(backend), link=Link(), enabled=entry != "enable",
+        autoconnect=entry == "startup",
+    )
+    value.start()
+    if entry != "startup":
+        value.configure(True, True)
+
+    # MAP/PBAP readiness and unanswered reads must not bypass the first probe.
+    value.maybe_autoconnect()
+    value.observe_link(None, "")
+    value.maybe_autoconnect()
+    assert backend.connects == []
+
+    value.observe_link(existing_link, "bnep0" if existing_link else "")
+    value.maybe_autoconnect()
+    if existing_link:
+        assert backend.connects == []
+        assert value.snapshot()["external"] is True
+        value.configure(False, True)
+        assert backend.disconnects == []  # the applet's connection stays alone
+    else:
+        assert len(backend.connects) == 1
+        assert value.state == CONNECTING
+
+
+def test_synchronous_initial_probe_starts_automatic_tether_once():
+    bus = LinkBus(reply={"Connected": False})
+    value, _timers, chooser = _watched_controller(bus, enabled=False)
+    value.start()
+    value.configure(True, True)
+    value.maybe_autoconnect()
+    assert chooser.calls == 1
+    assert value.state == CONNECTING
+
+
+def test_turning_automatic_off_during_initial_probe_keeps_link_ownership_gate():
+    backend = Backend()
+    value, *_ = controller(Chooser(backend), link=Link(), autoconnect=True)
+    value.start()
+    value.configure(True, False)
+    value.observe_link(False, "")
+    assert backend.connects == []
+    value.configure(True, True)
+    assert len(backend.connects) == 1
+
+
+@pytest.mark.parametrize("external", [True, False])
+@pytest.mark.parametrize("probe_result", [True, False, None])
+def test_failed_disconnect_preserves_confirmed_link_until_disproved(external, probe_result):
+    from blueferry.tether_status import TetherStatus
+
+    backend = Backend()
+    value, *_ = controller(Chooser(backend), link=Link())
+    value.start()
+    if external:
+        value.observe_link(True, "bnep0")
+    else:
+        value.connect()
+        backend.connects[0][0]("bnep0")
+    value.disconnect()
+    backend.disconnects[0][1](tether.TIMEOUT)
+    value.observe_link(probe_result, "bnep0" if probe_result else "")
+
+    if probe_result is False:
+        assert value.state == OFF
+        assert value.snapshot()["error"] == ""
+        assert not value.link_alive()
+        return
+    assert value.state == CONNECTED
+    assert value.snapshot()["interface"] == "bnep0"
+    assert value.snapshot()["external"] is external
+    assert value.link_alive()
+    assert "try disconnecting again" in TetherStatus.from_dict(value.snapshot()).summary()
+    value.disconnect()
+    assert len(backend.disconnects) == 2
+
+
+@pytest.mark.parametrize("external", [True, False])
+def test_repeated_failed_stops_do_not_extend_unknown_interface_trust(external):
+    clock = Clock()
+    backend = Backend()
+    value, *_ = controller(Chooser(backend), link=Link(), clock=clock)
+    value.start()
+    if external:
+        value.observe_link(True, "")
+    else:
+        value.connect()
+        backend.connects[0][0]("")
+    assert value.link_alive()
+    for attempt in range(2):
+        value.disconnect()
+        clock.now += tether.UNKNOWN_INTERFACE_TRUST_SECONDS / 2
+        backend.disconnects[-1][1](tether.TIMEOUT)
+        value.observe_link(None, "")
+        assert value.link_alive() is (attempt == 0)
+    assert value.state == CONNECTED  # still retryable after the trust budget expires
