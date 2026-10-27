@@ -107,6 +107,38 @@ GridLayout {
                         onClicked: callsTab.bridge.hangupCall(activeCall.modelData.call_id)
                     }
                 ]
+                // Keypad tones (DTMF) go to the active call only. The text
+                // is kept by the bridge: the cards are rebuilt on each
+                // phoneCalls change.
+                RowLayout {
+                    objectName: "callTonesRow"
+                    Layout.fillWidth: true
+                    visible: activeCall.card.active === true
+                    Controls.TextField {
+                        id: tonesField
+                        objectName: "callTonesField"
+                        Layout.fillWidth: true
+                        placeholderText: activeCall.card.tones || ""
+                        Accessible.name: placeholderText
+                        maximumLength: 32
+                        inputMethodHints: Qt.ImhDialableCharactersOnly
+                        validator: RegularExpressionValidator { regularExpression: /[0-9*#]*/ }
+                        text: callsTab.bridge.callTonesDraft || ""
+                        onTextEdited: callsTab.bridge.setCallTonesDraft(text)
+                        onAccepted: activeCall.sendTones()
+                    }
+                    Controls.Button {
+                        objectName: "callTonesSend"
+                        text: activeCall.card.send_tones || ""
+                        icon.name: "input-dialpad"
+                        enabled: tonesField.text !== "" && !callsTab.bridge.busy
+                        onClicked: activeCall.sendTones()
+                    }
+                }
+                function sendTones(): void {
+                    if (tonesField.text !== "" && !callsTab.bridge.busy)
+                        callsTab.bridge.sendCallTones(activeCall.modelData.call_id, tonesField.text)
+                }
                 Controls.Switch {
                     objectName: "callsAudioSwitch"
                     text: qsTr("Sound on this computer")

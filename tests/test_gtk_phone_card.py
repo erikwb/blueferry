@@ -13,7 +13,7 @@ from tests.gtk_broadway import run_scenario
 
 @pytest.mark.parametrize(
     "scenario", [
-        "layout", "card", "quick-settings", "dial-pad", "running-calls", "recent-calls",
+        "layout", "card", "quick-settings", "dial-pad", "running-calls", "call-tones", "recent-calls",
         "notifications", "close",
     ],
 )
@@ -80,6 +80,9 @@ class FakeClient:
 
     def swap_calls_async(self, on_ok, on_err):
         self.calls.append(("swap", on_ok, on_err))
+
+    def send_call_tones_async(self, call_id, tones, on_ok, on_err):
+        self.calls.append((("tones", call_id, tones), on_ok, on_err))
 
     def set_phone_audio_route_async(self, route, on_ok, on_err):
         self.calls.append((("route", route), on_ok, on_err))
@@ -434,6 +437,65 @@ def _exercise_running_calls():
     window.destroy()
 
 
+def _exercise_call_tones():
+    from blueferry.models import CallsSnapshot
+
+    window, client = _window()
+    running = window.calls.running
+    client.answer_status(CALLS_READY)
+    window.show_tab("calls")
+    ringing = {"call_id": "voicecall01", "state": "incoming", "number": "+41790000001"}
+    client.take("list-calls")[1](CallsSnapshot.from_dict({"state": "ready", "calls": [ringing]}))
+    assert running.tones is None, "keypad tones only for the active call"
+    active = {**ringing, "state": "active"}
+    held = {"call_id": "voicecall02", "state": "held", "number": "+41790000002"}
+    client.emit("calls-changed")
+    client.take("list-calls")[1](CallsSnapshot.from_dict({"state": "ready", "calls": [
+        held, active]}))
+    tones, send = running.tones, running.tones_button
+    assert tones is not None and tones.get_parent() is running
+    assert tones.get_title() == "Keypad tones (0-9 * #)"
+    assert send.get_tooltip_text() == "Send Tones" and not send.get_sensitive()
+    assert running.rows[1][0].get_index() + 1 == tones.get_index(), "under the active call"
+    tones.set_text("1a2*#b ")
+    assert tones.get_text() == "12*#" and send.get_sensitive()
+    tones.set_text("1" * 50)
+    assert tones.get_text() == "1" * 32
+    tones.set_text("12*#")
+    # A new ListCalls read rebuilds the rows; the typed tones stay.
+    client.emit("calls-changed")
+    client.take("list-calls")[1](CallsSnapshot.from_dict({"state": "ready", "calls": [
+        held, active]}))
+    assert running.tones is not tones and running.tones.get_text() == "12*#"
+    tones, send = running.tones, running.tones_button
+    send.emit("clicked")
+    assert tones.get_text() == "" and not send.get_sensitive()
+    assert not running.rows[0][3][0].get_sensitive(), "busy while the tones are sent"
+    tones.set_text("9")
+    assert not send.get_sensitive(), "no second send while one runs"
+    tones.emit("entry-activated")
+    assert ("tones", "voicecall01", "9") not in client.names()
+    toasts = []
+    window._toasts.add_toast = toasts.append
+    client.take(("tones", "voicecall01", "12*#"))[2]("<b>No</b> call")
+    assert [(t.get_title(), t.get_use_markup()) for t in toasts] == [("<b>No</b> call", False)]
+    assert send.get_sensitive()
+    tones.emit("entry-activated")
+    client.take(("tones", "voicecall01", "9"))[1](None)
+    # The call ends: no tone row, and the next call starts with an empty field.
+    while "list-calls" in client.names():
+        client.take("list-calls")[1](CallsSnapshot.from_dict({"state": "ready", "calls": [
+            held, active]}))
+    running.tones.set_text("5")
+    client.emit("calls-changed")
+    client.take("list-calls")[1](CallsSnapshot.from_dict({"state": "ready", "calls": [held]}))
+    assert running.tones is None
+    client.emit("calls-changed")
+    client.take("list-calls")[1](CallsSnapshot.from_dict({"state": "ready", "calls": [active]}))
+    assert running.tones.get_text() == ""
+    window.destroy()
+
+
 def _exercise_quick_settings():
     window, client = _window()
     card = window.phone_card
@@ -654,6 +716,7 @@ if __name__ == "__main__":
         "card": _exercise_card,
         "dial-pad": _exercise_dial_pad,
         "running-calls": _exercise_running_calls,
+        "call-tones": _exercise_call_tones,
         "quick-settings": _exercise_quick_settings,
         "recent-calls": _exercise_recent_calls,
         "notifications": _exercise_notifications,

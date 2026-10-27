@@ -504,6 +504,9 @@ def test_running_calls_are_read_and_controlled_on_their_workers(monkeypatch) -> 
         def swap_calls(self):
             actions.append(("swap",))
 
+        def send_call_tones(self, call_id, tones):
+            actions.append(("tones", call_id, tones))
+
     client, submitted = _recording_client(monkeypatch, Backend())
     results = []
     try:
@@ -511,8 +514,10 @@ def test_running_calls_are_read_and_controlled_on_their_workers(monkeypatch) -> 
         client.answer_call_async("voicecall01", results.append, None)
         client.swap_calls_async(results.append, None)
         client.hangup_call_async("voicecall01", results.append, None)
+        client.send_call_tones_async("voicecall01", "12#", results.append, None)
     finally:
         client.stop()
-    assert results == [CallsSnapshot(state="ready"), None, None, None]
-    assert actions == [("answer", "voicecall01"), ("swap",), ("hangup", "voicecall01")]
-    assert submitted == ["read", "mutation", "mutation", "mutation"]
+    assert results == [CallsSnapshot(state="ready"), None, None, None, None]
+    assert actions == [("answer", "voicecall01"), ("swap",), ("hangup", "voicecall01"),
+                       ("tones", "voicecall01", "12#")]
+    assert submitted == ["read", "mutation", "mutation", "mutation", "mutation"]

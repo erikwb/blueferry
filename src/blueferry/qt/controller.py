@@ -134,6 +134,7 @@ class BridgeController(QObject):
     featuresChanged = Signal()
     doctorChanged = Signal()
     phoneCallsChanged = Signal()
+    callTonesDraftChanged = Signal()
     # (number, problem) of a clicked tel:/callto: link to confirm; see
     # tel_links.dial_request. Never dials by itself.
     dialLinkRequested = Signal(str, str)
@@ -189,6 +190,9 @@ class BridgeController(QObject):
         self._refresh_again = False
         # Optional HFP calls (Calls1); empty unless the backend enables them.
         self._phone_calls: list[dict] = []
+        # The keypad-tone field's text: the call cards are rebuilt whenever
+        # phoneCalls changes, so the draft lives here, not in the delegate.
+        self._call_tones_draft = ""
         self._calls_state = "disabled"
         # (calls_enabled, calls_state) of the last status that refreshed the
         # call list. Calls themselves are announced by CallsChanged.
@@ -294,6 +298,17 @@ class BridgeController(QObject):
     @Property(str, notify=phoneCallsChanged)
     def callsState(self) -> str:
         return self._calls_state
+
+    @Property(str, notify=callTonesDraftChanged)
+    def callTonesDraft(self) -> str:
+        return self._call_tones_draft
+
+    @Slot(str)
+    def setCallTonesDraft(self, text: str) -> None:
+        draft = phone_link_view.dial_tones(text)
+        if draft != self._call_tones_draft:
+            self._call_tones_draft = draft
+            self.callTonesDraftChanged.emit()
 
     @Property("QVariantMap", notify=statusChanged)
     def status(self):
@@ -1349,7 +1364,10 @@ class BridgeController(QObject):
     def _apply_calls(self, snapshot: object) -> None:
         if not isinstance(snapshot, CallsSnapshot):
             return
-        self._phone_calls = [call.to_dict() for call in snapshot.calls]
+        calls = [call.to_dict() for call in snapshot.calls]
+        if calls == self._phone_calls and snapshot.state == self._calls_state:
+            return  # an unchanged list must not rebuild the call cards
+        self._phone_calls = calls
         self._calls_state = snapshot.state
         self.phoneCallsChanged.emit()
 
@@ -1408,6 +1426,15 @@ class BridgeController(QObject):
     def swapCalls(self) -> None:
         """Hold the active call (or resume the held one): HFP AT+CHLD=2."""
         self._call_action(self._backend.swap_calls)
+
+    @Slot(str, str)
+    def sendCallTones(self, call_id: str, tones: str) -> None:
+        """Keypad tones (DTMF) on the active call; clears the draft."""
+        selected = phone_link_view.dial_tones(tones)
+        if not call_id or not selected:
+            return
+        self.setCallTonesDraft("")
+        self._call_action(lambda: self._backend.send_call_tones(str(call_id), selected))
 
     @Slot()
     def syncContacts(self) -> None:

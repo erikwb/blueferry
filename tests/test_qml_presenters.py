@@ -782,6 +782,8 @@ def settings_window(qml_engine):
                     subtitle: call.ringing === true ? "Incoming call\\u2026" : held ? "On hold" : "",
                     answer: "Answer", hold: held ? "Resume" : "Hold",
                     hangup: call.ringing === true ? "Decline" : "Hang Up",
+                    active: call.state === "active" && call.ringing !== true,
+                    tones: "Keypad tones (0-9 * #)", send_tones: "Send Tones",
                 };
             }
             function notificationsView(info, hint) {
@@ -854,6 +856,11 @@ def settings_window(qml_engine):
             function setMprisPlayer(enabled) { record("setMprisPlayer", [enabled]); }
             function setPhoneAudioRoute(route) { record("setPhoneAudioRoute", [route]); }
             function swapCalls() { record("swapCalls", []); }
+            property string callTonesDraft: ""
+            function setCallTonesDraft(text) { callTonesDraft = text; }
+            function sendCallTones(callId, tones) {
+                record("sendCallTones", [callId, tones]); callTonesDraft = "";
+            }
             function watchNotifications(watched) { record("watchNotifications", [watched]); }
             function refreshNotifications() { record("refreshNotifications", []); }
             function setThreadStarred(key, starred) { record("setThreadStarred", [key, starred]); }
@@ -4692,6 +4699,55 @@ def test_running_calls_show_as_cards_with_answer_hold_and_hang_up(qml_engine, se
     bridge.setProperty("phoneCalls", [])
     QGuiApplication.processEvents()
     assert _visual_find(window.contentItem(), "activeCallCard", qml_engine) is None
+
+
+def test_keypad_tones_go_to_the_active_call_and_survive_a_refresh(qml_engine, settings_window):
+    window, bridge = settings_window
+    _evaluate(qml_engine, "testWindow.currentTab = testWindow.callsTab")
+    bridge.setProperty("status", {"calls_enabled": True})
+    bridge.setProperty("callsState", "ready")
+    ringing = {"call_id": "voicecall01", "state": "incoming", "ringing": True,
+               "display_peer": "Alice", "number": "+41790000001", "first_seen": ""}
+    bridge.setProperty("phoneCalls", [ringing])
+    QGuiApplication.processEvents()
+    card = _visual_find(window.contentItem(), "activeCallCard", qml_engine)
+    assert _visual_find(card, "callTonesRow").property("visible") is False
+    active = {**ringing, "state": "active", "ringing": False}
+    bridge.setProperty("phoneCalls", [active])
+    QGuiApplication.processEvents()
+    card = _visual_find(window.contentItem(), "activeCallCard", qml_engine)
+    assert _visual_find(card, "callTonesRow").property("visible") is True
+    field = _visual_find(card, "callTonesField")
+    send = _visual_find(card, "callTonesSend")
+    assert field.property("placeholderText") == "Keypad tones (0-9 * #)"
+    assert field.property("maximumLength") == 32
+    assert send.property("text") == "Send Tones" and send.property("enabled") is False
+    # Typed text: the validator keeps 0-9 * # only.
+    field.forceActiveFocus()
+    for char in "1a2*#b":
+        QTest.keyClick(window, char)
+    QGuiApplication.processEvents()
+    assert field.property("text") == "12*#"
+    assert bridge.property("callTonesDraft") == "12*#"
+    assert send.property("enabled") is True
+    bridge.setProperty("busy", True)
+    QGuiApplication.processEvents()
+    assert send.property("enabled") is False
+    bridge.setProperty("busy", False)
+    # A refreshed list rebuilds the card; the draft comes back.
+    bridge.setProperty("phoneCalls", [dict(active)])
+    QGuiApplication.processEvents()
+    card = _visual_find(window.contentItem(), "activeCallCard", qml_engine)
+    field = _visual_find(card, "callTonesField")
+    assert field.property("text") == "12*#"
+    QMetaObject.invokeMethod(_visual_find(card, "callTonesSend"), "clicked")
+    QGuiApplication.processEvents()
+    assert _evaluate(qml_engine, "testBridge.calls")[-1] == {
+        "method": "sendCallTones", "args": ["voicecall01", "12*#"],
+    }
+    assert field.property("text") == ""
+    bridge.setProperty("phoneCalls", [])
+    QGuiApplication.processEvents()
 
 
 def test_settings_page_keeps_the_former_menu_entries(qml_engine, settings_window):

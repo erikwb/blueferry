@@ -22,8 +22,9 @@ Karte die Einstellung, die es einschaltet. Die Reiter wechselt man
 in der Kopfzeile, in einem schmalen Fenster unten:
 
 - **Messages**: Unterhaltungen und der Chat.
-- **Calls**: laufende [Anrufe](calls.md) mit annehmen, halten/fortsetzen
-  und auflegen sowie dem Ton-Schalter, ein Wählfeld, das auch deine
+- **Calls**: laufende [Anrufe](calls.md) mit annehmen, halten/fortsetzen,
+  auflegen, Tastentönen (0-9, `*`, `#`) für den aktiven Anruf sowie dem
+  Ton-Schalter, ein Wählfeld, das auch deine
   Kontakte nach Namen durchsucht, und die [Anrufliste](call-history.md) nach Tagen
   gruppiert, mit All und Missed, Rückruf- und Nachrichtenknöpfen und
   **Refresh from iPhone**. Jeder Anruf fragt vorher nach.
@@ -67,7 +68,7 @@ Einstellung, die sie einschaltet. Rechts gibt es drei Reiter:
 - **Messages**: Unterhaltungen mit den Filtern All, Unread und Starred und
   der Chat.
 - **Calls**: [Anrufe](calls.md) mit Wählfeld und laufenden Anrufen als
-  Karten (annehmen, halten, auflegen) und die [Anrufliste](call-history.md)
+  Karten (annehmen, halten, auflegen, Tastentöne für den aktiven Anruf) und die [Anrufliste](call-history.md)
   nach Tagen gruppiert, mit All und Missed.
 - **Notifications**: die [letzten iPhone-Mitteilungen](notification-history.md)
   anderer Apps.
