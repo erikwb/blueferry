@@ -415,6 +415,48 @@ def test_status_replies_are_plain_text_and_states_are_closed() -> None:
 # ---- the toolkit-free form helpers every client uses ---------------------------------
 
 
+def test_form_rows_groups_and_actions() -> None:
+    from blueferry import plugin_settings_view as view
+
+    parsed = _form(header="ConfigTest=true\nConfigLogin=nextcloud\n")
+    rows = {row["key"]: row for row in view.form_fields(parsed, {"token": SECRET_MASK})}
+    assert rows["url"]["placeholder"] == "https://cloud.example.com"
+    assert rows["url"]["helpUrl"].startswith("https://docs.example.com")
+    assert rows["token"]["stored"] and rows["token"]["value"] == ""
+    assert (rows["image_size"]["showIfKey"], rows["image_size"]["showIfValue"]) == (
+        "upload_images", "true")
+    groups = view.form_groups(parsed)
+    assert [g["label"] for g in groups] == ["Konto", "Bilder", "Advanced"]
+    assert groups[-1]["collapsed"] is True
+    assert view.form_actions(parsed) == {
+        "test": True, "login": "nextcloud", "loginLabel": "Sign in with Nextcloud",
+    }
+    assert view.help_link(parsed, "url").startswith("https://")
+    assert view.help_link(parsed, "token") == "" and view.help_link(parsed, "nope") == ""
+
+
+def test_check_form_waits_for_required_fields_and_shows_typed_errors() -> None:
+    from blueferry import plugin_settings_view as view
+
+    parsed = _form()
+    empty = view.check_form(parsed, {}, {})
+    # Untouched: Save stays off, but nothing is red yet.
+    assert empty["valid"] is False and empty["errors"] == {}
+    assert "image_size" not in empty["visible"]
+    typed = view.check_form(parsed, {}, {"url": "http://x", "token": "a b"})
+    assert set(typed["errors"]) == {"url", "token"}
+    assert typed["errors"]["token"].startswith("An app password")
+    good = view.check_form(parsed, {"token": SECRET_MASK}, {"url": "https://c.example"})
+    assert good == {"errors": {}, "visible": good["visible"], "valid": True}
+    # Showing the picture options makes their required quality count.
+    shown = view.check_form(parsed, {"token": SECRET_MASK}, {
+        "url": "https://c.example", "upload_images": True, "image_size": "large",
+        "image_quality": "5",
+    })
+    assert shown["errors"] == {"image_quality": "Use a value from 10 to 100."}
+    assert view.check_form(parsed, {}, {"url": ""})["errors"] == {"url": "is required"}
+
+
 def test_the_example_manifest_in_plugins_md_parses() -> None:
     from pathlib import Path
 
@@ -430,3 +472,27 @@ def test_the_example_manifest_in_plugins_md_parses() -> None:
     keys = {field.key: field for field in parsed.config}
     assert keys["max_side"].show_if == ("resize", "true")
     assert keys["app_password"].coerce("abcde-fghij-klmno-pqrst-uvwxy")
+
+
+def test_plugin_rows_escape_link_and_tooltip_texts() -> None:
+    from blueferry import plugin_settings_view as view
+    from blueferry.plugin_api.testing import manifest
+    from blueferry.plugin_manager import PluginEntry
+
+    plugin = manifest(extra="Source=https://git.example.org/<b>x</b>\n"
+                            "[Config url]\nLabel=URL\nType=url\n"
+                            "HelpUrl=https://docs.example.org/<i>y</i>\n")
+    row = view.entry_row(PluginEntry(plugin, None, True))
+    assert row["source"] == "https://git.example.org/<b>x</b>"
+    assert row["sourceText"] == "https://git.example.org/&lt;b&gt;x&lt;/b&gt;"
+    field = view.form_fields(plugin, {})[0]
+    assert field["helpUrlText"] == "https://docs.example.org/&lt;i&gt;y&lt;/i&gt;"
+
+
+def test_int_bounds_beyond_32_bits_are_clamped_for_the_spin_box() -> None:
+    from blueferry import plugin_settings_view as view
+
+    plugin = manifest(extra="[Config big]\nLabel=Big\nType=int\nMin=-2147483649\n"
+                            "Max=2147483648\nDefault=0\n")
+    field = view.form_fields(plugin, {})[0]
+    assert (field["minimum"], field["maximum"]) == (-2_147_483_648, 2_147_483_647)
