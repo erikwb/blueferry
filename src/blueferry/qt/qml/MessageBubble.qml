@@ -21,12 +21,32 @@ Rectangle {
         1
     )
 
-    width: Math.min(
-        availableWidth * 0.78,
-        bodyColumn.implicitWidth + Kirigami.Units.largeSpacing * 2
+    readonly property bool richBody: message.body_markup !== undefined
+    readonly property string bodyText: richBody
+        ? "<style>a { color: " + Kirigami.Theme.linkColor + "; }</style>"
+            + "<span style=\"white-space: pre-wrap;\">"
+            + message.body_markup + "</span>"
+        : message.body
+    readonly property real maximumWidth: availableWidth * 0.75
+    readonly property real naturalContentWidth: Math.max(
+        naturalBody.implicitWidth + messageBody.leftPadding + messageBody.rightPadding,
+        senderLabel.visible ? senderLabel.implicitWidth : 0,
+        timestampLabel.implicitWidth
     )
-    implicitHeight: bodyColumn.implicitHeight + Kirigami.Units.largeSpacing
-    radius: Kirigami.Units.cornerRadius
+
+    // A wrapping TextArea reports the width it is given, not the width its
+    // text needs. This unwrapped copy measures the line length instead.
+    Text {
+        id: naturalBody
+        visible: false
+        text: root.bodyText
+        textFormat: root.richBody ? Text.RichText : Text.PlainText
+        font: messageBody.font
+    }
+
+    width: Math.min(root.maximumWidth, root.naturalContentWidth + Kirigami.Units.largeSpacing * 2)
+    implicitHeight: bodyColumn.implicitHeight + Kirigami.Units.largeSpacing * 2
+    radius: Kirigami.Units.cornerRadius * 2
     color: message.outgoing
         ? outgoingBackground
         : Kirigami.Theme.alternateBackgroundColor
@@ -34,11 +54,13 @@ Rectangle {
     ColumnLayout {
         id: bodyColumn
         anchors.fill: parent
-        anchors.margins: Kirigami.Units.smallSpacing
-        width: Math.min(implicitWidth, root.availableWidth * 0.72)
+        anchors.margins: Kirigami.Units.largeSpacing
+        spacing: Kirigami.Units.smallSpacing / 2
 
         Controls.Label {
-            Layout.maximumWidth: root.availableWidth * 0.7
+            id: senderLabel
+            Layout.fillWidth: true
+            elide: Text.ElideRight
             text: root.message.outgoing ? qsTr("You") : (root.message.sender || "")
             visible: root.showSender
             textFormat: Text.PlainText
@@ -47,15 +69,15 @@ Rectangle {
             color: Kirigami.Theme.textColor
         }
         Controls.TextArea {
+            id: messageBody
             objectName: "messageBody"
-            Layout.maximumWidth: root.availableWidth * 0.7
-            text: root.message.body_markup !== undefined
-                ? "<style>a { color: " + Kirigami.Theme.linkColor + "; }</style>"
-                    + "<span style=\"white-space: pre-wrap;\">"
-                    + root.message.body_markup + "</span>"
-                : root.message.body
-            textFormat: root.message.body_markup !== undefined
-                ? TextEdit.RichText : TextEdit.PlainText
+            Layout.fillWidth: true
+            leftPadding: 0
+            rightPadding: 0
+            topPadding: 0
+            bottomPadding: 0
+            text: root.bodyText
+            textFormat: root.richBody ? TextEdit.RichText : TextEdit.PlainText
             readOnly: true
             selectByMouse: true
             wrapMode: Text.Wrap
@@ -70,12 +92,13 @@ Rectangle {
             }
         }
         Controls.Label {
+            id: timestampLabel
+            Layout.alignment: root.message.outgoing ? Qt.AlignRight : Qt.AlignLeft
             text: root.message.display_timestamp || ""
             visible: text !== ""
             textFormat: Text.PlainText
             font: Kirigami.Theme.smallFont
-            opacity: 0.7
-            color: Kirigami.Theme.textColor
+            color: Kirigami.Theme.disabledTextColor
         }
     }
 }

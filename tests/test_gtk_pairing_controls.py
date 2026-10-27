@@ -2,13 +2,13 @@
 from __future__ import annotations
 
 import os
-import shutil
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 import pytest
+
+from tests.gtk_broadway import run_scenario
 
 
 @pytest.mark.parametrize("scenario", [
@@ -17,40 +17,7 @@ import pytest
     pytest.param("upgrade-activation", marks=pytest.mark.private_dbus),
 ])
 def test_gtk_pairing_ui(tmp_path, scenario):
-    executable = shutil.which("gtk4-broadwayd")
-    if executable is None:
-        pytest.skip("GTK4 Broadway is not installed")
-    runtime = tmp_path / "run"
-    runtime.mkdir(mode=0o700)
-    environment = dict(
-        os.environ, XDG_RUNTIME_DIR=str(runtime), GDK_BACKEND="broadway",
-        BROADWAY_DISPLAY=":0", GTK_A11Y="none", GSETTINGS_BACKEND="memory",
-        PYTHONPATH=str(Path(__file__).resolve().parents[1] / "src"),
-        XDG_CONFIG_HOME=str(tmp_path / "config"),
-    )
-    # Both the GTK display and its HTTP endpoint use private Unix sockets.
-    daemon = subprocess.Popen(
-        [executable, "--unixsocket", str(runtime / "http"), ":0"],
-        env=environment, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-    )
-    try:
-        deadline = time.monotonic() + 5
-        while not (runtime / "broadway1.socket").exists():
-            assert daemon.poll() is None, daemon.communicate()[0].decode()
-            assert time.monotonic() < deadline, "Broadway did not create its display socket"
-            time.sleep(0.02)
-        result = subprocess.run(
-            [sys.executable, str(Path(__file__).resolve()), scenario], env=environment,
-            capture_output=True, text=True, timeout=30,
-        )
-        assert result.returncode == 0, result.stdout + result.stderr
-    finally:
-        daemon.terminate()
-        try:
-            daemon.communicate(timeout=5)
-        except subprocess.TimeoutExpired:
-            daemon.kill()
-            daemon.communicate()
+    run_scenario(tmp_path, str(Path(__file__).resolve()), scenario)
 
 
 def _exercise_gtk_controls():
@@ -85,10 +52,12 @@ def _exercise_gtk_controls():
 
     with (
         patch.object(status, "SetupClient", lambda: setup),
-        patch.object(status.IPhonePage, "_load_setup_state", lambda self: None),
+        patch.object(status.SettingsDialog, "_load_setup_state", lambda self: None),
         patch.object(status.Adw, "AlertDialog", Dialog),
     ):
-        page = status.IPhonePage(SimpleNamespace(connect=lambda *_args: None), lambda *_args: None)
+        page = status.SettingsDialog(
+            SimpleNamespace(connect=lambda *_args: None), lambda *_args: None,
+        )
         page._run_setup = lambda operation, _done: operations.append(operation)
         page._devices = [PairedDevice.from_dict({
             "mac": "NEW", "name": "Phone", "paired": False,
@@ -164,6 +133,7 @@ def _exercise_error_toasts():
     from gi.repository import GLib
 
     from blueferry import setup_client
+    from blueferry.ui.status import SettingsDialog
     from blueferry.ui.window import Adw, Gtk, MainWindow
 
     Adw.init()
@@ -196,16 +166,27 @@ def _exercise_error_toasts():
             yield from label_texts(child)
             child = child.get_next_sibling()
 
-    for show_toast in (MainWindow.toast, MainWindow.phone_toast):
+    def show_in_window(overlay):
+        MainWindow.toast(SimpleNamespace(_toasts=overlay), message)
+        return overlay
+
+    def show_in_settings(overlay):
+        # The settings dialog shows its toasts itself (AdwPreferencesDialog).
+        dialog = Adw.PreferencesDialog()
+        dialog.present(overlay)
+        SettingsDialog.show_toast(dialog, message)
+        return dialog
+
+    for show_toast in (show_in_window, show_in_settings):
         overlay = Adw.ToastOverlay(child=Gtk.Label(label="Test content"))
-        window = Gtk.Window(default_width=680, default_height=620, child=overlay)
+        window = Adw.Window(default_width=680, default_height=620, content=overlay)
         try:
             window.present()
-            show_toast(SimpleNamespace(_toasts=overlay, _phone_toasts=overlay), message)
+            shown = show_toast(overlay)
             context = GLib.MainContext.default()
             while context.pending():
                 context.iteration(False)
-            assert message in list(label_texts(overlay)), "GTK lost the diagnostic text"
+            assert message in list(label_texts(shown)), "GTK lost the diagnostic text"
         finally:
             window.destroy()
 

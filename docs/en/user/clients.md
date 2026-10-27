@@ -10,12 +10,75 @@ desktops.
 
 ![GTK client](../../images/gtk.png)
 
+**Settings** (main menu, `Ctrl+,`) has the same categories as the KDE
+client, one page each; the switcher sits in the header bar, or at the
+bottom in a narrow window, and the search button finds any setting:
+
+| Category | What's there |
+| --- | --- |
+| Phone | Pairing, connection health with **Reconnect**, **Run Diagnostics** (the same checks as `blueferry doctor`; the report opens in its own dialog with a copy button), pairing report, contact sync, contact photos |
+| Notifications | Which events create popups, contacts only, click rules, notification content, action buttons, sync notifications with iPhone, mark read on dismiss, keeping recent notifications |
+| Calls & Audio | Phone calls, call history, battery warning, [iPhone sound on this computer](phone-audio.md), media control |
+| Security | One-time codes, away lock, local storage and its encryption, Clear History |
+| About | Version, the background service, About BlueFerry, keyboard shortcuts, **Restart Service**, Quit |
+
+The switches that need a restart (below) work as in the KDE client: while a
+change waits for the restart, every page starts with a notice and
+**Restart Service**. The GTK client doesn't have the plugin settings yet;
+use the KDE client or `blueferry plugins` for those.
+
 ## KDE Plasma (Kirigami)
 
 `blueferry-qt` is a Kirigami app for KDE Plasma. It isn't available on
 Ubuntu 24.04, Linux Mint 22.3, or Pop!_OS 24.04.
 
 ![KDE client](../../images/qt.png)
+
+The window is a phone overview. On the left, a card shows the iPhone's name,
+connection, battery and signal, what is playing (with previous, play/pause
+and next), and quick switches for [the sound](phone-audio.md) and the
+[away lock](proximity-lock.md). Features that are off stay visible but
+greyed out, with the setting that turns them on. On the right are three
+tabs:
+
+- **Messages**: conversations with All, Unread and Starred filters, and the
+  chat.
+- **Calls**: [phone calls](calls.md) with a dial pad and running calls as
+  cards (answer, hold, hang up), and the [call history](call-history.md)
+  grouped by day, with All and Missed.
+- **Notifications**: the [recent iPhone notifications](notification-history.md)
+  of other apps.
+
+In a narrow window the card folds behind the phone button in the header.
+
+**Settings** (the gear in the header) has categories on the left, like KDE's
+System Settings:
+
+| Category | What's there |
+| --- | --- |
+| Phone | Pairing, connection health, **Run Diagnostics** (the same checks as `blueferry doctor`, shown in the window), contact sync, contact photos |
+| Notifications | Which events create popups, contacts only, click rules, notification content, action buttons, sync notifications with iPhone, mark read on dismiss |
+| Calls & Audio | Phone calls, call history, battery warning, [iPhone sound on this computer](phone-audio.md), media control |
+| Security | One-time codes, away lock, local storage and its encryption, Clear History |
+| About | Version, the background service, keyboard shortcuts, Quit |
+
+In a narrow window the categories become a list; a category opens on its
+own with **All Settings** to go back.
+
+### Switches that need a restart
+
+A few on/off settings used to need an edit of `~/.config/blueferry/local.env`:
+showing notification content and marking a message read when you dismiss
+its popup. The settings page and
+`blueferry features` now store them in `~/.config/blueferry/settings.json`,
+where they override `local.env`. They apply after the background service
+restarts; the page says so and offers **Restart Service**. A variable set in
+the service's own environment still wins, and the switch then says so.
+
+```bash
+blueferry features                                 # every switch, its value and source
+blueferry features off mark_read_on_dismiss        # applies after a restart
+```
 
 ### System tray item
 
