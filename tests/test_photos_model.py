@@ -6,6 +6,8 @@ from blueferry.photos_model import PhotosTabModel
 from blueferry.plugin_api.client import Photo
 from blueferry.plugin_api.testing import manifest
 from tests.client_fakes import ManualRunner
+from tests.photo_fixtures import png
+from tests.test_photo_thumbnails import png_bomb
 
 
 def _url(path: object) -> str:
@@ -23,6 +25,7 @@ def _model(work: ManualRunner):
 def test_loads_only_while_watched_and_opens_the_original(monkeypatch, tmp_path) -> None:
     plugin = manifest()
     thumb = tmp_path / "t.webp"
+    thumb.write_bytes(png(2, 2))
     original = tmp_path / "IMG_1.HEIC"
     snapshot = photos_view.PhotosSnapshot(True, True, "1 recent items", [
         Photo("a", "2026-10-06T16:21:00Z", "video", thumb),
@@ -51,6 +54,32 @@ def test_loads_only_while_watched_and_opens_the_original(monkeypatch, tmp_path) 
     assert model.state["items"][0]["original"] == f"file://{original}"
     model.watch(False)
     assert model.state["items"] == []
+
+
+def test_oversized_thumbnails_are_checked_on_the_worker(monkeypatch, tmp_path) -> None:
+    good = tmp_path / "good.png"
+    good.write_bytes(png(2, 2))
+    bomb = tmp_path / "bomb.png"
+    bomb.write_bytes(png_bomb(100_000, 100_000))
+    big = tmp_path / "big.png"
+    big.write_bytes(png(2, 2) + bytes(photos_view.MAX_THUMBNAIL_BYTES))
+    snapshot = photos_view.PhotosSnapshot(True, True, "3 recent items", [
+        Photo("a", "", "image", good), Photo("b", "", "image", bomb),
+        Photo("c", "", "image", big),
+    ])
+    monkeypatch.setattr(photos_view, "find_plugin", manifest)
+    monkeypatch.setattr(photos_view, "load_recent", lambda manifest: snapshot)
+    checked: list[object] = []
+    safe = photos_view.safe_thumbnail
+    monkeypatch.setattr(photos_view, "safe_thumbnail",
+                        lambda path: checked.append(path) or safe(path))
+    work = ManualRunner()
+    model, _opened, _changes = _model(work)
+    model.watch(True)
+    assert checked == []  # nothing read before the worker runs
+    work.run_tasks()
+    assert checked == [good, bomb, big]
+    assert [item["thumbnail"] for item in model.state["items"]] == [f"file://{good}", "", ""]
 
 
 def test_a_photo_of_a_plugin_disabled_or_replaced_meanwhile_is_not_fetched(
