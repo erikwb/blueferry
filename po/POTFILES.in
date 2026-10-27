@@ -34,6 +34,8 @@ src/blueferry/qt/qml/ContactPhotoSettings.qml
 src/blueferry/qt/qml/OtpAutocopySettings.qml
 src/blueferry/qt/qml/PhoneCallsSettings.qml
 src/blueferry/qt/qml/PhoneStatusIndicator.qml
+src/blueferry/qt/qml/TetherSection.qml
+src/blueferry/tether_status.py
 src/blueferry/plugin_stopper.py
 src/blueferry/plugin_surfaces.py
 src/blueferry/photos_view.py

@@ -26,6 +26,7 @@ from blueferry.cli_proximity import proximity_app
 from blueferry.cli_reconnect import reconnect
 from blueferry.cli_surfaces import cards as plugin_cards
 from blueferry.cli_surfaces import send as send_files
+from blueferry.cli_tether import tether
 from blueferry.notification_policy import NotificationPolicyStore
 
 app = typer.Typer(
@@ -691,6 +692,7 @@ app.command("audio")(audio)
 app.add_typer(notification_actions_app, name="notification-actions")
 app.add_typer(calls_app, name="calls")
 app.command("phone-status")(phone_status)
+app.command("tether")(tether)
 app.command("reconnect")(reconnect)
 app.add_typer(otp_app, name="otp")
 
