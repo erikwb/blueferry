@@ -1838,11 +1838,36 @@ def test_a_photo_of_a_plugin_disabled_meanwhile_is_not_fetched(monkeypatch, tmp_
 
     controller._plugin_set = (("io.example.demo", True),)
     monkeypatch.setattr(controller._plugin_settings, "state",
-                        lambda: {"plugins": [{"id": "io.example.demo", "enabled": False}]})
+                        lambda: {"loaded": True,
+                                 "plugins": [{"id": "io.example.demo", "enabled": False}]})
     monkeypatch.setattr(photos_view, "load_recent",
                         lambda manifest: photos_view.PhotosSnapshot(False, False, "none", []))
     controller._plugin_set_changed()
     assert controller._photos_plugin is None and controller.photos["items"] == []
+
+
+def test_installing_the_first_plugin_reloads_cards_and_photos(monkeypatch):
+    controller = BridgeController(
+        backend=_Backend(), setup=object(), subscribe=False, autostart=False,
+    )
+    reloads = []
+    photo_refreshes = []
+    monkeypatch.setattr(controller._plugin_surfaces, "schedule_reload",
+                        lambda: reloads.append(True))
+    monkeypatch.setattr(controller, "refreshPhotos", lambda: photo_refreshes.append(True))
+    state = {"loaded": False, "plugins": []}
+    monkeypatch.setattr(controller._plugin_settings, "state", lambda: dict(state))
+
+    controller._plugin_set_changed()  # list not loaded yet: nothing known
+    assert controller._plugin_set is None and reloads == []
+    state["loaded"] = True
+    controller._plugin_set_changed()  # first load: no plugin installed
+    assert controller._plugin_set == () and reloads == []
+    state["plugins"] = [{"id": "io.example.demo", "enabled": True}]
+    controller._plugin_set_changed()  # the very first plugin was installed
+    assert reloads == [True] and photo_refreshes == [True]
+    controller._plugin_set_changed()  # unchanged: no second reload
+    assert reloads == [True]
 
 
 def test_manual_reconnect_reports_an_unreachable_phone(monkeypatch):

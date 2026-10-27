@@ -220,8 +220,10 @@ class BridgeController(QObject):
             bus=self._bus, parent=self,
         )
         self._plugin_surfaces.changed.connect(self.pluginSurfacesChanged)
-        # Enabling, installing or removing a plugin changes the card.
-        self._plugin_set: tuple = ()
+        # Enabling, installing or removing a plugin changes the card. None
+        # until the first plugin list has loaded; an empty tuple means "no
+        # plugin installed", so installing the very first one still reloads.
+        self._plugin_set: tuple | None = None
         self._plugin_settings.changed.connect(self._plugin_set_changed)
         if subscribe:
             self._subscribe()
@@ -566,12 +568,14 @@ class BridgeController(QObject):
         self._plugin_settings.clear_message()
 
     def _plugin_set_changed(self) -> None:
+        state = self._plugin_settings.state()
+        if not state.get("loaded"):
+            return
         current = tuple(
-            (row.get("id"), row.get("enabled"))
-            for row in self._plugin_settings.state().get("plugins", [])
+            (row.get("id"), row.get("enabled")) for row in state.get("plugins", [])
         )
         if current != self._plugin_set:
-            known = bool(self._plugin_set)
+            known = self._plugin_set is not None
             self._plugin_set = current
             if known:
                 self._plugin_surfaces.schedule_reload()
