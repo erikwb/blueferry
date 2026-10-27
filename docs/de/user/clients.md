@@ -13,12 +13,96 @@ Desktops.
 
 ![GTK-Client](../../images/gtk.png)
 
+Das Fenster ist eine Telefon-Übersicht. Eine Karte über den Reitern zeigt
+Name und Verbindung des iPhones, Akku, Empfang und Netz sowie, was gerade
+läuft (mit zurück, Wiedergabe/Pause und weiter). Ihr Knopf **Quick
+Settings** enthält die Schalter für [den Ton](phone-audio.md) und die
+[Abwesenheitssperre](proximity-lock.md). Ist etwas ausgeschaltet, nennt die
+Karte die Einstellung, die es einschaltet. Die Reiter wechselt man
+in der Kopfzeile, in einem schmalen Fenster unten:
+
+- **Messages**: Unterhaltungen und der Chat.
+- **Calls**: laufende [Anrufe](calls.md) mit annehmen, halten/fortsetzen
+  und auflegen sowie dem Ton-Schalter, ein Wählfeld, das auch deine
+  Kontakte nach Namen durchsucht, und die [Anrufliste](call-history.md) nach Tagen
+  gruppiert, mit All und Missed, Rückruf- und Nachrichtenknöpfen und
+  **Refresh from iPhone**. Jeder Anruf fragt vorher nach.
+- **Notifications**: die [letzten iPhone-Mitteilungen](notification-history.md)
+  anderer Apps. Ist die Liste aus, sagt der Reiter warum und öffnet die
+  Einstellung.
+
+**Settings** (Hauptmenü, `Strg+,`) hat dieselben Kategorien wie der
+KDE-Client, je eine Seite; die Umschaltleiste sitzt in der Kopfzeile, in
+einem schmalen Fenster unten, und der Suchknopf findet jede Einstellung:
+
+| Kategorie | Inhalt |
+| --- | --- |
+| Phone | Kopplung, Verbindungszustand mit **Reconnect**, **Run Diagnostics** (dieselben Prüfungen wie `blueferry doctor`; der Bericht öffnet sich in einem eigenen Dialog mit Kopierknopf), Kopplungsbericht, Kontaktabgleich, Kontaktfotos |
+| Notifications | Welche Ereignisse Popups erzeugen, nur Kontakte, Klickregeln, Mitteilungsinhalt, Aktionsknöpfe, Mitteilungen mit dem iPhone abgleichen, beim Wegklicken als gelesen markieren, letzte Mitteilungen behalten |
+| Calls & Audio | Anrufe, Anrufliste, Akku-Warnung, [iPhone-Ton am Computer](phone-audio.md), Mediensteuerung |
+| Security | Einmalcodes, Abwesenheitssperre, lokale Daten und ihre Verschlüsselung, Verlauf löschen |
+| About | Version, Hintergrunddienst, About BlueFerry, Tastenkürzel, **Restart Service**, Beenden |
+
+Die Schalter, die einen Neustart brauchen (unten), funktionieren wie im
+KDE-Client: Solange eine Änderung auf den Neustart wartet, beginnt jede
+Seite mit einem Hinweis und **Restart Service**. Die Plugin-Einstellungen
+und den Reiter Photos hat der GTK-Client noch nicht; dafür gibt es den
+KDE-Client oder auf der Kommandozeile `blueferry plugins` und
+`blueferry photos`.
+
 ## KDE Plasma (Kirigami)
 
 `blueferry-qt` ist eine Kirigami-App für KDE Plasma. Unter Ubuntu 24.04,
 Linux Mint 22.3 und Pop!_OS 24.04 gibt es sie nicht.
 
 ![KDE-Client](../../images/qt.png)
+
+Das Fenster ist eine Telefon-Übersicht. Links zeigt eine Karte Name,
+Verbindung, Akku und Empfang des iPhones, was gerade läuft (mit zurück,
+Wiedergabe/Pause und weiter) und Schnellschalter für [den
+Ton](phone-audio.md) und die [Abwesenheitssperre](proximity-lock.md).
+Ausgeschaltete Funktionen bleiben sichtbar, aber ausgegraut, mit der
+Einstellung, die sie einschaltet. Rechts gibt es drei Reiter:
+
+- **Messages**: Unterhaltungen mit den Filtern All, Unread und Starred und
+  der Chat.
+- **Calls**: [Anrufe](calls.md) mit Wählfeld und laufenden Anrufen als
+  Karten (annehmen, halten, auflegen) und die [Anrufliste](call-history.md)
+  nach Tagen gruppiert, mit All und Missed.
+- **Notifications**: die [letzten iPhone-Mitteilungen](notification-history.md)
+  anderer Apps.
+
+In einem schmalen Fenster klappt die Karte hinter den Telefon-Knopf in der
+Kopfzeile.
+
+**Settings** (das Zahnrad in der Kopfzeile) hat links Kategorien, wie KDEs
+Systemeinstellungen:
+
+| Kategorie | Inhalt |
+| --- | --- |
+| Phone | Kopplung, Verbindungszustand, **Run Diagnostics** (dieselben Prüfungen wie `blueferry doctor`, im Fenster angezeigt), Kontaktabgleich, Kontaktfotos |
+| Notifications | Welche Ereignisse Popups erzeugen, nur Kontakte, Klickregeln, Mitteilungsinhalt, Aktionsknöpfe, Mitteilungen mit dem iPhone abgleichen, beim Wegklicken als gelesen markieren |
+| Calls & Audio | Anrufe, Anrufliste, Akku-Warnung, [iPhone-Ton am Computer](phone-audio.md), Mediensteuerung |
+| Security | Einmalcodes, Abwesenheitssperre, lokale Daten und ihre Verschlüsselung, Verlauf löschen |
+| About | Version, Hintergrunddienst, Tastenkürzel, Beenden |
+
+In einem schmalen Fenster werden die Kategorien zur Liste; eine Kategorie
+öffnet sich einzeln, **All Settings** führt zurück.
+
+### Schalter, die einen Neustart brauchen
+
+Einige Ein/Aus-Einstellungen brauchten bisher eine Änderung in
+`~/.config/blueferry/local.env`: Mitteilungsinhalt anzeigen und eine Nachricht
+beim Wegklicken des Popups als gelesen markieren. Die Einstellungsseite und `blueferry features` speichern sie
+jetzt in `~/.config/blueferry/settings.json`, wo sie `local.env`
+überschreiben. Sie gelten nach einem Neustart des Hintergrunddienstes; die
+Seite sagt das und bietet **Restart Service** an. Eine Variable aus der
+Umgebung des Dienstes gewinnt weiterhin, der Schalter sagt dann das.
+
+```bash
+blueferry features                                 # alle Schalter mit Wert und Quelle
+blueferry features off mark_read_on_dismiss        # gilt nach einem Neustart
+```
 
 ### Symbol im Systemabschnitt der Kontrollleiste
 
@@ -85,6 +169,66 @@ Suche in Unterhaltungen, ein mehrzeiliges Eingabefeld, Mausunterstützung,
 Themes und ein Layout, das sich schmalen Terminals anpasst.
 
 ![Terminal-Client](../../images/terminal.png)
+
+### Einstellungen
+
+`o` öffnet **Settings** mit denselben Kategorien wie die Einstellungen von Qt
+und GTK, als Reiter. Eine Einstellung erscheint nur, wenn der laufende
+Hintergrunddienst sie anbietet.
+
+| Kategorie | Inhalt |
+|---|---|
+| Phone | Zustand des Hintergrunddienstes, **Reconnect** (auch `b`), automatisches Zurücksetzen einer hängenden Verbindung (auch `B`), **Run Diagnostics**, Kontaktabgleich, Kontaktfotos |
+| Notifications | Welche Ereignisse Popups erzeugen, nur Kontakte, **Click Rules** (auch `l`), Mitteilungsinhalt, Aktionsknöpfe, Mitteilungen mit dem iPhone abgleichen, beim Wegklicken als gelesen markieren, letzte iPhone-Mitteilungen behalten |
+| Calls & Audio | Telefonate, Anrufliste und Popups für verpasste Anrufe, Akkuwarnung, iPhone-Ton auf diesem Computer (auch `a`), Mediensteuerung und MPRIS |
+| Security | Einmalcodes, Sperre bei Abwesenheit, die Speichereinstellung (nur angezeigt; ändern mit `blueferry storage-policy-set`) |
+| About | Version, der Hintergrunddienst mit **Restart Service**, die Tastenbelegung |
+
+Die Schalter, die einen Neustart brauchen (siehe oben), zeigen den Hinweis
+oben in Settings mit **Restart Service**. Ein Dienst, der sie noch nicht kennt,
+zeigt jeden Schalter ausgegraut mit der `local.env`-Variable, die stattdessen
+zu setzen ist.
+
+**Run Diagnostics** führt `blueferry doctor` aus und zeigt den Bericht.
+**Copy Report** legt ihn über das Terminal (OSC 52) in die Zwischenablage;
+reicht das Terminal das nicht weiter, markiere den Text mit der Maus.
+
+Die Befehlspalette (`Strg+P`) kennt außerdem **Settings: Phone** … **Settings:
+About** und **Run Diagnostics**. Die Kopplung bleibt bei `blueferry
+pair-setup` oder einem grafischen Client; Plugin-Einstellungen hat der
+Terminal-Client noch nicht.
+
+### iPhone, Anrufe und Mitteilungen
+
+**iPhone Overview** in der Befehlspalette ist die Telefon-Karte des
+Terminals: der Name des iPhones, die Verbindung, Akku, Empfang und Netz, was
+gerade läuft, und für jede ausgeschaltete optionale Funktion der Schalter,
+der sie einschaltet, samt seiner Kategorie in Settings. Die Knöpfe öffnen die
+Mitteilungsliste, die letzten Anrufe, das Anruf-Panel und Settings.
+
+**iPhone Notifications** (in der Palette und in der Übersicht) listet die
+letzten Mitteilungen von iPhone-Apps, die **Keep recent iPhone
+notifications** behält: App, Zeit und, wenn erlaubt, Titel und Text. Die
+Liste wird nur gelesen, solange sie offen ist, folgt neuen Mitteilungen und
+wird beim Schließen vergessen. Ist sie ausgeschaltet, leer oder nicht
+verfügbar, sagt sie warum; **Open Notification Settings** führt zu
+Settings › Notifications.
+
+Das Anruf-Panel (`c` oder **Phone Calls** in der Palette) beschreibt jeden
+Anruf wie Qt und GTK (eingehend, gehalten, die Dauer). Seine eine Knopfreihe
+wirkt auf den naheliegenden Anruf: **Answer** nimmt den klingelnden an,
+**Hold** bzw. **Resume** hält den verbundenen oder holt ihn zurück, **Hang
+Up** (oder **Decline**) beendet zuerst den aktiven; ein Anruf, der wartet,
+während ein anderer verbunden ist, bekommt ein eigenes **Decline**. Während eines aktiven
+Anrufs sendet das Tastentonfeld 0–9, `*` und `#`, etwa an ein
+Telefonmenü. Wer im Nummernfeld einen Namen tippt, bekommt die
+Telefonnummern passender Kontakte vorgeschlagen. Jeder Anruf wird zuerst
+bestätigt.
+
+**Recent calls** (`h`) sind nach Tagen gruppiert; `m` zeigt nur verpasste
+Anrufe, `s` (oder **Refresh from iPhone**) liest die Liste des iPhones neu
+ein. Enter oder **Call Back** ruft die gewählte Nummer nach der
+Bestätigung an, **Send a Message** beginnt eine neue Nachricht an sie.
 
 ## Kommandozeile
 
