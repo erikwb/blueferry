@@ -707,3 +707,70 @@ def test_reopening_options_during_a_restart_cannot_start_a_second_one() -> None:
             assert not second.query_one("#options-service-restart", Button).disabled
 
     asyncio.run(scenario())
+
+
+def test_the_policy_select_mounts_once_without_an_initial_changed(monkeypatch) -> None:
+    from textual.widgets import Select as TextualSelect
+
+    from blueferry.tui_options import PolicySelect
+
+    mounts: list[object] = []
+    original = TextualSelect._on_mount
+
+    def counting(self, event) -> None:
+        mounts.append(self)
+        original(self, event)
+
+    monkeypatch.setattr(TextualSelect, "_on_mount", counting)
+
+    async def scenario() -> None:
+        changes: list[object] = []
+        app = _app(_OptionsBackend(policy="all"))
+        async with app.run_test(size=(120, 40)) as pilot:
+            screen = await _open(app, pilot, "notifications")
+            select = screen.query_one("#options-policy", PolicySelect)
+            assert mounts.count(select) == 1
+            screen.policy_changed = lambda event: changes.append(event.value)  # type: ignore[method-assign]
+            await pilot.pause(0.1)
+            assert changes == []
+
+    asyncio.run(scenario())
+
+
+def test_a_restart_ending_while_options_is_being_pushed_does_not_crash() -> None:
+    async def scenario() -> None:
+        release = threading.Event()
+        app = _app(_OptionsBackend(features={}), restart=lambda: release.wait(5))
+        async with app.run_test(size=(120, 40)) as pilot:
+            first = await _open(app, pilot, "about")
+            first.restart_service()
+            await _until(pilot, lambda: first.restarting)
+            first.dismiss(None)
+            await _until(pilot, lambda: not isinstance(app.screen, OptionsScreen))
+            app._push_options("about")
+            release.set()
+            second = await _mounted(pilot, app, OptionsScreen)
+            await _until(pilot, lambda: not second.restarting)
+            await pilot.pause(0.1)
+            assert app.is_running
+            assert not second.query_one("#options-service-restart", Button).disabled
+
+    asyncio.run(scenario())
+
+
+def test_a_status_forwarded_while_options_is_being_pushed_does_not_crash() -> None:
+    async def scenario() -> None:
+        backend = _OptionsBackend()
+        app = _app(backend)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause(0.2)
+            app._push_options("phone")
+            # A new status arrives before the screen has composed.
+            backend.battery = True
+            app._schedule_snapshot(app.state.fetch_snapshot())
+            screen = await _mounted(pilot, app, OptionsScreen)
+            await _until(pilot, lambda: screen.values is not None)
+            await pilot.pause(0.1)
+            assert app.is_running
+
+    asyncio.run(scenario())

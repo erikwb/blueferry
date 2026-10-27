@@ -26,12 +26,13 @@ from dataclasses import dataclass, field
 from typing import Any, ClassVar, Protocol
 
 from rich.text import Text
-from textual import events, on
+from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import Button, Checkbox, Select, Static, TabbedContent, TabPane
+from textual.widgets.select import NoSelection
 
 from blueferry import __version__, features_view
 from blueferry.backend_lifecycle import restart_backend
@@ -398,9 +399,13 @@ class PolicySelect(Select[str]):
     held back here. Every later Changed comes from the user, because the
     screen renders the daemon's value inside ``prevent(Select.Changed)``."""
 
-    def _on_mount(self, event: events.Mount) -> None:
+    def _watch_value(self, value: str | NoSelection) -> None:
+        # Textual sets is_mounted only after the Mount handlers ran.
+        if self.is_mounted:
+            super()._watch_value(value)
+            return
         with self.prevent(Select.Changed):
-            super()._on_mount(event)
+            super()._watch_value(value)
 
 
 class RestartState:
@@ -788,9 +793,12 @@ class OptionsScreen(ModalScreen[None]):
 
         def open_screens() -> list[OptionsScreen]:
             # This screen, or one opened again while the restart ran.
+            # A screen pushed but not yet mounted renders the shared state
+            # in its own on_mount; its widgets do not exist yet.
             return [
                 screen for screen in self.app.screen_stack
-                if isinstance(screen, OptionsScreen) and not screen._closed
+                if isinstance(screen, OptionsScreen) and screen.is_mounted
+                and not screen._closed
             ]
 
         def restarted(_value: object) -> None:

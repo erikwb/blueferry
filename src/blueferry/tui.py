@@ -881,7 +881,8 @@ class BlueFerryApp(App[None]):
             self._update_status()
             self._update_notice()
             for screen in self.screen_stack:
-                if isinstance(screen, OptionsScreen):
+                # An Options screen not mounted yet loads the status itself.
+                if isinstance(screen, OptionsScreen) and screen.is_mounted:
                     screen.status_changed(self.state.status)
         elif self.state.error != previous_error:
             self._update_notice()

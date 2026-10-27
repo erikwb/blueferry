@@ -16,8 +16,9 @@ strings. The TUI marks the strings of its Options and diagnostics screens
 and command palette entries (`tui.py`, `tui_options.py`, `tui_doctor.py`);
 its older screens still show unmarked English text. The CLI and the
 Quickshell shell (`data/quickshell/`) show English text that is not marked
-for translation, so they are not in the inventory. The Quickshell shell also loads no translation catalog, so
-marking its strings needs that runtime support first.
+for translation, so they are not in the inventory. The Quickshell shell also
+loads no translation catalog, so marking its strings needs that runtime
+support first.
 
 The repository contains no generated template (`.pot`) and no build step
 reads `POTFILES.in` yet, so changing the inventory requires no
