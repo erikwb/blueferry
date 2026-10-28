@@ -31,6 +31,7 @@ SOON = {
     "description": "Soon.", "repo": "https://github.com/joshii-h/blueferry-plugin-calendar",
     "ref": None, "capabilities": ["calendar"], "icon": "view-calendar",
 }
+DEEP_INDEX = b'{"version":1,"plugins":' + b"[" * 100_000 + b"]" * 100_000 + b"}"
 
 
 def _index(*plugins) -> bytes:
@@ -59,7 +60,8 @@ def test_entries_are_validated_field_by_field() -> None:
 def test_index_documents() -> None:
     entries = parse_index(_index(IMMICH, SOON, IMMICH, {"id": "broken"}))
     assert [entry.id for entry in entries] == [IMMICH["id"], SOON["id"]]
-    for data in (b"[]", b"nope", json.dumps({"version": 2, "plugins": []}).encode(),
+    for data in (b"[]", b"nope", DEEP_INDEX,
+                 json.dumps({"version": 2, "plugins": []}).encode(),
                  b"x" * (MAX_INDEX_BYTES + 1)):
         with pytest.raises(IndexFetchError):
             parse_index(data)
@@ -135,6 +137,44 @@ def test_catalog_merges_indexes_and_marks_install_state(tmp_path) -> None:
     assert not by_id["io.x.future"].compatible
     assert [url for url, _problem in catalog.problems] == ["https://broken.example/x"]
     assert [item.entry.id for item in search(catalog.items, "PHOTOS")] == [IMMICH["id"]]
+
+
+def test_excessively_nested_response_preserves_cached_catalog(tmp_path) -> None:
+    assert len(DEEP_INDEX) < MAX_INDEX_BYTES
+    fetch = _Fetch(_index(IMMICH))
+    index = PluginIndex(fetch=fetch, cache=tmp_path)
+    index.load(DEFAULT_INDEX_URL)
+    fetch.data = DEEP_INDEX
+    entries, note = index.load(DEFAULT_INDEX_URL, refresh=True)
+    assert [entry.id for entry in entries] == [IMMICH["id"]]
+    assert "cached" in note and "not valid JSON" in note
+    # A bad refresh must not overwrite the known-good cache.
+    assert index.load(DEFAULT_INDEX_URL)[1] == ""
+
+
+def test_excessively_nested_cache_is_replaced_from_network(tmp_path) -> None:
+    fetch = _Fetch(_index(IMMICH))
+    index = PluginIndex(fetch=fetch, cache=tmp_path)
+    index.load(DEFAULT_INDEX_URL)
+    cached = next(tmp_path.iterdir())
+    cached.write_bytes(DEEP_INDEX)
+    entries, note = index.load(DEFAULT_INDEX_URL)
+    assert [entry.id for entry in entries] == [IMMICH["id"]] and not note
+    assert len(fetch.calls) == 2
+    assert cached.read_bytes() == _index(IMMICH)
+
+
+def test_excessively_nested_catalog_does_not_block_other_indexes(tmp_path) -> None:
+    good = "https://example.org/good.json"
+    index = PluginIndex(
+        fetch=lambda url: _index(IMMICH) if url == good else DEEP_INDEX, cache=tmp_path,
+    )
+    catalog = index.catalog(
+        [DEFAULT_INDEX_URL, good], installed={}, records={},
+        blueferry_version="0.9.0", supported_api=frozenset({1}),
+    )
+    assert [item.entry.id for item in catalog.items] == [IMMICH["id"]]
+    assert catalog.problems == ((DEFAULT_INDEX_URL, "the index is not valid JSON"),)
 
 
 def test_index_urls_from_settings() -> None:

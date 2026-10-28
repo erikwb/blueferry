@@ -39,6 +39,9 @@
   navigation, and avoid empty media placeholders while the phone is idle.
 - Harden asynchronous storage, conversation, call, media, and plugin handling
   against stale replies, shutdown, and reconnects.
+- Verify caller Unix users in plugin services, reject excessively nested
+  plugin catalogs without crashing, and explain plugin permissions before
+  installation or updates.
 - Fix package smoke tests and path-dependent plugin tests. Optional Qt avatar
   and QML tests now skip when the separate QtTest binding is unavailable.
   Declare Fedora's required wheel-builder and GTK introspection dependencies.
