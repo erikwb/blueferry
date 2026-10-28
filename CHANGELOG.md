@@ -41,6 +41,7 @@
   against stale replies, shutdown, and reconnects.
 - Fix package smoke tests and path-dependent plugin tests. Optional Qt avatar
   and QML tests now skip when the separate QtTest binding is unavailable.
+  Declare Fedora's required wheel-builder and GTK introspection dependencies.
 
 ### Upgrading
 

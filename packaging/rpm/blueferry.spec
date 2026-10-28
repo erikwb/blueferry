@@ -13,6 +13,7 @@ BuildRequires:  appstream
 BuildRequires:  python3-devel
 BuildRequires:  python3-dbus
 BuildRequires:  python3-gobject
+BuildRequires:  python3-pip
 BuildRequires:  python3dist(cryptography) >= 41
 BuildRequires:  python3dist(phonenumbers) >= 8.12
 BuildRequires:  python3dist(regex) >= 2022.10.31
@@ -24,6 +25,7 @@ BuildRequires:  python3dist(wheel)
 BuildRequires:  pyproject-rpm-macros
 BuildRequires:  systemd-rpm-macros
 BuildRequires:  gtk4
+BuildRequires:  gobject-introspection
 BuildRequires:  libadwaita
 
 Requires:       bluez >= 5.86
@@ -65,6 +67,7 @@ visible to other Python applications.
 Summary:        GTK4/libadwaita client for BlueFerry
 Requires:       %{name} = %{version}-%{release}
 Requires:       gtk4
+Requires:       gobject-introspection
 Requires:       libadwaita
 Requires:       python3-gobject
 
