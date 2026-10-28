@@ -30,6 +30,7 @@ BuildRequires:  libadwaita
 
 Requires:       bluez >= 5.86
 Requires:       bluez-obexd
+Requires:       git-core
 Requires:       libsecret
 Requires:       polkit
 Requires:       python3-dbus
