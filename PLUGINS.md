@@ -602,11 +602,11 @@ dependencies = [
 ```
 
 Pin the dependency to a `plugin-api-v<version>` tag (the `version` in
-`plugin-api/pyproject.toml`), never to a branch. Until the plugin API is
-released upstream, the `plugin-api-v*` tags live in the fork
-`joshii-h/blueferry`; pin
-`git+https://github.com/joshii-h/blueferry@plugin-api-v1.5.0#subdirectory=plugin-api`
-there instead. Declare a
+`plugin-api/pyproject.toml`), never to a branch. The upstream
+`erikwb/blueferry` tag `plugin-api-v1.5.0` includes the caller-verification
+fix shipped with BlueFerry 0.9.0. Plugins still pinned to the earlier
+`joshii-h/blueferry` fork tag should update their dependency to the upstream
+URL above and rebuild their environments. Declare a
 `[project.scripts]` entry point that serves the plugin and name it in `Exec=`
 (and `Cli=`). Ship exactly one manifest, in `data/` or as package data in
 `src/<package>/`.
