@@ -501,11 +501,21 @@ and `blueferry plugins log ID [--lines N] [--path]`.
 
 ## Security
 
+- Plugins, dependencies, and installation code run with the user's account
+  permissions. A virtual environment isolates Python packages, not access
+  to files, the network, or session services. Capabilities describe features;
+  they are not enforced permissions. Install and update confirmation shows
+  this trust requirement before any plugin code runs.
 - Clients use the **session bus** only and refuse a plugin whose bus name is
   owned by a different Unix user. The SDK transport activates the service
   without a plugin-method payload, checks its unique owner's Unix user,
   then sends the call to that exact connection. Changing the well-known
   name's owner cannot redirect settings, credentials, files or actions.
+- Exported SDK services also verify the caller's Unix UID before invoking
+  hooks or queuing work, including on shared buses. Missing or unverifiable
+  credentials are denied. Unexported in-process test services need no bus.
+  Plugins with their own SDK copy must update that dependency to receive
+  security fixes; upgrading BlueFerry does not replace SDKs in plugin venvs.
 - Plugin data is **untrusted**: replies over 512 KiB are rejected, JSON is
   validated field by field, surface ids match `[A-Za-z0-9_.-]{1,64}`, text
   is shown as plain text only (escaped where a Qt control would read it as

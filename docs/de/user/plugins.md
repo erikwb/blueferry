@@ -7,8 +7,8 @@ läuft im Hintergrunddienst, und nichts ist ab Werk installiert.
 ## Ein Plugin installieren
 
 Der Store listet ausgewählte Plugins. Eine Installation zeigt Quelle,
-Version, was das Plugin darf (seine Fähigkeiten) und den Befehl, den es
-ausführt (`Exec` aus seinem Manifest), und fragt vorher nach. Jede
+Version, welche Funktionen das Plugin anbietet (seine Fähigkeiten), und den
+Befehl, den es ausführt (`Exec` aus seinem Manifest), und fragt vorher nach. Jede
 https-Git-URL geht auch:
 
 ```bash
@@ -19,7 +19,12 @@ blueferry plugins list
 
 Jedes Plugin bekommt eine eigene Python-Umgebung unter
 `~/.local/share/blueferry/plugins`; seine Abhängigkeiten kommen aus dem
-Netz. Alles läuft als du, nichts fragt nach root. `blueferry plugins update`,
+Netz. Plugins, ihre Abhängigkeiten und ihr Installationscode laufen mit
+deinen Benutzerrechten. Sie sind nicht in einer Sandbox: Fähigkeiten
+beschreiben Funktionen und beschränken den Zugriff auf deine Dateien, das
+Netzwerk oder Sitzungsdienste nicht. Installiere Plugins und Updates nur
+aus Quellen, denen du vertraust. Nichts fragt nach root.
+`blueferry plugins update`,
 `remove` und `disable` beenden einen laufenden Plugin-Prozess, den BlueFerry
 installiert hat. Deaktivieren sorgt außerdem dafür, dass BlueFerry das
 Plugin sofort nicht mehr aufruft.

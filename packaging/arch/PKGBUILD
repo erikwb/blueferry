@@ -6,7 +6,7 @@ pkgname=(
   blueferry-qt
   blueferry-quickshell
 )
-pkgver=0.8.1
+pkgver=0.9.0
 pkgrel=1
 pkgdesc='BlueFerry Bluetooth bridge from iPhone to Linux'
 arch=('any')
@@ -110,6 +110,7 @@ package_blueferry-backend() {
     'bluez>=5.86'
     'bluez-obex'
     'bluez-utils'
+    'git'
     'libsecret'
     'org.freedesktop.secrets'
     'polkit'

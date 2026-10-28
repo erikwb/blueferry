@@ -158,7 +158,7 @@ def parse_index(data: bytes, index: str = "") -> list[IndexEntry]:
         raise IndexFetchError("the index is too large")
     try:
         document = json.loads(data.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError):
+    except (UnicodeDecodeError, ValueError, RecursionError):
         raise IndexFetchError("the index is not valid JSON") from None
     if not isinstance(document, dict) or document.get("version") != 1:
         raise IndexFetchError("unsupported index format")

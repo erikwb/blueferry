@@ -7,7 +7,7 @@ background service, and nothing is installed by default.
 ## Installing a plugin
 
 The store lists curated plugins. An install shows the source, the version,
-what the plugin may do (its capabilities) and the command it runs (the
+the features it provides (its capabilities) and the command it runs (the
 manifest's `Exec`), and asks first. Any https Git URL works too:
 
 ```bash
@@ -18,7 +18,11 @@ blueferry plugins list
 
 Each plugin gets its own Python environment under
 `~/.local/share/blueferry/plugins`; its dependencies come from the network.
-Everything runs as you, nothing asks for root. `blueferry plugins update`,
+Plugins, their dependencies, and their installation code run with your user
+permissions. They are not sandboxed: capabilities describe features and do
+not restrict access to your files, network, or session services. Only install
+plugins and updates from sources you trust. Nothing asks for root.
+`blueferry plugins update`,
 `remove` and `disable` stop a running plugin process BlueFerry installed.
 Disabling also stops BlueFerry from calling the plugin at once.
 
