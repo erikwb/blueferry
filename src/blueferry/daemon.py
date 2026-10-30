@@ -463,6 +463,7 @@ class Daemon:
         self._initialization_retry_id: int | None = None
         self._initializing = True
         self._bluetooth_initialized = False
+        self._target_bond_status: bool | None = None
         self.profiles = ProfileSupervisor(
             self.sessions,
             self.obex_worker,
@@ -1303,6 +1304,9 @@ class Daemon:
             raise PairingRequiredError(
                 "the saved iPhone is not currently paired; open a client to pair it"
             )
+        # Remember the bond before starting supervisors: even a partially
+        # initialized daemon must stop if the phone is subsequently forgotten.
+        self._target_bond_status = True
 
         # Class-of-Device is controller state, not durable configuration.
         # Repair it before opening either bearer and continue supervising it
@@ -1992,20 +1996,29 @@ class Daemon:
         mac, adapter = config.current_target()
         if mac == config.IPHONE_MAC and adapter == config.ADAPTER:
             bonded = bond_status(mac, adapter, cached=True)
-            if bonded is not False:
+            # Unavailable adapters and transient inspection failures say
+            # nothing about whether a bond was removed.
+            if bonded is None:
+                return True
+            previous_bond = self._target_bond_status
+            self._target_bond_status = bonded
+            if bonded or previous_bond is False:
+                return True
+            self.recovery.forget_phone()
+            if self.call_history is not None:
+                # A re-paired (possibly reset) phone's first sync is silent.
+                self.call_history.forget_phone()
+            if previous_bond is None:
+                # A missing bond at startup is a pairing prerequisite, not a
+                # removal event. Clear stale state once, but keep the control
+                # service and startup retries available for pairing.
                 return True
             # The daemon may already have initialized its supervisors when a
             # user removes the bond through a desktop Bluetooth client. Stop
             # the current process so those supervisors cannot keep issuing
             # Connect/CreateSession calls for an explicitly forgotten phone.
-            # ``None`` is deliberately ignored above because it represents an
-            # unavailable adapter or transient BlueZ inspection failure.
             log.info("saved iPhone bond was removed; stopping daemon")
             self.proximity.inhibit(INHIBIT_FORGOTTEN)
-            self.recovery.forget_phone()
-            if self.call_history is not None:
-                # A re-paired (possibly reset) phone's first sync is silent.
-                self.call_history.forget_phone()
             main_loop.quit()
             return False
         self.proximity.inhibit(INHIBIT_FORGOTTEN)
