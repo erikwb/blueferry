@@ -5,8 +5,45 @@ from typer.testing import CliRunner
 
 from blueferry import cli, commands, config
 
+_MNS_UUID = "00001133-0000-1000-8000-00805f9b34fb"
+
+
+def _mns_probe(monkeypatch, *, running=True, powered=True, uuids=(_MNS_UUID,)):
+    import dbus
+
+    from blueferry import bus
+
+    probes = []
+
+    class SessionBus:
+        def name_has_owner(self, name):
+            probes.append(("owner", name))
+            return running and name == "org.bluez.obex"
+
+    class SystemBus:
+        def get_name_owner(self, name):
+            assert name == "org.bluez"
+            return ":1.42"
+
+        def get_object(self, name, path, *, introspect):
+            assert name == ":1.42"  # Never activate bluetoothd during a probe.
+            assert introspect is False
+            probes.append(("adapter", path))
+            return self
+
+        def GetAll(self, interface, *, timeout):
+            assert interface == "org.bluez.Adapter1"
+            assert 0 < timeout <= 5
+            return {"Powered": powered, "UUIDs": uuids}
+
+    monkeypatch.setattr(bus, "get_session_bus", SessionBus)
+    monkeypatch.setattr(bus, "get_system_bus", SystemBus)
+    monkeypatch.setattr(dbus, "Interface", lambda proxy, _interface: proxy)
+    return probes
+
 
 def _healthy_non_cod_checks(monkeypatch) -> None:
+    _mns_probe(monkeypatch)
     monkeypatch.setattr(cli, "_setup_logging", lambda _verbose: None)
     monkeypatch.setattr(config, "IPHONE_MAC", "02:00:00:00:00:01")
     monkeypatch.setattr(cli, "_find_obexd", lambda: "/usr/lib/bluetooth/obexd")
@@ -18,6 +55,114 @@ def _healthy_non_cod_checks(monkeypatch) -> None:
         raise CommandError(tuple(command), "btmgmt is not available in tests")
 
     monkeypatch.setattr(commands, "run_command", no_btmgmt)
+
+
+def test_doctor_warns_when_obex_runs_without_the_local_mns_service(monkeypatch, caplog):
+    _matching_cod(monkeypatch)
+    monkeypatch.setattr(config, "ADAPTER", "hci2")
+    probes = _mns_probe(monkeypatch, uuids=["0000112e-0000-1000-8000-00805f9b34fb"])
+    caplog.set_level("INFO", logger="doctor")
+
+    result = CliRunner().invoke(cli.app, ["doctor"])
+
+    assert result.exit_code == 0
+    assert "Checks completed with warnings." in result.output
+    assert "MNS" in caplog.text and "missing on hci2" in caplog.text
+    assert "Sending and contacts can still work" in caplog.text
+    assert "-P irmc,pbap" in caplog.text
+    assert ("adapter", "/org/bluez/hci2") in probes
+    assert not any("/dev_" in str(probe) for probe in probes)
+
+
+def test_doctor_accepts_the_local_mns_uuid_case_insensitively(monkeypatch, caplog):
+    _matching_cod(monkeypatch)
+    _mns_probe(monkeypatch, uuids=[_MNS_UUID.upper()])
+    caplog.set_level("INFO", logger="doctor")
+
+    result = CliRunner().invoke(cli.app, ["doctor"])
+
+    assert result.exit_code == 0
+    assert "All checks passed." in result.output
+    assert "MNS" in caplog.text and "advertised" in caplog.text
+    assert "-P irmc,pbap" not in caplog.text
+
+
+def test_doctor_does_not_activate_obex_to_check_mns(monkeypatch, caplog):
+    _matching_cod(monkeypatch)
+    probes = _mns_probe(monkeypatch, running=False, uuids=[])
+    caplog.set_level("INFO", logger="doctor")
+
+    result = CliRunner().invoke(cli.app, ["doctor"])
+
+    assert result.exit_code == 0
+    assert "OBEX service not running" in caplog.text
+    assert not any(kind == "adapter" for kind, _value in probes)
+    assert "-P irmc,pbap" not in caplog.text
+
+
+def test_doctor_rejects_an_invalid_adapter_before_the_mns_probe(monkeypatch, caplog):
+    _matching_cod(monkeypatch)
+    monkeypatch.setattr(config, "ADAPTER", "hci0/dev_02_00_00_00_00_01")
+    probes = _mns_probe(monkeypatch)
+
+    result = CliRunner().invoke(cli.app, ["doctor"])
+
+    assert result.exit_code == 0
+    assert "Checks completed with warnings." in result.output
+    assert "invalid Bluetooth adapter" in caplog.text
+    assert not any(kind == "adapter" for kind, _value in probes)
+    assert "-P irmc,pbap" not in caplog.text
+
+
+def test_doctor_does_not_diagnose_missing_profiles_on_a_powered_off_adapter(
+    monkeypatch, caplog,
+):
+    _matching_cod(monkeypatch)
+    _mns_probe(monkeypatch, powered=False, uuids=[])
+
+    result = CliRunner().invoke(cli.app, ["doctor"])
+
+    assert result.exit_code == 0
+    assert "Checks completed with warnings." in result.output
+    assert "powered off" in caplog.text
+    assert "-P irmc,pbap" not in caplog.text
+
+
+def test_doctor_reports_an_unreadable_mns_probe_without_claiming_a_missing_service(
+    monkeypatch, caplog,
+):
+    import dbus
+
+    from blueferry import bus
+
+    _matching_cod(monkeypatch)
+
+    def unavailable():
+        raise dbus.exceptions.DBusException("bus unavailable")
+
+    monkeypatch.setattr(bus, "get_system_bus", unavailable)
+
+    result = CliRunner().invoke(cli.app, ["doctor"])
+
+    assert result.exit_code == 0
+    assert "Checks completed with warnings." in result.output
+    assert "Could not check" in caplog.text and "MNS" in caplog.text
+    assert "-P irmc,pbap" not in caplog.text
+
+
+@pytest.mark.parametrize("uuids", [None, _MNS_UUID])
+def test_doctor_does_not_treat_invalid_uuid_properties_as_missing_mns(
+    monkeypatch, caplog, uuids,
+):
+    _matching_cod(monkeypatch)
+    _mns_probe(monkeypatch, uuids=uuids)
+
+    result = CliRunner().invoke(cli.app, ["doctor"])
+
+    assert result.exit_code == 0
+    assert "Checks completed with warnings." in result.output
+    assert "Could not check" in caplog.text and "MNS" in caplog.text
+    assert "-P irmc,pbap" not in caplog.text
 
 
 def test_doctor_treats_an_unset_device_class_as_advisory(monkeypatch) -> None:

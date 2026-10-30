@@ -171,6 +171,8 @@ def doctor(verbose: bool = typer.Option(False, "-v", "--verbose")):
         warnings = True
     if not _doctor_hfp_plugin(log):
         warnings = True
+    if not _doctor_mns(log):
+        warnings = True
     _doctor_profile_reset(log)
 
     if not ok:
@@ -527,6 +529,67 @@ def _doctor_hfp_plugin(log: logging.Logger) -> bool:
         "modem never powers up and calls do not work."
     )
     log.warning("    %s", hfp_plugin_hint())
+    return False
+
+
+def _doctor_mns(log: logging.Logger) -> bool:
+    """Check the local incoming-MAP service without activating OBEX or BlueZ."""
+    import dbus
+
+    from blueferry.bus import get_session_bus, get_system_bus
+
+    adapter = config.ADAPTER
+    if not config.is_valid_adapter(adapter):
+        log.warning("Could not check local MNS service: invalid Bluetooth adapter")
+        return False
+    try:
+        if not get_session_bus().name_has_owner("org.bluez.obex"):
+            log.info(
+                "OBEX service not running; skipped the local MNS check. "
+                "Open BlueFerry, let it connect, then run doctor again."
+            )
+            return True
+        bus = get_system_bus()
+        # Address the current owner so a shutdown between the lookup and GetAll
+        # cannot D-Bus-activate bluetoothd. Inspect the adapter, not the phone.
+        owner = bus.get_name_owner("org.bluez")
+        props = dbus.Interface(
+            bus.get_object(owner, f"/org/bluez/{adapter}", introspect=False),
+            "org.freedesktop.DBus.Properties",
+        )
+        values = props.GetAll("org.bluez.Adapter1", timeout=5.0)
+    except dbus.exceptions.DBusException:
+        log.warning("Could not check local MNS service on %s: D-Bus unavailable", adapter)
+        log.debug("local MNS probe failed", exc_info=True)
+        return False
+    uuids = values.get("UUIDs")
+    if "Powered" not in values or not isinstance(uuids, (list, tuple)):
+        log.warning("Could not check local MNS service on %s: incomplete adapter status", adapter)
+        return False
+    if not values["Powered"]:
+        log.warning("Adapter %s is powered off; skipped the local MNS check", adapter)
+        return False
+    mns_uuid = "00001133-0000-1000-8000-00805f9b34fb"
+    if mns_uuid in {str(uuid).lower() for uuid in uuids}:
+        log.info("Local MAP notification service (MNS) advertised on %s  OK", adapter)
+        return True
+    log.warning(
+        "Local MAP notification service (MNS, UUID %s) missing on %s "
+        "although obexd is running. Sending and contacts can still work, "
+        "but new messages cannot arrive over MAP.",
+        mns_uuid, adapter,
+    )
+    log.warning(
+        "    Check obexd's server-profile registration and plugin options. "
+        "On systemd: journalctl --user -u obex.service -b"
+    )
+    log.warning(
+        "    On affected Evolution-backed obexd builds, starting obexd with "
+        "'-P irmc,pbap' avoids a BlueZ initialization bug. Check the symptoms "
+        "and workaround before changing its configuration: "
+        "https://blueferry.weirdware.io/docs/en/user/troubleshooting/"
+        "#sending-works-but-incoming-messages-never-arrive"
+    )
     return False
 
 
