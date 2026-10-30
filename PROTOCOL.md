@@ -703,6 +703,35 @@ to fetch group metadata before iOS removes the notification. The delay does not
 block the OBEX worker or require ANCS to arrive; pending acknowledgements are
 discarded if their MAP session is replaced or the daemon stops.
 
+### Adapter recovery after a rejected power change
+
+Observed on 2026-10-30 with BlueZ 5.87, Linux 7.2.11, a MediaTek controller,
+and an existing iPhone bond (phone model and iOS version were not recorded):
+a recovery power-off request failed with `Busy (0x0a)`. BlueZ subsequently
+reported `Powered=true` and `PowerState=off`; `btmgmt info` independently
+reported the controller powered on. The durable restoration journal remained
+in its `off` phase, keeping BlueFerry's profiles paused for over eight hours.
+
+The observed mismatch is consistent with BlueZ 5.87's
+[`property_set_mode_complete` error path](https://github.com/bluez/bluez/blob/5.87/src/adapter.c#L2885-L2913):
+it calls `reset_power_state_target`, which sets the terminal `PowerState` to
+the attempted target even when the controller's `Powered` setting did not
+change. Restoration therefore waits while `PowerState` is transitional or
+unknown, but uses `Powered` to decide whether a terminal state needs a
+power-on request. A failed power-on can produce the opposite mismatch and
+must retain the power-on obligation. Controller identity and rfkill guards
+still apply; no additional power-off is issued.
+
+Starting the patched backend with the original stuck journal cleared that
+journal and reopened MAP/PBAP in about two seconds. The ANCS authorization
+probe succeeded about four seconds after startup, followed by AMS
+registration. Both bearers were connected and the recovery pause was cleared,
+while BlueZ still reported the contradictory power properties. This verified
+recovery of protocol sessions without re-pairing or another radio power cycle.
+The user then confirmed sending and receiving a test message, followed by a
+second successful exchange after switching Bluetooth off and on in the
+iPhone's Settings app. BlueFerry reconnected without another backend restart.
+
 ## Apple Media Service (mostly unverified on hardware)
 
 Optional media control follows Apple's published AMS reference. One part has
