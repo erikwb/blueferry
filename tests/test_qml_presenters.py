@@ -5240,8 +5240,8 @@ def test_keypad_and_keyboard_send_tones_during_an_active_call(qml_engine, settin
     QMetaObject.invokeMethod(one, "clicked")
     QMetaObject.invokeMethod(_visual_find(window.contentItem(), "dialKey#", qml_engine), "clicked")
     zero = _visual_find(window.contentItem(), "dialKey0", qml_engine)
+    # Qt emits no clicked after a handled long press (see CallsTab.qml).
     QMetaObject.invokeMethod(zero, "pressAndHold")
-    QMetaObject.invokeMethod(zero, "clicked")  # the release after the long press
     QGuiApplication.processEvents()
     assert field.property("text") == ""
     tones = [c["args"][0] for c in _recorded_calls(qml_engine) if c["method"] == "pressCallTone"]
