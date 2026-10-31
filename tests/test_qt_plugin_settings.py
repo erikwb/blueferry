@@ -512,6 +512,7 @@ class _GatedClient(_GuidedClient):
     """Holds GetConfig, SetConfig and ConfigLogin until the test releases them."""
 
     gate: ClassVar[threading.Event] = threading.Event()
+    login_started: ClassVar[threading.Event] = threading.Event()
 
     def get_config(self):
         _GatedClient.gate.wait(5)
@@ -525,6 +526,7 @@ class _GatedClient(_GuidedClient):
         return ConfigResult(True, {})
 
     def config_login(self, values):
+        _GatedClient.login_started.set()
         _GatedClient.gate.wait(5)
         return super().config_login(values)
 
@@ -539,6 +541,7 @@ def gated(guided):
                      extra=GUIDED)
     settings._manifests[other.id] = other
     _GatedClient.gate = threading.Event()
+    _GatedClient.login_started = threading.Event()
     yield settings, opened
     _GatedClient.gate.set()
 
@@ -561,10 +564,96 @@ def test_a_late_sign_in_opens_nothing_after_the_form_closed(gated) -> None:
     _wait(lambda: settings.state()["config"].get("loaded"))
     _GatedClient.gate.clear()
     settings.sign_in("io.example.cloud", {"url": "https://cloud.example"})
+    _wait(_GatedClient.login_started.is_set)
     settings.close_config()
     _GatedClient.gate.set()
     _wait(lambda: ("cancel", "flow-1") in _GuidedClient.log)
     assert opened == [] and settings._login is None and settings.state()["config"] == {}
+
+
+@pytest.mark.parametrize("reply", ["open", "done", "error"])
+def test_cancel_sign_in_before_initial_reply_discards_the_answer(gated, monkeypatch, reply):
+    from blueferry.plugin_api.config_flow import LoginStep
+
+    settings, opened = gated
+    _GatedClient.gate.set()
+    settings.load_config("io.example.cloud")
+    _wait(lambda: settings.state()["config"].get("loaded") and _idle(settings))
+    _GatedClient.gate.clear()
+
+    def login(client, values):
+        _GatedClient.login_started.set()
+        _GatedClient.gate.wait(5)
+        if reply == "error":
+            raise RuntimeError("late failure")
+        if reply == "done":
+            return LoginStep("done", "late success")
+        return _GuidedClient.config_login(client, values)
+
+    monkeypatch.setattr(_GatedClient, "config_login", login)
+    settings.sign_in("io.example.cloud", {"url": "https://cloud.example"})
+    _wait(_GatedClient.login_started.is_set)
+    settings.cancel_sign_in()
+    cancelled = dict(settings.state()["config"]["status"])
+    assert cancelled["text"] == "The sign-in was cancelled."
+    assert cancelled["pending"] is False
+    _GatedClient.gate.set()
+    _wait(lambda: not settings._tasks)
+    assert opened == [] and settings._login is None
+    assert settings.state()["config"]["status"] == cancelled
+    assert (("cancel", "flow-1") in _GuidedClient.log) is (reply == "open")
+
+
+def test_cancelled_queued_sign_in_does_not_call_the_plugin(gated):
+    settings, opened = gated
+    _GatedClient.gate.set()
+    settings.load_config("io.example.cloud")
+    _wait(lambda: settings.state()["config"].get("loaded") and _idle(settings))
+    _GatedClient.gate.clear()
+    settings.test_config("io.example.cloud", {})
+    # The test request owns the operation slot until its response is delivered.
+    settings.sign_in("io.example.cloud", {"url": "https://cloud.example"})
+    settings.cancel_sign_in()
+    _GatedClient.gate.set()
+    _wait(lambda: not settings._tasks and not settings._queue)
+    assert opened == [] and not _GatedClient.login_started.is_set()
+
+
+def test_reopening_the_same_form_does_not_revive_its_old_sign_in(gated):
+    settings, opened = gated
+    _GatedClient.gate.set()
+    settings.load_config("io.example.cloud")
+    _wait(lambda: settings.state()["config"].get("loaded") and _idle(settings))
+    _GatedClient.gate.clear()
+    settings.sign_in("io.example.cloud", {"url": "https://cloud.example"})
+    _wait(_GatedClient.login_started.is_set)
+    settings.close_config()
+    settings.load_config("io.example.cloud")
+    _GatedClient.gate.set()
+    _wait(lambda: not settings._tasks and not settings._queue)
+    assert opened == [] and settings._login is None
+    assert settings.state()["config"]["status"] == {}
+    assert ("cancel", "flow-1") in _GuidedClient.log
+
+
+def test_a_new_sign_in_survives_the_cancelled_attempts_late_reply(gated):
+    settings, opened = gated
+    _GuidedClient.polls = -10000
+    _GatedClient.gate.set()
+    settings.load_config("io.example.cloud")
+    _wait(lambda: settings.state()["config"].get("loaded") and _idle(settings))
+    _GatedClient.gate.clear()
+    settings.sign_in("io.example.cloud", {"url": "https://first.example"})
+    _wait(_GatedClient.login_started.is_set)
+    settings.cancel_sign_in()
+    settings.sign_in("io.example.cloud", {"url": "https://second.example"})
+    _GatedClient.gate.set()
+    _wait(lambda: len(opened) == 1 and _idle(settings) and not settings._queue)
+    assert opened == ["https://cloud.example/login/v2/f"]
+    assert ("login", {"url": "https://second.example"}) in _GuidedClient.log
+    assert _GuidedClient.log.count(("cancel", "flow-1")) == 1
+    assert settings._login is not None
+    assert settings.state()["config"]["status"]["pending"] is True
 
 
 def test_a_save_that_ends_later_leaves_another_plugins_form_alone(gated) -> None:

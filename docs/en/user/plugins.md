@@ -7,7 +7,7 @@ background service, and nothing is installed by default.
 ## Installing a plugin
 
 Open **Settings › Plugins** in the KDE client. The store lists curated
-plugins; **Install** shows the source, the version, what the plugin may do
+plugins; **Install** shows the source, the version, the features it provides
 (its capabilities) and the command it runs (the manifest's `Exec`), and
 asks first. You can also paste any https Git URL. From a terminal:
 
@@ -19,9 +19,13 @@ blueferry plugins list
 
 Each plugin gets its own Python environment under
 `~/.local/share/blueferry/plugins`; its dependencies come from the network.
-Everything runs as you, nothing asks for root. **Update**, **Remove** and the
-switch next to a plugin (or `blueferry plugins update`, `remove`,
-`disable`) stop a running plugin process BlueFerry installed.
+Plugins, their dependencies, and their installation code run with your user
+permissions. They are not sandboxed: capabilities describe features and do
+not restrict access to your files, network, or session services. Only install
+plugins and updates from sources you trust. Nothing asks for root.
+**Update**, **Remove** and the switch next to a plugin (or
+`blueferry plugins update`, `remove`, `disable`) stop a running plugin process
+BlueFerry installed.
 Disabling also stops BlueFerry from calling the plugin at once.
 
 ## Setting a plugin up

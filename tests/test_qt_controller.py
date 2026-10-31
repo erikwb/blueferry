@@ -8,12 +8,18 @@ import pytest
 
 pytest.importorskip("PySide6")
 
-from blueferry.client import BackendError
+from blueferry.client import BackendError, TetherUnsupportedError
 from blueferry.conversation_state import ConversationSnapshot
 from blueferry.models import BackendStatus, Thread
 from blueferry.qt import phone_link
 from blueferry.qt.controller import BridgeController
 from blueferry.setup_client import ConfigurationState
+from blueferry.tether_status import TetherStatus
+from tests.qt_settle import main_thread_gc
+
+# Controllers own timers too: collect their Python cycles on the UI thread,
+# never on a worker that happens to allocate during the following test.
+pytestmark = pytest.mark.usefixtures(main_thread_gc.__name__)
 
 
 def _apply_threads(controller, threads):
@@ -1591,6 +1597,148 @@ def test_mpris_setting_is_forwarded_and_merged_into_status(monkeypatch):
     controller.setMprisPlayer(True)
     assert controller.status["media_mpris_enabled"] is True
 
+class _TetherBackend(_Backend):
+    def __init__(self, *, fail: str | None = None, unsupported: bool = False):
+        super().__init__()
+        self.fail = fail
+        self.unsupported = unsupported
+        self.tether_calls: list[str] = []
+        self.enabled = True
+        self.autoconnect = False
+
+    def _tether(self, name, state):
+        self.tether_calls.append(name)
+        if self.unsupported:
+            raise TetherUnsupportedError("the running backend does not support tethering")
+        if self.fail:
+            raise BackendError(self.fail)
+        return TetherStatus.from_dict(
+            {"enabled": self.enabled, "autoconnect": self.autoconnect, **state}
+        )
+
+    def tether_state(self):
+        return self._tether("state", {"state": "off"})
+
+    def tether_configure(self, enabled, autoconnect):
+        self.enabled, self.autoconnect = enabled, autoconnect
+        return self._tether(f"configure:{enabled}:{autoconnect}", {"state": "off"})
+
+    def tether_connect(self):
+        return self._tether("connect", {"state": "connecting", "backend": "networkmanager"})
+
+    def tether_disconnect(self):
+        return self._tether("disconnect", {"state": "disconnecting"})
+
+
+def _tether_controller(backend):
+    return BridgeController(backend=backend, setup=object(), subscribe=False, autostart=False)
+
+
+def _settle(controller) -> None:
+    """Finish worker tasks and deliver their queued results to the controller."""
+    from PySide6.QtCore import QCoreApplication
+    from PySide6.QtGui import QGuiApplication
+
+    # A GUI application: later QML tests in the same process need one, and
+    # Qt cannot replace a plain QCoreApplication once it exists.
+    application = QCoreApplication.instance() or QGuiApplication([])
+    controller._pool.waitForDone(1000)
+    for _ in range(5):
+        application.processEvents()
+
+
+def test_tether_state_is_exposed_with_shared_guidance():
+    backend = _TetherBackend()
+    controller = _tether_controller(backend)
+    assert controller.tether == {"available": False}
+
+    controller.refreshTether()
+    _settle(controller)
+
+    assert controller.tether["available"] is True
+    assert controller.tether["state"] == "off"
+    assert "Not sharing" in controller.tether["summary"]
+    assert backend.tether_calls == ["state"]
+    assert controller.busy is False
+
+
+def test_tether_toggle_sends_exactly_one_explicit_request():
+    backend = _TetherBackend()
+    controller = _tether_controller(backend)
+
+    controller.setTetherConnected(True)
+    controller.setTetherConnected(True)  # ignored while the first is pending
+    _settle(controller)
+
+    assert backend.tether_calls == ["connect"]
+    assert controller.tether["state"] == "connecting"
+    assert controller.tether["pending"] is False
+
+    controller.setTetherConnected(False)
+    _settle(controller)
+    assert backend.tether_calls == ["connect", "disconnect"]
+
+
+def test_backend_without_tether1_hides_the_control():
+    controller = _tether_controller(_TetherBackend(unsupported=True))
+    controller._tether = {"available": True, "state": "off"}
+    controller.refreshTether()
+    _settle(controller)
+    assert controller.tether == {"available": False}
+    assert controller.errorText == ""
+
+
+def test_transient_tether_read_failure_keeps_the_last_state():
+    backend = _TetherBackend()
+    controller = _tether_controller(backend)
+    controller.refreshTether()
+    _settle(controller)
+    before = dict(controller.tether)
+
+    backend.fail = "status timed out"
+    controller.refreshTether()
+    _settle(controller)
+
+    assert controller.tether == before
+    assert controller.tether["available"] is True
+    assert "status timed out" in controller.errorText
+
+
+def test_failed_tether_request_reports_and_clears_pending():
+    backend = _TetherBackend(fail="the iPhone is not connected over Bluetooth yet")
+    controller = _tether_controller(backend)
+    controller._tether = {"available": True, "state": "off"}
+
+    controller.setTetherConnected(True)
+    _settle(controller)
+
+    assert controller.tether["pending"] is False
+    assert "not connected over Bluetooth" in controller.errorText
+
+
+def test_tethering_opt_in_is_saved_and_reflected():
+    backend = _TetherBackend()
+    backend.enabled = False
+    controller = _tether_controller(backend)
+    controller.refreshTether()
+    _settle(controller)
+    assert controller.tether["enabled"] is False
+    assert "turned off" in controller.tether["summary"]
+
+    controller.setTethering(True, False)
+    controller.setTethering(False, False)  # ignored while the first is pending
+    _settle(controller)
+
+    assert backend.tether_calls == ["state", "configure:True:False"]
+    assert controller.tether["enabled"] is True
+    assert controller.tether["autoconnect"] is False
+    assert controller.tether["pending"] is False
+
+    controller.setTethering(True, True)
+    _settle(controller)
+    assert controller.tether["autoconnect"] is True
+
+
 
 class _AudioBackend(_Backend):
     def __init__(self):
@@ -1676,6 +1824,7 @@ def test_feature_hints_point_to_the_setting_for_each_opt_in():
 
 def test_notification_failure_stays_in_the_tab(monkeypatch):
     controller = _inline_controller(monkeypatch, _PhoneLinkBackend(fail_notifications=True))
+    controller._status = _notification_status()
     controller.watchNotifications(True)
     assert controller.notifications == []
     assert "locked" in controller.notificationsInfo["error"]
@@ -1685,6 +1834,7 @@ def test_notification_failure_stays_in_the_tab(monkeypatch):
 def test_notifications_are_fetched_only_while_watched_and_forgotten_after(monkeypatch):
     backend = _PhoneLinkBackend()
     controller = _inline_controller(monkeypatch, backend)
+    controller._status = _notification_status()
     controller.refreshNotifications()
     controller._notificationsInvalidated()
     assert backend.notification_calls == 0
@@ -1697,6 +1847,153 @@ def test_notifications_are_fetched_only_while_watched_and_forgotten_after(monkey
 
     controller.watchNotifications(False)
     assert controller.notifications == []
+
+
+def _notification_status(**changes):
+    return {
+        "daemon": True, "notification_history_enabled": True,
+        "notification_content_shown": True, "storage_state": "ready",
+        "phone_profile_id": "11111111-1111-4111-8111-111111111111", **changes,
+    }
+
+
+def _notification_snapshot(body="private notification", **changes):
+    return {
+        "enabled": True, "content": True, "notifications": [
+            {"app_id": "com.example.chat", "title": "Private title",
+             "subtitle": "Private subtitle", "body": body},
+        ], **changes,
+    }
+
+
+@pytest.fixture
+def notification_controller(monkeypatch):
+    controller = BridgeController(backend=object(), setup=object(), subscribe=False, autostart=False)
+    controller._storage_unlock_attempted = True
+    pending = []
+
+    def run_deferred(operation, on_done=None, on_failed=None, *, busy=True):
+        assert busy is False
+        pending.append((on_done, on_failed))
+
+    monkeypatch.setattr(controller, "_run", run_deferred)
+
+    def status(**changes):
+        controller._apply_snapshot((ConversationSnapshot(
+            status=BackendStatus.from_dict(_notification_status(**changes)),
+        ), None))
+        controller._now_playing_timer.stop()
+
+    status()
+    yield controller, pending, status
+    controller._notifications_timer.stop()
+    controller._now_playing_timer.stop()
+    controller.deleteLater()
+
+
+@pytest.mark.parametrize("change", [
+    {"daemon": False}, {"notification_history_enabled": False}, {"storage_state": "locked"},
+    {"notification_content_shown": False},
+    {"phone_profile_id": "22222222-2222-4222-8222-222222222222"},
+])
+@pytest.mark.parametrize("outcome", ["success", "error"])
+def test_notification_access_change_clears_rows_and_rejects_old_responses(
+    notification_controller, change, outcome,
+):
+    controller, pending, status = notification_controller
+    controller.watchNotifications(True)
+    pending.pop()[0](_notification_snapshot())
+    assert controller.notifications[0]["body"] == "private notification"
+    controller.refreshNotifications()
+    old_done, old_failed = pending.pop()
+
+    status(**change)
+    assert controller.notifications == []
+    assert controller.notificationsInfo["content"] is False
+    if outcome == "success":
+        old_done(_notification_snapshot("stale private text"))
+    else:
+        old_failed("stale error")
+    assert controller.notifications == []
+    assert controller.notificationsInfo["error"] == ""
+
+    if change.get("notification_content_shown") is False:
+        pending.pop()[0](_notification_snapshot())
+        assert controller.notifications[0]["app"] == "com.example.chat"
+        assert all(controller.notifications[0][field] == "" for field in ("title", "subtitle", "body"))
+    elif "phone_profile_id" in change:
+        pending.pop()[0](_notification_snapshot("new phone"))
+        assert controller.notifications[0]["body"] == "new phone"
+    else:
+        assert pending == []
+        status()
+        assert len(pending) == 1
+        pending.pop()[0](_notification_snapshot("recovered"))
+        assert controller.notifications[0]["body"] == "recovered"
+
+
+@pytest.mark.parametrize("outcome", ["success", "error"])
+def test_notification_response_cannot_cross_tab_visits(notification_controller, outcome):
+    controller, pending, _status = notification_controller
+    controller.watchNotifications(True)
+    done, failed = pending.pop()
+    controller.watchNotifications(False)
+    controller.watchNotifications(True)
+    assert pending == []  # Wait for the old operation before starting another.
+    if outcome == "success":
+        done(_notification_snapshot())
+    else:
+        failed("old visit failed")
+    assert controller.notifications == []
+    assert controller.notificationsInfo["error"] == ""
+    assert len(pending) == 1
+    pending.pop()[0](_notification_snapshot("current visit"))
+    assert controller.notifications[0]["body"] == "current visit"
+
+
+def test_notification_refreshes_coalesce_and_keep_recent_rows_on_bluetooth_loss(notification_controller):
+    controller, pending, status = notification_controller
+    controller.watchNotifications(True)
+    for _ in range(10):
+        controller.refreshNotifications()
+    assert len(pending) == 1
+    pending.pop()[0](_notification_snapshot())
+    assert len(pending) == 1
+    pending.pop()[0](_notification_snapshot("latest"))
+    assert pending == []
+    status(ancs=False, map=False, pbap=False)
+    assert controller.notifications[0]["body"] == "latest"
+    assert pending == []
+
+
+@pytest.mark.parametrize("change", [{"enabled": False}, {"content": False}])
+def test_notification_snapshot_respects_its_privacy_flags(notification_controller, change):
+    controller, pending, _status = notification_controller
+    controller.watchNotifications(True)
+    pending.pop()[0](_notification_snapshot(**change))
+    if change.get("enabled") is False:
+        assert controller.notifications == []
+    else:
+        assert controller.notifications[0]["body"] == ""
+        assert controller.notifications[0]["title"] == ""
+        assert controller.notifications[0]["subtitle"] == ""
+    assert controller.notificationsInfo["content"] is False
+
+
+def test_notifications_opened_before_backend_ready_load_when_it_returns(notification_controller):
+    controller, pending, status = notification_controller
+    status(daemon=False)
+    controller.watchNotifications(True)
+    controller.refreshNotifications()
+    assert pending == []
+    status()
+    pending.pop()[1]("backend restarting")
+    assert controller.notificationsInfo["error"] == "backend restarting"
+    status(daemon=False)
+    assert controller.notificationsInfo["error"] == ""
+    status()
+    pending.pop()[0](_notification_snapshot())
+    assert controller.notifications[0]["body"] == "private notification"
 
 
 def test_phone_name_comes_from_the_configured_device():
@@ -1760,7 +2057,7 @@ def test_photo_load_failure_stops_the_spinner(monkeypatch):
         backend=_Backend(), setup=object(), subscribe=False, autostart=False,
     )
     monkeypatch.setattr(
-        controller, "_run",
+        controller, "_run_photo",
         lambda _operation, _on_done=None, on_failed=None, **_kwargs: on_failed("boom"),
     )
     controller.watchPhotos(True)
@@ -1797,7 +2094,7 @@ def test_photos_load_only_while_watched_and_open_the_original(monkeypatch, tmp_p
         backend=_Backend(), setup=object(), subscribe=False, autostart=False,
     )
     monkeypatch.setattr(
-        controller, "_run",
+        controller, "_run_photo",
         lambda operation, on_done=None, *_args, **_kwargs: on_done(operation()),
     )
     controller.refreshPhotos()
@@ -1837,7 +2134,7 @@ def test_a_photo_of_a_plugin_disabled_meanwhile_is_not_fetched(monkeypatch, tmp_
         backend=_Backend(), setup=object(), subscribe=False, autostart=False,
     )
     monkeypatch.setattr(
-        controller, "_run",
+        controller, "_run_photo",
         lambda operation, on_done=None, *_args, **_kwargs: on_done(operation()),
     )
     controller.watchPhotos(True)
@@ -1953,11 +2250,76 @@ def test_phone_links_only_ask_for_confirmation():
     controller.requestDialLink("tel:7042;phone-context=example.com")
     controller.requestDialLink("tel:+15550100000;ext=7")
     controller.requestDialLink("tel:+15550100000;m-routing=private")
+    controller.requestDialLink("Alice 2026")
+    controller.requestDialLink("+1 555 123 4567 ext 89")
+    controller.requestDialLink("0491570156")
     controller._pool.waitForDone(1000)
     assert requested == [
         ("+15550100000", ""), ("", "invalid"), ("112", "emergency"),
         ("", "invalid"), ("", "invalid"), ("", "invalid"),
+        ("", "invalid"), ("", "invalid"), ("0491570156", ""),
     ]
     assert backend.dialed == []
     assert controller.contactNameForNumber("+15550100000") == "Test Contact"
     assert controller.contactNameForNumber("+15550100009") == ""
+
+
+@pytest.mark.parametrize("read_outcome", ["success", "error", "unsupported"])
+def test_tether_read_completion_cannot_release_pending_command(read_outcome):
+    import threading
+    import time
+
+    from PySide6.QtGui import QGuiApplication
+
+    read_started, release_read = threading.Event(), threading.Event()
+    command_started, release_command = threading.Event(), threading.Event()
+    delivered = threading.Event()
+    commands = []
+
+    class Backend:
+        def tether_state(self):
+            read_started.set()
+            assert release_read.wait(5)
+            if read_outcome == "error":
+                raise BackendError("status timed out")
+            if read_outcome == "unsupported":
+                raise TetherUnsupportedError("older daemon")
+            return TetherStatus(enabled=True)
+
+        def tether_configure(self, enabled, automatic):
+            commands.append((enabled, automatic))
+            command_started.set()
+            assert release_command.wait(5)
+            return TetherStatus(enabled=enabled, autoconnect=automatic)
+
+    application = QGuiApplication.instance() or QGuiApplication([])
+    controller = _tether_controller(Backend())
+    controller._apply_tether(TetherStatus(enabled=False))
+    try:
+        controller.refreshTether()
+        assert read_started.wait(2)
+        controller.setTethering(True, True)
+        assert controller.tether["pending"] is True
+        controller.tetherChanged.connect(delivered.set)
+        controller.errorTextChanged.connect(delivered.set)
+        release_read.set()
+        assert command_started.wait(2)
+        deadline = time.monotonic() + 2
+        while not delivered.is_set() and time.monotonic() < deadline:
+            application.processEvents()
+        assert delivered.is_set()
+        if read_outcome == "unsupported":
+            assert controller.tether["available"] is False
+        else:
+            assert controller.tether["pending"] is True
+        # Even an unsupported read must not release the outstanding command.
+        controller.setTethering(False, False)
+    finally:
+        release_read.set()
+        release_command.set()
+        controller._pool.waitForDone(5000)
+        application.processEvents()
+    assert commands == [(True, True)]
+    assert controller.tether["enabled"] is True
+    assert controller.tether["autoconnect"] is True
+    assert controller.tether["pending"] is False

@@ -370,7 +370,12 @@ class BluezRecoveryAdapter:
         current = self._restoration_state(transaction)
         if current.power_state not in {"on", "off"}:
             return  # Includes pending transitions and missing/unknown state.
-        if not current.powered and current.power_state == "off":
+        # BlueZ can leave PowerState at the attempted target after a rejected
+        # power request (including Busy). Once it reports a terminal state,
+        # use Powered, the controller's actual setting, to reconcile our
+        # obligation. Requiring the two to agree strands recovery forever,
+        # including when an older daemon's journal is loaded after restart.
+        if not current.powered:
             with self._restore_lock:
                 if transaction.completed:
                     self._complete_restore(transaction)
@@ -391,8 +396,11 @@ class BluezRecoveryAdapter:
             # Journal I/O precedes the last identity check too: a slow disk
             # must not create a large gap between inspection and the request.
             current = self._restoration_state(transaction)
-            if transaction.completed or current.powered or current.power_state != "off":
-                if transaction.completed or (current.powered and current.power_state == "on"):
+            if (transaction.completed or current.powered
+                    or current.power_state not in {"on", "off"}):
+                if transaction.completed or (
+                    current.powered and current.power_state in {"on", "off"}
+                ):
                     self._complete_restore(transaction)
                 return
             props.Set("org.bluez.Adapter1", "Powered", dbus.Boolean(True),
@@ -401,7 +409,7 @@ class BluezRecoveryAdapter:
             # A subsequent user power-off must not become another restore.
             self._complete_restore(transaction)
             return
-        if current.powered and current.power_state == "on":
+        if current.powered:
             self._complete_restore(transaction)
 
     def _restoration_state(self, transaction: _PowerRestore) -> AdapterState:

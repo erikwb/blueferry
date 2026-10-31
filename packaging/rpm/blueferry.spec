@@ -1,5 +1,5 @@
 Name:           blueferry-backend
-Version:        0.8.1
+Version:        0.9.1
 Release:        1%{?dist}
 Summary:        iPhone Bluetooth bridge backend, daemon, and CLI
 License:        GPL-2.0-or-later AND MIT AND BSD-2-Clause AND PSF-2.0
@@ -13,6 +13,7 @@ BuildRequires:  appstream
 BuildRequires:  python3-devel
 BuildRequires:  python3-dbus
 BuildRequires:  python3-gobject
+BuildRequires:  python3-pip
 BuildRequires:  python3dist(cryptography) >= 41
 BuildRequires:  python3dist(phonenumbers) >= 8.12
 BuildRequires:  python3dist(regex) >= 2022.10.31
@@ -24,10 +25,12 @@ BuildRequires:  python3dist(wheel)
 BuildRequires:  pyproject-rpm-macros
 BuildRequires:  systemd-rpm-macros
 BuildRequires:  gtk4
+BuildRequires:  gobject-introspection
 BuildRequires:  libadwaita
 
 Requires:       bluez >= 5.86
 Requires:       bluez-obexd
+Requires:       git-core
 Requires:       libsecret
 Requires:       polkit
 Requires:       python3-dbus
@@ -65,6 +68,7 @@ visible to other Python applications.
 Summary:        GTK4/libadwaita client for BlueFerry
 Requires:       %{name} = %{version}-%{release}
 Requires:       gtk4
+Requires:       gobject-introspection
 Requires:       libadwaita
 Requires:       python3-gobject
 
@@ -214,6 +218,20 @@ fi
 %{_metainfodir}/io.weirdware.BlueFerry.Qt.metainfo.xml
 
 %changelog
+* Fri Oct 30 2026 BlueFerry Contributors <blueferry@weirdware.io> - 0.9.1-1
+- Continue pairing when ANCS advertising fails and avoid unpaired restart loops.
+- Resume Bluetooth recovery when BlueZ power properties disagree.
+- Diagnose missing incoming-message service registration.
+- Bound plugin index nesting independently of Python's stack limit.
+
+* Tue Oct 27 2026 BlueFerry Contributors <blueferry@weirdware.io> - 0.9.0-1
+- Improve pairing, Bluetooth recovery, incoming messages, and contact matching.
+- Add opt-in calls, media control, contact photos, one-time codes, and tethering.
+- Add plugin support, notification actions and rules, and a shared desktop tray.
+- Preserve explicit phone audio choices across reconnects.
+- Fix Quickshell thread loading, keyboard navigation, and idle media display.
+- Skip optional Qt tests when the separate QtTest binding is unavailable.
+
 * Mon Sep 14 2026 BlueFerry Contributors <blueferry@weirdware.io> - 0.8.1-1
 - Add clickable web links to GTK, Qt, and Quickshell messages.
 - Recover encrypted storage after keyring startup races without a daemon restart.
