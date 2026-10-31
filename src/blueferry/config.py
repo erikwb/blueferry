@@ -252,11 +252,15 @@ SolicitUUIDs field and by the ANCS GATT client."""
 BLE_ADVERT_LOCAL_NAME: str = "BlueFerry"
 
 
-def _env_bool(name: str, default: bool) -> bool:
-    value = os.environ.get(name)
+def parse_bool(value: str | None, default: bool) -> bool:
+    """Parse a default-on flag from an environment or local.env value."""
     if value is None:
         return default
     return value.strip().casefold() not in {"0", "false", "no", "off"}
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    return parse_bool(os.environ.get(name), default)
 
 
 def _env_opt_in(name: str) -> bool:
