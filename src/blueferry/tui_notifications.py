@@ -262,7 +262,10 @@ class NotificationsScreen(ModalScreen[str | None]):
         if self._forgotten or not self._shown or not self.is_attached:
             return
         records = self._records()
-        rows = phone_link_view.notification_rows(records)
+        # The shared model decides whether titles and text may be shown.
+        rows = phone_link_view.notification_rows(
+            records, content=self.history.info.get("content") is True,
+        )
         view = phone_link_view.notifications_view(self.history.info, self._opt_in_hint)
         content = self.query_one("#notifications-content-hint", Static)
         content.update(Text(_plain(view["contentHint"])))
