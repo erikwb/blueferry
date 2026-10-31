@@ -137,3 +137,55 @@ def test_a_feature_switch_keeps_its_choice_while_it_is_saved(app, monkeypatch) -
     held.pop()[2]("Access denied")
     assert switch()["active"] is True
     assert controller.errorText == "Access denied"
+
+
+@pytest.mark.parametrize("failed_read", [False, True])
+def test_stale_feature_reads_cannot_undo_a_new_choice(app, monkeypatch, failed_read):
+    from blueferry import features_view
+    from blueferry.qt.controller import BridgeController
+    from tests.test_qt_controller import _Backend
+
+    controller = BridgeController(backend=_Backend(), setup=object(), subscribe=False,
+                                  autostart=False)
+    items = {"mark_read_on_dismiss": {"value": False, "running": False}}
+    controller._features = features_view.loaded(features_view.initial(), items)
+    held = []
+    monkeypatch.setattr(controller, "_run", lambda operation, on_done=None, on_failed=None,
+                        **_kwargs: held.append((on_done, on_failed)))
+    controller.loadFeatures()
+    read_done, read_failed = held.pop()
+    controller.setFeature("mark_read_on_dismiss", True)
+    saved, _failed = held.pop()
+    if failed_read:
+        read_failed("old daemon disappeared")
+    else:
+        read_done(items)
+    saved("restart-required")
+    assert controller.features["switches"]["mark_read_on_dismiss"]["active"]
+    assert controller.features["restart_pending"]
+
+
+def test_failed_feature_save_preserves_another_pending_choice(app, monkeypatch):
+    from blueferry import features_view
+    from blueferry.qt.controller import BridgeController
+    from tests.test_qt_controller import _Backend
+
+    controller = BridgeController(backend=_Backend(), setup=object(), subscribe=False,
+                                  autostart=False)
+    controller._features = features_view.loaded(features_view.initial(), {
+        name: {"value": False, "running": False}
+        for name in ("mark_read_on_dismiss", "notification_history")
+    })
+    held = []
+    monkeypatch.setattr(controller, "_run", lambda operation, on_done=None, on_failed=None,
+                        **_kwargs: held.append((on_done, on_failed)))
+    controller.setFeature("notification_history", True)
+    _saved, failed = held.pop()
+    controller.setFeature("mark_read_on_dismiss", True)
+    saved, _failed = held.pop()
+    failed("access denied")
+    assert not held  # Wait until all saves finish before reloading.
+    saved("restart-required")
+    assert not controller.features["switches"]["notification_history"]["active"]
+    assert controller.features["switches"]["mark_read_on_dismiss"]["active"]
+    assert controller.features["restart_pending"]

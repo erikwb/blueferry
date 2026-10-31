@@ -150,6 +150,7 @@ class NotificationsScreen(ModalScreen[str | None]):
         self.pin_error = ""
         self._pin_error_key = ""  # the notification pin_error is about
         self._shown_key: tuple[tuple[str, ...], str] | None = None
+        self._status: Mapping[str, Any] = dict(status)
 
     def compose(self) -> ComposeResult:
         with Vertical(id="notifications-dialog", classes="dialog"):
@@ -168,6 +169,8 @@ class NotificationsScreen(ModalScreen[str | None]):
 
     def on_mount(self) -> None:
         self._shown = True
+        # Access, privacy and phone profile gate every read and every row.
+        self.history.sync_status(self._status)
         self.history.watch(True)
         self.load_apps()
         self._update_view()
@@ -184,10 +187,11 @@ class NotificationsScreen(ModalScreen[str | None]):
         if supported != self._mute_supported:
             self._mute_supported = supported
             self.load_apps()
+        self._status = dict(status)
+        self.history.sync_status(self._status)
         hint = phone_link_view.feature_hints(status).get("notifications", "")
         if hint != self._opt_in_hint:
             self._opt_in_hint = hint
-            self.history.refresh()
             self._update_view()
 
     def invalidated(self) -> None:
@@ -258,7 +262,10 @@ class NotificationsScreen(ModalScreen[str | None]):
         if self._forgotten or not self._shown or not self.is_attached:
             return
         records = self._records()
-        rows = phone_link_view.notification_rows(records)
+        # The shared model decides whether titles and text may be shown.
+        rows = phone_link_view.notification_rows(
+            records, content=self.history.info.get("content") is True,
+        )
         view = phone_link_view.notifications_view(self.history.info, self._opt_in_hint)
         content = self.query_one("#notifications-content-hint", Static)
         content.update(Text(_plain(view["contentHint"])))

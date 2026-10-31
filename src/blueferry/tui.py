@@ -33,7 +33,6 @@ from textual.widgets import (
 from blueferry import (
     config,
     contacts_view,
-    doctor_report,
     media_volume_view,
     phone_link_view,
     phone_overview,
@@ -48,7 +47,7 @@ from blueferry.conversation_state import (
     ReplyDisposition,
     fetch_conversation_snapshot,
 )
-from blueferry.doctor_report import DoctorReport, run_doctor
+from blueferry.doctor_report import DoctorReport
 from blueferry.i18n import _
 from blueferry.models import (
     BackendStatus,
@@ -961,7 +960,7 @@ class BlueFerryApp(App[None]):
         *,
         monitor_factory: Callable[[], _Monitor | None] = _EventMonitor,
         restart: Callable[[], None] | None = None,
-        doctor: Callable[[], DoctorReport] = run_doctor,
+        doctor: Callable[[], DoctorReport] | None = None,
         phone_name: Callable[[], str] = load_phone_name,
     ) -> None:
         super().__init__()
@@ -1056,7 +1055,9 @@ class BlueFerryApp(App[None]):
             self._monitor.close()
         # A diagnostics run still going would hold up interpreter exit
         # until its timeout.
-        doctor_report.terminate_running()
+        for screen in self.screen_stack:
+            if isinstance(screen, DoctorScreen):
+                screen.cancel()
 
     def on_resize(self, event: events.Resize) -> None:
         self._update_responsive(event.size.width)
