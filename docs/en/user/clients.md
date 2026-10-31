@@ -190,7 +190,6 @@ app does not offer volume control.
 | iPhone volume buttons and level | ✓ | ✓ | ✓ | ✓ now-playing strip | ✓ `blueferry media volume up\|down` |
 | Pin / unpin notifications | ✓ | ✓ | ✓ | ✓ Show Recent Notifications | ✓ `blueferry notifications pin\|unpin KEY` |
 | Mute apps | ✓ | ✓ | ✓ | ✓ iPhone settings › Notifications | ✓ `blueferry notifications apps\|mute\|unmute` |
-| Plugin cards with their buttons | ✓ | ✓ | ✓ iPhone overview | ✓ From Plugins, without buttons that send files | ✓ `blueferry cards` |
 
 **From Plugins** under the now-playing strip shows what your
 [plugins](plugins.md) offer while the conversations are shown, for example

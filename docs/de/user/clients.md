@@ -203,7 +203,6 @@ anbietet.
 | iPhone-Lautstärkeknöpfe und Pegel | ✓ | ✓ | ✓ | ✓ Wiedergabestreifen | ✓ `blueferry media volume up\|down` |
 | Mitteilungen anheften/lösen | ✓ | ✓ | ✓ | ✓ Show Recent Notifications | ✓ `blueferry notifications pin\|unpin KEY` |
 | Apps stummschalten | ✓ | ✓ | ✓ | ✓ iPhone settings › Notifications | ✓ `blueferry notifications apps\|mute\|unmute` |
-| Plugin-Karten mit ihren Knöpfen | ✓ | ✓ | ✓ iPhone-Übersicht | ✓ From Plugins, ohne Knöpfe, die Dateien senden | ✓ `blueferry cards` |
 
 **From Plugins** unter dem Wiedergabestreifen zeigt, solange die
 Unterhaltungen zu sehen sind, was deine [Plugins](plugins.md) anbieten, etwa
