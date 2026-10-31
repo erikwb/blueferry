@@ -10,6 +10,24 @@ desktops.
 
 ![GTK client](../../images/gtk.png)
 
+**Settings** (main menu, `Ctrl+,`) has the same categories as the KDE
+client, one page each; the switcher sits in the header bar, or at the
+bottom in a narrow window, and the search button finds any setting:
+
+| Category | What's there |
+| --- | --- |
+| Phone | Pairing, connection health with **Reconnect**, **Run Diagnostics** (the same checks as `blueferry doctor`; the report opens in its own dialog with a copy button), pairing report, contact sync, contact photos |
+| Notifications | Which events create popups, contacts only, click rules, notification content, action buttons, sync notifications with iPhone, mark read on dismiss, keeping recent notifications |
+| Calls & Audio | Phone calls, call history, battery warning, [iPhone sound on this computer](phone-audio.md), media control |
+| Network | Opt-in [Bluetooth tethering](bluetooth-tethering.md) |
+| Security | One-time codes, away lock, local storage and its encryption, Clear History |
+| About | Version, the background service, About BlueFerry, keyboard shortcuts, **Restart Service**, Quit |
+
+The switches that need a restart (below) work as in the KDE client: while a
+change waits for the restart, every page starts with a notice and
+**Restart Service**. The GTK client doesn't have the plugin settings yet;
+use the KDE client or `blueferry plugins` for those.
+
 ## KDE Plasma (Kirigami)
 
 `blueferry-qt` is a Kirigami app for KDE Plasma. It isn't available on
@@ -28,11 +46,15 @@ tabs:
   chat.
 - **Calls**: [phone calls](calls.md) with a dial pad and running calls as
   cards (answer, hold, hang up), and the [call history](call-history.md)
-  grouped by day, with All and Missed.
+  grouped by day, with All and Missed. Dialing asks you to confirm the number;
+  names and numbers with extensions are never converted into another number.
 - **Notifications**: the [recent iPhone notifications](notification-history.md)
   of other apps.
 
 In a narrow window the card folds behind the phone button in the header.
+Messages are marked read only while their conversation is visible and the
+window has focus. The phone card's sound switch controls media playback;
+it does not switch the audio of a phone call.
 
 **Settings** (the gear in the header) has categories on the left, like KDE's
 System Settings:
@@ -42,6 +64,7 @@ System Settings:
 | Phone | Pairing, connection health, **Run Diagnostics** (the same checks as `blueferry doctor`, shown in the window), contact sync, contact photos |
 | Notifications | Which events create popups, contacts only, click rules, notification content, action buttons, sync notifications with iPhone, mark read on dismiss, muted apps |
 | Calls & Audio | Phone calls, call history, battery warning, [iPhone sound on this computer](phone-audio.md), media control |
+| Network | [Bluetooth tethering](bluetooth-tethering.md), share iPhone Internet, automatic hotspot connection |
 | Security | One-time codes, away lock, local storage and its encryption, Clear History |
 | About | Version, the background service, keyboard shortcuts, Quit |
 

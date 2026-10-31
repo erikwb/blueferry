@@ -22,6 +22,13 @@ ColumnLayout {
 
     SectionHeader {
         text: qsTr("Recent Photos")
+        Controls.BusyIndicator {
+            objectName: "photosBusyIndicator"
+            running: tab.photos.busy === true
+            visible: running
+            Layout.preferredHeight: Kirigami.Units.iconSizes.smallMedium
+            Layout.preferredWidth: Kirigami.Units.iconSizes.smallMedium
+        }
         FilterBar {
             objectName: "photosFilter"
             visible: tab.photos.ready === true
@@ -38,7 +45,7 @@ ColumnLayout {
             icon.name: "view-refresh"
             text: qsTr("Refresh")
             display: Controls.AbstractButton.IconOnly
-            enabled: tab.photos.present === true
+            enabled: tab.photos.present === true && tab.photos.busy !== true
             Accessible.name: text
             Controls.ToolTip.visible: hovered
             Controls.ToolTip.text: text
@@ -90,6 +97,7 @@ ColumnLayout {
         GridView {
             id: grid
             objectName: "photosGrid"
+            enabled: tab.photos.busy !== true
             clip: true
             activeFocusOnTab: true
             keyNavigationEnabled: true

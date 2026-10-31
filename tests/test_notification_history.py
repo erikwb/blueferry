@@ -1,6 +1,8 @@
 """The opt-in Notifications tab state shared by the clients: no toolkit."""
 from __future__ import annotations
 
+import pytest
+
 from blueferry.notification_history import LIMIT, REFRESH_DELAY_MS, NotificationHistory
 from tests.client_fakes import ManualRunner
 
@@ -20,6 +22,9 @@ def _history(work: ManualRunner, answer=lambda: SNAPSHOT):
 
     history = NotificationHistory(runner=work, timer=work.timer, fetch=fetch,
                                   on_change=lambda: changes.append(None))
+    history.sync_status({"daemon": True, "notification_history_enabled": True,
+                         "notification_content_shown": True, "storage_state": "ready"})
+    changes.clear()
     return history, calls, changes
 
 
@@ -85,3 +90,44 @@ def test_a_failure_stays_in_the_tab() -> None:
     history.refresh()
     work.run_tasks()
     assert history.info["error"] == "Notifications are unavailable"
+
+
+@pytest.mark.parametrize("change", [
+    {"daemon": False}, {"storage_state": "locked"},
+    {"notification_content_shown": False}, {"phone_profile_id": "another-phone"},
+])
+@pytest.mark.parametrize("fails", [False, True])
+def test_inflight_reply_cannot_cross_privacy_or_profile_change(change, fails):
+    def answer():
+        if fails:
+            raise RuntimeError("old phone error")
+        return {"enabled": True, "content": True, "notifications": [
+            {"app_id": "chat", "body": "old phone body"},
+        ]}
+
+    work = ManualRunner()
+    history, _calls, _changes = _history(work, answer)
+    history.watch(True)
+    reply = work.start_next()
+    history.sync_status({"daemon": True, "notification_history_enabled": True,
+                         "notification_content_shown": True, "storage_state": "ready", **change})
+    reply()
+    assert history.rows == [] and history.info["error"] == ""
+    # At most one fresh read follows; a locked/unavailable backend gets none.
+    assert len(work.pending) == (0 if not history._available() else 1)
+
+
+def test_refresh_storm_coalesces_and_tab_reopen_rejects_old_response():
+    work = ManualRunner()
+    history, calls, _changes = _history(work)
+    history.watch(True)
+    reply = work.start_next()
+    for _ in range(30):
+        history.refresh()
+    assert not work.pending and calls == [LIMIT]
+    history.watch(False)
+    history.watch(True)
+    reply()
+    assert history.rows == [] and len(work.pending) == 1
+    work.run_tasks()
+    assert calls == [LIMIT, LIMIT] and history.rows
