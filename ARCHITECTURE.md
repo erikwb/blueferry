@@ -202,6 +202,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `plugin_stopper.py` | After an update, removal or disabling, SIGTERMs the owner of the plugin's bus name if it runs as the user from the plugin's old venv (pidfd, never SIGKILL, never BlueFerry itself); blocking, worker thread or CLI only. |
 | `plugin_index.py` | Plugin store: fetches (https on every redirect hop), validates and caches curated index files. |
 | `plugin_prefs.py` | Reads which plugins are disabled without the plugin manager. |
+| `plugin_card_watch.py` | dbus-python `CardChangeWatcher`: one `CardChanged` match per enabled card plugin's bus name (matched against its owner), for the Quickshell bridge and the terminal client; GTK has the GDBus twin. |
 | `plugin_logs.py` | Finds a plugin's standard log file and reads its tail without following symlinks. |
 | `plugin_settings_view.py` | Toolkit-free plugin rows, store cards and settings forms, used by `plugin_settings_model.py` and the Qt views (`qt/qml/SettingsPlugins.qml`, `qt/qml/PluginConfigForm.qml`, `qt/qml/PluginStoreCard.qml`). |
 | `plugin_settings_model.py`, `qt/plugin_settings.py` | Toolkit-neutral plugin management shared by Qt and (soon) GTK: install/update/remove with confirmation, the enable/disable kill switch, settings form load/save/test, browser sign-in polling, settings actions, store and indexes, one step at a time on a `TaskRunner`. Late answers never reach a closed or different form. `qt/plugin_settings.py` only adapts it to a `QThreadPool`, a `QTimer` and the `changed` signal. |
