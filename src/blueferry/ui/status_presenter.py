@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 
 from blueferry.i18n import _
 from blueferry.models import BackendStatus, phone_status_fields
+from blueferry.tether_status import TetherStatus
 
 
 def map_connection_refused(status: Mapping) -> bool:
@@ -67,3 +69,56 @@ def connection_subtitle(status: Mapping, *, reachable: bool) -> str:
     if phone:
         subtitle = _("{state} · {phone}").format(state=subtitle, phone=" · ".join(phone))
     return subtitle
+
+
+@dataclass(frozen=True)
+class TetherControls:
+    """What the GTK Internet Sharing group shows for one tether state."""
+
+    group_visible: bool = False
+    enable_active: bool = False
+    enable_sensitive: bool = False
+    connect_visible: bool = False
+    connect_active: bool = False
+    connect_sensitive: bool = False
+    auto_visible: bool = False
+    auto_active: bool = False
+    auto_sensitive: bool = False
+    summary: str = ""
+    warning: bool = False
+
+
+def tether_controls(
+    tether: TetherStatus | None, *, reachable: bool, pending: bool
+) -> TetherControls:
+    """Parity with the Qt TetherSection.
+
+    The section exists only when the daemon offers Tether1. The connect
+    switch, automatic tethering, and the state line appear only once the
+    user enabled tethering; until then BlueFerry ignores PAN links.
+    """
+    if tether is None:
+        return TetherControls()
+    enabled = tether.enabled
+    transitioning = pending or tether.state in {"connecting", "disconnecting"}
+    if enabled:
+        summary = tether.summary()
+    else:
+        summary = _(
+            "Lets BlueFerry use the iPhone's Personal Hotspot over Bluetooth. "
+            "While this is off, BlueFerry leaves Bluetooth network connections "
+            "alone, including ones started from the network applet."
+        )
+    return TetherControls(
+        group_visible=True,
+        enable_active=enabled,
+        enable_sensitive=reachable and not pending,
+        connect_visible=enabled,
+        connect_active=tether.state in {"connected", "connecting"},
+        connect_sensitive=reachable and not transitioning,
+        auto_visible=enabled,
+        auto_active=tether.autoconnect,
+        auto_sensitive=reachable and not pending,
+        summary=summary,
+        warning=enabled and tether.state == "failed",
+    )

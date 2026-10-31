@@ -1,8 +1,8 @@
-"""Pure presentation helpers for the Qt phone overview (card and tabs).
+"""Toolkit-neutral presentation of the phone overview (card and tabs).
 
 The rules live in :mod:`blueferry.phone_overview`; this module adapts them
-to the QML keys. Kept free of Qt so the wording and the opt-in hints are
-unit-testable. Every string returned here is plain text; QML renders it with
+to the keys the clients bind (the Qt client's QML today, the GTK client
+next). Every string returned here is plain text; QML renders it with
 Text.PlainText.
 """
 from __future__ import annotations
@@ -38,7 +38,7 @@ def feature_hints(status: Mapping[str, Any]) -> dict[str, str]:
     return hints
 
 
-def notification_rows(records: object) -> list[dict[str, str]]:
+def notification_rows(records: object, *, content: bool = True) -> list[dict[str, str]]:
     """Normalize ListNotifications records for the Notifications tab."""
     rows: list[dict[str, str]] = []
     if not isinstance(records, list):
@@ -50,8 +50,8 @@ def notification_rows(records: object) -> list[dict[str, str]]:
         rows.append({
             "app": app,
             "time": format_message_timestamp(str(record.get("time") or "")),
-            "title": str(record.get("title") or ""),
-            "subtitle": str(record.get("subtitle") or ""),
-            "body": str(record.get("body") or ""),
+            "title": str(record.get("title") or "") if content else "",
+            "subtitle": str(record.get("subtitle") or "") if content else "",
+            "body": str(record.get("body") or "") if content else "",
         })
     return rows

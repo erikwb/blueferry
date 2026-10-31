@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import threading
 import time
 from collections import deque
@@ -162,6 +163,18 @@ class PluginService(dbus.service.Object):
     def config_login_cancel(self, login_id: str) -> None:
         """Blocking; worker thread. Stop the flow; no answer expected."""
 
+    def config_action(self, action_id: str) -> surfaces.ActionResult | dict[str, object]:
+        """Blocking; worker thread. ApiVersion 1.6: the user pressed the
+        settings form's button ``[ConfigAction <action_id>]``.
+
+        Work with the stored settings (the client disables the buttons
+        while the form has unsaved edits). Return ``ActionResult(ok,
+        message, open_uri)``; an ``open_uri`` is opened like a card
+        action's (http(s), or a file in the plugin's cache directory). The
+        form reloads the settings afterwards, so an action may change them.
+        """
+        raise PluginCallError("this plugin has no settings actions")
+
     # ---- helpers ---------------------------------------------------------
 
     def _submit(self, work: Callable[[], None]) -> None:
@@ -172,8 +185,34 @@ class PluginService(dbus.service.Object):
             )
         self._executor.submit(work)
 
+    def _authorize(self, sender: str | None) -> None:
+        """Only the service's Unix user may invoke an exported plugin.
+
+        Ask the bus about the message's unique sender, never a well-known
+        name whose owner can change. Check each call so exporting the object
+        on another connection cannot reuse credentials from an earlier bus.
+        An unexported object has only in-process callers (the SDK harness).
+        """
+        connection = getattr(self, "_connection", None)
+        if connection is None:
+            return
+        identity = str(sender or "")
+        if not identity.startswith(":"):
+            raise AccessDeniedError("D-Bus caller identity is unavailable")
+        try:
+            uid = int(connection.call_blocking(
+                "org.freedesktop.DBus", "/org/freedesktop/DBus",
+                "org.freedesktop.DBus", "GetConnectionUnixUser", "s", (identity,),
+                timeout=1.0,
+            ))
+        except Exception:
+            raise AccessDeniedError("D-Bus caller credentials could not be verified") from None
+        if uid != os.getuid():
+            raise AccessDeniedError("D-Bus caller is not authorized")
+
     def admit(self, sender: str | None) -> None:
-        """Count one call; raise RateLimitedError over the budget."""
+        """Authorize and count a call before running hooks or queuing work."""
+        self._authorize(sender)
         now = self._clock()
         self.last_activity = now
         key = str(sender)
@@ -330,6 +369,28 @@ class PluginService(dbus.service.Object):
             return json.dumps({"ok": True})
 
         self.run_async(work, reply, error)
+
+    @dbus.service.method(
+        PLUGIN_INTERFACE, in_signature="s", out_signature="s",
+        async_callbacks=("reply", "error"), sender_keyword="sender",
+    )
+    def RunConfigAction(self, action_id, reply, error, sender=None) -> None:
+        self.admit(sender)
+        ident = str(action_id)
+        self.run_async(lambda: self._run_config_action(ident), reply, error)
+
+    def _run_config_action(self, action_id: str) -> str:
+        self._fields()
+        # Only the buttons the manifest declares; anything else never
+        # reaches the hook.
+        if self.manifest.config_action(action_id) is None:
+            raise PluginCallError("this plugin has no such settings action")
+        result = self.config_action(action_id)
+        log.info("plugin settings action run")
+        try:
+            return surfaces.result_json(result)
+        except TypeError as failure:
+            raise PluginCallError(str(failure)) from None
 
     def _fields(self):
         if not self.manifest.config:

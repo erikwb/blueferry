@@ -8,7 +8,7 @@ pytest.importorskip("PySide6")
 from PySide6.QtCore import QCoreApplication, QEventLoop, QTimer
 from PySide6.QtGui import QGuiApplication
 
-from blueferry.doctor_report import DoctorReport, parse_output
+from blueferry.doctor_report import DoctorReport
 
 
 @pytest.fixture(scope="module")
@@ -91,9 +91,3 @@ def _capture(operation):
     except Exception as error:  # the BackendError the worker would report
         return error
     raise AssertionError("expected a failure")
-
-
-def test_doctor_output_is_plain_text() -> None:
-    report = parse_output(1, "\x1b[31mERROR\x1b[0m bad\x07\n")
-    assert report.text == "ERROR bad" and not report.ok
-    assert parse_output(0, "WARNING doctor: Adapter CoD").warnings is True

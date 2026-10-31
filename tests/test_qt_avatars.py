@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 os.environ["QT_QPA_PLATFORM"] = "offscreen"
-pytest.importorskip("PySide6")
+pytest.importorskip("PySide6.QtTest")
 
 from PySide6.QtCore import (
     Property,

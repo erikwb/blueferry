@@ -15,7 +15,6 @@ Kirigami.ApplicationWindow {
     property string selectedThreadKey: ""
     onSelectedThreadKeyChanged: root.markSelectedThreadRead()
     onActiveChanged: root.markSelectedThreadRead()
-    onIphoneSettingsPageChanged: Qt.callLater(root.markSelectedThreadRead)
     property bool firstRunRedirected: false
     property var iphoneSettingsPage: null
     property string pendingMessageHandle: ""
@@ -51,7 +50,8 @@ Kirigami.ApplicationWindow {
     }
 
     function markSelectedThreadRead() {
-        if (!root.visible || !root.active || root.iphoneSettingsPage !== null)
+        if (!root.visible || !root.active || !root.tabsVisible
+                || root.iphoneSettingsPage !== null || root.currentTab !== root.messagesTab)
             return
         const thread = selectedThread()
         if (thread && threadIsUnread(thread))
@@ -136,26 +136,44 @@ Kirigami.ApplicationWindow {
     readonly property int messagesTab: 0
     readonly property int callsTab: 1
     readonly property int notificationsTab: 2
+    readonly property int photosTab: 3
     property int currentTab: messagesTab
     property bool callHistoryWatched: false
     property bool notificationsWatched: false
-    onCurrentTabChanged: root.syncWatches()
+    property bool photosWatched: false
+    readonly property bool tabsVisible: root.visible && root.visibility !== Window.Minimized
+        && root.iphoneSettingsPage === null && tabsContent.visible
+    onCurrentTabChanged: {
+        root.syncWatches()
+        Qt.callLater(root.markSelectedThreadRead)
+    }
+    onTabsVisibleChanged: {
+        root.syncWatches()
+        Qt.callLater(root.markSelectedThreadRead)
+    }
 
     function syncWatches() {
-        const calls = root.currentTab === root.callsTab && bridge.callHistoryEnabled === true
+        const calls = root.tabsVisible && root.currentTab === root.callsTab
+            && bridge.callHistoryEnabled === true
         if (calls !== root.callHistoryWatched) {
             root.callHistoryWatched = calls
             bridge.watchCallHistory(calls)
         }
-        const notifications = root.currentTab === root.notificationsTab
+        const notifications = root.tabsVisible && root.currentTab === root.notificationsTab
         if (notifications !== root.notificationsWatched) {
             root.notificationsWatched = notifications
             bridge.watchNotifications(notifications)
+        }
+        const photos = root.tabsVisible && root.currentTab === root.photosTab
+        if (photos !== root.photosWatched) {
+            root.photosWatched = photos
+            bridge.watchPhotos(photos)
         }
     }
 
     function showTab(tab) {
         closePhoneSettings()
+        messagesPage.cardOpen = false
         pageStack.currentIndex = 0
         currentTab = tab
     }
@@ -578,6 +596,7 @@ Kirigami.ApplicationWindow {
                     }
 
                     ColumnLayout {
+                        id: tabsContent
                         Layout.fillWidth: true
                         Layout.fillHeight: true
                         visible: !messagesPage.compact || !messagesPage.cardOpen
@@ -604,6 +623,11 @@ Kirigami.ApplicationWindow {
                                 objectName: "notificationsTabButton"
                                 text: qsTr("Notifications")
                                 icon.name: "notifications"
+                            }
+                            Controls.TabButton {
+                                objectName: "photosTabButton"
+                                text: qsTr("Photos")
+                                icon.name: "folder-pictures"
                             }
                         }
 
@@ -725,6 +749,9 @@ Kirigami.ApplicationWindow {
                                                 )
                                             }
                                             TapHandler {
+                                                // ListRow's default children belong to its
+                                                // trailing actions; handle the whole row here.
+                                                parent: threadDelegate
                                                 acceptedButtons: Qt.RightButton
                                                 onTapped: eventPoint => {
                                                     threadContextMenu.threadKey = threadDelegate.modelData.key
@@ -984,6 +1011,10 @@ Kirigami.ApplicationWindow {
                             }
 
                             NotificationsTab {
+                                bridge: root.bridge
+                            }
+
+                            PhotosTab {
                                 bridge: root.bridge
                             }
                         }

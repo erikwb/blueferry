@@ -248,7 +248,9 @@ that adapts to narrow terminals.
 `blueferry-tray` ships with the Qt client: a small separate process for the
 system tray (a StatusNotifierItem under KDE Plasma). Its phone icon carries
 the number of unread messages; the tooltip shows the connection, battery,
-signal, and network. Left-click opens the Qt client (or raises it). The tray
+signal, and network. Left-click opens the BlueFerry client you use, or
+raises it: a running one first, otherwise the one you used last, otherwise
+the one that suits your desktop. **Quit Tray Icon** closes only the tray item. The tray
 only talks to a running backend and never starts or restarts the daemon.
 While it runs, `blueferry-qt` leaves out its own tray icon.
 
@@ -461,11 +463,11 @@ physical iPhone.
 
 Restart the user service after editing `local.env` settings.
 
-Three on/off switches without a setting of their own
-(`BLUEFERRY_SHOW_NOTIFICATION_CONTENT`, `BLUEFERRY_MARK_READ_ON_DISMISS`,
-`BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE`) can also be changed in the Qt settings
+Two on/off switches without a setting of their own
+(`BLUEFERRY_SHOW_NOTIFICATION_CONTENT`, `BLUEFERRY_MARK_READ_ON_DISMISS`)
+can also be changed in the Qt settings
 or with `blueferry features` (`blueferry features off
-keep_phone_audio_on_phone`). They are stored in
+mark_read_on_dismiss`). They are stored in
 `~/.config/blueferry/settings.json`, override `local.env`, and apply after
 the service restarts; a variable set in the service's own environment still
 wins.
@@ -796,6 +798,37 @@ iPhone's connection once (see
 [Reconnect and self-healing](#reconnect-and-self-healing)). Audio routing
 itself is PipeWire's job; BlueFerry only controls the call.
 
+## Companion tools (optional)
+
+The Qt phone card (section **Tools**) and `blueferry tools` can start three
+programs that BlueFerry does not ship. Each entry only works when its tool
+is installed; otherwise it stays greyed out with what to install. These are
+local client actions; the daemon is not involved.
+
+- **Mirror iPhone screen** starts [UxPlay](https://github.com/FDH2/UxPlay).
+  A `uxplay.desktop` entry (with your own UxPlay options) is used when
+  present, otherwise `uxplay -n <host name> -nh`. On the iPhone, open Control
+  Center, tap Screen Mirroring and choose this computer. The same entry stops
+  the UxPlay that BlueFerry started (tracked by a pid file in
+  `$XDG_RUNTIME_DIR/blueferry`, never by a process search).
+- **Send a file (LocalSend)** opens the Flathub app
+  `org.localsend.localsend_app`, or `localsend` from PATH.
+- **iPhone photos (USB)** needs `ifuse` and libimobiledevice (`idevice_id`,
+  `idevicepair`) and an iPhone on a USB cable. It mounts the camera roll at
+  `$XDG_RUNTIME_DIR/blueferry/iphone-photos` (mode 0700) and opens `DCIM` in
+  the file manager; **Eject** runs `fusermount3 -u`. If the iPhone does not
+  trust this computer yet, unlock it and confirm "Trust This Computer"; "Ask
+  the iPhone again" runs `idevicepair pair`.
+
+```sh
+blueferry tools            # which tools are ready
+blueferry tools mirror     # start or stop UxPlay
+blueferry tools send
+blueferry tools photos     # mount and open the camera roll
+blueferry tools eject
+blueferry tools pair       # ask the iPhone to trust this computer
+```
+
 ## Plugins (optional)
 
 Features outside messaging run as separate plugin processes on your session
@@ -803,22 +836,29 @@ bus, not inside the backend (see [PLUGINS.md](PLUGINS.md)). Nothing is
 installed by default.
 
 - **Install** with `blueferry plugins install URL` (any https Git URL) or
-  pick one from the curated store (`blueferry plugins available`). Every install and update
+  pick one from the curated store (`blueferry plugins available`), or from
+  **Settings › Plugins** in the Qt client. Every install and update
   shows the source, the pinned ref and commit, the capabilities and the
   command the plugin's manifest runs (`Exec`), and asks first. Each plugin
   gets its own virtual environment under `~/.local/share/blueferry/plugins`;
   pip fetches its dependencies from the network. Everything runs as you;
   nothing asks for root.
-- **Settings** of a plugin come from its schema:
+- **Settings** of a plugin come from its schema: a form in the Qt client with
+  help links, **Test connection**, where offered a browser sign-in and the
+  plugin's own buttons (such as "Set up iPhone"), or
   `blueferry plugins config ID --set KEY=VALUE --secret KEY` (`--test`,
-  `--login`). BlueFerry stores no plugin secrets; each plugin keeps its own
-  (the published plugins use the desktop keyring).
+  `--login`, `--action ACTION`). BlueFerry stores no plugin secrets; each
+  plugin keeps its own (the published plugins use the desktop keyring).
 - **Disable** stops BlueFerry from calling a plugin at once and stops a
   plugin process it installed; `blueferry plugins disable ID`.
 - **Card and Send to**: `blueferry cards` lists what plugins offer, for
   example the next calendar entry or a running transfer, with their
   actions; `blueferry send FILE --to TARGET` hands files to a plugin target
   such as "iPhone (LocalSend)".
+- **From Plugins** in the Qt phone card shows the same items with buttons;
+  a plugin that fails shows a dimmed line. **Send to…** at the end of that
+  section hands files to a plugin target, and an item can also take files
+  directly (file dialog or drop).
 - **Popups** from plugins follow BlueFerry's notification setting: off with
   "None", only the plugin name while notification content is hidden, at most
   six a minute per plugin. The popup's text never travels on a D-Bus
@@ -826,9 +866,9 @@ installed by default.
 - **Photos**: with a plugin that has the `photos` capability, such as
   [blueferry-plugin-immich](https://github.com/joshii-h/blueferry-plugin-immich)
   for a self-hosted Immich server, `blueferry photos recent` lists the newest
-  photos and videos.
+  photos and videos and the Qt client's **Photos** tab shows them.
 - **Logs**: plugins write `~/.local/state/blueferry/plugins/<id>.log`
-  (owner-only, rotated, secrets masked); `blueferry plugins log ID`.
+  (owner-only, rotated, secrets masked); `blueferry plugins log ID` or **Show Log** in the settings.
 
 ```bash
 blueferry plugins list
@@ -843,6 +883,12 @@ blueferry photos recent
 
 Plugin text is plain text, and a plugin may only ask BlueFerry to open web
 links or files in its own cache.
+A plugin can replace a companion tool: while the
+LocalSend plugin is enabled, the LocalSend app disappears from **Tools**,
+because both would answer on the same port.
+If a plugin replaces UxPlay while mirroring is already running, **Stop
+mirroring** stays available until that receiver exits. BlueFerry blocks
+new starts while the replacement is enabled.
 
 ## Lock when the iPhone goes away
 
@@ -1012,6 +1058,85 @@ of waiting forever.
 BlueFerry deliberately does not use AVRCP for this: acting as an AVRCP
 controller could make the iPhone route its audio to this computer.
 
+## Internet sharing (experimental)
+
+BlueFerry can also use the iPhone's Personal Hotspot over Bluetooth (PAN).
+This is off until you enable it: tick **Enable Bluetooth tethering** under
+**Internet Sharing** in the iPhone settings of the KDE or GTK client (the
+Quickshell client has the same checkbox, the terminal client has it behind
+`t`), or run `blueferry tether enable`. While it is off, BlueFerry leaves
+Bluetooth network connections alone entirely (see below). This has only been
+exercised against simulated BlueZ and NetworkManager services, not yet with a
+real iPhone.
+
+1. Enable Bluetooth tethering as described above. The **Share iPhone
+   Internet** switch and **Connect automatically** then appear.
+2. On the iPhone, open **Settings → Personal Hotspot** and turn on **Allow
+   Others to Join**. When it is off the connection usually fails, and
+   BlueFerry points you here.
+3. Make sure BlueFerry's normal connection to the iPhone is up. Tethering
+   uses that existing Bluetooth link and never connects or disconnects the
+   phone itself, so messages, contacts and notifications keep working.
+4. Run `blueferry tether on` or flip the switch. `blueferry tether off` or the
+   switch turns it off again.
+
+With NetworkManager running, BlueFerry asks it to activate the phone's
+Bluetooth network (PAN) profile. If one already exists, for example because
+you connected through the Plasma network applet before, BlueFerry reuses it
+as is and never changes or deletes it. Only when there is none does it create
+"BlueFerry iPhone hotspot": visible only to your user, with autoconnect
+turned off, so NetworkManager does not tether by itself because of it.
+NetworkManager handles the address and DNS. If NetworkManager reports a
+permission error, the daemon is probably not part of an active desktop
+session as far as polkit is concerned.
+
+Without NetworkManager, BlueFerry brings up only the Bluetooth link and prints
+the interface name (usually `bnep0`). Run your own DHCP client on it, for
+example `sudo dhcpcd bnep0`; BlueFerry never runs privileged commands. BlueZ
+does not end that link when the daemon stops, so it keeps running across a
+daemon restart (and is picked up again while tethering is enabled); end it
+with `blueferry tether off`.
+
+The kernel needs Bluetooth BNEP support (`CONFIG_BT_BNEP`), and BlueZ needs
+its network plugin. The choices made in a client or with `blueferry tether
+enable [--autoconnect|--no-autoconnect]` / `disable` are saved in
+`settings.json` and take precedence. Optional settings in
+`~/.config/blueferry/local.env` only provide the first values:
+
+```bash
+# Initial opt-in (off by default); a saved choice wins.
+BLUEFERRY_TETHER_ENABLED=false
+# Tether automatically once messages are connected (off by default; only
+# while tethering is enabled). `blueferry tether off` pauses this until the
+# next explicit `on`, also across daemon restarts. A saved choice wins.
+BLUEFERRY_TETHER_AUTOCONNECT=false
+# auto (default) prefers NetworkManager; bluez forces the link-only mode.
+BLUEFERRY_TETHER_BACKEND=auto
+```
+
+While tethering is **off** (the default):
+
+- BlueFerry does not watch the phone's Bluetooth network state and never
+  adopts a tether another tool started, for example from the Plasma network
+  applet.
+- Such a tether does not hold back BlueFerry's last-resort Bluetooth adapter
+  recovery, so notification (ANCS) recovery keeps working as before.
+- `blueferry tether on` and the D-Bus `Connect` call are refused with a
+  message that says how to enable it.
+
+While it is **on**:
+
+- A tether started elsewhere is shown as active in BlueFerry and can be
+  turned off from it.
+- While a tether link demonstrably exists (its network interface is present,
+  also after udev renamed `bnep0` to a predictable name), BlueFerry skips its last-resort Bluetooth adapter power cycle so it does not
+  cut your connection. This applies to applet-started tethers too.
+- Turning a tether off in the network applet counts as a deliberate stop:
+  automatic tethering does not bring it back until you turn it on again.
+
+Turning tethering off stops a tether BlueFerry started, stops watching, and
+releases the recovery hold at once. A tether another tool started keeps
+running; BlueFerry just stops tracking it.
 ### iPhone sound on this computer (optional)
 
 When this computer offers the Bluetooth audio sink role, BlueFerry can move
@@ -1054,6 +1179,7 @@ blueferry otp status
 blueferry notifications open-map list
 blueferry notifications sync status
 blueferry doctor
+blueferry tether            # status; also: enable, disable, on, off
 blueferry reconnect         # page the iPhone now instead of waiting
 ```
 

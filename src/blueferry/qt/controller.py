@@ -5,6 +5,7 @@ from __future__ import annotations
 import threading
 from collections import OrderedDict
 from collections.abc import Callable
+from typing import Any
 
 from PySide6.QtCore import (
     SLOT,
@@ -17,10 +18,17 @@ from PySide6.QtCore import (
 )
 from PySide6.QtDBus import QDBusConnection
 
-from blueferry import __version__, phone_audio_view, phone_overview
+from blueferry import (
+    __version__,
+    doctor_report,
+    features_view,
+    phone_audio_view,
+    phone_link_view,
+    phone_overview,
+)
 from blueferry.backend_lifecycle import ensure_backend_current, restart_backend
 from blueferry.bluetooth_devices import iphone_candidates
-from blueferry.client import BackendClient
+from blueferry.client import BackendClient, TetherUnsupportedError
 from blueferry.conversation_state import (
     ConversationSnapshot,
     ConversationState,
@@ -30,11 +38,15 @@ from blueferry.conversation_state import (
 from blueferry.doctor_report import DoctorReport, run_doctor
 from blueferry.i18n import _
 from blueferry.models import BackendStatus, CallsSnapshot
+from blueferry.notification_history import NotificationHistory
 from blueferry.onboarding import OnboardingState, effective_compatibility
-from blueferry.protocol import BUS_NAME, EVENTS_IFACE, OBJECT_PATH
-from blueferry.qt import phone_link
+from blueferry.photos_model import PhotosTabModel
+from blueferry.protocol import BUS_NAME, EVENTS_IFACE, OBJECT_PATH, TETHER_IFACE
 from blueferry.qt.avatars import avatar_url
-from blueferry.qt.tasks import Task
+from blueferry.qt.companion import CompanionTools
+from blueferry.qt.plugin_settings import PluginSettings
+from blueferry.qt.plugin_surfaces import PluginSurfaces
+from blueferry.qt.tasks import QtTaskRunner, Task, qt_timers
 from blueferry.quirks_report import issue_report, issue_url
 from blueferry.reconnect_view import UNREACHABLE_TEXT, reconnect_view, result_text
 from blueferry.service_manager import bluetooth_restart_command
@@ -44,6 +56,7 @@ from blueferry.setup_client import (
     SetupClient,
 )
 from blueferry.tel_links import dial_request, known_contact_name
+from blueferry.tether_status import TetherStatus
 
 # Bounds on the per-window avatar cache (least recently used entries are
 # dropped). The count covers a long list of small photos; the byte bound
@@ -55,6 +68,44 @@ MAX_CACHED_AVATAR_BYTES = 16 * 1024 * 1024
 MAX_PENDING_AVATARS = 32
 AVATAR_RETRY_SECONDS = 30
 AVATAR_RETRY_MAX_SECONDS = 600
+
+
+class _WorkerRunner:
+    """:class:`blueferry.client_tasks.TaskRunner` on the controller's
+    serialized D-Bus worker (``BridgeController._run``), with or without the
+    busy indicator. ``_run`` is looked up per call, so tests that replace it
+    run these tasks inline too."""
+
+    def __init__(self, controller: BridgeController, *, busy: bool = False) -> None:
+        self._controller = controller
+        self._busy = busy
+
+    def submit(
+        self,
+        operation: Callable[[], object],
+        on_done: Callable[[Any], None] | None = None,
+        on_error: Callable[[str], None] | None = None,
+        on_finished: Callable[[], None] | None = None,
+    ) -> None:
+        controller = self._controller
+        if on_finished is None:
+            controller._run(operation, on_done, on_error, busy=self._busy)
+            return
+
+        def done(value: object) -> None:
+            try:
+                if on_done is not None:
+                    on_done(value)
+            finally:
+                on_finished()
+
+        def failed(message: str) -> None:
+            try:
+                (on_error or controller._operation_failed)(message)
+            finally:
+                on_finished()
+
+        controller._run(operation, done, failed, busy=self._busy)
 
 
 class BridgeController(QObject):
@@ -80,10 +131,15 @@ class BridgeController(QObject):
     callHistoryChanged = Signal()
     nowPlayingChanged = Signal()
     notificationsChanged = Signal()
+    photosChanged = Signal()
+    companionToolsChanged = Signal()
+    pluginSettingsChanged = Signal()
+    pluginSurfacesChanged = Signal()
     phoneIdentityChanged = Signal()
     featuresChanged = Signal()
     doctorChanged = Signal()
     phoneCallsChanged = Signal()
+    tetherChanged = Signal()
     # (number, problem) of a clicked tel:/callto: link to confirm; see
     # tel_links.dial_request. Never dials by itself.
     dialLinkRequested = Signal(str, str)
@@ -96,6 +152,9 @@ class BridgeController(QObject):
         subscribe: bool = True,
         autostart: bool = True,
         parent: QObject | None = None,
+        companion: CompanionTools | None = None,
+        plugin_settings: PluginSettings | None = None,
+        plugin_surfaces: PluginSurfaces | None = None,
         doctor: Callable[[], DoctorReport] = run_doctor,
     ) -> None:
         super().__init__(parent)
@@ -117,11 +176,9 @@ class BridgeController(QObject):
         # Settings: local.env switches (Messages1.GetFeatures) and the doctor
         # report; the doctor runs a local program on its own pool so the
         # D-Bus worker stays free.
-        self._features: dict = {"loaded": False, "available": False, "items": {},
-                                "notice": "", "error": ""}
+        self._features: dict = features_view.initial()
         self._doctor_runner = doctor
-        self._doctor: dict = {"running": False, "ran": False, "ok": False,
-                              "warnings": False, "text": ""}
+        self._doctor: dict = doctor_report.idle_state()
         self._local_pool = QThreadPool(self)
         self._local_pool.setMaxThreadCount(1)
         self._bluetooth_active = False
@@ -189,16 +246,46 @@ class BridgeController(QObject):
         self._now_playing_timer.setInterval(150)
         self._now_playing_timer.timeout.connect(self.refreshNowPlaying)
         # Opt-in app-notification list: fetched only while its tab is shown.
-        self._notifications: list[dict] = []
-        self._notifications_info: dict = {"enabled": False, "content": False, "error": ""}
-        self._notifications_watched = False
-        self._notifications_timer = QTimer(self)
-        self._notifications_timer.setSingleShot(True)
-        self._notifications_timer.setInterval(150)
-        self._notifications_timer.timeout.connect(self.refreshNotifications)
+        self._notification_history = NotificationHistory(
+            runner=_WorkerRunner(self), timer=qt_timers(self),
+            fetch=lambda limit: self._backend.notifications(limit),
+            on_change=self.notificationsChanged.emit,
+        )
+        self.statusChanged.connect(
+            lambda: self._notification_history.sync_status(self._status))
         self.devicesChanged.connect(self.phoneIdentityChanged)
         self.configuredChanged.connect(self.phoneIdentityChanged)
+        # The Photos tab (a plugin with the photos capability).
+        self._photos_pool = QThreadPool(self)
+        self._photos_pool.setMaxThreadCount(1)
+        self._photos = PhotosTabModel(
+            runner=QtTaskRunner(self._photos_pool),
+            url=_file_url, open_file=_open_file,
+            on_change=self.photosChanged.emit, on_error=self._operation_failed,
+        )
+        # UxPlay, LocalSend and iPhone photos: client-side, no daemon involved.
+        self._companion = companion or CompanionTools(parent=self)
+        self._companion.changed.connect(self.companionToolsChanged)
+        # Plugin management runs git, pip and plugin calls on its own queue.
+        self._plugin_settings = plugin_settings or PluginSettings(parent=self)
+        self._plugin_settings.changed.connect(self.pluginSettingsChanged)
+        self._tether: dict = {"available": False}
+        self._tether_pending = False
+        self._tether_timer = QTimer(self)
+        self._tether_timer.setSingleShot(True)
+        self._tether_timer.setInterval(100)
+        self._tether_timer.timeout.connect(self.refreshTether)
         self._bus = QDBusConnection.sessionBus() if subscribe else None
+        # "From Plugins" and "Send to…", on their own pool.
+        self._plugin_surfaces = plugin_surfaces or PluginSurfaces(
+            bus=self._bus, parent=self,
+        )
+        self._plugin_surfaces.changed.connect(self.pluginSurfacesChanged)
+        # Enabling, installing or removing a plugin changes the card. None
+        # until the first plugin list has loaded; an empty tuple means "no
+        # plugin installed", so installing the very first one still reloads.
+        self._plugin_set: tuple | None = None
+        self._plugin_settings.changed.connect(self._plugin_set_changed)
         if subscribe:
             self._subscribe()
         if autostart:
@@ -447,7 +534,7 @@ class BridgeController(QObject):
 
     @Property("QVariantMap", notify=statusChanged)
     def featureHints(self):
-        return phone_link.feature_hints(self._status)
+        return phone_link_view.feature_hints(self._status)
 
     @Property(str, notify=phoneIdentityChanged)
     def phoneName(self) -> str:
@@ -457,56 +544,197 @@ class BridgeController(QObject):
                 return str(device["name"])
         return "iPhone"
 
+    @Property("QVariantMap", notify=pluginSettingsChanged)
+    def pluginSettings(self):
+        return self._plugin_settings.state()
+
+    @Slot()
+    def loadPlugins(self) -> None:
+        self._plugin_settings.load()
+
+    @Slot(str, bool)
+    def setPluginEnabled(self, plugin_id: str, enabled: bool) -> None:
+        self._plugin_settings.set_enabled(str(plugin_id), bool(enabled))
+
+    @Slot(str, str)
+    def preparePluginInstall(self, url: str, ref: str) -> None:
+        self._plugin_settings.prepare_install(str(url), str(ref))
+
+    @Slot(str)
+    def installStorePlugin(self, plugin_id: str) -> None:
+        self._plugin_settings.install_from_store(str(plugin_id))
+
+    @Slot(str)
+    def preparePluginUpdate(self, plugin_id: str) -> None:
+        self._plugin_settings.prepare_update(str(plugin_id))
+
+    @Slot()
+    def confirmPluginInstall(self) -> None:
+        self._plugin_settings.confirm_install()
+
+    @Slot()
+    def cancelPluginInstall(self) -> None:
+        self._plugin_settings.cancel_install()
+
+    @Slot(str)
+    def removePlugin(self, plugin_id: str) -> None:
+        self._plugin_settings.remove(str(plugin_id))
+
+    @Slot(str)
+    def loadPluginConfig(self, plugin_id: str) -> None:
+        self._plugin_settings.load_config(str(plugin_id))
+
+    @Slot(str, "QVariantMap")
+    def savePluginConfig(self, plugin_id: str, values: dict) -> None:
+        self._plugin_settings.save_config(str(plugin_id), dict(values or {}))
+
+    @Slot()
+    def closePluginConfig(self) -> None:
+        self._plugin_settings.close_config()
+
+    @Slot(str, "QVariantMap", result="QVariantMap")
+    def checkPluginConfig(self, plugin_id: str, values: dict) -> dict:
+        return self._plugin_settings.check_config(str(plugin_id), dict(values or {}))
+
+    @Slot(str, "QVariantMap")
+    def testPluginConfig(self, plugin_id: str, values: dict) -> None:
+        self._plugin_settings.test_config(str(plugin_id), dict(values or {}))
+
+    @Slot(str, "QVariantMap")
+    def signInPlugin(self, plugin_id: str, values: dict) -> None:
+        self._plugin_settings.sign_in(str(plugin_id), dict(values or {}))
+
+    @Slot()
+    def cancelPluginSignIn(self) -> None:
+        self._plugin_settings.cancel_sign_in()
+
+    @Slot(str)
+    def openPluginLog(self, plugin_id: str) -> None:
+        self._plugin_settings.open_log(str(plugin_id))
+
+    @Slot(str, str)
+    def openPluginHelp(self, plugin_id: str, key: str) -> None:
+        self._plugin_settings.open_help(str(plugin_id), str(key))
+
+    @Slot(str, str)
+    def runPluginConfigAction(self, plugin_id: str, action_id: str) -> None:
+        self._plugin_settings.run_action(str(plugin_id), str(action_id))
+
+    @Slot(bool)
+    def loadPluginStore(self, refresh: bool) -> None:
+        self._plugin_settings.load_store(bool(refresh))
+
+    @Slot("QVariantList")
+    def setPluginIndexes(self, urls: list) -> None:
+        self._plugin_settings.set_indexes([str(url) for url in urls or []])
+
+    @Slot()
+    def clearPluginMessage(self) -> None:
+        self._plugin_settings.clear_message()
+
+    def _plugin_set_changed(self) -> None:
+        state = self._plugin_settings.state()
+        if not state.get("loaded"):
+            return
+        current = tuple(
+            (row.get("id"), row.get("enabled")) for row in state.get("plugins", [])
+        )
+        if current != self._plugin_set:
+            known = self._plugin_set is not None
+            self._plugin_set = current
+            if known:
+                self._plugin_surfaces.schedule_reload()
+                # The photo plugin may be gone or disabled now: forget it
+                # until the next load finds it again.
+                self._photos.plugins_changed()
+
+    @Property("QVariantMap", notify=pluginSurfacesChanged)
+    def pluginSurfaces(self):
+        """cards (per plugin: name, ok, hint, items with actions), busy,
+        message, targets for "Send to…"; everything plain text."""
+        return self._plugin_surfaces.state()
+
+    @Slot()
+    def refreshPluginCards(self) -> None:
+        self._plugin_surfaces.reload()
+
+    @Slot(str, str, str)
+    def invokePluginAction(self, plugin_id: str, item_id: str, action_id: str) -> None:
+        self._plugin_surfaces.invoke(str(plugin_id), str(item_id), str(action_id))
+
+    @Slot()
+    def clearPluginCardMessage(self) -> None:
+        self._plugin_surfaces.clear_message()
+
+    @Slot()
+    def loadShareTargets(self) -> None:
+        self._plugin_surfaces.load_targets()
+
+    @Slot(str, "QVariantList")
+    def sendToTarget(self, key: str, urls: list) -> None:
+        self._plugin_surfaces.send(str(key), list(urls or []))
+
+    @Slot(str, str, str, "QVariantList")
+    def sendFromPluginCard(self, plugin_id: str, target_id: str, label: str, urls: list) -> None:
+        """A card action with send_to, or files dropped on a card item."""
+        self._plugin_surfaces.send_from_card(
+            str(plugin_id), str(target_id), str(label), list(urls or []))
+
+    @Property("QVariantMap", notify=companionToolsChanged)
+    def companionTools(self):
+        return self._companion.state()
+
+    @Slot()
+    def refreshCompanionTools(self) -> None:
+        self._companion.refresh()
+
+    @Slot(str)
+    def runCompanionTool(self, action: str) -> None:
+        self._companion.run(action)
+
+    @Slot()
+    def clearCompanionMessage(self) -> None:
+        self._companion.clear_message()
+
+    @Property("QVariantMap", notify=photosChanged)
+    def photos(self):
+        """present, ready, loaded, hint and items (id, label, video, thumbnail, original)."""
+        return self._photos.state
+
+    @Slot(bool)
+    def watchPhotos(self, watched: bool) -> None:
+        """The Photos tab became visible (load) or hidden (forget the list)."""
+        self._photos.watch(bool(watched))
+
+    @Slot()
+    def refreshPhotos(self) -> None:
+        self._photos.refresh()
+
+    @Slot(str)
+    def openPhoto(self, photo_id: str) -> None:
+        """Download the original (plugin) and open it in the default viewer."""
+        self._photos.open(photo_id)
+
     @Property("QVariantList", notify=notificationsChanged)
     def notifications(self):
-        return self._notifications
+        return self._notification_history.rows
 
     @Property("QVariantMap", notify=notificationsChanged)
     def notificationsInfo(self):
-        return self._notifications_info
+        return self._notification_history.info
 
     @Slot(bool)
     def watchNotifications(self, watched: bool) -> None:
         """The Notifications tab became visible (load) or hidden (forget)."""
-        self._notifications_watched = bool(watched)
-        if self._notifications_watched:
-            self.refreshNotifications()
-            return
-        self._notifications_timer.stop()
-        if self._notifications:
-            self._notifications = []
-            self.notificationsChanged.emit()
+        self._notification_history.watch(bool(watched))
 
     @Slot()
     def refreshNotifications(self) -> None:
-        if not self._notifications_watched:
-            return
-
-        def completed(value: object) -> None:
-            if not self._notifications_watched:
-                return
-            snapshot = value if isinstance(value, dict) else {}
-            self._notifications = phone_link.notification_rows(snapshot.get("notifications"))
-            self._notifications_info = {
-                "enabled": snapshot.get("enabled") is True,
-                "content": snapshot.get("content") is True,
-                "error": "",
-            }
-            self.notificationsChanged.emit()
-
-        def failed(message: str) -> None:
-            self._notifications = []
-            self._notifications_info = {
-                **self._notifications_info, "error": message or _("Notifications are unavailable"),
-            }
-            self.notificationsChanged.emit()
-
-        self._run(lambda: self._backend.notifications(100), completed, failed, busy=False)
+        self._notification_history.refresh()
 
     @Slot()
     def _notificationsInvalidated(self) -> None:
-        if self._notifications_watched:
-            self._notifications_timer.start()
+        self._notification_history.invalidated()
 
     @Property(str, notify=callHistoryChanged)
     def callHistoryError(self) -> str:
@@ -518,6 +746,10 @@ class BridgeController(QObject):
     @Property("QVariantMap", notify=nowPlayingChanged)
     def nowPlaying(self):
         return self._now_playing
+
+    @Property("QVariantMap", notify=tetherChanged)
+    def tether(self):
+        return self._tether
 
     @Property("QVariantList", notify=devicesChanged)
     def devices(self):
@@ -731,6 +963,14 @@ class BridgeController(QObject):
             self,
             SLOT("_callsInvalidated()"),
         )
+        self._bus.connect(
+            BUS_NAME,
+            OBJECT_PATH,
+            TETHER_IFACE,
+            "TetherChanged",
+            self,
+            SLOT("_tetherInvalidated()"),
+        )
 
     @Slot()
     def _nowPlayingInvalidated(self) -> None:
@@ -788,6 +1028,13 @@ class BridgeController(QObject):
     @Slot()
     def _statusInvalidated(self) -> None:
         self._refresh_timer.start()
+        # A replaced daemon or a changed Classic link can change what
+        # tethering reports, and older daemons never send TetherChanged.
+        self._tether_timer.start()
+
+    @Slot()
+    def _tetherInvalidated(self) -> None:
+        self._tether_timer.start()
 
     @Slot(str)
     def _openMessageRequested(self, handle: str) -> None:
@@ -899,6 +1146,7 @@ class BridgeController(QObject):
             self._set_error("")
             if self._configuration.configured:
                 self.refresh()
+                self._tether_timer.start()
             self.loadSetupState()
             self.loadDevices(False)
             self._update_onboarding_stage()
@@ -1090,10 +1338,7 @@ class BridgeController(QObject):
             matches = list(value) if isinstance(value, list) else []
             if not self._state.apply_contact_results(request, matches):
                 return
-            self._contact_results = [
-                {"name": str(name), "address": str(address)}
-                for name, address in self._state.contact_results
-            ]
+            self._contact_results = self._state.contact_result_rows()
             self.contactResultsChanged.emit()
 
         def failed(message: str) -> None:
@@ -1191,9 +1436,9 @@ class BridgeController(QObject):
     @Slot()
     def restartBackend(self) -> None:
         def restarted(_value: object) -> None:
-            self._features = {**self._features, "notice": ""}
-            QTimer.singleShot(800, self.refresh)
-            QTimer.singleShot(1200, self.loadFeatures)
+            self._features = features_view.with_notice(self._features, "")
+            QTimer.singleShot(features_view.RESTART_REFRESH_DELAY_MS, self.refresh)
+            QTimer.singleShot(features_view.RESTART_FEATURES_DELAY_MS, self.loadFeatures)
 
         self._run(restart_backend, restarted)
 
@@ -1206,15 +1451,12 @@ class BridgeController(QObject):
     @Slot()
     def loadFeatures(self) -> None:
         def done(value: object) -> None:
-            items = value if isinstance(value, dict) else {}
-            self._features = {**self._features, "loaded": True, "available": True,
-                              "items": items, "error": ""}
+            self._features = features_view.loaded(self._features, value)
             self.featuresChanged.emit()
 
         def failed(message: str) -> None:
             # Older daemons have no GetFeatures; the UI falls back to hints.
-            self._features = {**self._features, "loaded": True, "available": False,
-                              "items": {}, "error": message}
+            self._features = features_view.unavailable(self._features, message)
             self.featuresChanged.emit()
 
         self._run(lambda: self._backend.features(), done, failed, busy=False)
@@ -1222,13 +1464,8 @@ class BridgeController(QObject):
     @Slot(str, bool)
     def setFeature(self, name: str, enabled: bool) -> None:
         def done(value: object) -> None:
-            notice = {
-                "restart-required": _("Restart the BlueFerry service to apply the change."),
-                "environment": _(
-                    "Saved, but the service's environment sets this variable and wins."
-                ),
-            }.get(str(value), "")
-            self._features = {**self._features, "notice": notice}
+            self._features = features_view.with_notice(
+                self._features, features_view.set_notice(value))
             self.featuresChanged.emit()
             self.loadFeatures()
 
@@ -1242,20 +1479,17 @@ class BridgeController(QObject):
     def runDoctor(self) -> None:
         if self._doctor["running"]:
             return
-        self._doctor = {**self._doctor, "running": True}
+        self._doctor = doctor_report.running_state(self._doctor)
         self.doctorChanged.emit()
         task = Task(self._doctor_runner)
         self._tasks.add(task)
 
         def done(report: object) -> None:
-            if isinstance(report, DoctorReport):
-                self._doctor = {"running": False, "ran": True, "ok": report.ok,
-                                "warnings": report.warnings, "text": report.text}
+            self._doctor = doctor_report.finished_state(self._doctor, report)
             self.doctorChanged.emit()
 
         def failed(message: str) -> None:
-            self._doctor = {"running": False, "ran": True, "ok": False,
-                            "warnings": False, "text": message}
+            self._doctor = doctor_report.failed_state(message)
             self.doctorChanged.emit()
 
         task.signals.done.connect(done)
@@ -1487,6 +1721,93 @@ class BridgeController(QObject):
                 self.statusChanged.emit()
 
         self._run(lambda: self._backend.set_mpris_player(bool(enabled)), completed)
+
+    # ---- opt-in tethering --------------------------------------------------
+
+    def _apply_tether(self, value: object) -> None:
+        if not isinstance(value, TetherStatus):
+            return
+        self._tether = {
+            "available": True,
+            "pending": self._tether_pending,
+            "state": value.state,
+            "interface": value.interface,
+            "backend": value.backend,
+            "external": value.external,
+            "error": value.error,
+            "needs_dhcp": value.needs_dhcp,
+            "enabled": value.enabled,
+            "autoconnect": value.autoconnect,
+            "active": value.active,
+            "summary": value.summary(),
+        }
+        self.tetherChanged.emit()
+
+    def _tether_result(self, value: object) -> None:
+        if value is None:
+            # The running daemon has no Tether1 (an older release): hide the
+            # control. Any other failure keeps the last known state.
+            self._tether = {"available": False}
+            self.tetherChanged.emit()
+            return
+        self._apply_tether(value)
+
+    def _tether_failed(self, message: str) -> None:
+        self._operation_failed(message)
+
+    def _tether_request(self, request: Callable[[], object]) -> Callable[[], object]:
+        def run() -> object:
+            try:
+                return request()
+            except TetherUnsupportedError:
+                return None
+        return run
+
+    @Slot()
+    def refreshTether(self) -> None:
+        self._run(
+            self._tether_request(lambda: self._backend.tether_state()),
+            self._tether_result,
+            self._tether_failed,
+            busy=False,
+        )
+
+    def _tether_command(self, request: Callable[[], object]) -> None:
+        if self._tether_pending:
+            return
+        self._tether_pending = True
+        self._tether = {**self._tether, "pending": True}
+        self.tetherChanged.emit()
+
+        def completed(value: object) -> None:
+            self._tether_pending = False
+            self._tether_result(value)
+
+        def failed(message: str) -> None:
+            self._tether_pending = False
+            self._tether = {**self._tether, "pending": False}
+            self.tetherChanged.emit()
+            self._tether_failed(message)
+            self._tether_timer.start()
+
+        self._run(self._tether_request(request), completed, failed, busy=False)
+
+    @Slot(bool)
+    def setTetherConnected(self, connected: bool) -> None:
+        """Explicit user action; the daemon never tethers without one."""
+        def request() -> object:
+            if connected:
+                return self._backend.tether_connect()
+            return self._backend.tether_disconnect()
+
+        self._tether_command(request)
+
+    @Slot(bool, bool)
+    def setTethering(self, enabled: bool, autoconnect: bool) -> None:
+        """Save the opt-in; off makes the daemon ignore PAN links entirely."""
+        self._tether_command(
+            lambda: self._backend.tether_configure(bool(enabled), bool(autoconnect))
+        )
 
     @Slot(str)
     def setStoragePolicy(self, policy: str) -> None:
@@ -1721,3 +2042,17 @@ class BridgeController(QObject):
 
         adapter = self._configuration.adapter.strip() or None
         self._run(lambda: self._setup.forget(mac, adapter=adapter), completed)
+
+
+def _file_url(path: object) -> str:
+    """A local path as the file URL QML shows ("" for none)."""
+    from PySide6.QtCore import QUrl
+
+    return QUrl.fromLocalFile(str(path)).toString() if path else ""
+
+
+def _open_file(path: object) -> None:
+    from PySide6.QtCore import QUrl
+    from PySide6.QtGui import QDesktopServices
+
+    QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))

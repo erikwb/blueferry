@@ -90,7 +90,8 @@ _SMOKE = textwrap.dedent("""
             super().refresh_threads()
 
     tray = CountingTray(
-        bus, launch=lambda: launches.append(1) or True, autostart_path=entry,
+        bus, launch=lambda client, _token: launches.append(client.key) or True,
+        autostart_path=entry,
     )
     # The subscriptions only fail without a bus; then the tray polls.
     assert tray.signals_connected is bool(address), tray.signals_connected
@@ -117,7 +118,7 @@ _SMOKE = textwrap.dedent("""
     lines = tray.tray.toolTip().splitlines()
     assert lines == ["iPhone connected", "Battery: 87 %", "2 unread messages"], lines
     texts = [action.text() for action in tray.menu.actions() if not action.isSeparator()]
-    assert texts == ["Open BlueFerry", "Start at login", "Quit"], texts
+    assert texts == ["Open BlueFerry", "Start at login", "Quit Tray Icon"], texts
     # Autostart is opt-in: off until the user checks it, then a user entry.
     assert not tray.autostart_action.isChecked() and not entry.exists()
     tray.autostart_action.trigger()
@@ -161,8 +162,13 @@ _SMOKE = textwrap.dedent("""
     tray.apply_status(json.dumps({"api_version": 0}))
     assert "needs an update" in tray.tray.toolTip()
 
-    tray.open_app()  # no Qt client registered: start one
-    assert launches == [1]
+    tray.open_app()  # no client registered: start one, once the bus answered
+    for _ in range(100):
+        app.processEvents()
+        if launches:
+            break
+        time.sleep(0.01)
+    assert len(launches) == 1, launches
 
     badge = badged_icon(phone_icon(), "3").pixmap(64, 64).toImage()
     red = badge.pixelColor(56, 6)
@@ -309,3 +315,210 @@ def test_tray_delayed_replies(tmp_path, scenario):
         capture_output=True, text=True, timeout=30, check=False,
     )
     assert result.returncode == 0 and "RACE-OK" in result.stdout, result.stdout + result.stderr
+
+
+_OPEN_SETUP = textwrap.dedent("""
+    import os, sys
+    from pathlib import Path
+    from PySide6.QtDBus import QDBusConnection
+    from PySide6.QtWidgets import QApplication, QSystemTrayIcon
+    from blueferry import client_activation
+    from blueferry.client_activation import ACTIVATION_INTERFACE, ACTIVATION_PATH, CLIENTS
+    from blueferry.qt.tray import TrayController
+
+    GTK, QT, QS = CLIENTS
+    # Only the stubs on PATH count as installed, plus Qt from its module.
+    client_activation._SYSTEM_BIN = Path(sys.argv[1]) / "no-usr-bin"
+    sys.executable = str(Path(sys.argv[1]) / "no-venv" / "python")
+    client_activation._dependency_available = lambda _client: True
+    client_activation._module_program = lambda client: (
+        [sys.executable, "-m", "blueferry.qt.app"] if client.key == "qt" else None
+    )
+    app = QApplication([])
+    calls, launches, failing = [], [], set()
+    names, replies = [":1.7"], {}
+    deferred, waiting = set(), {}
+
+    class FakeBusTray(TrayController):
+        def _call(self, service, interface, method, args, reply, error, **kwargs):
+            calls.append((service, interface, method, args, kwargs.get("path")))
+            if method in deferred:
+                waiting[method] = (reply, error)
+                return
+            if method == "ListNames" and "ListNames" not in replies:
+                reply([names])
+                return
+            ok, value = replies.get(method, (True, []))
+            (reply if ok else error)(value)
+
+    def launch(client, token):
+        launches.append((client.key, token))
+        return client.key not in failing
+
+    def used(key, stamp):
+        client_activation.time.time_ns = lambda: stamp
+        client_activation.record_client_use(key)
+
+    tray = FakeBusTray(
+        QDBusConnection("not-connected"), launch=launch,
+        autostart_path=Path(sys.argv[1]) / "tray.desktop",
+    )
+    # Every call goes through the fake _call; only the gate needs a bus.
+    tray._bus = type("Bus", (), {"isConnected": lambda self: True})()
+    os.environ["XDG_ACTIVATION_TOKEN"] = "click-token"
+    os.putenv("XDG_ACTIVATION_TOKEN", "click-token")
+
+    def opened():
+        return [call for call in calls if call[2] not in ("ListNames", "NameHasOwner")]
+""")
+
+_OPEN_CASES = {
+    # A running GTK client wins over a more recently used Qt client.
+    "gtk_live": ("gtk quickshell", """
+        used("qt", 300); used("gtk", 100)
+        names.append(GTK.bus_name)
+        tray.open_app()
+        assert opened() == [(GTK.bus_name, ACTIVATION_INTERFACE, "OpenMessage",
+                             ["", "click-token"], ACTIVATION_PATH)], calls
+        assert launches == []
+        # The token is single-use: a later click must not send it again.
+        assert "XDG_ACTIVATION_TOKEN" not in os.environ
+        from PySide6.QtCore import QProcessEnvironment
+        assert not QProcessEnvironment.systemEnvironment().contains("XDG_ACTIVATION_TOKEN")
+    """),
+    "legacy_gtk_live": ("gtk", """
+        names.append(GTK.desktop_id)
+        tray.open_app()
+        token = {"activation-token": "click-token", "desktop-startup-id": "click-token"}
+        assert opened() == [(GTK.desktop_id, "org.freedesktop.Application", "Activate",
+                             [token], "/io/weirdware/BlueFerry/Gtk")], calls
+        assert launches == []
+    """),
+    "qt_live": ("gtk quickshell", """
+        used("gtk", 300); used("qt", 100)
+        names.append(QT.bus_name)
+        tray.open_app()
+        assert opened() == [(QT.bus_name, ACTIVATION_INTERFACE, "OpenMessage",
+                             ["", "click-token"], ACTIVATION_PATH)], calls
+        assert launches == []
+    """),
+    "none_live_uses_recency": ("gtk quickshell", """
+        used("gtk", 100); used("quickshell", 300); used("qt", 200)
+        tray.open_app()
+        assert opened() == [] and launches == [("quickshell", "click-token")], launches
+    """),
+    "chosen_missing_falls_back": ("gtk", """
+        used("quickshell", 300); used("gtk", 100)
+        tray.open_app()
+        assert launches == [("gtk", "click-token")], launches
+    """),
+    "launch_failure_tries_next": ("gtk", """
+        used("gtk", 300); used("qt", 100)
+        failing.add("gtk")
+        tray.open_app()
+        assert launches == [("gtk", "click-token"), ("qt", "click-token")], launches
+    """),
+    "no_bus_answer_still_launches": ("gtk", """
+        used("gtk", 100)
+        replies["ListNames"] = (False, "org.freedesktop.DBus.Error.Disconnected")
+        tray.open_app()
+        assert launches == [("gtk", "click-token")], launches
+    """),
+    "live_client_exited_is_started_again": ("gtk", """
+        names.append(GTK.bus_name)
+        replies["OpenMessage"] = (False, "org.freedesktop.DBus.Error.ServiceUnknown")
+        replies["NameHasOwner"] = (True, [False])
+        tray.open_app()
+        assert launches == [("gtk", "click-token")], launches
+    """),
+    "slow_live_client_is_not_duplicated": ("gtk", """
+        names.append(GTK.bus_name)
+        replies["OpenMessage"] = (False, "org.freedesktop.DBus.Error.NoReply")
+        replies["NameHasOwner"] = (True, [True])
+        tray.open_app()
+        assert launches == [], launches
+    """),
+    "closed_before_click": ("gtk", """
+        tray.close()
+        tray.open_app()
+        assert calls == [] and launches == [], (calls, launches)
+    """),
+    "closed_during_activation": ("gtk", """
+        names.append(GTK.bus_name)
+        deferred.add("OpenMessage")
+        tray.open_app()
+        tray.close()
+        waiting.pop("OpenMessage")[1]("org.freedesktop.DBus.Error.ServiceUnknown")
+        assert launches == [], launches
+        assert not any(call[2] == "NameHasOwner" for call in calls), calls
+    """),
+    "closed_during_owner_check": ("gtk", """
+        names.append(GTK.bus_name)
+        replies["OpenMessage"] = (False, "org.freedesktop.DBus.Error.ServiceUnknown")
+        deferred.add("NameHasOwner")
+        tray.open_app()
+        tray.close()
+        waiting.pop("NameHasOwner")[0]([False])
+        assert launches == [], launches
+    """),
+    # Qt maps SNI Activate to Trigger, SecondaryActivate to MiddleClick and
+    # ContextMenu to Context: only the primary click opens a client.
+    "activation_reasons": ("", """
+        clicks = []
+        tray.open_app = lambda: clicks.append(1)
+        Reason = QSystemTrayIcon.ActivationReason
+        for reason in (Reason.Context, Reason.MiddleClick, Reason.DoubleClick, Reason.Unknown):
+            tray._activated(reason)
+        assert clicks == [], clicks
+        tray._activated(Reason.Trigger)
+        assert clicks == [1], clicks
+    """),
+}
+
+
+@needs_pyside6
+@pytest.mark.parametrize("scenario", sorted(_OPEN_CASES))
+def test_tray_opens_the_client_in_use(tmp_path: Path, scenario: str) -> None:
+    installed, case = _OPEN_CASES[scenario]
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    for key in installed.split():
+        stub = bin_dir / f"blueferry-{key}"
+        stub.write_text("#!/bin/sh\n")
+        stub.chmod(0o755)
+    script = _OPEN_SETUP + textwrap.dedent(case) + '\nprint("OPEN-OK")\n'
+    env = {
+        key: value for key, value in os.environ.items()
+        if key not in ("XDG_ACTIVATION_TOKEN", "DESKTOP_STARTUP_ID")
+    }
+    result = subprocess.run(  # nosec B603 - fixed interpreter and regression script
+        [sys.executable, "-c", script, str(tmp_path)],
+        env={**env, "QT_QPA_PLATFORM": "offscreen", "PYTHONPATH": str(ROOT / "src"),
+             "PATH": str(bin_dir), "XDG_CONFIG_HOME": str(tmp_path / "config"),
+             "XDG_CURRENT_DESKTOP": "niri",
+             "DBUS_SESSION_BUS_ADDRESS": "unix:path=/tmp/blueferry-tests-no-live-bus"},
+        capture_output=True, text=True, timeout=30, check=False,
+    )
+    assert result.returncode == 0 and "OPEN-OK" in result.stdout, result.stdout + result.stderr
+
+
+@needs_pyside6
+def test_launch_client_really_starts_the_program(tmp_path: Path, monkeypatch) -> None:
+    """Without mocks: PySide6's startDetached returns a bare bool, not (ok, pid)."""
+    import time
+
+    from blueferry.client_activation import CLIENTS
+    from blueferry.qt import tray
+
+    marker = tmp_path / "started"
+    stub = tmp_path / "blueferry-gtk"
+    stub.write_text(f'#!/bin/sh\necho "$XDG_ACTIVATION_TOKEN" > "{marker}"\n')
+    stub.chmod(0o755)
+    monkeypatch.setattr(tray, "client_program", lambda client: [str(stub)])
+    gtk = next(client for client in CLIENTS if client.key == "gtk")
+    assert tray.launch_client(gtk, "click-token") is True
+    for _attempt in range(100):
+        if marker.exists() and marker.read_text().strip():
+            break
+        time.sleep(0.05)
+    assert marker.read_text().strip() == "click-token"
