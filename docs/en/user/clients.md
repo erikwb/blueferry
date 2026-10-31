@@ -226,7 +226,7 @@ enabled) lists the newest items of that plugin; Enter opens one in your image vi
 
 | | Qt | GTK | TUI | Quickshell | CLI |
 |---|---|---|---|---|---|
-| Plugin cards with their buttons | ✓ | ✓ | ✓ iPhone overview | see the Quickshell section | ✓ `blueferry cards` |
+| Plugin cards with their buttons | ✓ | ✓ | ✓ iPhone overview | ✓ From Plugins, without buttons that send files | ✓ `blueferry cards` |
 | Plugin management and settings | ✓ | ✓ | ✓ Settings › Plugins | — | ✓ `blueferry plugins` |
 | Send to… | ✓ | ✓ | ✓ file paths | — | ✓ `blueferry send` |
 | Dropping files on the window or a card item | ✓ | ✓ | — a terminal gets no file drops | — | — |

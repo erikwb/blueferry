@@ -239,7 +239,7 @@ kopiert seinen Pfad.
 
 | | Qt | GTK | TUI | Quickshell | CLI |
 |---|---|---|---|---|---|
-| Plugin-Karten mit ihren Knöpfen | ✓ | ✓ | ✓ iPhone-Übersicht | siehe Abschnitt Quickshell | ✓ `blueferry cards` |
+| Plugin-Karten mit ihren Knöpfen | ✓ | ✓ | ✓ iPhone-Übersicht | ✓ From Plugins, ohne Knöpfe, die Dateien senden | ✓ `blueferry cards` |
 | Plugins verwalten und einstellen | ✓ | ✓ | ✓ Settings › Plugins | — | ✓ `blueferry plugins` |
 | Send to… | ✓ | ✓ | ✓ Dateipfade | — | ✓ `blueferry send` |
 | Dateien auf das Fenster oder einen Karteneintrag ziehen | ✓ | ✓ | — ein Terminal bekommt keine Dateien gezogen | — | — |
