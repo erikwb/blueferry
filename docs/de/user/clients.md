@@ -68,6 +68,7 @@ einem schmalen Fenster unten, und der Suchknopf findet jede Einstellung:
 | Phone | Kopplung, Verbindungszustand mit **Reconnect**, **Run Diagnostics** (dieselben Prüfungen wie `blueferry doctor`; der Bericht öffnet sich in einem eigenen Dialog mit Kopierknopf), Kopplungsbericht, Kontaktabgleich, Kontaktfotos |
 | Notifications | Welche Ereignisse Popups erzeugen, nur Kontakte, [stummgeschaltete Apps](notification-mute.md), Klickregeln, Mitteilungsinhalt, Aktionsknöpfe, Mitteilungen mit dem iPhone abgleichen, beim Wegklicken als gelesen markieren, letzte Mitteilungen behalten |
 | Calls & Audio | Anrufe, Anrufliste, Akku-Warnung, [iPhone-Ton am Computer](phone-audio.md), Mediensteuerung |
+| Network | Optionales [Bluetooth-Tethering](bluetooth-tethering.md) |
 | Security | Einmalcodes, Abwesenheitssperre, lokale Daten und ihre Verschlüsselung, Verlauf löschen |
 | Plugins | Installierte [Plugins](plugins.md) mit Schalter, **Show Log**, **Check for Update** und **Remove**; der Store, eine eigene Git-URL und die Plugin-Listen. Jede Installation fragt vorher nach. Die **Settings** eines Plugins öffnen sich als eigene Seite |
 | About | Version, Hintergrunddienst, About BlueFerry, Tastenkürzel, **Restart Service**, Beenden |
@@ -109,6 +110,7 @@ Systemeinstellungen:
 | Phone | Kopplung, Verbindungszustand, **Run Diagnostics** (dieselben Prüfungen wie `blueferry doctor`, im Fenster angezeigt), Kontaktabgleich, Kontaktfotos |
 | Notifications | Welche Ereignisse Popups erzeugen, nur Kontakte, Klickregeln, Mitteilungsinhalt, Aktionsknöpfe, Mitteilungen mit dem iPhone abgleichen, beim Wegklicken als gelesen markieren |
 | Calls & Audio | Anrufe, Anrufliste, Akku-Warnung, [iPhone-Ton am Computer](phone-audio.md), Mediensteuerung |
+| Network | [Bluetooth-Tethering](bluetooth-tethering.md), iPhone-Internet teilen, automatische Hotspot-Verbindung |
 | Security | Einmalcodes, Abwesenheitssperre, lokale Daten und ihre Verschlüsselung, Verlauf löschen |
 | About | Version, Hintergrunddienst, Tastenkürzel, Beenden |
 

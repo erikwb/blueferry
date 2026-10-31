@@ -42,16 +42,16 @@ DEFAULT_INDEX_URL = (
 )
 FETCH_TIMEOUT_SEC = 10.0
 MAX_INDEX_BYTES = 256 * 1024
+# Entries need four container levels; allow room for future index metadata.
+MAX_INDEX_DEPTH = 32
 MAX_ENTRIES = 100
 MAX_INDEXES = 8
-MAX_JSON_DEPTH = 32
 CACHE_TTL_SEC = 6 * 3600
 _ID = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*(\.[A-Za-z_][A-Za-z0-9_-]*)+$")
 _REF = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,99}$")
 _CAPABILITY = re.compile(r"^[a-z][a-z0-9-]{0,23}$")
 _ICON = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 _VERSION = re.compile(r"^\d+(\.\d+){0,3}$")
-_JSON_TOKEN = re.compile(r'\\.|["\[\]{}]', re.DOTALL)
 _INDEX_URL = re.compile(r"^https://[A-Za-z0-9.-]+(:\d{1,5})?/\S{1,400}$")
 
 Fetch = Callable[[str], bytes]
@@ -155,27 +155,31 @@ def parse_entry(raw: object, index: str = "") -> IndexEntry | None:
     )
 
 
-def _too_deeply_nested(text: str, limit: int = MAX_JSON_DEPTH) -> bool:
-    """Whether brackets outside JSON strings nest deeper than ``limit``.
+def _check_json_depth(text: str) -> None:
+    """Bound nesting before decoding, independently of Python's stack limit.
 
-    The C JSON decoder only stops deep nesting through the interpreter's
-    stack guard, which never fires when the stack size is unlimited, so the
-    depth is bounded here before decoding.
+    JSON syntax validation stays with the decoder. Only count containers
+    outside string literals, including correct handling of escaped quotes.
     """
     depth = 0
     in_string = False
-    for piece in _JSON_TOKEN.findall(text):
-        if piece == '"':
-            in_string = not in_string
-        elif in_string or piece[0] == "\\":
-            continue
-        elif piece in "[{":
+    escaped = False
+    for char in text:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+        elif char == '"':
+            in_string = True
+        elif char in "[{":
             depth += 1
-            if depth > limit:
-                return True
-        else:
+            if depth > MAX_INDEX_DEPTH:
+                raise IndexFetchError("the index is too deeply nested")
+        elif char in "]}":
             depth -= 1
-    return False
 
 
 def parse_index(data: bytes, index: str = "") -> list[IndexEntry]:
@@ -183,8 +187,7 @@ def parse_index(data: bytes, index: str = "") -> list[IndexEntry]:
         raise IndexFetchError("the index is too large")
     try:
         text = data.decode("utf-8")
-        if _too_deeply_nested(text):
-            raise ValueError("too deeply nested")
+        _check_json_depth(text)
         document = json.loads(text)
     except (UnicodeDecodeError, ValueError, RecursionError):
         raise IndexFetchError("the index is not valid JSON") from None

@@ -1,13 +1,15 @@
 """Toolkit-neutral state of the global search (``Messages1.Search``).
 
-Shared by the Qt client (``qt/controller.py``) and the GTK client
-(``ui/search.py``); sections, rows and wording come from
+Shared by the Qt client (``qt/controller.py``), the GTK client
+(``ui/search.py``) and the terminal client (``tui_search.py``); sections,
+rows and wording come from
 :mod:`blueferry.search_view`. The search runs
 :data:`blueferry.search_view.TYPING_DELAY_MS` after the last change of the
 query, only one answer (the newest) is shown, and the results are dropped
 when the search is closed (:meth:`GlobalSearch.clear`). While the daemon's
 search queue is full it answers ``NotReady``; the model then tries the same
-query again after the typing delay, a few times.
+query again after the typing delay, :data:`BUSY_RETRIES` times, and then
+says the search is busy.
 """
 from __future__ import annotations
 
@@ -29,7 +31,8 @@ def _busy(error: BaseException) -> bool:
     """Whether ``error`` is the daemon's ``NotReady`` (search queue full)."""
     for item in (error, error.__cause__):
         get_name = getattr(item, "get_dbus_name", None)
-        if callable(get_name) and str(get_name() or "").endswith(".NotReady"):
+        name = get_name() if callable(get_name) else getattr(item, "dbus_name", "")
+        if str(name or "").endswith(".NotReady"):
             return True
     return False
 
@@ -72,6 +75,8 @@ class GlobalSearch:
         shown = search_view.should_search(self._query) and bool(self._searched)
         payload = self._payload if shown else {"query": self._query}
         view = search_view.search_view(payload)
+        # Also say so when the daemon capped the LIMIT this model asked for.
+        view["limit_text"] = search_view.limit_text(payload, LIMIT)
         if self._loading:
             view["hint"] = ""
         if self._error:
@@ -146,7 +151,7 @@ class GlobalSearch:
                     self._timer.start(search_view.TYPING_DELAY_MS)
                     return
                 self._loading = False
-                self._error = search_view.search_failed_text("")
+                self._error = search_view.search_busy_text()
                 self._on_change()
                 return
             self._loading = False

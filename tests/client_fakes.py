@@ -56,18 +56,29 @@ class ManualRunner:
         self.submitted += 1
         self.pending.append((operation, on_done, on_error, on_finished))
 
-    def run_next(self) -> None:
+    def start_next(self) -> Callable[[], None]:
+        """Run the worker now; return delivery to the UI for late-reply tests."""
         operation, on_done, on_error, on_finished = self.pending.pop(0)
         try:
-            value = operation()
+            result = (True, operation())
         except Exception as error:
-            if on_error is not None:
-                on_error(str(error))
-        else:
-            if on_done is not None:
-                on_done(value)
-        if on_finished is not None:
-            on_finished()
+            result = (False, str(error))
+
+        def deliver() -> None:
+            ok, value = result
+            try:
+                if ok and on_done is not None:
+                    on_done(value)
+                elif not ok and on_error is not None:
+                    on_error(value)
+            finally:
+                if on_finished is not None:
+                    on_finished()
+
+        return deliver
+
+    def run_next(self) -> None:
+        self.start_next()()
 
     def run_tasks(self, limit: int = 100) -> None:
         """Run queued work, and the work it queues, but fire no timer."""
@@ -98,3 +109,11 @@ class ManualRunner:
             if not self.fire_timers():
                 return
         raise AssertionError("timers kept re-arming")
+
+
+class InlineRunner(ManualRunner):
+    """Deliver results immediately for synchronous presentation assertions."""
+
+    def submit(self, *args, **kwargs) -> None:
+        super().submit(*args, **kwargs)
+        self.run_tasks()

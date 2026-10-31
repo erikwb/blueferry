@@ -74,6 +74,7 @@ class PluginSettingsModel:
         self._form_generation = 0
         # The running browser sign-in: (plugin id, login id, polls left).
         self._login: tuple[str, str, int] | None = None
+        self._login_attempt: object | None = None
         self._poll_ms = max(1, poll_ms)
         self._login_timer = timer(self._poll_login)
         self._queue: list[tuple] = []
@@ -107,7 +108,7 @@ class PluginSettingsModel:
         keep_message: bool = False,
         on_error: Callable[[str], None] | None = None,
     ) -> None:
-        """Run one blocking step on the runner; later steps wait their turn.
+        """Run one blocking step on the pool; later steps wait their turn.
 
         A failure lands in the page message, or in ``on_error`` when given.
         """
@@ -268,7 +269,7 @@ class PluginSettingsModel:
             "fields": view.form_fields(manifest, values),
             "groups": view.form_groups(manifest),
             "actions": view.form_actions(manifest),
-            "errors": {}, "status": {},
+            "errors": {}, "status": {}, "loadError": "",
         }
 
     def load_config(self, plugin_id: str, *, keep_status: bool = False) -> None:
@@ -288,10 +289,18 @@ class PluginSettingsModel:
             self._update(config={**self._form(manifest, plugin_id, values, loaded=True),
                                  "status": status})
 
+        def failed(text: str) -> None:
+            if owns():
+                self._update(config={**self._state["config"], "loadError": text})
+
         self._stored = {}
-        if not keep_status:
+        if keep_status:
+            # An action or sign-in may have changed the saved settings.
+            # The old fields must stay unavailable until a fresh read succeeds.
+            self._update(config={**self._state["config"], "loaded": False, "loadError": ""})
+        else:
             self._update(config=self._form(manifest, plugin_id, {}, loaded=False))
-        self._work("config", lambda: self._client(manifest).get_config(), done)
+        self._work("config", lambda: self._client(manifest).get_config(), done, on_error=failed)
 
     def _current(self, plugin_id: str) -> PluginManifest | None:
         if self._state["config"].get("id") != plugin_id or plugin_id in self._disabled:
@@ -311,7 +320,7 @@ class PluginSettingsModel:
     def check_config(self, plugin_id: str, raw: Mapping[str, object]) -> dict[str, Any]:
         """The form's pre-check on every edit; does not change the state."""
         manifest = self._current(plugin_id)
-        if manifest is None:
+        if manifest is None or not self._state["config"].get("loaded"):
             return {"errors": {}, "visible": [], "valid": False}
         return view.check_form(manifest, self._stored, raw)
 
@@ -324,7 +333,7 @@ class PluginSettingsModel:
 
     def save_config(self, plugin_id: str, raw: Mapping[str, object]) -> None:
         manifest = self._current(plugin_id)
-        if manifest is None:
+        if manifest is None or not self._state["config"].get("loaded"):
             return
         values, errors = view.parse_form(manifest, raw)
         if errors:
@@ -347,7 +356,8 @@ class PluginSettingsModel:
     def test_config(self, plugin_id: str, raw: Mapping[str, object]) -> None:
         """"Test connection": the plugin checks the typed values, nothing is saved."""
         manifest = self._current(plugin_id)
-        if manifest is None or not manifest.config_test:
+        if (manifest is None or not manifest.config_test
+                or not self._state["config"].get("loaded")):
             return
         values, errors = view.parse_form(manifest, raw)
         if errors:
@@ -376,15 +386,25 @@ class PluginSettingsModel:
     def sign_in(self, plugin_id: str, raw: Mapping[str, object]) -> None:
         """"Sign in with …": start the plugin's browser flow and poll it."""
         manifest = self._current(plugin_id)
-        if manifest is None:
+        if manifest is None or not self._state["config"].get("loaded"):
             return
         self._stop_login()
+        attempt = self._login_attempt = object()
         values = view.login_values(manifest, raw)
         self._set_status("login", True, view.login_text("pending"), pending=True)
 
+        def current() -> bool:
+            return self._login_attempt is attempt and self._current(plugin_id) is not None
+
+        def start() -> LoginStep:
+            if not current():
+                return LoginStep("cancelled")
+            return self._client(manifest).config_login(values)
+
         def done(step: LoginStep) -> None:
-            if self._current(plugin_id) is None:
-                # Closed or disabled meanwhile: open nothing, end the flow.
+            if not current():
+                # Cancelled, closed or replaced: discard the answer and end
+                # any flow the plugin started before we could cancel it.
                 if step.state == "open":
                     client = self._client(manifest)
                     self._start(lambda: client.config_login_cancel(step.login_id))
@@ -400,11 +420,11 @@ class PluginSettingsModel:
                 self._login_finished(plugin_id, step)
 
         def failed(text: str) -> None:
-            if self._current(plugin_id) is not None:
+            if current():
+                self._login_attempt = None
                 self._set_status("login", False, text)
 
-        self._work("login", lambda: self._client(manifest).config_login(values), done,
-                   on_error=failed)
+        self._work("login", start, done, on_error=failed)
 
     def _poll_login(self) -> None:
         login = self._login
@@ -420,9 +440,10 @@ class PluginSettingsModel:
             self._set_status("login", False, view.login_text("expired"))
             return
         self._login = (plugin_id, login_id, left - 1)
+        attempt = self._login_attempt
 
         def done(step: LoginStep) -> None:
-            if self._login is None or self._login[1] != login_id:
+            if self._login is None or self._login_attempt is not attempt:
                 return
             if step.final:
                 self._login = None
@@ -431,13 +452,15 @@ class PluginSettingsModel:
                 self._login_timer.start(self._poll_ms)
 
         def failed(message: str) -> None:
-            if self._login is not None and self._login[1] == login_id:
+            if self._login is not None and self._login_attempt is attempt:
                 self._login = None
+                self._login_attempt = None
                 self._set_status("login", False, message or view.login_text("error"))
 
         self._start(lambda: self._client(manifest).config_login_status(login_id), done, failed)
 
     def _login_finished(self, plugin_id: str, step: LoginStep) -> None:
+        self._login_attempt = None
         ok = step.state == "done"
         self._set_status("login", ok, view.login_text(step.state, step.message))
         if ok and self._current(plugin_id) is not None:
@@ -445,11 +468,13 @@ class PluginSettingsModel:
             self._reload()
 
     def cancel_sign_in(self) -> None:
-        login = self._stop_login()
-        if login is not None:
+        active = self._login_attempt is not None
+        self._stop_login()
+        if active:
             self._set_status("login", False, view.login_text("cancelled"))
 
     def _stop_login(self) -> tuple[str, str, int] | None:
+        self._login_attempt = None
         login, self._login = self._login, None
         self._login_timer.stop()
         if login is not None:
@@ -465,15 +490,28 @@ class PluginSettingsModel:
         manifest = self._current(plugin_id)
         if manifest is None or manifest.config_action(action_id) is None:
             return
-        if self._state["config"].get("status", {}).get("pending"):
+        if (not self._state["config"].get("loaded")
+                or self._state["config"].get("status", {}).get("pending")):
             return
+        generation = self._form_generation
+
+        def current() -> bool:
+            return generation == self._form_generation and self._current(plugin_id) is not None
+
+        def run() -> Any:
+            # A queued action must not activate a plugin after its form was
+            # closed or replaced, including a new form for the same plugin.
+            if not current():
+                return None
+            return self._client(manifest).run_config_action(action_id)
+
         self._set_status("action", True, _("Working…"), pending=True)
 
         def done(result: Any) -> None:
             # The user may have closed this form, opened another one or
             # disabled the plugin meanwhile: the answer, and any page it
             # asks to open, belongs to this form only.
-            if self._current(plugin_id) is None:
+            if not current() or result is None:
                 return
             if result.ok and result.open_uri:
                 self._open(result.open_uri)
@@ -484,11 +522,10 @@ class PluginSettingsModel:
             self._reload()
 
         def failed(text: str) -> None:
-            if self._current(plugin_id) is not None:
+            if current():
                 self._set_status("action", False, text)
 
-        self._work("action", lambda: self._client(manifest).run_config_action(action_id), done,
-                   on_error=failed)
+        self._work("action", run, done, on_error=failed)
 
     def open_help(self, plugin_id: str, key: str) -> None:
         """"Where do I find this?": the field's https HelpUrl, nothing else."""

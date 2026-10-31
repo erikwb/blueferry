@@ -148,10 +148,12 @@ class NotificationsPage(Gtk.Box):
 
     def apply_status(self, status: dict) -> None:
         """A status read by the phone card: is the list switched on?"""
+        # Access, privacy and phone profile gate every read and every row.
+        self.history.sync_status(status)
         hint = phone_link_view.feature_hints(status).get("notifications", "")
         if hint != self._opt_in_hint:
             self._opt_in_hint = hint
-            self.history.refresh()
+            # sync_status above already reread the list if access changed.
             self._render()
         supported = notification_apps_view.supported(status)
         if supported != self._apps_supported:

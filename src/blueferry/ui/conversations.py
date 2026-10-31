@@ -128,9 +128,12 @@ class ConversationsPage(Gtk.Box):
         self._avatars = AvatarCache(client.contact_photo_async, self._refresh_avatars)
         self._pending_open_handle: str | None = None
         # A conversation picked in the global search that was not loaded
-        # yet, and the message a search hit pointed at (scrolled to, marked).
+        # yet, and the message a search hit pointed at: marked while its
+        # conversation is shown, scrolled to once (_focus_pending).
         self._pending_thread_key = ""
         self._focused_handle = ""
+        self._focused_thread = ""
+        self._focus_pending = False
         self._reload_pending = False
         self._reload_again = False
         self._backend_error_banner = Adw.Banner(use_markup=False)
@@ -421,6 +424,8 @@ class ConversationsPage(Gtk.Box):
     def open_search_hit(self, thread_key: str, handle: str = "") -> None:
         """A global search hit: the conversation, at ``handle`` when given."""
         self._focused_handle = handle
+        self._focused_thread = thread_key if handle else ""
+        self._focus_pending = bool(handle)
         if handle and self._state.select_message(handle):
             self.open_message(handle)
         elif thread_key:
@@ -430,7 +435,7 @@ class ConversationsPage(Gtk.Box):
         """The direct conversation with ``address``, else New Message to it."""
         for thread in self._state.threads:
             if not thread.is_group and tuple(thread.recipients) == (address,):
-                self._focused_handle = ""
+                self._forget_focused_message()
                 self.open_thread(thread.key)
                 return
         self.compose_to(address)
@@ -736,6 +741,8 @@ class ConversationsPage(Gtk.Box):
         if row is None:
             return
         self._state.selected_key = row.thread_key
+        if self._focused_handle and row.thread_key != self._focused_thread:
+            self._forget_focused_message()
         thread = self._state.selected
         if thread is None:
             return
@@ -753,11 +760,17 @@ class ConversationsPage(Gtk.Box):
             row = self._append_bubble(message, is_group=thread.is_group, focused=marked)
             if marked:
                 focused = row
-        if focused is not None:
+        # The hit is centred once; a later re-render (a new message) shows
+        # the newest message again and leaves the hit only marked.
+        if focused is not None and self._focus_pending:
+            self._focus_pending = False
             self._scroll_to_row(focused)
         else:
             self._scroll_to()
         self._mark_selected_read()
+
+    def _forget_focused_message(self) -> None:
+        self._focused_handle, self._focused_thread, self._focus_pending = "", "", False
 
     def _update_conversation_title(self, thread: Thread) -> None:
         self._set_avatar(self._conversation_avatar, thread)

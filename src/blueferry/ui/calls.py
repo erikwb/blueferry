@@ -66,8 +66,10 @@ class CallsPage(Gtk.Box):
         self._syncing = False
         self._contacts = ConversationState(select_first=False)
         self._typed = True  # entry changes come from the keyboard
-        # A recent call picked in the global search (a ListCallHistory id).
+        # A recent call picked in the global search (a ListCallHistory id):
+        # marked while the tab stays shown, scrolled to once.
         self._focused_call = ""
+        self._focus_pending = False
         # The readiness hint the recent-call rows were built with.
         self._rows_hint: str | None = None
         self._search_timer = (timer or glib_timer)(self._search_contacts)
@@ -263,13 +265,14 @@ class CallsPage(Gtk.Box):
             self._calls_read.refresh()
             return
         self._search_timer.stop()
-        self._focused_call = ""
+        self._focused_call, self._focus_pending = "", False
         self._forget_calls()
         self._render_calls()
 
     def focus_call(self, call_id: str) -> None:
         """Show and mark the recent call a search hit points at."""
         self._focused_call = call_id
+        self._focus_pending = bool(call_id)
         if self.missed_filter.get_active():
             self.all_filter.set_active(True)  # re-renders through "toggled"
         else:
@@ -451,7 +454,10 @@ class CallsPage(Gtk.Box):
                 focused = row
             group.add(row)
         self.recent_stack.set_visible_child_name("list")
-        if focused is not None:
+        # Scrolled to once; later renders (a refresh, the filter) keep the
+        # mark but leave the scroll position to the user.
+        if focused is not None and self._focus_pending:
+            self._focus_pending = False
             self._scroll_to_row(focused)
 
     def _scroll_to_row(self, row: Gtk.Widget) -> None:
