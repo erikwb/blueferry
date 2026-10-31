@@ -17,6 +17,7 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.css.query import NoMatches
 from textual.message import Message
 from textual.screen import ModalScreen, Screen
+from textual.widget import Widget
 from textual.widgets import (
     Button,
     Checkbox,
@@ -85,6 +86,7 @@ from blueferry.tui_phone import (
     now_playing_text,
     volume_controls,
 )
+from blueferry.tui_plugins import PluginCardsPanel
 from blueferry.tui_search import SearchResult, SearchScreen
 
 _REFRESH_SECONDS = 15.0
@@ -963,9 +965,12 @@ class BlueFerryApp(App[None]):
         restart: Callable[[], None] | None = None,
         doctor: Callable[[], DoctorReport] = run_doctor,
         phone_name: Callable[[], str] = load_phone_name,
+        plugin_cards: Callable[[], Widget] | None = PluginCardsPanel,
     ) -> None:
         super().__init__()
         self.state = state
+        # Builds the overview's "From Plugins" panel; None leaves it out.
+        self._plugin_cards = plugin_cards
         # Blocking; read on a worker when the iPhone overview opens.
         self._phone_name_loader = phone_name
         self._phone_name = ""
@@ -1615,6 +1620,7 @@ class BlueFerryApp(App[None]):
             on_name=self._remember_phone_name,
             volume=self.volume,
             send_media=self._overview_media,
+            plugin_cards=self._plugin_cards,
         )
         self.push_screen(screen, self._overview_closed)
 
