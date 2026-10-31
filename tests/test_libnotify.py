@@ -128,7 +128,8 @@ def test_message_popup_includes_omarchy_open_argv(tmp_path, monkeypatch) -> None
         "blueferry.sinks.libnotify.config.SHOW_NOTIFICATION_CONTENT", True
     )
     monkeypatch.setattr(
-        "blueferry.client_activation.os.access", lambda path, _mode: path.endswith("quickshell")
+        "blueferry.client_activation.client_program",
+        lambda client: ["/usr/bin/blueferry-quickshell"] if client.key == "quickshell" else None,
     )
     sink = LibnotifySink.__new__(LibnotifySink)
     sink._notif = _FakeNotifications()

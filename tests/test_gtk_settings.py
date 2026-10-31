@@ -14,6 +14,7 @@ from tests.gtk_broadway import run_scenario
     "scenario", [
         "categories", "features", "old-daemon", "doctor", "mirror-removals",
         "battery-warning", "reconnect", "notification-rules",
+        "feature-races", "status-save-races", "rule-races",
     ],
 )
 def test_gtk_settings(tmp_path, scenario):
@@ -51,6 +52,9 @@ class FakeClient:
 
     def get_status_async(self, on_ok, _on_err=None):
         on_ok(self.status)
+
+    def get_tether_async(self, on_ok, _on_err=None):
+        on_ok(None)
 
     def unlock_storage_async(self, *_args):
         pass
@@ -164,11 +168,12 @@ def _exercise_categories():
     dialog, window, client = _settings()
     assert list(dialog.pages) == [category.key for category in categories()]
     assert [page.get_title() for page in dialog.pages.values()] == [
-        "Phone", "Notifications", "Calls & Audio", "Security", "Plugins", "About"]
+        "Phone", "Notifications", "Calls & Audio", "Network", "Security", "Plugins", "About"]
     for key, groups in {
         "phone": ["Connection Health", "Diagnostics", "Contacts"],
         "notifications": ["Desktop Notifications", "Content and Actions", "History"],
         "calls": ["Phone Calls", "Call History", "iPhone Sound", "Media Control"],
+        "network": ["Internet Sharing"],
         "security": ["One-Time Codes", "Away Lock", "Local Data"],
     }.items():
         titles = _group_titles(dialog.pages[key])
@@ -238,6 +243,7 @@ def _exercise_features():
     client.take(("set_feature", "notification_history", True))[2]("Access denied")
     assert not history.get_active() and history.get_sensitive()
     assert toasts == ["Could not save the setting: Access denied"]
+    client.take("features")[1](dialog.features.state["items"])
 
     # Restart Service: every restart button waits for the restart.
     button = dialog.features._restart_buttons[0]
@@ -487,10 +493,13 @@ def _exercise_notification_rules():
         ("set_rule", "com.apple.mobilemail", "https://mail.example.com/"))
     # A failure keeps the form; an answer without this rule does too.
     failed("invalid target")
+    rules.add()
+    _name, updated, _failed = client.take(
+        ("set_rule", "com.apple.mobilemail", "https://mail.example.com/"))
     updated([{"bundle_id": "org.other", "target": "https://other.example/"}])
     assert rules.bundle_entry.get_text() == "com.apple.mobilemail"
     rule = {"bundle_id": "com.apple.mobilemail", "target": "https://mail.example.com/"}
-    updated([rule])
+    client.take("open_map")[1]([rule])
     assert rules.bundle_entry.get_text() == "" and rules.target_entry.get_text() == ""
     assert not rules.empty_row.get_visible()
     rows = [row for row in _descendants(rules.group)
@@ -509,9 +518,102 @@ def _exercise_notification_rules():
     window.destroy()
 
 
+def _exercise_feature_races():
+    for failed_read in (False, True):
+        dialog, window, client = _settings()
+        features = dialog.features
+        features.load()
+        client.take("features")[1](ITEMS)
+        features.load()
+        _name, read, read_failed = client.take("features")
+        rows = {name: row for name, (row, _description) in features._rows.items()}
+        rows["notification_history"].set_active(True)
+        _name, _saved, failed = client.take(("set_feature", "notification_history", True))
+        rows["mark_read_on_dismiss"].set_active(True)
+        _name, saved, _failed = client.take(("set_feature", "mark_read_on_dismiss", True))
+        if failed_read:
+            read_failed("stale read failed")
+        else:
+            read(ITEMS)
+        failed("save failed")
+        assert client.calls == []  # Still saving the other switch.
+        saved("restart-required")
+        assert rows["mark_read_on_dismiss"].get_active()
+        assert not rows["notification_history"].get_active()
+        assert features.state["restart_pending"]
+        client.take("features")[1](features.state["items"])
+        window.destroy()
+
+
+def _exercise_status_save_races():
+    from blueferry.models import BackendStatus
+
+    for field, attr, method in (
+        ("mirror_iphone_removals", "_mirror_removals_row", "mirror"),
+        ("phone_battery_warning", "_battery_warning_row", "battery"),
+    ):
+        initial = {"daemon": True, field: False, "phone_battery_warning_percent": 20}
+        dialog, window, client = _settings(BackendStatus.from_dict(initial))
+        row = getattr(dialog, attr)
+        row.set_active(True)
+        _name, saved, _failed = client.take((method, True))
+        dialog._apply_status(BackendStatus.from_dict(initial))
+        assert row.get_active() and not row.get_sensitive()
+        assert client.calls == []  # Status rendering cannot enqueue another save.
+        client.status = BackendStatus.from_dict({**initial, field: True})
+        saved(True)
+        assert row.get_active() and row.get_sensitive()
+        window.destroy()
+
+
+def _exercise_rule_races():
+    from blueferry.models import BackendStatus
+
+    dialog, window, client = _settings()
+    rules = dialog.notification_rules
+
+    def apply(revision=1, daemon=True):
+        dialog._apply_status(BackendStatus.from_dict({
+            "daemon": daemon, "notification_policy": "all",
+            "notification_open_map_revision": revision,
+        }))
+
+    apply()
+    client.take("open_map")[2]("temporary outage")
+    apply()  # Same revision must retry after a failed read.
+    client.take("open_map")[1]([])
+    apply(2)
+    _name, stale, _failed = client.take("open_map")
+    apply(3)
+    current = [{"bundle_id": "org.new", "target": "https://new.example/"}]
+    client.take("open_map")[1](current)
+    stale([{"bundle_id": "org.old", "target": "https://old.example/"}])
+    assert rules.rules == current
+    # A restart may report the same revision; availability still invalidates it.
+    apply(3, daemon=False)
+    apply(3)
+    _name, stale, _failed = client.take("open_map")
+    rules.bundle_entry.set_text("org.saved")
+    rules.target_entry.set_text("https://saved.example/")
+    rules.add()
+    assert not rules.add_button.get_sensitive() and not rules.group.get_sensitive()
+    rules.add()  # Repeated Enter must not enqueue a second write.
+    _name, saved, _failed = client.take(("set_rule", "org.saved", "https://saved.example/"))
+    updated = [{"bundle_id": "org.saved", "target": "https://saved.example/"}]
+    saved(updated)
+    stale(current)
+    assert rules.rules == updated
+    client.take("open_map")[1](updated)
+    assert client.calls == [] and rules.group.get_sensitive()
+    window.destroy()
+
+
 if __name__ == "__main__":
     {
         "notification-rules": _exercise_notification_rules,
+        "feature-races": _exercise_feature_races,
+        "status-save-races": _exercise_status_save_races,
+        "rule-races": _exercise_rule_races,
         "reconnect": _exercise_reconnect,
         "battery-warning": _exercise_battery_warning,
         "mirror-removals": _exercise_mirror_removals,
