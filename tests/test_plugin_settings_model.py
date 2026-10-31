@@ -424,6 +424,52 @@ def test_a_second_press_is_dropped_while_one_runs(with_actions) -> None:
     assert _ActionClient.ran == ["approve"]
 
 
+def test_queued_action_is_cancelled_when_form_closes(with_actions):
+    settings, opened, work = with_actions
+    settings.load_config("io.example.setup")
+    work.drain()
+    settings.run_action("io.example.setup", "setup_iphone")
+    settings.close_config()
+    work.drain()
+    assert _ActionClient.ran == [] and opened == []
+
+
+def test_same_plugin_reopened_form_rejects_old_action_reply(with_actions):
+    settings, opened, work = with_actions
+    settings.load_config("io.example.setup")
+    work.drain()
+    settings.run_action("io.example.setup", "setup_iphone")
+    reply = work.start_next()
+    settings.close_config()
+    settings.load_config("io.example.setup")
+    reply()
+    work.drain()
+    assert opened == [] and settings.state()["config"]["status"] == {}
+
+
+def test_failed_settings_refresh_disables_form_until_read_retry(with_actions, monkeypatch):
+    settings, _opened, work = with_actions
+    settings.load_config("io.example.setup")
+    work.drain()
+    settings.run_action("io.example.setup", "approve")
+    get_config = _ActionClient.get_config
+    monkeypatch.setattr(_ActionClient, "get_config",
+                        lambda _self: (_ for _ in ()).throw(RuntimeError("read failed")))
+    work.drain()
+    assert _ActionClient.port == 47802
+    config = settings.state()["config"]
+    assert not config["loaded"] and config["loadError"] == "read failed"
+    settings.run_action("io.example.setup", "approve")
+    settings.save_config("io.example.setup", {"port": 47801})
+    assert not work.pending and _ActionClient.ran == ["approve"]
+    monkeypatch.setattr(_ActionClient, "get_config", get_config)
+    settings.load_config("io.example.setup")
+    work.drain()
+    assert settings.state()["config"]["loaded"]
+    assert settings.state()["config"]["fields"][0]["value"] == 47802
+    assert _ActionClient.ran == ["approve"]
+
+
 def test_an_answer_never_lands_in_another_form(with_actions) -> None:
     from blueferry.plugin_api.testing import manifest
 
@@ -435,7 +481,9 @@ def test_an_answer_never_lands_in_another_form(with_actions) -> None:
     work.drain()
     settings.run_action("io.example.setup", "setup_iphone")
     # The user switches to another plugin's form before the answer arrives.
+    reply = work.start_next()
     settings._update(config=settings._form(other, other.id, {}, loaded=True))
+    reply()
     work.drain()
     assert _ActionClient.ran == ["setup_iphone"]
     assert settings.state()["config"]["id"] == "io.example.other"
@@ -448,7 +496,9 @@ def test_an_action_of_a_plugin_disabled_meanwhile_opens_nothing(with_actions) ->
     settings.load_config("io.example.setup")
     work.drain()
     settings.run_action("io.example.setup", "setup_iphone")
+    reply = work.start_next()
     settings.set_enabled("io.example.setup", False)  # the kill switch closes the form
+    reply()
     work.drain()
     assert _ActionClient.ran == ["setup_iphone"] and opened == []
     assert settings.state()["config"] == {}
@@ -504,10 +554,29 @@ def test_a_late_sign_in_opens_nothing_after_the_form_closed(guided) -> None:
     settings.load_config("io.example.cloud")
     work.drain()
     settings.sign_in("io.example.cloud", {"url": "https://cloud.example"})
+    reply = work.start_next()
     settings.close_config()
+    reply()
     work.drain()
     assert ("cancel", "flow-1") in GuidedClient.log
     assert opened == [] and settings._login is None and settings.state()["config"] == {}
+
+
+@pytest.mark.parametrize("started", [False, True])
+def test_cancel_sign_in_before_initial_reply(guided, started):
+    settings, opened, work = guided
+    settings.load_config("io.example.cloud")
+    work.drain()
+    settings.sign_in("io.example.cloud", {"url": "https://cloud.example"})
+    reply = work.start_next() if started else None
+    settings.cancel_sign_in()
+    if reply is not None:
+        reply()
+    work.drain()
+    assert opened == [] and settings._login is None and not settings._login_timer.active
+    assert (("cancel", "flow-1") in GuidedClient.log) is started
+    if not started:
+        assert GuidedClient.log == []
 
 
 def test_a_save_that_ends_later_leaves_another_plugins_form_alone(guided) -> None:

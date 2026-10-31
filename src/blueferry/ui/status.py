@@ -1,7 +1,7 @@
 """The GTK settings dialog: one preferences page per category.
 
 The categories mirror the Qt client's settings page (Phone, Notifications,
-Calls & Audio, Security, About); see :mod:`blueferry.ui.settings_presenter`.
+Calls & Audio, Network, Security, About); see :mod:`blueferry.ui.settings_presenter`.
 """
 
 from __future__ import annotations
@@ -31,6 +31,7 @@ from blueferry.setup_verification import (
     NOTIFICATION_ACCESS,
     remaining_iphone_setup_tasks,
 )
+from blueferry.tether_status import TetherStatus
 from blueferry.ui.doctor import DoctorSection
 from blueferry.ui.feature_switches import FeatureSwitches
 from blueferry.ui.notification_rules import NotificationRules
@@ -41,6 +42,7 @@ from blueferry.ui.status_presenter import (
     connection_subtitle,
     map_connection_refused,
     map_connection_refused_message,
+    tether_controls,
 )
 
 
@@ -63,6 +65,8 @@ class SettingsDialog(Adw.PreferencesDialog):
         self._applying_ancs_actions = False
         self._applying_mirror_removals = False
         self._applying_battery_warning = False
+        self._mirror_removals_choice = SavedChoice()
+        self._battery_warning_choice = SavedChoice()
         self._applying_saved_switches = False
         self._media_control_choice = SavedChoice()
         self._auto_profile_reset_choice = SavedChoice()
@@ -82,6 +86,9 @@ class SettingsDialog(Adw.PreferencesDialog):
         self._compatibility_override = False
         self._explicit_pairing_overrides: dict[str, bool] = {}
         self._applying_pairing_mode = False
+        self._tether: TetherStatus | None = None
+        self._tether_pending = False
+        self._applying_tether = False
 
         self.features = FeatureSwitches(
             client, self._toast, self._refresh, timer, is_open=self.get_mapped,
@@ -587,6 +594,35 @@ class SettingsDialog(Adw.PreferencesDialog):
         )
         self._calls_group.add(self._calls_enabled_row)
 
+
+        # Opt-in Bluetooth tethering, shown only when the daemon offers
+        # Tether1. Until it is enabled the daemon ignores PAN links.
+        self._tether_group = Adw.PreferencesGroup(title=_("Internet Sharing"))
+        self._tether_group.set_visible(False)
+        self._tether_enable_row, self._tether_enable_switch = self._switch_row(
+            _("Enable Bluetooth tethering"), self._tether_enable_changed
+        )
+        self._tether_connect_row, self._tether_connect_switch = self._switch_row(
+            _("Share iPhone Internet"), self._tether_connect_changed
+        )
+        self._tether_connect_row.set_subtitle(
+            _("Turn on Personal Hotspot on the iPhone first")
+        )
+        self._tether_auto_row, self._tether_auto_switch = self._switch_row(
+            _("Connect automatically when the iPhone is connected"),
+            self._tether_auto_changed,
+        )
+        self._tether_summary = Gtk.Label(wrap=True, xalign=0)
+        self._tether_summary.set_margin_start(12)
+        self._tether_summary.set_margin_end(12)
+        self._tether_summary.set_margin_top(6)
+        self._tether_summary.set_margin_bottom(6)
+        for widget in (
+            self._tether_enable_row, self._tether_connect_row,
+            self._tether_auto_row, self._tether_summary,
+        ):
+            self._tether_group.add(widget)
+
         # Shown only for daemons that report the contact-photo opt-in.
         self._photos_group = Adw.PreferencesGroup(
             title=_("Contact Photos"),
@@ -693,6 +729,7 @@ class SettingsDialog(Adw.PreferencesDialog):
                 self._calls_group, self._call_history_group, self._battery_group,
                 self._phone_audio_group, self._media_group,
             )),
+            ("network", (self._tether_group,)),
             ("security", (self._otp_group, self._proximity_lock_group, data_group)),
             ("about", (about_group, about_links)),
         ):
@@ -700,11 +737,25 @@ class SettingsDialog(Adw.PreferencesDialog):
                 self.pages[key].add(group)
         self.connect("closed", lambda _dialog: self.features.stop())
 
-        client.connect("availability-changed", lambda *_: self._refresh())
+        client.connect("availability-changed", lambda *_: self._refresh_all())
         client.connect("status-invalidated", self._status_invalidated)
+        client.connect("tether-invalidated", lambda *_: self._refresh_tether())
         self._load_setup_state()
         if self._setup.configuration().configured:
-            self._refresh()
+            self._refresh_all()
+
+    def _refresh_all(self) -> None:
+        self._refresh()
+        self._refresh_tether()
+
+    @staticmethod
+    def _switch_row(title: str, changed) -> tuple[Adw.ActionRow, Gtk.Switch]:
+        row = Adw.ActionRow(title=title)
+        switch = Gtk.Switch(valign=Gtk.Align.CENTER)
+        switch.connect("notify::active", changed)
+        row.add_suffix(switch)
+        row.set_activatable_widget(switch)
+        return row, switch
 
     def show_toast(self, text: str) -> None:
         self.add_toast(Adw.Toast(title=text, use_markup=False))
@@ -1245,6 +1296,86 @@ class SettingsDialog(Adw.PreferencesDialog):
     def _status_invalidated(self, _client) -> None:
         self._refresh()
 
+    # ---- opt-in tethering ------------------------------------------------
+
+    def _refresh_tether(self) -> None:
+        # A transient read failure keeps the last known state.
+        self._client.get_tether_async(self._apply_tether, lambda _message: None)
+
+    def _apply_tether(self, tether: TetherStatus | None) -> bool:
+        self._tether = tether
+        controls = tether_controls(
+            tether, reachable=self._last_status.daemon, pending=self._tether_pending,
+        )
+        self._applying_tether = True
+        self._tether_group.set_visible(controls.group_visible)
+        self._tether_enable_switch.set_active(controls.enable_active)
+        self._tether_enable_row.set_sensitive(controls.enable_sensitive)
+        self._tether_connect_row.set_visible(controls.connect_visible)
+        self._tether_connect_switch.set_active(controls.connect_active)
+        self._tether_connect_row.set_sensitive(controls.connect_sensitive)
+        self._tether_auto_row.set_visible(controls.auto_visible)
+        self._tether_auto_switch.set_active(controls.auto_active)
+        self._tether_auto_row.set_sensitive(controls.auto_sensitive)
+        self._applying_tether = False
+        self._tether_summary.set_label(controls.summary)
+        if controls.warning:
+            self._tether_summary.add_css_class("warning")
+        else:
+            self._tether_summary.remove_css_class("warning")
+        return False
+
+    def _tether_request(self, start) -> None:
+        if self._tether_pending:
+            # One request at a time; snap the switch back to the daemon state.
+            self._apply_tether(self._tether)
+            return
+        self._tether_pending = True
+        self._apply_tether(self._tether)
+
+        def done(value: TetherStatus | None) -> None:
+            self._tether_pending = False
+            self._apply_tether(value)
+
+        def failed(error: str) -> None:
+            self._tether_pending = False
+            self._toast(_("Tethering request failed: {error}").format(error=error))
+            self._apply_tether(self._tether)
+            self._refresh_tether()
+
+        start(done, failed)
+
+    def _tether_enable_changed(self, _switch, _property) -> None:
+        if self._applying_tether:
+            return
+        enabled = self._tether_enable_switch.get_active()
+        autoconnect = bool(self._tether and self._tether.autoconnect)
+        self._tether_request(
+            lambda done, failed: self._client.configure_tether_async(
+                enabled, autoconnect, done, failed
+            )
+        )
+
+    def _tether_connect_changed(self, _switch, _property) -> None:
+        if self._applying_tether:
+            return
+        connected = self._tether_connect_switch.get_active()
+        self._tether_request(
+            lambda done, failed: self._client.set_tether_connected_async(
+                connected, done, failed
+            )
+        )
+
+    def _tether_auto_changed(self, _switch, _property) -> None:
+        if self._applying_tether:
+            return
+        autoconnect = self._tether_auto_switch.get_active()
+        self._tether_request(
+            lambda done, failed: self._client.configure_tether_async(
+                True, autoconnect, done, failed
+            )
+        )
+
     def _status_failed(self, message: str) -> bool:
         self._apply_status(BackendStatus(extra={"error": message}))
         return False
@@ -1391,6 +1522,9 @@ class SettingsDialog(Adw.PreferencesDialog):
         self._update_iphone_setup_tasks()
         self._update_onboarding()
         self._refresh_issue_offer()
+        if self._tether is not None:
+            # Sensitivity follows daemon reachability.
+            self._apply_tether(self._tether)
         return False
 
     def _render_reconnect(self, values: dict) -> None:
@@ -1514,26 +1648,34 @@ class SettingsDialog(Adw.PreferencesDialog):
         preference = status.extra.get("mirror_iphone_removals")
         self._mirror_removals_row.set_visible(isinstance(preference, bool))
         self._applying_mirror_removals = True
-        self._mirror_removals_row.set_active(preference is True)
+        self._show_saved_choice(
+            self._mirror_removals_row, self._mirror_removals_choice, preference is True,
+        )
         self._applying_mirror_removals = False
-        self._mirror_removals_row.set_sensitive(reachable)
+        self._mirror_removals_row.set_sensitive(
+            reachable and not self._mirror_removals_choice.saving
+        )
 
     def _mirror_removals_changed(self, row, _property) -> None:
         if self._applying_mirror_removals:
             return
+        enabled = row.get_active()
+        self._mirror_removals_choice.begin(enabled)
         row.set_sensitive(False)
 
         def saved(_value: bool) -> None:
+            self._mirror_removals_choice.saved(enabled)
             self._toast(_("Notification sync preference saved"))
             self._refresh()
 
         def failed(error: str) -> None:
+            self._mirror_removals_choice.failed()
             self._toast(
                 _("Could not save notification sync preference: {error}").format(error=error)
             )
             self._apply_status(self._last_status)
 
-        self._client.set_mirror_notification_removals_async(row.get_active(), saved, failed)
+        self._client.set_mirror_notification_removals_async(enabled, saved, failed)
 
     def _apply_battery_warning(self, status: BackendStatus, values: dict, reachable: bool) -> None:
         # As in the Qt client: shown only for daemons that report the setting.
@@ -1547,26 +1689,34 @@ class SettingsDialog(Adw.PreferencesDialog):
             )
         )
         self._applying_battery_warning = True
-        self._battery_warning_row.set_active(status.phone_battery_warning)
+        self._show_saved_choice(
+            self._battery_warning_row, self._battery_warning_choice, status.phone_battery_warning,
+        )
         self._applying_battery_warning = False
-        self._battery_warning_row.set_sensitive(reachable)
+        self._battery_warning_row.set_sensitive(
+            reachable and not self._battery_warning_choice.saving
+        )
 
     def _battery_warning_changed(self, row, _property) -> None:
         if self._applying_battery_warning:
             return
+        enabled = row.get_active()
+        self._battery_warning_choice.begin(enabled)
         row.set_sensitive(False)
 
         def saved(_value: bool) -> None:
+            self._battery_warning_choice.saved(enabled)
             self._toast(_("Battery warning preference saved"))
             self._refresh()
 
         def failed(error: str) -> None:
+            self._battery_warning_choice.failed()
             self._toast(
                 _("Could not save battery warning preference: {error}").format(error=error)
             )
             self._apply_status(self._last_status)
 
-        self._client.set_phone_battery_warning_async(row.get_active(), saved, failed)
+        self._client.set_phone_battery_warning_async(enabled, saved, failed)
 
     def _show_saved_choice(self, switch, choice: SavedChoice, reported: bool) -> None:
         """Set ``switch`` for a status reporting ``reported``."""

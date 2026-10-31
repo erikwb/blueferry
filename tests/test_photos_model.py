@@ -1,6 +1,8 @@
 """The Photos tab state shared by the clients: no toolkit, no plugin started."""
 from __future__ import annotations
 
+import pytest
+
 from blueferry import photos_view
 from blueferry.photos_model import PhotosTabModel
 from blueferry.plugin_api.client import Photo
@@ -126,7 +128,7 @@ def test_a_failed_load_stops_the_spinner_and_a_late_load_is_dropped(monkeypatch)
     model.watch(True)
     work.run_tasks()
     assert model.state == {"present": False, "ready": False, "loaded": True,
-                           "hint": "Photos unavailable", "items": []}
+                           "hint": "Photos unavailable", "items": [], "busy": False}
 
     plugin = manifest()
     monkeypatch.setattr(photos_view, "find_plugin", lambda: plugin)
@@ -135,7 +137,7 @@ def test_a_failed_load_stops_the_spinner_and_a_late_load_is_dropped(monkeypatch)
     model.refresh()
     model.watch(False)  # hidden before the answer
     work.run_tasks()
-    assert model.plugin is plugin and model.state["hint"] == "Photos unavailable"
+    assert model.plugin is None and model.state["hint"] == ""
 
 
 def test_originals_are_fetched_on_the_open_runner(monkeypatch, tmp_path) -> None:
@@ -157,3 +159,59 @@ def test_originals_are_fetched_on_the_open_runner(monkeypatch, tmp_path) -> None
     assert not work.pending and downloads.pending
     downloads.run_tasks()
     assert opened == [tmp_path / "IMG_1.HEIC"]
+
+
+@pytest.mark.parametrize("fails", [False, True])
+@pytest.mark.parametrize("operation", ["list", "fetch"])
+def test_old_photo_result_cannot_repopulate_or_open_after_tab_reopens(
+    monkeypatch, tmp_path, fails, operation,
+):
+    plugin = manifest()
+    monkeypatch.setattr(photos_view, "find_plugin", lambda: plugin)
+    snapshot = photos_view.PhotosSnapshot(True, True, "old", [Photo("old", "", "image", None)])
+    monkeypatch.setattr(photos_view, "load_recent", lambda _plugin: snapshot)
+    work = ManualRunner()
+    model, opened, _changes = _model(work)
+    errors = []
+    model._on_error = errors.append
+
+    def result(*_args):
+        if fails:
+            raise RuntimeError("old photo error")
+        return snapshot if operation == "list" else tmp_path / "old.jpg"
+
+    if operation == "fetch":
+        model.watch(True)
+        work.run_tasks()
+        monkeypatch.setattr(photos_view, "fetch_original", result)
+        model.open("old")
+    else:
+        monkeypatch.setattr(photos_view, "load_recent", result)
+        model.watch(True)
+    reply = work.start_next()
+    model.watch(False)
+    model.watch(True)
+    reply()
+    assert model.state["items"] == [] and model.state["hint"] == ""
+    assert model.plugin is None and opened == [] and errors == []
+    assert len(work.pending) == 1  # only the fresh tab's reload
+
+
+def test_plugin_disabled_during_download_is_checked_before_opening(monkeypatch, tmp_path):
+    plugin = manifest()
+    monkeypatch.setattr(photos_view, "find_plugin", lambda: plugin)
+    monkeypatch.setattr(photos_view, "load_recent", lambda _plugin: photos_view.PhotosSnapshot(
+        True, True, "ready", [Photo("a", "", "image", None)]))
+
+    def download(*_args):
+        monkeypatch.setattr(photos_view, "find_plugin", lambda: None)
+        return tmp_path / "original.jpg"
+
+    monkeypatch.setattr(photos_view, "fetch_original", download)
+    work = ManualRunner()
+    model, opened, _changes = _model(work)
+    model.watch(True)
+    work.run_tasks()
+    model.open("a")
+    work.run_tasks()
+    assert not opened and model.state["items"][0]["original"] == ""

@@ -174,6 +174,36 @@ def test_gtk_sources_avoid_the_known_newer_libadwaita_symbols() -> None:
 
 
 def test_the_check_sees_newer_symbols(monkeypatch, tmp_path) -> None:
+    # The parser test must also pass on the supported minimum versions,
+    # whose installed GIR files naturally do not contain newer symbols.
+    members = {
+        "Adw": """
+            <class name="ButtonRow" version="1.6"/>
+            <class name="Spinner" version="1.6"/>
+            <class name="ToggleGroup" version="1.7"/>
+            <class name="WrapBox" version="1.7"/>
+            <class name="BottomSheet" version="1.8"/>
+            <class name="PreferencesDialog" version="1.5"/>
+            <class name="PreferencesPage">
+                <method name="set_banner" version="1.7"/>
+                <property name="description-centered" version="1.6"/>
+            </class>
+            <class name="EntryRow">
+                <property name="max-length" version="1.6"/>
+            </class>""",
+        "Gtk": """
+            <bitfield name="IconLookupFlags">
+                <member name="none" version="4.18"/>
+            </bitfield>
+            <enumeration name="SelectionMode"><member name="none"/></enumeration>""",
+    }
+    for namespace, body in members.items():
+        (tmp_path / f"{namespace}.gir").write_text(
+            f'<repository xmlns="{_CORE[1:-1]}"><namespace name="{namespace}">'
+            f'{body}</namespace></repository>'
+        )
+    monkeypatch.setattr(sys.modules[__name__], "_gir",
+                        lambda namespace, _version: tmp_path / f"{namespace}.gir")
     newer_top, newer_members = _newer_symbols()
     assert {"ButtonRow", "Spinner", "ToggleGroup", "WrapBox", "BottomSheet"} <= newer_top["Adw"]
     assert "PreferencesDialog" not in newer_top["Adw"]

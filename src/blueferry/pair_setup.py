@@ -1527,8 +1527,8 @@ def _register_solicitation(
     quirks_report.mark(attempt, "advert_register_sent")
     if not bluez_setup.register_advert(adapter, settle_for_pairing=True):
         quirks_report.mark(attempt, "advert_unavailable")
-        if policy.ancs_enabled:
-            raise PairingError("The ANCS advertisement did not activate")
+        # Solicitation helps ANCS discovery, but MAP/PBAP do not depend on it.
+        # Keep the selected policy so the daemon can still retry ANCS setup.
         log.warning(
             "ANCS solicitation is unavailable; continuing with MAP/PBAP"
         )

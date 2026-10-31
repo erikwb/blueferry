@@ -43,6 +43,7 @@ class FeatureSwitches:
         self._notices: list[tuple[Adw.PreferencesGroup, Adw.ActionRow]] = []
         self._restart_buttons: list[Gtk.Button] = []
         self._saving: set[str] = set()
+        self._load_revision = 0
         self._applying = False
         self._daemon = False
         self._restarting = False
@@ -90,11 +91,20 @@ class FeatureSwitches:
             self._render()
 
     def load(self) -> None:
+        if self._saving:
+            return  # The last completed save reloads all switches.
+        self._load_revision += 1
+        revision = self._load_revision
+
         def loaded(value: object) -> None:
+            if revision != self._load_revision:
+                return
             self._state = features_view.loaded(self._state, value)
             self._render()
 
         def failed(message: str) -> None:
+            if revision != self._load_revision:
+                return
             # Older daemons have no GetFeatures; the rows fall back to hints.
             self._state = features_view.unavailable(self._state, message)
             self._render()
@@ -134,10 +144,11 @@ class FeatureSwitches:
         self._features_timer.stop()
 
     def _toggled(self, row: Adw.SwitchRow, _pspec, name: str) -> None:
-        if self._applying:
+        if self._applying or name in self._saving:
             return
         enabled = row.get_active()
         # Show the choice while it is saved; a failure puts the old state back.
+        self._load_revision += 1  # Discard reads started before this write.
         previous = self._state
         self._state = features_view.assume(previous, name, enabled)
         self._saving.add(name)
@@ -153,9 +164,10 @@ class FeatureSwitches:
 
         def failed(message: str) -> None:
             self._saving.discard(name)
-            self._state = previous
+            self._state = features_view.restore(self._state, previous, name)
             self._toast(_("Could not save the setting: {error}").format(error=message))
             self._render()
+            self.load()
 
         self._client.set_feature_async(name, enabled, saved, failed)
 

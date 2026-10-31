@@ -26,6 +26,7 @@ def categories() -> tuple[Category, ...]:
         Category("phone", _("Phone"), "phone-symbolic"),
         Category("notifications", _("Notifications"), "preferences-system-notifications-symbolic"),
         Category("calls", _("Calls & Audio"), "call-start-symbolic"),
+        Category("network", _("Network"), "network-wireless-symbolic"),
         Category("security", _("Security"), "security-high-symbolic"),
         Category("about", _("About"), "help-about-symbolic"),
     )
