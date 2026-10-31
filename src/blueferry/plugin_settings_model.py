@@ -503,8 +503,7 @@ class PluginSettingsModel:
             if isinstance(path, Path):
                 self._open(path.as_uri())
             else:
-                self._say(_("This plugin has not written a log yet. Plugins for plugin API "
-                            "1.4 start one the first time they run."), False)
+                self._say(plugin_logs.missing_text(), False)
 
         self._work("log", lambda: plugin_logs.find_log(plugin_id), done)
 
