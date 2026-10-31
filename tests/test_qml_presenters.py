@@ -25,6 +25,7 @@ from PySide6.QtCore import (
     QIODevice,
     QMetaObject,
     QObject,
+    QPoint,
     QPointF,
     Qt,
     QUrl,
@@ -4679,15 +4680,18 @@ def test_dial_pad_requires_confirmation_and_preserves_keypad_input(qml_engine, s
     bridge.setProperty("callsState", "ready")
     QGuiApplication.processEvents()
     field = _settings_object(window, "dialPadField")
-    qml_engine.globalObject().setProperty("callsTabItem", qml_engine.newQObject(
-        _settings_object(window, "callsTab")))
     zero = _visual_find(window.contentItem(), "dialKey0", qml_engine)
-    QMetaObject.invokeMethod(zero, "pressAndHold")
-    QMetaObject.invokeMethod(zero, "clicked")  # the release after a long press
-    for key in ("4", "1", "7", "9", "0", "0", "0", "0", "0", "0", "1"):
-        _evaluate(qml_engine, f"callsTabItem.append('{key}')")
+    position = zero.mapToScene(QPointF(zero.width() / 2, zero.height() / 2)).toPoint()
+    QTest.mousePress(window, Qt.LeftButton, Qt.NoModifier, position)
+    QTest.qWait(QGuiApplication.styleHints().mousePressAndHoldInterval() + 100)
+    QTest.mouseRelease(window, Qt.LeftButton, Qt.NoModifier, position)
+    assert field.property("text") == "+"
+    # Use real clicks: Qt does not emit clicked when a long press finishes,
+    # and the first later zero must not be swallowed by a leftover flag.
+    for digit in "41790000001":
+        _click_control(window, _visual_find(window.contentItem(), "dialKey" + digit, qml_engine))
     assert field.property("text") == "+41790000001"
-    QMetaObject.invokeMethod(call_button, "clicked")
+    _click_control(window, call_button)
     dialog = _settings_object(window, "dialLinkDialog")
     QGuiApplication.processEvents()
     assert dialog.property("canCall") is True
@@ -4700,6 +4704,98 @@ def test_dial_pad_requires_confirmation_and_preserves_keypad_input(qml_engine, s
     }
     _wait_closed(dialog)
 
+
+
+@pytest.mark.parametrize("size", [(420, 480), (600, 700), (900, 480), (900, 700)])
+@pytest.mark.parametrize("active_calls", [0, 1, 2])
+def test_short_calls_windows_scroll_the_dialer_and_keep_history_visible(
+    qml_engine, settings_window, size, active_calls,
+):
+    window, bridge = settings_window
+    window.resize(*size)
+    bridge.setProperty("status", {"daemon": True, "calls_enabled": True,
+                                 "calls_state": "ready", "call_history_enabled": True})
+    bridge.setProperty("callsState", "ready")
+    bridge.setProperty("callHistoryEnabled", True)
+    bridge.setProperty("phoneCalls", [
+        {"call_id": str(index), "state": "active", "ringing": False,
+         "display_peer": "Test", "number": "+15551234567", "first_seen": ""}
+        for index in range(active_calls)
+    ])
+    bridge.setProperty("callHistoryRows", {"all": [
+        {"key": "one", "day": "Today", "clock": "10:00", "caller": "Test",
+         "address": "+15551234567", "known": True, "direction": "incoming",
+         "missed": False, "count": 1},
+    ]})
+    _evaluate(qml_engine, "testWindow.currentTab = testWindow.callsTab")
+    QTest.qWait(100)
+    _settings_object(window, "dialPadField").setProperty("text", "+15550100123")
+    QGuiApplication.processEvents()
+    scroll = _settings_object(window, "dialerScroll")
+    call = _settings_object(window, "dialPadCallButton")
+    history = _settings_object(window, "recentCallsPage")
+    assert scroll.mapToScene(QPointF(0, scroll.height())).y() <= window.height()
+    assert history.height() >= 100
+    history_title = _visual_find(window.contentItem(), "callTitle", qml_engine)
+    assert history_title is not None
+    assert history.mapToScene(QPointF(0, 0)).y() <= history_title.mapToScene(QPointF(0, 0)).y()
+    assert history_title.mapToScene(QPointF(0, history_title.height())).y() <= window.height()
+
+    # Wheel over the dialer's margin so the gesture goes to its viewport,
+    # then verify the button can actually be clicked at its new position.
+    for _ in range(20):
+        top = call.mapToItem(scroll, QPointF(0, 0)).y()
+        bottom = top + call.height()
+        if top >= 0 and bottom <= scroll.height():
+            break
+        QTest.wheelEvent(
+            window, scroll.mapToScene(QPointF(2, scroll.height() / 2)),
+            QPoint(0, -120 if bottom > scroll.height() else 120),
+        )
+        QTest.qWait(100)
+    viewport = scroll.property("contentItem")
+    for _ in range(50):
+        if not viewport.property("moving"):
+            break
+        QTest.qWait(20)
+    assert 0 <= call.mapToItem(scroll, QPointF(0, 0)).y()
+    assert call.mapToItem(scroll, QPointF(0, call.height())).y() <= scroll.height()
+    _click_control(window, call)
+    dialog = _settings_object(window, "dialLinkDialog")
+    assert dialog.property("canCall") is True
+    assert dialog.property("number") == "+15550100123"
+    assert "dialCall" not in _bridge_methods(qml_engine)
+    _close_dial_dialog(dialog)
+
+
+@pytest.mark.parametrize("target", ["body", "star"])
+def test_thread_context_menu_handles_the_whole_row(qml_engine, settings_window, target):
+    window, bridge = settings_window
+    bridge.setProperty("threads", [{"key": "one", "name": "Alice", "unread": False,
+                                    "messages": [], "recipients": [], "is_group": False,
+                                    "reply_ready": True, "starred": False}])
+    QTest.qWait(50)
+    row = _visual_find(window.contentItem(), "threadDelegate", qml_engine)
+    menus = [item for item in window.findChildren(QObject)
+             if "Menu" in item.metaObject().className()
+             and item.metaObject().indexOfProperty("threadKey") >= 0]
+    assert len(menus) == 1
+    menu = menus[0]
+    QMetaObject.invokeMethod(row, "forceActiveFocus")
+    QTest.qWait(30)
+    if target == "star":
+        qml_engine.globalObject().setProperty("testThreadRow", qml_engine.newQObject(row))
+        star = _evaluate(qml_engine, "testThreadRow.actions[0]")
+        position = star.mapToScene(QPointF(star.width() / 2, star.height() / 2)).toPoint()
+    else:
+        position = row.mapToScene(QPointF(row.width() / 2, row.height() / 2)).toPoint()
+    QTest.mouseClick(window, Qt.RightButton, Qt.NoModifier, position)
+    QTest.qWait(50)
+    assert menu.property("visible") is True
+    assert menu.property("threadKey") == "one"
+    assert "setThreadStarred" not in _bridge_methods(qml_engine)
+    QMetaObject.invokeMethod(menu, "close")
+    _wait_closed(menu)
 
 
 def test_dial_suggestions_show_and_dial_contact_numbers_unchanged(qml_engine, settings_window):

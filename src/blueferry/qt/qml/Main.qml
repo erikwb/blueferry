@@ -737,6 +737,9 @@ Kirigami.ApplicationWindow {
                                                 )
                                             }
                                             TapHandler {
+                                                // ListRow's default children belong to its
+                                                // trailing actions; handle the whole row here.
+                                                parent: threadDelegate
                                                 acceptedButtons: Qt.RightButton
                                                 onTapped: eventPoint => {
                                                     threadContextMenu.threadKey = threadDelegate.modelData.key
