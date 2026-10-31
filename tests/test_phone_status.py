@@ -349,6 +349,27 @@ def test_daemon_wires_the_controller_and_battery_to_its_handler(make_daemon) -> 
     assert instance.phone_battery.device_path.endswith(config.IPHONE_MAC.replace(":", "_"))
 
 
+def test_le_disconnect_clears_the_exact_level_while_classic_remains(make_daemon, monkeypatch):
+    from types import SimpleNamespace
+
+    instance, _seen, _now, _timers = _daemon_with_recorders(make_daemon)
+    instance.bearers = SimpleNamespace(bredr_connected=True, le_connected=False)
+    instance._battery_link_seen = True
+    instance.phone_battery._gatt = 89
+    instance.calls.enabled = True
+    instance.calls._phone = PhoneStatus(battery_steps=4)
+    monkeypatch.setattr(instance.audio_preference, "connection_changed", lambda: None)
+    monkeypatch.setattr(instance.proximity, "bearer_changed", lambda: None)
+    monkeypatch.setattr(instance.calls, "poke", lambda: None)
+
+    instance._bearer_status_changed()
+
+    assert instance.phone_battery.percent is None
+    assert instance._published_phone["phone_battery_level"] == 80
+    assert instance._published_phone["phone_battery_source"] == "hfp"
+    assert instance._battery_link_seen is False
+
+
 # ---- desktop warning -------------------------------------------------------------
 
 

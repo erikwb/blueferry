@@ -17,11 +17,11 @@ from typing import Any
 
 from blueferry.i18n import _
 
+from . import config
+
 TIMEOUT_SEC = 60.0
 MAX_CHARS = 20_000
 _ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
-_running: set[subprocess.Popen] = set()
-_running_lock = threading.Lock()
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,51 +31,77 @@ class DoctorReport:
     text: str
 
 
-def run_doctor(timeout: float = TIMEOUT_SEC, command: list[str] | None = None) -> DoctorReport:
-    """*Blocking.* ``blueferry doctor`` in a child process.
+class DoctorRunner:
+    """Own a client's doctor children and cancel even a run still starting.
 
-    The child is registered until it ends, so :func:`terminate_running` can
-    stop it when the client quits instead of waiting for the timeout.
+    Stopping is permanent for this owner, so work queued before shutdown
+    cannot start a new check afterwards. Other clients/runners are unaffected.
     """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._stopped = False
+        self._running: set[subprocess.Popen] = set()
+
+    def run(self, timeout: float = TIMEOUT_SEC, command: list[str] | None = None) -> DoctorReport:
+        """*Blocking.* Run on a worker thread, never on a toolkit thread."""
+        with self._lock:
+            if self._stopped:
+                return DoctorReport(False, False, "blueferry doctor was cancelled")
+        # config injects file-backed settings into our environment. The child
+        # must reread current files, preserving only genuine overrides.
+        environment = {
+            key: value for key, value in os.environ.items()
+            if key not in config.LOCAL_ENV_KEYS or key in config.EXPLICIT_ENV_KEYS
+        }
+        environment.update(NO_COLOR="1", TERM="dumb")
+        try:
+            process = subprocess.Popen(  # nosec B603
+                command or [sys.executable, "-m", "blueferry", "doctor"],
+                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, errors="replace", env=environment,
+            )
+        except OSError as error:
+            return _unfinished(error)
+        with self._lock:
+            self._running.add(process)
+            # stop() may have run while Popen was creating this process.
+            if self._stopped:
+                _kill(process)
+        try:
+            stdout, stderr = process.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired as error:
+            _kill(process)
+            process.communicate()
+            return _unfinished(error)
+        finally:
+            with self._lock:
+                self._running.discard(process)
+        return parse_output(process.returncode, stdout + stderr)
+
+    def stop(self) -> None:
+        """Cancel this owner's checks without waiting on the UI thread."""
+        with self._lock:
+            self._stopped = True
+            processes = list(self._running)
+        for process in processes:
+            _kill(process)
+
+
+def _kill(process: subprocess.Popen) -> None:
     try:
-        process = subprocess.Popen(  # nosec B603
-            command or [sys.executable, "-m", "blueferry", "doctor"],
-            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True, env=dict(os.environ, NO_COLOR="1", TERM="dumb"),
-        )
-    except OSError as error:
-        return _unfinished(error)
-    with _running_lock:
-        _running.add(process)
-    try:
-        stdout, stderr = process.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired as error:
         process.kill()
-        process.communicate()
-        return _unfinished(error)
-    finally:
-        with _running_lock:
-            _running.discard(process)
-    return parse_output(process.returncode, stdout + stderr)
+    except OSError:
+        pass  # It may already have exited; the worker still reaps it.
+
+
+def run_doctor(timeout: float = TIMEOUT_SEC, command: list[str] | None = None) -> DoctorReport:
+    """Run a standalone check; UIs use their own stoppable DoctorRunner."""
+    return DoctorRunner().run(timeout, command)
 
 
 def _unfinished(error: Exception) -> DoctorReport:
     return DoctorReport(False, False, f"blueferry doctor did not finish: {type(error).__name__}")
-
-
-def terminate_running() -> None:
-    """Stop every doctor run of this process, e.g. when the client quits.
-
-    The worker thread waiting in :func:`run_doctor` then returns at once, so
-    interpreter exit does not wait up to the timeout for it.
-    """
-    with _running_lock:
-        processes = list(_running)
-    for process in processes:
-        try:
-            process.terminate()
-        except OSError:
-            pass
 
 
 def parse_output(returncode: int, output: str) -> DoctorReport:
