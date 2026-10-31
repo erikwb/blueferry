@@ -2399,9 +2399,18 @@ class _PinBackend(_PhoneLinkBackend):
         return muted
 
 
+def _allow_notifications(controller) -> None:
+    """A status under which the shared model may read and show the list."""
+    controller._notification_history.sync_status({
+        "daemon": True, "notification_history_enabled": True,
+        "storage_state": "ready", "notification_content_shown": True,
+    })
+
+
 def test_notification_rows_carry_pin_state_and_muted_apps(monkeypatch):
     backend = _PinBackend(muted={"com.example.mail"})
     controller = _inline_controller(monkeypatch, backend)
+    _allow_notifications(controller)
     controller._status = {"notification_muted_app_count": 1}
     controller.watchNotifications(True)
 
@@ -2429,6 +2438,7 @@ def test_a_dropped_notification_reply_never_pairs_rows_with_other_keys(monkeypat
 
     backend = _PinBackend()
     controller = BridgeController(backend=backend, setup=object(), subscribe=False, autostart=False)
+    _allow_notifications(controller)
     pending = []
     monkeypatch.setattr(
         controller, "_run",
@@ -2464,6 +2474,7 @@ def test_a_dropped_notification_reply_never_pairs_rows_with_other_keys(monkeypat
 def test_hiding_notifications_forgets_the_raw_answer_with_one_change(monkeypatch):
     backend = _PinBackend()
     controller = _inline_controller(monkeypatch, backend)
+    _allow_notifications(controller)
     assert {"pinLimitReached", "pinLimitText", "pinError"} <= set(
         controller.notificationsInfo)
     controller.watchNotifications(True)
@@ -2478,6 +2489,7 @@ def test_hiding_notifications_forgets_the_raw_answer_with_one_change(monkeypatch
 def test_muted_apps_are_chosen_on_the_gui_thread_before_the_read(monkeypatch):
     backend = _PinBackend(muted={"com.example.mail"})
     controller = BridgeController(backend=backend, setup=object(), subscribe=False, autostart=False)
+    _allow_notifications(controller)
     pending = []
     monkeypatch.setattr(
         controller, "_run",
@@ -2503,6 +2515,7 @@ def test_pinning_refreshes_the_list_and_explains_a_failure(monkeypatch):
 
     backend = _PinBackend()
     controller = _inline_controller(monkeypatch, backend)
+    _allow_notifications(controller)
     controller.watchNotifications(True)
     calls = backend.notification_calls
 
@@ -2535,6 +2548,7 @@ def test_muted_apps_are_read_only_while_shown_and_only_from_capable_daemons(monk
     monkeypatch.setattr(controller_module, "qt_timers", lambda _parent: timers.timer)
     backend = _PinBackend(muted={"com.example.chat"})
     controller = BridgeController(backend=backend, setup=object(), subscribe=False, autostart=False)
+    _allow_notifications(controller)
     _run_inline_any(controller, monkeypatch)
     (notifications_timer,) = timers.timers
 
@@ -2597,6 +2611,7 @@ def test_notification_rows_without_pin_keys_hide_the_pin_control(monkeypatch):
         "enabled": True, "notifications": [{"app_id": "com.example.chat", "time": ""}, "junk"],
     }
     controller = _inline_controller(monkeypatch, backend)
+    _allow_notifications(controller)
     controller._status = {"notification_muted_app_count": 1}
     controller.watchNotifications(True)
 
