@@ -55,6 +55,17 @@ def primary_number(card: dict[str, Any]) -> str:
     return ""
 
 
+def avatar_text(initials: str) -> str:
+    """Text for an ``Adw.Avatar`` that shows exactly the presenter's initials.
+
+    Adw.Avatar derives its own initials from the first and last word of its
+    text; spacing the letters makes it show ``contacts_view.initials`` (the
+    ones Qt, the terminal and Quickshell show) instead of guessing from the
+    title, which may be a number or contain markup characters.
+    """
+    return " ".join(initials)
+
+
 class ContactsPage(Gtk.Box):
     def __init__(
         self,
@@ -302,7 +313,7 @@ class ContactsPage(Gtk.Box):
         )
         row.contact_id = item["id"]
         row.add_prefix(Adw.Avatar(
-            size=32, text=item["title"], show_initials=bool(item["initials"]),
+            size=32, text=avatar_text(item["initials"]), show_initials=bool(item["initials"]),
         ))
         return row
 
@@ -321,7 +332,7 @@ class ContactsPage(Gtk.Box):
         self.title_label.set_label(card["title"])
         self.subtitle_label.set_label(card["subtitle"])
         self.subtitle_label.set_visible(bool(card["subtitle"]))
-        self.avatar.set_text(card["title"])
+        self.avatar.set_text(avatar_text(card["initials"]))
         self.avatar.set_show_initials(bool(card["initials"]))
         photo = self.book.photo
         self.avatar.set_custom_image(decode_avatar(photo) if photo else None)

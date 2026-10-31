@@ -27,14 +27,23 @@ Die IDs der Karten bleiben gleich, solange sich eine Karte nicht ändert und
 der Hintergrunddienst nicht neu startet. Nach einem Abgleich, der eine Karte
 geändert hat, gilt ihre alte ID nicht mehr; liste die Kontakte dann neu auf.
 
-Im GTK-Client listet der Reiter **Contacts** die Karten mit einem Suchfeld
-(es sucht beim Tippen, nach einer kurzen Pause) und lädt weitere Karten,
-wenn du ans Ende scrollst. Eine Karte zeigt alle Angaben; **Call** fragt
-nach, bevor es die erste Nummer wählt, **Message** öffnet die Unterhaltung
-damit oder beginnt eine neue, und jede Nummer oder Adresse hat eigene
-Knöpfe zum Anrufen, Schreiben, Mailen und Kopieren. Die Liste wird nur
-gelesen, solange der Reiter offen ist, und lädt von selbst neu, wenn der
-Hintergrunddienst neu startet oder die Kontakte neu synchronisiert wurden.
+Kontaktansicht in den Clients:
+
+- **KDE-Client:**
+  noch nicht; nutze die Kommandozeile.
+- **GTK-Client:**
+  der Reiter **Contacts** listet die Karten mit einem Suchfeld (es sucht
+  beim Tippen, nach einer kurzen Pause) und lädt weitere Karten, wenn du ans
+  Ende scrollst. Eine Karte zeigt alle Angaben; **Call** fragt nach, bevor
+  es die erste Nummer wählt, **Message** öffnet die Unterhaltung damit oder
+  beginnt eine neue, und jede Nummer oder Adresse hat eigene Knöpfe zum
+  Anrufen, Schreiben, Mailen und Kopieren. Die Liste wird nur gelesen,
+  solange der Reiter offen ist, und lädt von selbst neu, wenn der
+  Hintergrunddienst neu startet oder die Kontakte neu synchronisiert wurden.
+- **Terminal-Client:**
+  noch nicht; nutze die Kommandozeile.
+- **Quickshell-Panel:**
+  noch nicht; nutze die Kommandozeile.
 
 ## Fotos
 

@@ -16,16 +16,25 @@ Nummer) und Anrufe (Name oder Nummer). Jede Gruppe zeigt, wie viele Treffer
 wegen des Limits fehlen. Groß-/Kleinschreibung, Akzente und
 Schreibvarianten spielen keine Rolle: `muller` findet `Müller`. Nummern
 werden über ihre Ziffern gefunden, sobald die Suche mindestens drei Ziffern
-enthält, auch bei Unterhaltungen. Pro Gruppe werden höchstens 50 Treffer
-angezeigt. Suchen mit weniger als zwei
+enthält, auch bei Unterhaltungen. Der Hintergrunddienst liefert pro Gruppe
+höchstens 50 Treffer (`-n 50`). Suchen mit weniger als zwei
 Zeichen finden nichts.
 
-Im GTK-Client öffnen die Lupe in der Kopfzeile, `Strg+K` oder `Strg+F` die
-Suche. Sie sucht beim Tippen, nach einer kurzen Pause, und zeigt dieselben
-Gruppen; Enter öffnet den ersten Treffer, ein Klick oder die Pfeiltasten
-jeden anderen: die Unterhaltung bei der Nachricht, die Kontaktkarte oder
-den Anruf in der Anrufliste. Beim Schließen vergisst die Suche die
-Ergebnisse.
+Suche in den Clients:
+
+- **KDE-Client:**
+  noch nicht; nutze die Kommandozeile.
+- **GTK-Client:**
+  die Lupe in der Kopfzeile, `Strg+K` oder `Strg+F` öffnen die Suche. Sie
+  sucht beim Tippen, nach einer kurzen Pause, und zeigt dieselben Gruppen
+  mit je bis zu 20 Treffern; Enter öffnet den ersten Treffer, ein Klick oder
+  die Pfeiltasten jeden anderen: die Unterhaltung bei der Nachricht, die
+  Kontaktkarte oder den Anruf in der Anrufliste. Beim Schließen vergisst die
+  Suche die Ergebnisse.
+- **Terminal-Client:**
+  noch nicht; nutze die Kommandozeile.
+- **Quickshell-Panel:**
+  noch nicht; nutze die Kommandozeile.
 
 ## Was durchsucht wird
 

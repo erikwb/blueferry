@@ -778,7 +778,7 @@ def test_tether_failure_is_a_warning_only_while_enabled():
 
 
 class _TetherPage:
-    """Borrows IPhonePage's tethering handlers without building widgets."""
+    """Borrows SettingsDialog's tethering handlers without building widgets."""
 
     def __init__(self, tether) -> None:
         from types import SimpleNamespace
