@@ -14,6 +14,7 @@ import signal
 import sys
 import threading
 from collections.abc import Callable, Mapping
+from dataclasses import asdict
 from typing import Any, TextIO
 
 from blueferry import (
@@ -26,15 +27,16 @@ from blueferry import (
 )
 from blueferry.backend_lifecycle import restart_backend
 from blueferry.bus import get_session_bus
-from blueferry.client import BackendClient, BackendError
+from blueferry.client import BackendClient, BackendError, TetherUnsupportedError
 from blueferry.client_activation import record_client_use
 from blueferry.config import FEATURE_SWITCHES
 from blueferry.contact_photos import image_type, valid_photo
 from blueferry.i18n import _
 from blueferry.phone_audio_view import phone_audio
-from blueferry.protocol import BUS_NAME, EVENTS_IFACE, OBJECT_PATH
+from blueferry.protocol import BUS_NAME, EVENTS_IFACE, OBJECT_PATH, TETHER_IFACE
 from blueferry.reconnect_view import ManualReconnect, reconnect_view
 from blueferry.service_manager import bluetooth_restart_command
+from blueferry.tether_status import TetherStatus
 
 MAX_REQUEST_CHARS = 1_048_576
 MAX_PENDING_REQUESTS = 32
@@ -43,6 +45,11 @@ REQUEST_WORKERS = 4
 NOTIFICATION_LIMIT = 30
 _FEATURE_NAME = re.compile(r"[a-z][a-z0-9_]{0,63}")
 _FEATURE_VARIABLES = {name: variable for name, variable, _default in FEATURE_SWITCHES}
+
+
+_TETHER_METHODS = frozenset({
+    "tether_state", "tether_connect", "tether_disconnect", "tether_configure",
+})
 
 
 class RequestError(ValueError):
@@ -67,6 +74,16 @@ def _texts(args: Mapping[str, Any], name: str) -> list[str]:
     if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
         raise RequestError(f"{name} must be a string array")
     return value
+
+
+def _tether_payload(status: TetherStatus) -> dict[str, object]:
+    """The decoded tether state plus the shared wording, for the QML side."""
+    return {
+        **asdict(status),
+        "available": True,
+        "active": status.active,
+        "summary": status.summary(),
+    }
 
 
 def _index(args: Mapping[str, Any], name: str) -> int:
@@ -195,6 +212,8 @@ class QuickshellBridge:
         # The notice after "Reconnect", shared with Qt and GTK; it lasts
         # until a status shows the outcome. Workers run in parallel.
         self._manual_reconnect = ManualReconnect()
+        # This bridge's diagnostics children, stopped when the shell exits.
+        self.doctor = doctor_report.DoctorRunner()
         self._reconnect_lock = threading.Lock()
         # SetCallQuickReplies replaces the whole list and has no version,
         # so the workers edit it one at a time: each read-modify-write
@@ -462,13 +481,33 @@ class QuickshellBridge:
             restart_backend()
             return None
         if method == "doctor":
-            report = doctor_report.run_doctor()
+            report = self.doctor.run()
             return doctor_report.view(
                 doctor_report.finished_state(doctor_report.idle_state(), report)
             )
         if method == "notifications":
             return self._notifications()
+        if method in _TETHER_METHODS:
+            return self._tether(method, args)
         raise RequestError(f"unsupported method: {method}")
+
+    def _tether(self, method: str, args: Mapping[str, Any]) -> dict[str, object]:
+        if method == "tether_configure":
+            enabled = _boolean(args, "enabled")
+            autoconnect = _boolean(args, "autoconnect")
+        try:
+            if method == "tether_connect":
+                status = self.client.tether_connect()
+            elif method == "tether_disconnect":
+                status = self.client.tether_disconnect()
+            elif method == "tether_configure":
+                status = self.client.tether_configure(enabled, autoconnect)
+            else:
+                status = self.client.tether_state()
+        except TetherUnsupportedError:
+            # An older daemon without Tether1: the shell hides the section.
+            return {"available": False}
+        return _tether_payload(status)
 
     def handle_line(self, line: str) -> None:
         request_id: object = None
@@ -557,6 +596,14 @@ def _install_signal_receivers(bridge: QuickshellBridge) -> list[object]:
             lambda handle: bridge.emit_event("open-message", str(handle)),
             signal_name="OpenMessageRequested",
             **common,
+        ),
+        # Content-free: the shell refetches the state with tether_state.
+        bus.add_signal_receiver(
+            lambda: bridge.emit_event("tether-changed"),
+            signal_name="TetherChanged",
+            dbus_interface=TETHER_IFACE,
+            bus_name=BUS_NAME,
+            path=OBJECT_PATH,
         ),
         # Content-free; the shell refetches through now_playing.
         bus.add_signal_receiver(
@@ -651,7 +698,7 @@ def main() -> int:
             if source is not None:
                 source.destroy()
         # A running diagnostics child would otherwise outlive the shell.
-        doctor_report.terminate_running()
+        bridge.doctor.stop()
         if activation is not None:
             activation.close()
         for match in signal_matches:

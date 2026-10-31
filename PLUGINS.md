@@ -561,11 +561,21 @@ and `blueferry plugins log ID [--lines N] [--path]`.
 
 ## Security
 
+- Plugins, dependencies, and installation code run with the user's account
+  permissions. A virtual environment isolates Python packages, not access
+  to files, the network, or session services. Capabilities describe features;
+  they are not enforced permissions. Install and update confirmation shows
+  this trust requirement before any plugin code runs.
 - Clients use the **session bus** only and refuse a plugin whose bus name is
   owned by a different Unix user. The SDK transport activates the service
   without a plugin-method payload, checks its unique owner's Unix user,
   then sends the call to that exact connection. Changing the well-known
   name's owner cannot redirect settings, credentials, files or actions.
+- Exported SDK services also verify the caller's Unix UID before invoking
+  hooks or queuing work, including on shared buses. Missing or unverifiable
+  credentials are denied. Unexported in-process test services need no bus.
+  Plugins with their own SDK copy must update that dependency to receive
+  security fixes; upgrading BlueFerry does not replace SDKs in plugin venvs.
 - Plugin data is **untrusted**: replies over 512 KiB are rejected, JSON is
   validated field by field, surface ids match `[A-Za-z0-9_.-]{1,64}`, text
   is shown as plain text only (escaped where a Qt control would read it as
@@ -654,11 +664,12 @@ dependencies = [
 ```
 
 Pin the dependency to a `plugin-api-v<version>` tag (the `version` in
-`plugin-api/pyproject.toml`), never to a branch. Until the plugin API is
-released upstream, the `plugin-api-v*` tags live in the fork
-`joshii-h/blueferry`; pin
-`git+https://github.com/joshii-h/blueferry@plugin-api-v1.6.0#subdirectory=plugin-api`
-there instead. Declare a
+`plugin-api/pyproject.toml`), never to a branch. The upstream
+`erikwb/blueferry` tag `plugin-api-v1.5.0` includes the caller-verification
+fix shipped with BlueFerry 0.9.0. Plugins still pinned to the earlier
+`joshii-h/blueferry` fork tag should update their dependency to the upstream
+repository and rebuild their environments. Plugins using settings actions
+need the upstream `plugin-api-v1.6.0` release. Declare a
 `[project.scripts]` entry point that serves the plugin and name it in `Exec=`
 (and `Cli=`). Ship exactly one manifest, in `data/` or as package data in
 `src/<package>/`.
