@@ -42,6 +42,9 @@ LOCAL_ENV_KEYS = frozenset({
     "BLUEFERRY_MISSED_CALL_NOTIFICATIONS",
     "BLUEFERRY_MEDIA_CONTROL_ENABLED",
     "BLUEFERRY_MEDIA_MPRIS_ENABLED",
+    "BLUEFERRY_TETHER_AUTOCONNECT",
+    "BLUEFERRY_TETHER_BACKEND",
+    "BLUEFERRY_TETHER_ENABLED",
 })
 PROFILE_ID_KEY = "BLUEFERRY_PROFILE_ID"
 _PROFILE_ID_RE = re.compile(
@@ -247,11 +250,15 @@ SolicitUUIDs field and by the ANCS GATT client."""
 BLE_ADVERT_LOCAL_NAME: str = "BlueFerry"
 
 
-def _env_bool(name: str, default: bool) -> bool:
-    value = os.environ.get(name)
+def parse_bool(value: str | None, default: bool) -> bool:
+    """Parse a default-on flag from an environment or local.env value."""
     if value is None:
         return default
     return value.strip().casefold() not in {"0", "false", "no", "off"}
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    return parse_bool(os.environ.get(name), default)
 
 
 def _env_opt_in(name: str) -> bool:
@@ -460,6 +467,32 @@ MISSED_CALL_NOTIFICATIONS: bool = _env_bool(
     "BLUEFERRY_MISSED_CALL_NOTIFICATIONS", True
 )
 """Desktop popups for newly seen missed calls; only with call history enabled."""
+
+TETHER_ENABLED: bool = _env_bool("BLUEFERRY_TETHER_ENABLED", False)
+"""Initial opt-in for Bluetooth tethering as a whole.
+
+Off by default. While off, the daemon neither watches nor adopts PAN links,
+does not hold back adapter recovery for them, and refuses ``Tether1.Connect``.
+A value saved through the D-Bus API (settings.json) takes precedence; see
+``tether.TetherSettings``.
+"""
+TETHER_AUTOCONNECT: bool = _env_bool("BLUEFERRY_TETHER_AUTOCONNECT", False)
+"""Initial value for starting tethering automatically once MAP/PBAP are up.
+
+Off by default and effective only while tethering is enabled. An explicit
+disconnect pauses automatic attempts until the next explicit connect. A value
+saved through the D-Bus API takes precedence.
+"""
+
+
+def _tether_backend() -> str:
+    value = os.environ.get("BLUEFERRY_TETHER_BACKEND", "auto").strip().casefold()
+    return value if value in {"auto", "networkmanager", "bluez"} else "auto"
+
+
+TETHER_BACKEND: str = _tether_backend()
+"""``auto`` prefers NetworkManager when it is running; ``bluez`` only brings
+the PAN link up and leaves DHCP to the user."""
 
 # ---- runtime paths ------------------------------------------------------
 

@@ -31,6 +31,7 @@ Kirigami.Page {
         { "key": "phone", "name": qsTr("Phone"), "icon": "smartphone" },
         { "key": "notifications", "name": qsTr("Notifications"), "icon": "preferences-desktop-notification" },
         { "key": "calls", "name": qsTr("Calls & Audio"), "icon": "call-start" },
+        { "key": "network", "name": qsTr("Network"), "icon": "network-wireless" },
         { "key": "security", "name": qsTr("Security"), "icon": "preferences-security" },
         { "key": "about", "name": qsTr("About"), "icon": "help-about" }
     ]
@@ -56,7 +57,17 @@ Kirigami.Page {
         settingsPage.drilled = true
     }
 
-    Component.onCompleted: settingsPage.bridge.loadFeatures()
+    readonly property bool daemonAvailable: settingsPage.bridge.status.daemon === true
+
+    function loadFeaturesIfVisible() {
+        if (settingsPage.visible && settingsPage.daemonAvailable)
+            settingsPage.bridge.loadFeatures()
+    }
+
+    // The page is created before the backend is ready and reused on reopen.
+    onVisibleChanged: settingsPage.loadFeaturesIfVisible()
+    onDaemonAvailableChanged: settingsPage.loadFeaturesIfVisible()
+    Component.onCompleted: settingsPage.loadFeaturesIfVisible()
 
     actions: [
         Kirigami.Action {
@@ -155,15 +166,24 @@ Kirigami.Page {
                         ]
                     }
 
+                    // Keep in-progress pairing choices when visiting another category.
+                    Loader {
+                        Layout.fillWidth: true
+                        visible: settingsPage.category === "phone"
+                        sourceComponent: phoneComponent
+                    }
                     Loader {
                         id: categoryLoader
                         objectName: "categoryLoader"
                         Layout.fillWidth: true
+                        active: settingsPage.category !== "phone"
+                        visible: active
                         sourceComponent: settingsPage.category === "notifications" ? notificationsComponent
                             : settingsPage.category === "calls" ? callsComponent
+                            : settingsPage.category === "network" ? networkComponent
                             : settingsPage.category === "security" ? securityComponent
                             : settingsPage.category === "about" ? aboutComponent
-                            : phoneComponent
+                            : null
                     }
                 }
             }
@@ -188,6 +208,10 @@ Kirigami.Page {
     Component {
         id: callsComponent
         SettingsCallsAudio { bridge: settingsPage.bridge }
+    }
+    Component {
+        id: networkComponent
+        SettingsNetwork { bridge: settingsPage.bridge }
     }
     Component {
         id: securityComponent

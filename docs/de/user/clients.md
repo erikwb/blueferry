@@ -27,6 +27,7 @@ Linux Mint 22.3 und Pop!_OS 24.04 gibt es sie nicht.
 | Phone | Kopplung, Verbindungszustand, **Run Diagnostics** (dieselben Prüfungen wie `blueferry doctor`, im Fenster angezeigt), Kontaktabgleich, Kontaktfotos |
 | Notifications | Welche Ereignisse Popups erzeugen, nur Kontakte, Klickregeln, Mitteilungsinhalt, Aktionsknöpfe, Mitteilungen mit dem iPhone abgleichen, beim Wegklicken als gelesen markieren |
 | Calls & Audio | Anrufe, Anrufliste, Akku-Warnung, [iPhone-Ton am Computer](phone-audio.md), Mediensteuerung |
+| Network | [Bluetooth-Tethering](bluetooth-tethering.md), iPhone-Internet teilen, automatische Hotspot-Verbindung |
 | Security | Einmalcodes, Abwesenheitssperre, lokale Daten und ihre Verschlüsselung, Verlauf löschen |
 | About | Version, Hintergrunddienst, Tastenkürzel, Beenden |
 
@@ -54,7 +55,9 @@ blueferry features off mark_read_on_dismiss        # gilt nach einem Neustart
 Systemabschnitt der Kontrollleiste (unter KDE Plasma ein
 StatusNotifierItem). Das Symbol zeigt die Zahl der ungelesenen Nachrichten,
 der Tooltip die Verbindung, den Akku, den Empfang und das Netz. Ein Klick
-öffnet BlueFerry oder holt ein offenes Fenster nach vorne.
+öffnet BlueFerry oder holt ein offenes Fenster nach vorne. Dabei nimmt es
+den Client, den du benutzt: zuerst ein laufendes BlueFerry-Fenster, sonst den
+zuletzt benutzten Client, sonst den, der zu deinem Desktop passt.
 
 Starte es im Anwendungsmenü als **BlueFerry Tray**. Beim Anmelden startet es
 nur, wenn du das willst: Hake im Menü des Symbols **Start at login** an, oder
@@ -70,7 +73,8 @@ dieselbe Datei, die auch die Autostart-Einstellungen des Desktops anzeigen.
 Das Symbol folgt nur einem laufenden Hintergrunddienst und startet ihn nie
 selbst. Ohne eingerichtetes BlueFerry bleibt es ausgeblendet. Solange es
 läuft, verzichtet `blueferry-qt` auf sein eigenes Symbol und beendet sich,
-wenn du sein Fenster schließt; das Symbol öffnet es wieder.
+wenn du sein Fenster schließt; das Symbol öffnet es wieder. **Quit Tray Icon**
+im Menü entfernt nur das Symbol; BlueFerry und offene Fenster laufen weiter.
 
 ## Quickshell
 

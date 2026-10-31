@@ -74,7 +74,8 @@ class FeatureSettings:
             elif feature.variable in stored:
                 source, value = "settings", stored[feature.variable]
             elif feature.variable in local:
-                source, value = "local.env", now
+                source = "local.env"
+                value = config.parse_bool(local[feature.variable], feature.default)
             else:
                 source, value = "default", feature.default
             result[feature.name] = {
