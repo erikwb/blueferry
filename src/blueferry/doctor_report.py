@@ -12,6 +12,7 @@ import re
 import subprocess  # nosec B404
 import sys
 from dataclasses import dataclass
+from typing import Any
 
 from . import config
 
@@ -56,3 +57,26 @@ def parse_output(returncode: int, output: str) -> DoctorReport:
         warnings="WARNING" in text or "warnings" in text,
         text=text.strip(),
     )
+
+
+# The settings page's view of the report, the same map for every client.
+
+def idle_state() -> dict[str, Any]:
+    return {"running": False, "ran": False, "ok": False, "warnings": False, "text": ""}
+
+
+def running_state(state: dict[str, Any]) -> dict[str, Any]:
+    return {**state, "running": True}
+
+
+def finished_state(state: dict[str, Any], report: object) -> dict[str, Any]:
+    """The worker's answer: a :class:`DoctorReport` replaces the state;
+    anything else only ends the run, so the page never spins forever."""
+    if isinstance(report, DoctorReport):
+        return {"running": False, "ran": True, "ok": report.ok,
+                "warnings": report.warnings, "text": report.text}
+    return {**state, "running": False}
+
+
+def failed_state(message: str) -> dict[str, Any]:
+    return {"running": False, "ran": True, "ok": False, "warnings": False, "text": message}

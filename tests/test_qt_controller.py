@@ -11,10 +11,10 @@ pytest.importorskip("PySide6")
 from blueferry.client import BackendError, TetherUnsupportedError
 from blueferry.conversation_state import ConversationSnapshot
 from blueferry.models import BackendStatus, Thread
-from blueferry.qt import phone_link
 from blueferry.qt.controller import BridgeController
 from blueferry.setup_client import ConfigurationState
 from blueferry.tether_status import TetherStatus
+from tests.client_fakes import InlineRunner
 from tests.qt_settle import main_thread_gc
 
 # Controllers own timers too: collect their Python cycles on the UI thread,
@@ -1825,6 +1825,7 @@ def test_feature_hints_point_to_the_setting_for_each_opt_in():
 def test_notification_failure_stays_in_the_tab(monkeypatch):
     controller = _inline_controller(monkeypatch, _PhoneLinkBackend(fail_notifications=True))
     controller._status = _notification_status()
+    controller.statusChanged.emit()
     controller.watchNotifications(True)
     assert controller.notifications == []
     assert "locked" in controller.notificationsInfo["error"]
@@ -1835,6 +1836,7 @@ def test_notifications_are_fetched_only_while_watched_and_forgotten_after(monkey
     backend = _PhoneLinkBackend()
     controller = _inline_controller(monkeypatch, backend)
     controller._status = _notification_status()
+    controller.statusChanged.emit()
     controller.refreshNotifications()
     controller._notificationsInvalidated()
     assert backend.notification_calls == 0
@@ -1886,7 +1888,7 @@ def notification_controller(monkeypatch):
 
     status()
     yield controller, pending, status
-    controller._notifications_timer.stop()
+    controller._notification_history._timer.stop()
     controller._now_playing_timer.stop()
     controller.deleteLater()
 
@@ -2004,17 +2006,6 @@ def test_phone_name_comes_from_the_configured_device():
     assert controller.phoneName == "Josh's iPhone"
 
 
-@pytest.mark.parametrize(("calls_state", "expected"), [
-    ("connecting", "connecting to the iPhone"),
-    ("searching", "connecting to the iPhone"),
-    ("unavailable", "oFono is not running"),
-    ("ready", "Waiting for battery and signal"),
-])
-def test_phone_status_hint_names_the_hands_free_state(calls_state, expected):
-    hints = phone_link.feature_hints({"calls_enabled": True, "calls_state": calls_state})
-    assert expected in hints["phoneStatus"]
-
-
 def _inline_controller(monkeypatch, backend):
     controller = BridgeController(backend=backend, setup=object(), subscribe=False, autostart=False)
 
@@ -2056,10 +2047,10 @@ def test_photo_load_failure_stops_the_spinner(monkeypatch):
     controller = BridgeController(
         backend=_Backend(), setup=object(), subscribe=False, autostart=False,
     )
-    monkeypatch.setattr(
-        controller, "_run_photo",
-        lambda _operation, _on_done=None, on_failed=None, **_kwargs: on_failed("boom"),
-    )
+    from blueferry import photos_view
+    controller._photos._runner = InlineRunner()
+    monkeypatch.setattr(photos_view, "find_plugin",
+                        lambda: (_ for _ in ()).throw(RuntimeError("boom")))
     controller.watchPhotos(True)
     assert controller.photos["loaded"] is True and controller.photos["hint"] == "boom"
 
@@ -2093,20 +2084,19 @@ def test_photos_load_only_while_watched_and_open_the_original(monkeypatch, tmp_p
     controller = BridgeController(
         backend=_Backend(), setup=object(), subscribe=False, autostart=False,
     )
-    monkeypatch.setattr(
-        controller, "_run_photo",
-        lambda operation, on_done=None, *_args, **_kwargs: on_done(operation()),
-    )
+    controller._photos._runner = controller._photos._open_runner = InlineRunner()
     controller.refreshPhotos()
     assert controller.photos["loaded"] is False  # not watched: nothing loaded
     controller.watchPhotos(True)
     item = controller.photos["items"][0]
     assert item["video"] is True and item["thumbnail"].endswith("/t.webp")
     assert item["original"] == "" and controller.photos["ready"] is True
+    assert not controller.busy
     # A thumbnail declaring 10 gigapixels never reaches QML's image loader.
     assert controller.photos["items"][1]["thumbnail"] == ""
     controller.openPhoto("a")
     assert fetched == ["a"] and opened == [str(original)]
+    assert not controller.busy
     assert controller.photos["items"][0]["original"].endswith("/IMG_1.HEIC")
     controller.watchPhotos(False)
     assert controller.photos["items"] == []
@@ -2133,10 +2123,7 @@ def test_a_photo_of_a_plugin_disabled_meanwhile_is_not_fetched(monkeypatch, tmp_
     controller = BridgeController(
         backend=_Backend(), setup=object(), subscribe=False, autostart=False,
     )
-    monkeypatch.setattr(
-        controller, "_run_photo",
-        lambda operation, on_done=None, *_args, **_kwargs: on_done(operation()),
-    )
+    controller._photos._runner = controller._photos._open_runner = InlineRunner()
     controller.watchPhotos(True)
     found[0] = None  # disabled after the list loaded
     controller.openPhoto("a")
@@ -2149,7 +2136,7 @@ def test_a_photo_of_a_plugin_disabled_meanwhile_is_not_fetched(monkeypatch, tmp_
     monkeypatch.setattr(photos_view, "load_recent",
                         lambda manifest: photos_view.PhotosSnapshot(False, False, "none", []))
     controller._plugin_set_changed()
-    assert controller._photos_plugin is None and controller.photos["items"] == []
+    assert controller._photos.plugin is None and controller.photos["items"] == []
 
 
 def test_installing_the_first_plugin_reloads_cards_and_photos(monkeypatch):
@@ -2160,7 +2147,8 @@ def test_installing_the_first_plugin_reloads_cards_and_photos(monkeypatch):
     photo_refreshes = []
     monkeypatch.setattr(controller._plugin_surfaces, "schedule_reload",
                         lambda: reloads.append(True))
-    monkeypatch.setattr(controller, "refreshPhotos", lambda: photo_refreshes.append(True))
+    monkeypatch.setattr(controller._photos, "plugins_changed",
+                        lambda: photo_refreshes.append(True))
     state = {"loaded": False, "plugins": []}
     monkeypatch.setattr(controller._plugin_settings, "state", lambda: dict(state))
 

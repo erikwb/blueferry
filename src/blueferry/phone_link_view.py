@@ -1,8 +1,8 @@
-"""Pure presentation helpers for the Qt phone overview (card and tabs).
+"""Toolkit-neutral presentation of the phone overview (card and tabs).
 
 The rules live in :mod:`blueferry.phone_overview`; this module adapts them
-to the QML keys. Kept free of Qt so the wording and the opt-in hints are
-unit-testable. Every string returned here is plain text; QML renders it with
+to the keys the clients bind (the Qt client's QML today, the GTK client
+next). Every string returned here is plain text; QML renders it with
 Text.PlainText.
 """
 from __future__ import annotations

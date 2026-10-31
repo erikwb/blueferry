@@ -59,10 +59,12 @@ def settle(adapter: object) -> None:
     cancel = getattr(adapter, "cancel_sign_in", None)
     if cancel is not None:
         cancel()
-    for name in ("_login_timer", "_timer"):
-        timer = getattr(adapter, name, None)
-        if timer is not None:
-            timer.stop()
+    # The timers live in the toolkit-neutral model behind the adapter.
+    for owner in (adapter, getattr(adapter, "model", None)):
+        for name in ("_login_timer", "_timer"):
+            timer = getattr(owner, name, None)
+            if timer is not None:
+                timer.stop()
     for _round in range(3):  # a finished task may queue the next one
         adapter._pool.waitForDone(5000)  # type: ignore[attr-defined]
         QCoreApplication.processEvents()

@@ -1,9 +1,11 @@
 """Shared phone overview rules: the Qt card and tabs, now playing and recent calls."""
 from __future__ import annotations
 
+import pytest
+
 from blueferry import phone_overview as overview
 from blueferry.models import CallHistoryEntry
-from blueferry.qt.phone_link import notification_rows
+from blueferry.phone_link_view import feature_hints, notification_rows
 
 
 def test_phone_status_hint_explains_the_opt_in_and_the_wait() -> None:
@@ -164,3 +166,14 @@ def test_call_rows_match_the_qt_recent_calls_page() -> None:
     ]
     assert rows[0].time == entries[0].display_time
     assert [row.caller for row in overview.call_rows(entries, missed_only=True)] == ["Ana"]
+
+
+@pytest.mark.parametrize(("calls_state", "expected"), [
+    ("connecting", "connecting to the iPhone"),
+    ("searching", "connecting to the iPhone"),
+    ("unavailable", "oFono is not running"),
+    ("ready", "Waiting for battery and signal"),
+])
+def test_phone_status_hint_names_the_hands_free_state(calls_state, expected):
+    hints = feature_hints({"calls_enabled": True, "calls_state": calls_state})
+    assert expected in hints["phoneStatus"]

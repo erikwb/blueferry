@@ -13,6 +13,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from blueferry import __version__
 from blueferry.contact_photos import image_dimensions
@@ -169,6 +170,75 @@ def fetch_original(
 ) -> Path:
     """*Blocking.* Download (or reuse) the original; raises PluginError."""
     return client_factory(manifest).fetch_original(photo_id)
+
+
+def load_current() -> tuple[PluginManifest | None, PhotosSnapshot]:
+    """*Blocking.* Look the photo plugin up again and load its newest items.
+
+    Oversized or unreadable thumbnails become placeholders here, on the
+    worker, before any client's image loader sees them."""
+    manifest = find_plugin()
+    return manifest, with_safe_thumbnails(load_recent(manifest))
+
+
+def fetch_current_original(plugin_id: str, photo_id: str) -> Path | None:
+    """*Blocking.* The original, but only from the plugin the list came from.
+
+    ``None`` when that plugin was disabled, removed or replaced since the
+    list loaded: it is never called then, because a call would start a
+    disabled plugin again by D-Bus activation. Raises PluginError.
+    """
+    current = find_plugin()
+    if current is None or current.id != plugin_id:
+        return None
+    original = fetch_original(current, photo_id)
+    current = find_plugin()
+    if current is None or current.id != plugin_id:
+        return None
+    return original
+
+
+# The Photos tab's state map, the same for every client. ``url`` turns a
+# local path into the client's file URL ("" for none).
+
+def initial_state() -> dict[str, object]:
+    return {"present": False, "ready": False, "loaded": False, "hint": "", "items": []}
+
+
+def photo_item(photo: Photo, url: Callable[[object], str]) -> dict[str, object]:
+    """One grid cell; paths become file URLs, text stays plain."""
+    return {
+        "id": photo.id,
+        "label": label(photo),
+        "video": photo.type == "video",
+        "thumbnail": url(photo.thumbnail),
+        "original": url(photo.original),
+    }
+
+
+def loaded_state(snapshot: PhotosSnapshot, url: Callable[[object], str]) -> dict[str, object]:
+    return {
+        "present": snapshot.present,
+        "ready": snapshot.ready,
+        "loaded": True,
+        "hint": snapshot.hint,
+        "items": [photo_item(photo, url) for photo in snapshot.photos],
+    }
+
+
+def failed_state(present: bool, message: str) -> dict[str, object]:
+    """A load that failed: never leave the tab spinning, show why instead."""
+    return {"present": present, "ready": False, "loaded": True,
+            "hint": message or _("Photos unavailable"), "items": []}
+
+
+def with_original(state: dict[str, Any], photo_id: str, original: str) -> dict[str, Any]:
+    """The state after one original was downloaded (``original`` is its URL)."""
+    items = [
+        {**item, "original": original} if item["id"] == photo_id else item
+        for item in state["items"]
+    ]
+    return {**state, "items": items}
 
 
 def taken_text(photo: Photo) -> str:

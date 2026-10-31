@@ -5,6 +5,7 @@ from __future__ import annotations
 import threading
 from collections import OrderedDict
 from collections.abc import Callable
+from typing import Any
 
 from PySide6.QtCore import (
     SLOT,
@@ -17,7 +18,14 @@ from PySide6.QtCore import (
 )
 from PySide6.QtDBus import QDBusConnection
 
-from blueferry import __version__, phone_audio_view, phone_overview, photos_view
+from blueferry import (
+    __version__,
+    doctor_report,
+    features_view,
+    phone_audio_view,
+    phone_link_view,
+    phone_overview,
+)
 from blueferry.backend_lifecycle import ensure_backend_current, restart_backend
 from blueferry.bluetooth_devices import iphone_candidates
 from blueferry.client import BackendClient, TetherUnsupportedError
@@ -30,16 +38,15 @@ from blueferry.conversation_state import (
 from blueferry.doctor_report import DoctorReport, run_doctor
 from blueferry.i18n import _
 from blueferry.models import BackendStatus, CallsSnapshot
+from blueferry.notification_history import NotificationHistory
 from blueferry.onboarding import OnboardingState, effective_compatibility
-from blueferry.plugin_api.client import Photo
-from blueferry.plugin_api.manifest import PluginManifest
+from blueferry.photos_model import PhotosTabModel
 from blueferry.protocol import BUS_NAME, EVENTS_IFACE, OBJECT_PATH, TETHER_IFACE
-from blueferry.qt import phone_link
 from blueferry.qt.avatars import avatar_url
 from blueferry.qt.companion import CompanionTools
 from blueferry.qt.plugin_settings import PluginSettings
 from blueferry.qt.plugin_surfaces import PluginSurfaces
-from blueferry.qt.tasks import Task
+from blueferry.qt.tasks import QtTaskRunner, Task, qt_timers
 from blueferry.quirks_report import issue_report, issue_url
 from blueferry.reconnect_view import UNREACHABLE_TEXT, reconnect_view, result_text
 from blueferry.service_manager import bluetooth_restart_command
@@ -61,6 +68,44 @@ MAX_CACHED_AVATAR_BYTES = 16 * 1024 * 1024
 MAX_PENDING_AVATARS = 32
 AVATAR_RETRY_SECONDS = 30
 AVATAR_RETRY_MAX_SECONDS = 600
+
+
+class _WorkerRunner:
+    """:class:`blueferry.client_tasks.TaskRunner` on the controller's
+    serialized D-Bus worker (``BridgeController._run``), with or without the
+    busy indicator. ``_run`` is looked up per call, so tests that replace it
+    run these tasks inline too."""
+
+    def __init__(self, controller: BridgeController, *, busy: bool = False) -> None:
+        self._controller = controller
+        self._busy = busy
+
+    def submit(
+        self,
+        operation: Callable[[], object],
+        on_done: Callable[[Any], None] | None = None,
+        on_error: Callable[[str], None] | None = None,
+        on_finished: Callable[[], None] | None = None,
+    ) -> None:
+        controller = self._controller
+        if on_finished is None:
+            controller._run(operation, on_done, on_error, busy=self._busy)
+            return
+
+        def done(value: object) -> None:
+            try:
+                if on_done is not None:
+                    on_done(value)
+            finally:
+                on_finished()
+
+        def failed(message: str) -> None:
+            try:
+                (on_error or controller._operation_failed)(message)
+            finally:
+                on_finished()
+
+        controller._run(operation, done, failed, busy=self._busy)
 
 
 class BridgeController(QObject):
@@ -131,11 +176,9 @@ class BridgeController(QObject):
         # Settings: local.env switches (Messages1.GetFeatures) and the doctor
         # report; the doctor runs a local program on its own pool so the
         # D-Bus worker stays free.
-        self._features: dict = {"loaded": False, "available": False, "items": {},
-                                "notice": "", "error": ""}
+        self._features: dict = features_view.initial()
         self._doctor_runner = doctor
-        self._doctor: dict = {"running": False, "ran": False, "ok": False,
-                              "warnings": False, "text": ""}
+        self._doctor: dict = doctor_report.idle_state()
         self._local_pool = QThreadPool(self)
         self._local_pool.setMaxThreadCount(1)
         self._bluetooth_active = False
@@ -203,32 +246,23 @@ class BridgeController(QObject):
         self._now_playing_timer.setInterval(150)
         self._now_playing_timer.timeout.connect(self.refreshNowPlaying)
         # Opt-in app-notification list: fetched only while its tab is shown.
-        self._notifications: list[dict] = []
-        self._notifications_info: dict = {"enabled": False, "content": False, "error": ""}
-        self._notifications_watched = False
-        self._notifications_generation = 0
-        self._notifications_loading = False
-        self._notifications_again = False
-        self._notifications_status_key: tuple[object, ...] | None = None
-        self._notifications_timer = QTimer(self)
-        self._notifications_timer.setSingleShot(True)
-        self._notifications_timer.setInterval(150)
-        self._notifications_timer.timeout.connect(self.refreshNotifications)
-        self.statusChanged.connect(self._sync_notifications)
+        self._notification_history = NotificationHistory(
+            runner=_WorkerRunner(self), timer=qt_timers(self),
+            fetch=lambda limit: self._backend.notifications(limit),
+            on_change=self.notificationsChanged.emit,
+        )
+        self.statusChanged.connect(
+            lambda: self._notification_history.sync_status(self._status))
         self.devicesChanged.connect(self.phoneIdentityChanged)
         self.configuredChanged.connect(self.phoneIdentityChanged)
         # The Photos tab (a plugin with the photos capability).
-        # Plugin downloads can take minutes: never share the backend worker
-        # or its busy flag. Keep at most one photo operation and one refresh.
         self._photos_pool = QThreadPool(self)
         self._photos_pool.setMaxThreadCount(1)
-        self._photos_working = False
-        self._photos_again = False
-        self._photos_generation = 0
-        self._photos_watched = False
-        self._photos_plugin: PluginManifest | None = None
-        self._photos: dict = {"present": False, "ready": False, "loaded": False,
-                              "hint": "", "items": [], "busy": False}
+        self._photos = PhotosTabModel(
+            runner=QtTaskRunner(self._photos_pool),
+            url=_file_url, open_file=_open_file,
+            on_change=self.photosChanged.emit, on_error=self._operation_failed,
+        )
         # UxPlay, LocalSend and iPhone photos: client-side, no daemon involved.
         self._companion = companion or CompanionTools(parent=self)
         self._companion.changed.connect(self.companionToolsChanged)
@@ -500,7 +534,7 @@ class BridgeController(QObject):
 
     @Property("QVariantMap", notify=statusChanged)
     def featureHints(self):
-        return phone_link.feature_hints(self._status)
+        return phone_link_view.feature_hints(self._status)
 
     @Property(str, notify=phoneIdentityChanged)
     def phoneName(self) -> str:
@@ -612,8 +646,7 @@ class BridgeController(QObject):
                 self._plugin_surfaces.schedule_reload()
                 # The photo plugin may be gone or disabled now: forget it
                 # until the next load finds it again.
-                self._clear_photos()
-                self.refreshPhotos()
+                self._photos.plugins_changed()
 
     @Property("QVariantMap", notify=pluginSurfacesChanged)
     def pluginSurfaces(self):
@@ -666,268 +699,42 @@ class BridgeController(QObject):
     @Property("QVariantMap", notify=photosChanged)
     def photos(self):
         """present, ready, loaded, hint and items (id, label, video, thumbnail, original)."""
-        return self._photos
+        return self._photos.state
 
     @Slot(bool)
     def watchPhotos(self, watched: bool) -> None:
         """The Photos tab became visible (load) or hidden (forget the list)."""
-        if self._photos_watched == bool(watched):
-            return
-        self._photos_watched = bool(watched)
-        if self._photos_watched:
-            self.refreshPhotos()
-            return
-        self._clear_photos()
-
-    def _clear_photos(self) -> None:
-        self._photos_generation += 1
-        self._photos_again = False
-        self._photos_plugin = None
-        self._photos = {"present": False, "ready": False, "loaded": False,
-                        "hint": "", "items": [], "busy": self._photos_working}
-        self.photosChanged.emit()
-
-    def _current_photos(self, generation: int) -> bool:
-        return self._photos_watched and generation == self._photos_generation
-
-    def _run_photo(
-        self, operation: Callable[[], object], on_done: Callable[[object], None],
-        on_failed: Callable[[str], None],
-    ) -> None:
-        self._photos_working = True
-        self._photos = {**self._photos, "busy": True}
-        self.photosChanged.emit()
-
-        def finished() -> None:
-            self._photos_working = False
-            self._photos = {**self._photos, "busy": False}
-            self.photosChanged.emit()
-            if self._photos_again:
-                self._photos_again = False
-                self.refreshPhotos()
-
-        def completed(value: object) -> None:
-            try:
-                on_done(value)
-            finally:
-                finished()
-
-        def failed(message: str) -> None:
-            try:
-                on_failed(message)
-            finally:
-                finished()
-
-        task = Task(operation)
-        self._tasks.add(task)
-        task.signals.done.connect(completed)
-        task.signals.failed.connect(failed)
-        task.signals.finished.connect(lambda: self._tasks.discard(task))
-        self._photos_pool.start(task)
+        self._photos.watch(bool(watched))
 
     @Slot()
     def refreshPhotos(self) -> None:
-        if not self._photos_watched:
-            return
-        if self._photos_working:
-            self._photos_again = True
-            return
-        generation = self._photos_generation
-
-        def load():
-            if not self._current_photos(generation):
-                return None
-            manifest = photos_view.find_plugin()
-            # Oversized or unreadable thumbnails become placeholders here, off
-            # the UI thread and before QML's image loader ever sees them.
-            return manifest, photos_view.with_safe_thumbnails(photos_view.load_recent(manifest))
-
-        def completed(value: object) -> None:
-            if not self._current_photos(generation) or value is None:
-                return
-            manifest, snapshot = value  # type: ignore[misc]
-            self._photos_plugin = manifest
-            self._photos = {
-                **self._photos,
-                "present": snapshot.present,
-                "ready": snapshot.ready,
-                "loaded": True,
-                "hint": snapshot.hint,
-                "items": [_photo_item(photo) for photo in snapshot.photos],
-            }
-            self.photosChanged.emit()
-
-        def failed(message: str) -> None:
-            if not self._current_photos(generation):
-                return
-            # Never leave the tab spinning: show why instead.
-            self._photos = {
-                **self._photos,
-                "present": self._photos_plugin is not None, "ready": False, "loaded": True,
-                "hint": message or _("Photos unavailable"), "items": [],
-            }
-            self.photosChanged.emit()
-
-        self._run_photo(load, completed, failed)
+        self._photos.refresh()
 
     @Slot(str)
     def openPhoto(self, photo_id: str) -> None:
         """Download the original (plugin) and open it in the default viewer."""
-        manifest = self._photos_plugin
-        if manifest is None or not self._photos_watched or self._photos_working:
-            return
-        if not any(item["id"] == photo_id for item in self._photos["items"]):
-            return
-        generation = self._photos_generation
-
-        def fetch() -> object:
-            if not self._current_photos(generation):
-                return None
-            # Disabled or removed since the list loaded: never call it (a call
-            # would start a disabled plugin again by D-Bus activation).
-            current = photos_view.find_plugin()
-            if current is None or current.id != manifest.id:
-                return None
-            original = photos_view.fetch_original(current, str(photo_id))
-            current = photos_view.find_plugin()
-            if current is None or current.id != manifest.id:
-                return None
-            return original
-
-        def completed(value: object) -> None:
-            from PySide6.QtCore import QUrl
-            from PySide6.QtGui import QDesktopServices
-
-            if value is None or not self._current_photos(generation):
-                return
-            url = QUrl.fromLocalFile(str(value))
-            items = [
-                {**item, "original": url.toString()} if item["id"] == photo_id else item
-                for item in self._photos["items"]
-            ]
-            self._photos = {**self._photos, "items": items}
-            self.photosChanged.emit()
-            QDesktopServices.openUrl(url)
-
-        def failed(message: str) -> None:
-            if self._current_photos(generation):
-                self._operation_failed(message)
-
-        self._run_photo(fetch, completed, failed)
+        self._photos.open(photo_id)
 
     @Property("QVariantList", notify=notificationsChanged)
     def notifications(self):
-        return self._notifications
+        return self._notification_history.rows
 
     @Property("QVariantMap", notify=notificationsChanged)
     def notificationsInfo(self):
-        return self._notifications_info
+        return self._notification_history.info
 
     @Slot(bool)
     def watchNotifications(self, watched: bool) -> None:
         """The Notifications tab became visible (load) or hidden (forget)."""
-        if self._notifications_watched == bool(watched):
-            return
-        self._notifications_watched = bool(watched)
-        if self._notifications_watched:
-            self.refreshNotifications()
-            return
-        self._clear_notifications()
-
-    def _notifications_available(self) -> bool:
-        return (
-            self._status.get("daemon") is True
-            and self._status.get("notification_history_enabled") is True
-            and (
-                self._status.get("storage_policy") == "none"
-                or self._status.get("storage_state") == "ready"
-            )
-        )
-
-    def _clear_notifications(self) -> None:
-        # A late response must not repopulate private rows after the tab was
-        # hidden, storage locked, or the daemon/phone changed.
-        self._notifications_generation += 1
-        self._notifications_again = False
-        self._notifications_timer.stop()
-        self._notifications = []
-        self._notifications_info = {"enabled": False, "content": False, "error": ""}
-        self.notificationsChanged.emit()
-
-    def _sync_notifications(self) -> None:
-        current = (
-            self._notifications_available(),
-            self._status.get("notification_content_shown") is True,
-            self._status.get("phone_profile_id"),
-        )
-        if current == self._notifications_status_key:
-            return
-        self._notifications_status_key = current
-        self._clear_notifications()
-        # A tab opened before the backend was available recovers without
-        # needing another notification or a manual tab switch.
-        self.refreshNotifications()
+        self._notification_history.watch(bool(watched))
 
     @Slot()
     def refreshNotifications(self) -> None:
-        if not self._notifications_watched or not self._notifications_available():
-            return
-        if self._notifications_loading:
-            self._notifications_again = True
-            return
-        self._notifications_loading = True
-        self._notifications_timer.stop()
-        generation = self._notifications_generation
-
-        def current() -> bool:
-            return (
-                generation == self._notifications_generation
-                and self._notifications_watched and self._notifications_available()
-            )
-
-        def finished() -> None:
-            self._notifications_loading = False
-            if self._notifications_again:
-                self._notifications_again = False
-                self.refreshNotifications()
-
-        def completed(value: object) -> None:
-            try:
-                if not current():
-                    return
-                snapshot = value if isinstance(value, dict) else {}
-                enabled = snapshot.get("enabled") is True
-                content = (
-                    enabled and snapshot.get("content") is True
-                    and self._status.get("notification_content_shown") is True
-                )
-                self._notifications = phone_link.notification_rows(
-                    snapshot.get("notifications") if enabled else [], content=content,
-                )
-                self._notifications_info = {"enabled": enabled, "content": content, "error": ""}
-                self.notificationsChanged.emit()
-            finally:
-                finished()
-
-        def failed(message: str) -> None:
-            try:
-                if not current():
-                    return
-                self._notifications = []
-                self._notifications_info = {
-                    **self._notifications_info,
-                    "error": message or _("Notifications are unavailable"),
-                }
-                self.notificationsChanged.emit()
-            finally:
-                finished()
-
-        self._run(lambda: self._backend.notifications(100), completed, failed, busy=False)
+        self._notification_history.refresh()
 
     @Slot()
     def _notificationsInvalidated(self) -> None:
-        if self._notifications_watched and self._notifications_available():
-            self._notifications_timer.start()
+        self._notification_history.invalidated()
 
     @Property(str, notify=callHistoryChanged)
     def callHistoryError(self) -> str:
@@ -1531,10 +1338,7 @@ class BridgeController(QObject):
             matches = list(value) if isinstance(value, list) else []
             if not self._state.apply_contact_results(request, matches):
                 return
-            self._contact_results = [
-                {"name": str(name), "address": str(address)}
-                for name, address in self._state.contact_results
-            ]
+            self._contact_results = self._state.contact_result_rows()
             self.contactResultsChanged.emit()
 
         def failed(message: str) -> None:
@@ -1632,9 +1436,9 @@ class BridgeController(QObject):
     @Slot()
     def restartBackend(self) -> None:
         def restarted(_value: object) -> None:
-            self._features = {**self._features, "notice": ""}
-            QTimer.singleShot(800, self.refresh)
-            QTimer.singleShot(1200, self.loadFeatures)
+            self._features = features_view.with_notice(self._features, "")
+            QTimer.singleShot(features_view.RESTART_REFRESH_DELAY_MS, self.refresh)
+            QTimer.singleShot(features_view.RESTART_FEATURES_DELAY_MS, self.loadFeatures)
 
         self._run(restart_backend, restarted)
 
@@ -1647,15 +1451,12 @@ class BridgeController(QObject):
     @Slot()
     def loadFeatures(self) -> None:
         def done(value: object) -> None:
-            items = value if isinstance(value, dict) else {}
-            self._features = {**self._features, "loaded": True, "available": True,
-                              "items": items, "error": ""}
+            self._features = features_view.loaded(self._features, value)
             self.featuresChanged.emit()
 
         def failed(message: str) -> None:
             # Older daemons have no GetFeatures; the UI falls back to hints.
-            self._features = {**self._features, "loaded": True, "available": False,
-                              "items": {}, "error": message}
+            self._features = features_view.unavailable(self._features, message)
             self.featuresChanged.emit()
 
         self._run(lambda: self._backend.features(), done, failed, busy=False)
@@ -1663,13 +1464,8 @@ class BridgeController(QObject):
     @Slot(str, bool)
     def setFeature(self, name: str, enabled: bool) -> None:
         def done(value: object) -> None:
-            notice = {
-                "restart-required": _("Restart the BlueFerry service to apply the change."),
-                "environment": _(
-                    "Saved, but the service's environment sets this variable and wins."
-                ),
-            }.get(str(value), "")
-            self._features = {**self._features, "notice": notice}
+            self._features = features_view.with_notice(
+                self._features, features_view.set_notice(value))
             self.featuresChanged.emit()
             self.loadFeatures()
 
@@ -1683,20 +1479,17 @@ class BridgeController(QObject):
     def runDoctor(self) -> None:
         if self._doctor["running"]:
             return
-        self._doctor = {**self._doctor, "running": True}
+        self._doctor = doctor_report.running_state(self._doctor)
         self.doctorChanged.emit()
         task = Task(self._doctor_runner)
         self._tasks.add(task)
 
         def done(report: object) -> None:
-            if isinstance(report, DoctorReport):
-                self._doctor = {"running": False, "ran": True, "ok": report.ok,
-                                "warnings": report.warnings, "text": report.text}
+            self._doctor = doctor_report.finished_state(self._doctor, report)
             self.doctorChanged.emit()
 
         def failed(message: str) -> None:
-            self._doctor = {"running": False, "ran": True, "ok": False,
-                            "warnings": False, "text": message}
+            self._doctor = doctor_report.failed_state(message)
             self.doctorChanged.emit()
 
         task.signals.done.connect(done)
@@ -2251,17 +2044,15 @@ class BridgeController(QObject):
         self._run(lambda: self._setup.forget(mac, adapter=adapter), completed)
 
 
-def _photo_item(photo: Photo) -> dict[str, object]:
-    """One grid cell; paths become file URLs, text stays plain."""
+def _file_url(path: object) -> str:
+    """A local path as the file URL QML shows ("" for none)."""
     from PySide6.QtCore import QUrl
 
-    def url(path: object) -> str:
-        return QUrl.fromLocalFile(str(path)).toString() if path else ""
+    return QUrl.fromLocalFile(str(path)).toString() if path else ""
 
-    return {
-        "id": photo.id,
-        "label": photos_view.label(photo),
-        "video": photo.type == "video",
-        "thumbnail": url(photo.thumbnail),
-        "original": url(photo.original),
-    }
+
+def _open_file(path: object) -> None:
+    from PySide6.QtCore import QUrl
+    from PySide6.QtGui import QDesktopServices
+
+    QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))

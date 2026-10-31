@@ -154,7 +154,7 @@ def test_stale_photo_replies_are_discarded_after_hiding_or_switching(
     controller.watchPhotos(True)
     old_gate.release.set()
     wait(new_gate.entered.is_set)
-    assert controller.photos["items"] == [] and controller._photos_plugin is None
+    assert controller.photos["items"] == [] and controller._photos.plugin is None
     assert controller.errorText == "" and opened == []
     assert controller.photos["hint"] == "" and not controller.photos["loaded"]
     new_gate.release.set()
@@ -184,7 +184,7 @@ def test_download_serializes_clicks_and_coalesces_refreshes(
         controller.openPhoto("1")
         controller.refreshPhotos()
     gate.release.set()
-    wait(lambda: not controller._tasks)
+    wait(lambda: not controller._photos._runner._tasks)
     assert downloads == ["1"] and len(lists) == 2 and len(opened) == 1
     assert loaded(controller)
 
@@ -198,13 +198,13 @@ def test_failed_download_releases_photo_busy_and_can_be_retried(controller, monk
 
     monkeypatch.setattr(photos_view, "fetch_original", fail)
     controller.openPhoto("1")
-    wait(lambda: not controller._tasks)
+    wait(lambda: not controller._photos._runner._tasks)
     assert loaded(controller) and not controller.busy
     assert controller.errorText == "download failed"
     opened = []
     monkeypatch.setattr(QDesktopServices, "openUrl", lambda url: opened.append(url))
     monkeypatch.setattr(photos_view, "fetch_original", lambda *_args: tmp_path / "retry.jpg")
     controller.openPhoto("1")
-    wait(lambda: not controller._tasks)
+    wait(lambda: not controller._photos._runner._tasks)
     assert loaded(controller)
     assert [url.toLocalFile() for url in opened] == [str(tmp_path / "retry.jpg")]

@@ -254,7 +254,7 @@ def guided(app):
     _GuidedClient.log, _GuidedClient.polls = [], 0
     settings = PluginSettings(manager=lambda: _NoManager(), index=lambda: None,
                               client=_GuidedClient, opener=opened.append, poll_ms=5)
-    settings._manifests = {plugin.id: plugin}
+    settings.model._manifests = {plugin.id: plugin}
     yield settings, opened
     _settle(settings)
 
@@ -311,14 +311,14 @@ def test_closing_the_form_cancels_a_running_sign_in(guided) -> None:
     settings.load_config("io.example.cloud")
     _wait(lambda: settings.state()["config"].get("loaded"))
     settings.sign_in("io.example.cloud", {"url": "https://cloud.example"})
-    _wait(lambda: settings._login is not None)
+    _wait(lambda: settings.model._login is not None)
     settings.cancel_sign_in()
     assert settings.state()["config"]["status"]["text"] == "The sign-in was cancelled."
     _wait(lambda: ("cancel", "flow-1") in _GuidedClient.log)
     settings.sign_in("io.example.cloud", {"url": "https://cloud.example"})
-    _wait(lambda: settings._login is not None)
+    _wait(lambda: settings.model._login is not None)
     settings.close_config()
-    assert settings._login is None and settings.state()["config"] == {}
+    assert settings.model._login is None and settings.state()["config"] == {}
     _wait(lambda: _GuidedClient.log.count(("cancel", "flow-1")) == 2)
 
 
@@ -415,7 +415,7 @@ def with_actions(app):
     _ActionClient.ran, _ActionClient.port = [], 47801
     settings = PluginSettings(manager=lambda: _OneManager(plugin), index=lambda: None,
                               client=_ActionClient, opener=opened.append)
-    settings._manifests = {plugin.id: plugin}
+    settings.model._manifests = {plugin.id: plugin}
     yield settings, opened
     _settle(settings)
 
@@ -451,7 +451,7 @@ def test_settings_buttons_run_open_and_reload_the_form(with_actions) -> None:
     _wait(lambda: _idle(settings))
     settings.run_action("io.example.setup", "nope")
     settings.run_action("io.example.other", "setup_iphone")
-    settings._disabled.add("io.example.setup")
+    settings.model._disabled.add("io.example.setup")
     settings.run_action("io.example.setup", "setup_iphone")
     assert _ActionClient.ran == ["setup_iphone", "approve", "broken"]
 
@@ -460,7 +460,7 @@ def test_a_second_press_is_dropped_while_one_runs(with_actions) -> None:
     settings, _opened = with_actions
     settings.load_config("io.example.setup")
     _wait(lambda: settings.state()["config"].get("loaded"))
-    settings._set_status("action", True, "Working…", pending=True)
+    settings.model._set_status("action", True, "Working…", pending=True)
     settings.run_action("io.example.setup", "approve")
     assert _ActionClient.ran == []
 
@@ -495,27 +495,27 @@ def test_failed_action_refresh_requires_a_read_retry(with_actions, monkeypatch, 
         assert settings.state()["config"]["loadError"] == ""
     finally:
         release.set()
-    _wait(lambda: not settings._tasks and not settings._queue)
+    _wait(lambda: not settings.model._runner._tasks and not settings.model._queue)
     config = settings.state()["config"]
     assert config["loaded"] is False
     assert config["loadError"] == "could not read the new settings"
     assert config["status"]["text"] == "Changed the saved settings"
-    assert settings._stored == {}
+    assert settings.model._stored == {}
     # Neither a second action nor another settings operation can use the old form.
     settings.run_action("io.example.setup", "approve")
     settings.save_config("io.example.setup", {"port": 47803})
     settings.sign_in("io.example.setup", {})
-    assert not settings._tasks and not settings._queue
+    assert not settings.model._runner._tasks and not settings.model._queue
     assert settings.check_config("io.example.setup", {})["valid"] is False
     assert _ActionClient.ran == ["approve"]
 
     monkeypatch.setattr(_ActionClient, "get_config", original_read)
     settings.load_config("io.example.setup")  # the Retry button only reloads
-    _wait(lambda: not settings._tasks and not settings._queue)
+    _wait(lambda: not settings.model._runner._tasks and not settings.model._queue)
     config = settings.state()["config"]
     assert config["loaded"] is True and config["loadError"] == ""
     assert config["fields"][0]["value"] == 47802
-    assert settings._stored == {"port": 47802}
+    assert settings.model._stored == {"port": 47802}
     assert _ActionClient.ran == ["approve"]
 
 
@@ -548,11 +548,11 @@ def test_a_late_settings_read_failure_stays_out_of_a_replaced_form(
             settings.load_config("io.example.setup")
         elif next_form == "other":
             other = manifest("io.example.other", extra=ACTIONS)
-            settings._manifests[other.id] = other
+            settings.model._manifests[other.id] = other
             settings.load_config(other.id)
     finally:
         release.set()
-    _wait(lambda: not settings._tasks and not settings._queue)
+    _wait(lambda: not settings.model._runner._tasks and not settings.model._queue)
     config = settings.state()["config"]
     assert settings.state()["message"] == ""
     if next_form == "closed":
@@ -588,7 +588,7 @@ def test_reopening_the_same_form_discards_old_action_results(with_actions, monke
         settings.changed.connect(lambda: statuses.append(settings.state()["config"]["status"]))
     finally:
         release.set()
-    _wait(lambda: not settings._tasks and not settings._queue)
+    _wait(lambda: not settings.model._runner._tasks and not settings.model._queue)
     assert settings.state()["config"]["loaded"] is True
     assert all(status == {} for status in statuses)
     assert opened == []
@@ -600,17 +600,17 @@ def test_a_queued_action_never_calls_a_plugin_after_its_form_is_gone(with_action
     settings.load_config("io.example.setup")
     _wait(lambda: settings.state()["config"].get("loaded") and _idle(settings))
     release = threading.Event()
-    settings._work("list", lambda: release.wait(5), lambda _result: None)
+    settings.model._work("list", lambda: release.wait(5), lambda _result: None)
     settings.run_action("io.example.setup", "setup_iphone")
     try:
         settings.close_config()
         if leave == "disable":
-            settings._disabled.add("io.example.setup")
+            settings.model._disabled.add("io.example.setup")
         elif leave == "reopen":
             settings.load_config("io.example.setup")
     finally:
         release.set()
-    _wait(lambda: not settings._tasks and not settings._queue)
+    _wait(lambda: not settings.model._runner._tasks and not settings.model._queue)
     assert _ActionClient.ran == []
     assert opened == []
 
@@ -621,7 +621,7 @@ def test_an_answer_never_lands_in_another_form(with_actions) -> None:
     settings, opened = with_actions
     other = manifest("io.example.other", capabilities="card;", api_version="1.6",
                      extra="[Config port]\nLabel=Port\nType=int\n")
-    settings._manifests[other.id] = other
+    settings.model._manifests[other.id] = other
     settings.load_config("io.example.setup")
     _wait(lambda: settings.state()["config"].get("loaded"))
     settings.run_action("io.example.setup", "setup_iphone")
@@ -629,7 +629,7 @@ def test_an_answer_never_lands_in_another_form(with_actions) -> None:
     # Otherwise the new execution guard can correctly skip this call entirely.
     assert settings._pool.waitForDone(5000)
     # The user switches to another plugin's form before the answer arrives.
-    settings._update(config=settings._form(other, other.id, {}, loaded=True))
+    settings.model._update(config=settings.model._form(other, other.id, {}, loaded=True))
     _wait(lambda: _idle(settings) and _ActionClient.ran == ["setup_iphone"])
     _wait(lambda: _idle(settings))
     assert settings.state()["config"]["id"] == "io.example.other"
@@ -643,11 +643,11 @@ def test_a_test_result_never_lands_in_another_or_a_closed_form(guided) -> None:
     settings, _opened = guided
     other = manifest("io.example.other", capabilities="card;", api_version="1.3",
                      extra="[Config port]\nLabel=Port\nType=int\n")
-    settings._manifests[other.id] = other
+    settings.model._manifests[other.id] = other
     settings.load_config("io.example.cloud")
     _wait(lambda: settings.state()["config"].get("loaded"))
     settings.test_config("io.example.cloud", {"url": "https://down.example"})
-    settings._update(config=settings._form(other, other.id, {}, loaded=True))
+    settings.model._update(config=settings.model._form(other, other.id, {}, loaded=True))
     _wait(lambda: _idle(settings))
     config = settings.state()["config"]
     assert config["id"] == "io.example.other"
@@ -689,10 +689,10 @@ def gated(guided):
     from blueferry.plugin_api.testing import manifest
 
     settings, opened = guided
-    settings._client = _GatedClient
+    settings.model._client = _GatedClient
     other = manifest("io.example.other", capabilities="card;", api_version="1.3",
                      extra=GUIDED)
-    settings._manifests[other.id] = other
+    settings.model._manifests[other.id] = other
     _GatedClient.gate = threading.Event()
     _GatedClient.login_started = threading.Event()
     yield settings, opened
@@ -707,7 +707,7 @@ def test_a_late_config_answer_does_not_reopen_a_closed_form(gated) -> None:
     _wait(lambda: _idle(settings))
     settings._pool.waitForDone()
     QCoreApplication.processEvents()
-    assert settings.state()["config"] == {} and settings._stored == {}
+    assert settings.state()["config"] == {} and settings.model._stored == {}
 
 
 def test_a_late_sign_in_opens_nothing_after_the_form_closed(gated) -> None:
@@ -721,7 +721,7 @@ def test_a_late_sign_in_opens_nothing_after_the_form_closed(gated) -> None:
     settings.close_config()
     _GatedClient.gate.set()
     _wait(lambda: ("cancel", "flow-1") in _GuidedClient.log)
-    assert opened == [] and settings._login is None and settings.state()["config"] == {}
+    assert opened == [] and settings.model._login is None and settings.state()["config"] == {}
 
 
 @pytest.mark.parametrize("reply", ["open", "done", "error"])
@@ -751,8 +751,8 @@ def test_cancel_sign_in_before_initial_reply_discards_the_answer(gated, monkeypa
     assert cancelled["text"] == "The sign-in was cancelled."
     assert cancelled["pending"] is False
     _GatedClient.gate.set()
-    _wait(lambda: not settings._tasks)
-    assert opened == [] and settings._login is None
+    _wait(lambda: not settings.model._runner._tasks)
+    assert opened == [] and settings.model._login is None
     assert settings.state()["config"]["status"] == cancelled
     assert (("cancel", "flow-1") in _GuidedClient.log) is (reply == "open")
 
@@ -768,7 +768,7 @@ def test_cancelled_queued_sign_in_does_not_call_the_plugin(gated):
     settings.sign_in("io.example.cloud", {"url": "https://cloud.example"})
     settings.cancel_sign_in()
     _GatedClient.gate.set()
-    _wait(lambda: not settings._tasks and not settings._queue)
+    _wait(lambda: not settings.model._runner._tasks and not settings.model._queue)
     assert opened == [] and not _GatedClient.login_started.is_set()
 
 
@@ -783,8 +783,8 @@ def test_reopening_the_same_form_does_not_revive_its_old_sign_in(gated):
     settings.close_config()
     settings.load_config("io.example.cloud")
     _GatedClient.gate.set()
-    _wait(lambda: not settings._tasks and not settings._queue)
-    assert opened == [] and settings._login is None
+    _wait(lambda: not settings.model._runner._tasks and not settings.model._queue)
+    assert opened == [] and settings.model._login is None
     assert settings.state()["config"]["status"] == {}
     assert ("cancel", "flow-1") in _GuidedClient.log
 
@@ -801,11 +801,11 @@ def test_a_new_sign_in_survives_the_cancelled_attempts_late_reply(gated):
     settings.cancel_sign_in()
     settings.sign_in("io.example.cloud", {"url": "https://second.example"})
     _GatedClient.gate.set()
-    _wait(lambda: len(opened) == 1 and _idle(settings) and not settings._queue)
+    _wait(lambda: len(opened) == 1 and _idle(settings) and not settings.model._queue)
     assert opened == ["https://cloud.example/login/v2/f"]
     assert ("login", {"url": "https://second.example"}) in _GuidedClient.log
     assert _GuidedClient.log.count(("cancel", "flow-1")) == 1
-    assert settings._login is not None
+    assert settings.model._login is not None
     assert settings.state()["config"]["status"]["pending"] is True
 
 
@@ -822,7 +822,7 @@ def test_a_save_that_ends_later_leaves_another_plugins_form_alone(gated) -> None
     assert settings.state()["config"]["id"] == "io.example.other"
     assert settings.state()["config"]["errors"] == {}
 
-    settings._reload = lambda: None  # keep the fake manifests
+    settings.model._reload = lambda: None  # keep the fake manifests
     _GatedClient.gate.clear()
     settings.save_config("io.example.other", {"url": "https://b.example", "app_password": "x"})
     settings.load_config("io.example.cloud")

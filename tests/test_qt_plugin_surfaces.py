@@ -1,4 +1,8 @@
-"""Qt "From Plugins" and "Send to…": adapter and QML section, fakes only."""
+"""Qt "From Plugins" and "Send to…": adapter and QML section, fakes only.
+
+The logic is tested without Qt in ``tests/test_plugin_surfaces_model.py``;
+these tests cover the pool, the timer, URL conversion and QtDBus watching.
+"""
 from __future__ import annotations
 
 import os
@@ -98,24 +102,6 @@ def test_reload_invoke_and_send_run_off_the_ui_thread(app, tmp_path, track) -> N
     assert adapter.state()["messageOk"] is False
 
 
-def test_an_action_of_a_plugin_disabled_meanwhile_opens_nothing(app, track) -> None:
-    opened: list[str] = []
-    installed = {"io.example.calendar"}
-
-    def invoke(plugin, item, action):
-        installed.clear()  # disabled while the plugin answered
-        return surfaces.Outcome(True, "Opened", "https://example.org/e")
-
-    adapter = track(PluginSurfaces(
-        load_cards=lambda: CARDS, share_available=lambda: False,
-        find=lambda plugin_id, capability: plugin_id if plugin_id in installed else None,
-        invoke=invoke, opener=opened.append,
-    ))
-    adapter.invoke("io.example.calendar", "next", "open")
-    _wait(lambda: adapter.state()["message"] == "Opened")
-    assert opened == []
-
-
 def test_a_second_send_waits_for_the_first(app, tmp_path, track) -> None:
     import threading
 
@@ -142,16 +128,6 @@ def test_a_second_send_waits_for_the_first(app, tmp_path, track) -> None:
     release.set()
     _wait(lambda: adapter.state()["message"] == "Sending 1 file")
     assert sent == ["io.example.ls:iphone"]
-
-
-def test_a_crashing_loader_never_breaks_the_card(app, track) -> None:
-    def boom():
-        raise RuntimeError("plugin exploded")
-
-    adapter = track(PluginSurfaces(load_cards=boom, share_available=lambda: False))
-    adapter.reload()
-    _wait(lambda: adapter.state()["loaded"])
-    assert adapter.state()["cards"] == [] and adapter.state()["messageOk"] is False
 
 
 _FIND_JS = """(function find(item, name) {
@@ -230,29 +206,6 @@ QtObject {
     function clearPluginCardMessage() {}
 }
 """
-
-
-def test_card_rows_carry_send_targets_only_for_share_plugins() -> None:
-    rows = surfaces.card_rows(SEND_CARDS)
-    item = rows[0]["items"][0]
-    assert item["dropTarget"] == "ls-1"
-    assert [a["sendTo"] for a in item["actions"]] == ["ls-1", ""]
-    without_share = [surfaces.PluginCard("io.example.ls", "LocalSend", True, "",
-                                         SEND_CARDS[0].items)]
-    item = surfaces.card_rows(without_share)[0]["items"][0]
-    assert item["dropTarget"] == "" and item["actions"][0]["sendTo"] == ""
-
-
-def test_button_labels_from_plugins_are_escaped_and_titles_stay_plain() -> None:
-    card = surfaces.PluginCard("io.example.x", "X", True, "", [
-        CardItem("one", "<b>Title</b>", subtitle="a & b", actions=[
-            Action("open", "<a href='https://evil.example'>Open</a>", kind="primary"),
-            Action("keep", "Tom & Jerry")])])
-    item = surfaces.card_rows([card])[0]["items"][0]
-    assert item["title"] == "<b>Title</b>" and item["subtitle"] == "a & b"  # plain labels
-    assert item["actions"][0]["label"] == (
-        "&lt;a href='https://evil.example'&gt;Open&lt;/a&gt;")
-    assert item["actions"][1]["label"] == "Tom & Jerry"  # no "<": plain already
 
 
 SHARE_ONLY_BRIDGE = """
@@ -338,20 +291,6 @@ def test_send_from_card_resolves_the_target_off_the_ui_thread(app, tmp_path, tra
     assert gone.state()["messageOk"] is False
 
 
-def test_a_stale_card_target_says_to_refresh(app, tmp_path, track) -> None:
-    picked = tmp_path / "a.txt"
-    picked.write_text("x")
-
-    def stale(*_args):
-        raise LookupError("iPhone is no longer there. Refresh the card and try again.")
-
-    adapter = track(PluginSurfaces(load_cards=lambda: [], share_available=lambda: True,
-                                   card_choice=stale))
-    adapter.send_from_card("io.example.ls", "ls-1", "iPhone", [str(picked)])
-    _wait(lambda: adapter.state()["message"] != "")
-    assert adapter.state()["messageOk"] is False and "Refresh" in adapter.state()["message"]
-
-
 class _RecordingBus:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str, str, str]] = []
@@ -382,9 +321,19 @@ def test_card_changed_is_only_heard_from_enabled_card_plugins(app, track) -> Non
     ]
     names[0] = ["io.weirdware.BlueFerry.Plugin.io.example.b"]  # a was disabled
     bus.calls.clear()
-    adapter._loading = False
+    adapter.model._loading = False
     adapter.reload()
     _wait(lambda: bus.calls != [])
     assert bus.calls == [("disconnect", "io.weirdware.BlueFerry.Plugin.io.example.a",
                           "io.weirdware.BlueFerry.Plugin1", "CardChanged")]
     assert all(call[1] for call in bus.calls)
+
+
+def test_card_changed_reloads_through_the_qt_timer(app, track) -> None:
+    loads: list[None] = []
+    adapter = track(PluginSurfaces(load_cards=lambda: loads.append(None) or CARDS,
+                                   share_available=lambda: False))
+    adapter._cardChanged()
+    adapter._cardChanged()  # coalesced into one reload
+    _wait(lambda: adapter.state()["loaded"])
+    assert len(loads) == 1 and adapter.state()["cards"][0]["name"] == "Calendar"
