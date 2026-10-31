@@ -137,7 +137,7 @@ Controls.ScrollView {
             id: audioSwitch
             objectName: "phoneCardAudioSwitch"
             Layout.fillWidth: true
-            text: qsTr("Sound on this computer")
+            text: qsTr("Media sound on this computer")
             subtitle: card.audio.hint || ""
             checked: card.audio.onPc === true
             enabled: card.status.daemon === true && card.audio.available === true
@@ -163,6 +163,20 @@ Controls.ScrollView {
                 card.bridge.setProximityLock(checked, card.status.proximity_lock_grace_sec || 60)
                 checked = Qt.binding(function() { return card.status.proximity_lock_enabled === true })
             }
+        }
+
+        Kirigami.Separator { Layout.fillWidth: true; visible: pluginCards.visible }
+
+        PluginCardSection {
+            id: pluginCards
+            bridge: card.bridge
+        }
+
+        Kirigami.Separator { Layout.fillWidth: true }
+
+        CompanionToolsSection {
+            Layout.bottomMargin: Kirigami.Units.largeSpacing
+            bridge: card.bridge
         }
     }
 }

@@ -31,17 +31,12 @@ Kirigami.Page {
         { "key": "phone", "name": qsTr("Phone"), "icon": "smartphone" },
         { "key": "notifications", "name": qsTr("Notifications"), "icon": "preferences-desktop-notification" },
         { "key": "calls", "name": qsTr("Calls & Audio"), "icon": "call-start" },
+        { "key": "network", "name": qsTr("Network"), "icon": "network-wireless" },
         { "key": "security", "name": qsTr("Security"), "icon": "preferences-security" },
+        { "key": "plugins", "name": qsTr("Plugins"), "icon": "preferences-plugin" },
         { "key": "about", "name": qsTr("About"), "icon": "help-about" }
     ]
-    readonly property var features: (settingsPage.bridge.features || ({})).items || ({})
-    readonly property bool restartPending: {
-        for (const name in settingsPage.features) {
-            if (settingsPage.features[name].restart_required === true)
-                return true
-        }
-        return false
-    }
+    readonly property bool restartPending: (settingsPage.bridge.features || ({})).restart_pending === true
 
     function categoryName(key) {
         for (const entry of settingsPage.categories) {
@@ -56,7 +51,17 @@ Kirigami.Page {
         settingsPage.drilled = true
     }
 
-    Component.onCompleted: settingsPage.bridge.loadFeatures()
+    readonly property bool daemonAvailable: settingsPage.bridge.status.daemon === true
+
+    function loadFeaturesIfVisible() {
+        if (settingsPage.visible && settingsPage.daemonAvailable)
+            settingsPage.bridge.loadFeatures()
+    }
+
+    // The page is created before the backend is ready and reused on reopen.
+    onVisibleChanged: settingsPage.loadFeaturesIfVisible()
+    onDaemonAvailableChanged: settingsPage.loadFeaturesIfVisible()
+    Component.onCompleted: settingsPage.loadFeaturesIfVisible()
 
     actions: [
         Kirigami.Action {
@@ -142,9 +147,7 @@ Kirigami.Page {
                         Layout.fillWidth: true
                         visible: settingsPage.restartPending
                         type: Kirigami.MessageType.Information
-                        text: ((settingsPage.bridge.features || ({})).notice || "") !== ""
-                            ? settingsPage.bridge.features.notice
-                            : qsTr("Some changes apply after the BlueFerry service restarts.")
+                        text: (settingsPage.bridge.features || ({})).restart_notice || ""
                         actions: [
                             Kirigami.Action {
                                 text: qsTr("Restart Service")
@@ -155,15 +158,25 @@ Kirigami.Page {
                         ]
                     }
 
+                    // Keep in-progress pairing choices when visiting another category.
+                    Loader {
+                        Layout.fillWidth: true
+                        visible: settingsPage.category === "phone"
+                        sourceComponent: phoneComponent
+                    }
                     Loader {
                         id: categoryLoader
                         objectName: "categoryLoader"
                         Layout.fillWidth: true
+                        active: settingsPage.category !== "phone"
+                        visible: active
                         sourceComponent: settingsPage.category === "notifications" ? notificationsComponent
                             : settingsPage.category === "calls" ? callsComponent
+                            : settingsPage.category === "network" ? networkComponent
                             : settingsPage.category === "security" ? securityComponent
+                            : settingsPage.category === "plugins" ? pluginsComponent
                             : settingsPage.category === "about" ? aboutComponent
-                            : phoneComponent
+                            : null
                     }
                 }
             }
@@ -190,12 +203,20 @@ Kirigami.Page {
         SettingsCallsAudio { bridge: settingsPage.bridge }
     }
     Component {
+        id: networkComponent
+        SettingsNetwork { bridge: settingsPage.bridge }
+    }
+    Component {
         id: securityComponent
         SettingsSecurity {
             bridge: settingsPage.bridge
             onStoragePolicyRequested: policy => settingsPage.storagePolicyRequested(policy)
             onClearHistoryRequested: settingsPage.clearHistoryRequested()
         }
+    }
+    Component {
+        id: pluginsComponent
+        SettingsPlugins { bridge: settingsPage.bridge }
     }
     Component {
         id: aboutComponent

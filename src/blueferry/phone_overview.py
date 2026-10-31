@@ -1,6 +1,6 @@
 """Toolkit-free rules for the phone overview, now playing and recent calls.
 
-``blueferry.qt.phone_link`` adapts the card, Calls and Notifications rules
+``blueferry.phone_link_view`` adapts the card, Calls and Notifications rules
 to the QML keys. The now-playing and recent-call rules mirror the Qt
 client's ``NowPlayingBar`` and ``RecentCallsPage`` so the GTK, TUI and
 Quickshell clients offer the same buttons and wording. Every string returned
