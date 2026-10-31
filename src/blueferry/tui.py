@@ -748,7 +748,7 @@ class HelpScreen(ModalScreen[None]):
             f"{calls_line}"
             "[bold #7dd3fc]Internet sharing[/]  t\n"
             "[bold #7dd3fc]Settings · diagnostics · restart service[/]  o\n"
-            "[bold #7dd3fc]Plugins: on/off · settings · update · remove · log[/]"
+            "[bold #7dd3fc]Plugins: on/off · settings · updates · remove · log[/]"
             "  o > Plugins: Space Enter u Delete g\n"
             "[bold #7dd3fc]Photos from a photo plugin[/]  Ctrl+P > Photos\n"
             "[bold #7dd3fc]Notification click rules[/]  l\n"
