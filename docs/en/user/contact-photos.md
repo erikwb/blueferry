@@ -32,7 +32,7 @@ client:
 | Client | Where |
 | --- | --- |
 | Qt (KDE) | iPhone settings, "Contact Photos" |
-| GTK | iPhone page, "Contact Photos" |
+| GTK | Settings → Phone, "Contact Photos" |
 | Quickshell | iPhone settings, "Contact photos" |
 | Terminal (TUI) | press `o` for Options |
 | CLI | `blueferry contact-photos enable` (`disable`, `status`) |
