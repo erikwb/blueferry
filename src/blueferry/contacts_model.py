@@ -1,7 +1,8 @@
 """Toolkit-neutral state of the Contacts tab (``ListContactCards``/``GetContact``).
 
-Shared by the Qt client (``qt/controller.py``) and the GTK client
-(``ui/contacts.py``); wording and row shapes come from
+Shared by the Qt client (``qt/controller.py``), the GTK client
+(``ui/contacts.py``) and the terminal client (``tui_contacts.py``); wording
+and row shapes come from
 :mod:`blueferry.contacts_view`. Contact cards are private, so the list is
 read only while the tab is shown and forgotten, with an open card, when it
 is hidden. Typing in the search field reloads the first page after

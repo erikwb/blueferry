@@ -41,8 +41,11 @@ ColumnLayout {
         return -1
     }
 
+    // Computed once per change of the list or the focused call, not per row.
+    readonly property int focusedRow: callsPage.focusedIndex()
+
     function showFocusedCall(): void {
-        const index = callsPage.focusedIndex()
+        const index = callsPage.focusedRow
         if (index >= 0)
             callsList.positionViewAtIndex(index, ListView.Center)
     }
@@ -126,7 +129,7 @@ ColumnLayout {
                 required property int index
                 partPrefix: "call"
                 density: "compact"
-                highlighted: callRow.index === callsPage.focusedIndex()
+                highlighted: callRow.index === callsPage.focusedRow
                 Accessible.name: callsPage.directionText(callRow.modelData.direction)
                     + ", " + callRow.modelData.caller + ", " + callRow.modelData.clock
                 title: callRow.modelData.count > 1

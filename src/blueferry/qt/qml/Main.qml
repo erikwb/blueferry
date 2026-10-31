@@ -15,7 +15,6 @@ Kirigami.ApplicationWindow {
     property string selectedThreadKey: ""
     onSelectedThreadKeyChanged: root.markSelectedThreadRead()
     onActiveChanged: root.markSelectedThreadRead()
-    onIphoneSettingsPageChanged: Qt.callLater(root.markSelectedThreadRead)
     property bool firstRunRedirected: false
     property var iphoneSettingsPage: null
     property string pendingMessageHandle: ""
@@ -57,7 +56,8 @@ Kirigami.ApplicationWindow {
     }
 
     function markSelectedThreadRead() {
-        if (!root.visible || !root.active || root.iphoneSettingsPage !== null)
+        if (!root.visible || !root.active || !root.tabsVisible
+                || root.iphoneSettingsPage !== null || root.currentTab !== root.messagesTab)
             return
         const thread = selectedThread()
         if (thread && threadIsUnread(thread))
@@ -97,6 +97,8 @@ Kirigami.ApplicationWindow {
             focusedMessageHandle = ""
             selectThreadKey(target.thread_key)
         } else if (target.kind === "message") {
+            // Cleared first, so picking the same hit again scrolls to it again.
+            focusedMessageHandle = ""
             focusedMessageHandle = target.handle
             if (!selectMessage(target.handle))
                 selectThreadKey(target.thread_key)
@@ -104,6 +106,7 @@ Kirigami.ApplicationWindow {
             showTab(contactsTab)
             bridge.openContact(target.contact_id)
         } else if (target.kind === "call") {
+            focusedCallId = ""  // the same hit again scrolls to it again
             focusedCallId = target.call_id
             openRecentCalls()
         }
@@ -213,29 +216,38 @@ Kirigami.ApplicationWindow {
     property bool callHistoryWatched: false
     property bool notificationsWatched: false
     property bool photosWatched: false
+    readonly property bool tabsVisible: root.visible && root.visibility !== Window.Minimized
+        && root.iphoneSettingsPage === null && tabsContent.visible
     onCurrentTabChanged: {
         if (root.currentTab !== root.callsTab)
             root.focusedCallId = ""
         root.syncWatches()
+        Qt.callLater(root.markSelectedThreadRead)
+    }
+    onTabsVisibleChanged: {
+        root.syncWatches()
+        Qt.callLater(root.markSelectedThreadRead)
     }
 
     function syncWatches() {
-        const contacts = root.currentTab === root.contactsTab && bridge.contactsSupported === true
+        const contacts = root.tabsVisible && root.currentTab === root.contactsTab
+            && bridge.contactsSupported === true
         if (contacts !== root.contactsWatched) {
             root.contactsWatched = contacts
             bridge.watchContacts(contacts)
         }
-        const calls = root.currentTab === root.callsTab && bridge.callHistoryEnabled === true
+        const calls = root.tabsVisible && root.currentTab === root.callsTab
+            && bridge.callHistoryEnabled === true
         if (calls !== root.callHistoryWatched) {
             root.callHistoryWatched = calls
             bridge.watchCallHistory(calls)
         }
-        const notifications = root.currentTab === root.notificationsTab
+        const notifications = root.tabsVisible && root.currentTab === root.notificationsTab
         if (notifications !== root.notificationsWatched) {
             root.notificationsWatched = notifications
             bridge.watchNotifications(notifications)
         }
-        const photos = root.currentTab === root.photosTab
+        const photos = root.tabsVisible && root.currentTab === root.photosTab
         if (photos !== root.photosWatched) {
             root.photosWatched = photos
             bridge.watchPhotos(photos)
@@ -244,6 +256,7 @@ Kirigami.ApplicationWindow {
 
     function showTab(tab) {
         closePhoneSettings()
+        messagesPage.cardOpen = false
         pageStack.currentIndex = 0
         currentTab = tab
     }
@@ -564,8 +577,9 @@ Kirigami.ApplicationWindow {
         onTargetActivated: target => root.openSearchTarget(target)
     }
 
-    // A clicked tel:/callto: link; asks before dialing, and explains when
-    // calls are off, so it exists whether or not calls are enabled.
+    // A clicked tel:/callto: link or a contact card's Call; asks before
+    // dialing, and explains when calls are off, so it exists whether or not
+    // calls are enabled.
     DialLinkDialog {
         id: dialLinkDialog
         bridge: root.bridge
@@ -727,6 +741,7 @@ Kirigami.ApplicationWindow {
                     }
 
                     ColumnLayout {
+                        id: tabsContent
                         Layout.fillWidth: true
                         Layout.fillHeight: true
                         visible: !messagesPage.compact || !messagesPage.cardOpen
@@ -887,6 +902,9 @@ Kirigami.ApplicationWindow {
                                                 )
                                             }
                                             TapHandler {
+                                                // ListRow's default children belong to its
+                                                // trailing actions; handle the whole row here.
+                                                parent: threadDelegate
                                                 acceptedButtons: Qt.RightButton
                                                 onTapped: eventPoint => {
                                                     threadContextMenu.threadKey = threadDelegate.modelData.key
@@ -1032,17 +1050,25 @@ Kirigami.ApplicationWindow {
                                         model: messagesPage.thread ? messagesPage.thread.messages : []
                                         Controls.ScrollBar.vertical: Controls.ScrollBar {}
                                         // A message picked in the search is shown in the
-                                        // middle; otherwise the newest message is.
+                                        // middle once (it stays marked); otherwise, and on
+                                        // every later change, the newest message is.
                                         readonly property string focusHandle: root.focusedMessageHandle
-                                        onFocusHandleChanged: Qt.callLater(settle)
+                                        property bool focusPending: false
+                                        onFocusHandleChanged: {
+                                            focusPending = focusHandle !== ""
+                                            Qt.callLater(settle)
+                                        }
 
                                         function settle() {
                                             const messages = messagesPage.thread
                                                 ? messagesPage.thread.messages : []
-                                            for (let index = 0; index < messages.length; ++index) {
-                                                if (focusHandle !== "" && messages[index].handle === focusHandle) {
-                                                    positionViewAtIndex(index, ListView.Center)
-                                                    return
+                                            if (focusPending) {
+                                                for (let index = 0; index < messages.length; ++index) {
+                                                    if (messages[index].handle === focusHandle) {
+                                                        focusPending = false
+                                                        positionViewAtIndex(index, ListView.Center)
+                                                        return
+                                                    }
                                                 }
                                             }
                                             positionViewAtEnd()
@@ -1164,7 +1190,9 @@ Kirigami.ApplicationWindow {
 
                             ContactsTab {
                                 bridge: root.bridge
-                                onCallRequested: number => root.bridge.dialCall(root.dialable(number))
+                                // Asks first, like a tel: link (dialLinkDialog).
+                                onCallRequested: number => root.bridge.requestDialLink(
+                                    "tel:" + root.dialable(number))
                                 onMessageRequested: address => root.messageAddress(address)
                             }
 

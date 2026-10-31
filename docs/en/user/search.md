@@ -15,14 +15,24 @@ contacts (name, company, mail, postal address or number) and calls (caller
 name or number). Each group shows how many matches the limit left out.
 Case, accents and spelling variants do not matter: `muller` finds
 `Müller`. Numbers match by their digits once the query has at least three
-digits, also for conversations. At most 50 hits per group are shown.
-Queries shorter than two characters find nothing.
+digits, also for conversations. The background service returns at most
+50 hits per group (`-n 50`). Queries shorter than two characters find
+nothing.
 
-In the KDE client, the magnifier in the header, `Ctrl+K` or `Ctrl+F` opens
-the search. It searches as you type, after a short pause, and shows the
-same groups; arrow keys and Enter, or a click, open a hit: the conversation
-scrolled to the message, the contact card, or the call in the call history.
-Closing the search forgets the results.
+Search in the clients:
+
+- **KDE client:**
+  the magnifier in the header, `Ctrl+K` or `Ctrl+F` opens the search. It
+  searches as you type, after a short pause, and shows the same groups with
+  up to 20 hits each; arrow keys and Enter, or a click, open a hit: the
+  conversation scrolled to the message, the contact card, or the call in the
+  call history. Closing the search forgets the results.
+- **GTK client:**
+  not yet; use the command line.
+- **Terminal client:**
+  not yet; use the command line.
+- **Quickshell panel:**
+  not yet; use the command line.
 
 ## What is searched
 

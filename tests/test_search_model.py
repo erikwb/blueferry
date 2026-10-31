@@ -36,6 +36,7 @@ class Daemon:
         self.queries: list = []
         self.busy = 0
         self.fail = ""
+        self.cap = 0
 
     def search(self, query, limit):
         self.queries.append((query, limit))
@@ -46,6 +47,8 @@ class Daemon:
             raise BackendError("search is busy") from error
         if self.fail:
             raise BackendError(self.fail)
+        if self.cap:
+            return json.dumps({**json.loads(_answer(query)), "limit": self.cap})
         return _answer(query)
 
 
@@ -119,7 +122,19 @@ def test_a_full_search_queue_is_retried_a_few_times():
     for _attempt in range(BUSY_RETRIES + 1):
         timer.fire()
         runner.run_all()
-    assert model.view()["error"] == search_view.search_failed_text("")
+    assert model.view()["error"] == search_view.search_busy_text()
+    assert model.view()["loading"] is False
+
+
+def test_the_limit_note_counts_the_limit_the_model_asked_for():
+    model, daemon, runner, timer = _search()
+    daemon.cap = LIMIT - 5
+    model.set_query("noon")
+    timer.fire()
+    runner.run_all()
+    assert model.view()["limit_text"] == search_view.limit_text(
+        json.loads(daemon.search("noon", LIMIT)), LIMIT)
+    assert str(LIMIT - 5) in model.view()["limit_text"]
 
 
 def test_errors_are_shown_and_clear_forgets_everything():
@@ -146,3 +161,32 @@ def test_an_unsupported_daemon_is_never_asked():
     model.run()
     assert timer.delay is None and runner.queue == [] and daemon.queries == []
     assert model.view()["supported"] is False
+
+
+def test_a_not_ready_error_name_kept_on_the_error_counts_as_busy():
+    class NamedError(Exception):
+        dbus_name = "io.weirdware.BlueFerry1.Error.NotReady"
+
+    calls = []
+
+    def fetch(query, limit):
+        calls.append(query)
+        if len(calls) == 1:
+            raise NamedError("busy")
+        return _answer(query)
+
+    runner, timers = Runner(), []
+
+    def timer(callback):
+        timers.append(Timer(callback))
+        return timers[-1]
+
+    model = GlobalSearch(runner=runner, timer=timer, fetch=fetch)
+    model.apply_status(STATUS)
+    model.set_query("noon")
+    timers[0].fire()
+    runner.run_all()
+    assert model.view()["error"] == "" and timers[0].delay == search_view.TYPING_DELAY_MS
+    timers[0].fire()
+    runner.run_all()
+    assert model.view()["count"] == 4 and calls == ["noon", "noon"]
