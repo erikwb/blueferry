@@ -114,6 +114,9 @@ class FakeClient:
     def unlock_storage_async(self, *_args):
         pass
 
+    def get_tether_async(self, *_args):
+        pass
+
 
 def _dialog(**model_options):
     """The settings dialog with a plugin model on a ManualRunner."""

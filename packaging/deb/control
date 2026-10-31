@@ -34,6 +34,7 @@ Depends:
  bluez (>= 5.72),
  bluez-obexd,
  dbus,
+ git,
  gir1.2-secret-1,
  libsecret-1-0,
  polkitd,
@@ -43,6 +44,7 @@ Depends:
  python3-dbus,
  python3-gi,
  python3-typer (>= 0.9),
+ python3-venv,
  systemd,
 Recommends: gnome-keyring | keepassxc
 Suggests: ofono, wl-clipboard | xclip | xsel

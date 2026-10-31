@@ -38,6 +38,7 @@ ColumnLayout {
     readonly property var actions: form.config.actions || ({})
     readonly property var status: form.config.status || ({})
     readonly property var serverErrors: form.config.errors || ({})
+    readonly property string loadError: form.config.loadError || ""
     readonly property bool ready: form.config.loaded === true && !form.busy
     // The plugin's own buttons work with the stored settings: not while
     // the form has unsaved edits.
@@ -122,8 +123,23 @@ ColumnLayout {
     Component.onCompleted: form.syncFields()
 
     Controls.Label {
-        visible: form.config.loaded !== true
+        objectName: "pluginConfigLoading"
+        visible: form.config.loaded !== true && form.loadError === ""
         text: qsTr("Loading the plugin's settings…")
+    }
+    Notice {
+        objectName: "pluginConfigLoadError"
+        type: Kirigami.MessageType.Error
+        plainText: form.loadError === "" ? ""
+            : qsTr("Could not load the plugin's settings: %1").arg(form.loadError)
+    }
+    Controls.Button {
+        objectName: "pluginConfigRetry"
+        text: qsTr("Retry")
+        icon.name: "view-refresh"
+        visible: form.loadError !== ""
+        enabled: !form.busy
+        onClicked: form.bridge.loadPluginConfig(form.config.id)
     }
     Notice {
         objectName: "pluginConfigFormError"

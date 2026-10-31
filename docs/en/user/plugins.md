@@ -18,6 +18,10 @@ to install, until its tool is there.
 | Send a file (LocalSend) | LocalSend (Flathub or `localsend`) | Opens LocalSend. Hidden while the LocalSend plugin is enabled. |
 | iPhone photos (USB) | `ifuse`, libimobiledevice, a USB cable | Mounts the camera roll in a private folder and opens it; **Eject** unmounts it. If the iPhone asks, confirm "Trust This Computer". |
 
+If a plugin replaces UxPlay, you can still stop a receiver BlueFerry already
+started. **Stop mirroring** stays visible until it exits; new starts are
+blocked while the replacement is enabled.
+
 ```bash
 blueferry tools            # which tools are ready
 blueferry tools mirror
@@ -28,7 +32,7 @@ blueferry tools eject
 ## Installing a plugin
 
 Open **Settings › Plugins** in the GTK or KDE client. The store lists curated
-plugins; **Install** shows the source, the version, what the plugin may do
+plugins; **Install** shows the source, the version, the features it provides
 (its capabilities) and the command it runs (the manifest's `Exec`), and
 asks first. You can also paste any https Git URL. From a terminal:
 
@@ -40,9 +44,13 @@ blueferry plugins list
 
 Each plugin gets its own Python environment under
 `~/.local/share/blueferry/plugins`; its dependencies come from the network.
-Everything runs as you, nothing asks for root. **Update**, **Remove** and the
-switch next to a plugin (or `blueferry plugins update`, `remove`,
-`disable`) stop a running plugin process BlueFerry installed.
+Plugins, their dependencies, and their installation code run with your user
+permissions. They are not sandboxed: capabilities describe features and do
+not restrict access to your files, network, or session services. Only install
+plugins and updates from sources you trust. Nothing asks for root.
+**Update**, **Remove** and the switch next to a plugin (or
+`blueferry plugins update`, `remove`, `disable`) stop a running plugin process
+BlueFerry installed.
 Disabling also stops BlueFerry from calling the plugin at once.
 
 ## Setting a plugin up

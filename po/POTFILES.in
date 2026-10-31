@@ -31,6 +31,7 @@ src/blueferry/qt/qml/SettingsPage.qml
 src/blueferry/qt/qml/SettingsPhone.qml
 src/blueferry/qt/qml/SettingsNotifications.qml
 src/blueferry/qt/qml/SettingsCallsAudio.qml
+src/blueferry/qt/qml/SettingsNetwork.qml
 src/blueferry/qt/qml/SettingsSecurity.qml
 src/blueferry/qt/qml/SettingsAbout.qml
 src/blueferry/qt/qml/PhoneSettingsDialogs.qml
@@ -50,6 +51,8 @@ src/blueferry/qt/qml/ContactPhotoSettings.qml
 src/blueferry/qt/qml/OtpAutocopySettings.qml
 src/blueferry/qt/qml/PhoneCallsSettings.qml
 src/blueferry/qt/qml/PhoneStatusIndicator.qml
+src/blueferry/qt/qml/TetherSection.qml
+src/blueferry/tether_status.py
 src/blueferry/phone_audio_view.py
 src/blueferry/qt/qml/PhoneCard.qml
 src/blueferry/qt/qml/CallsTab.qml

@@ -6,7 +6,8 @@ which BlueFerry already is for ANCS. Where BlueZ's battery plugin claims that
 service it also publishes ``org.bluez.Battery1.Percentage`` on the device.
 The characteristic is preferred: bluetoothd 5.87 can fail to register the
 battery again after an LE reconnect ("path exists") and then keeps publishing
-the level from before it. ``Battery1`` is the fallback.
+the level from before it. ``Battery1`` is the fallback. Failed refreshes
+discard cached GATT values; a new LE connection must supply a new reading.
 
 Everything here is asynchronous: GetManagedObjects, ReadValue, StartNotify and
 StopNotify are sent with reply handlers, and updates arrive as
@@ -87,6 +88,11 @@ class PhoneBattery:
         self._wanted = False
         self._generation = 0
         self._char_generation = 0
+        self._link_generation = 0
+        self._link_connected: bool | None = None
+        # Every Value signal counts, even when the percentage is unchanged.
+        # Read replies/errors must not overwrite a newer notification.
+        self._value_revision = 0
         self._discovery_changes: set[str] | None = None
         self._matches: list[Any] = []
         self._char_match: Any = None
@@ -170,10 +176,21 @@ class PhoneBattery:
 
     def link_up(self) -> None:
         """The LE link (re)connected: notification sessions start over."""
+        self._link_connected = True
+        self._reset_link()
         if not self._running or self._char_path is None:
             return
-        self._notifying = False
         self._subscribe(self._char_path)
+
+    def link_down(self) -> None:
+        """An old LE reading must not mask a still-connected Classic source."""
+        self._link_connected = False
+        self._reset_link()
+
+    def _reset_link(self) -> None:
+        self._link_generation += 1
+        self._notifying = False
+        self._set_gatt(None)
 
     # ---- internals ------------------------------------------------------
 
@@ -209,11 +226,15 @@ class PhoneBattery:
     ) -> None:
         generation = self._generation
         char_generation = self._char_generation
+        link_generation = self._link_generation
 
         def current() -> bool:
             return (
                 self._running and generation == self._generation
-                and (not characteristic or char_generation == self._char_generation)
+                and (not characteristic or (
+                    char_generation == self._char_generation
+                    and link_generation == self._link_generation
+                ))
             )
 
         def replied(*values: Any) -> None:
@@ -313,26 +334,29 @@ class PhoneBattery:
         if path == self._char_path and GATT_CHAR_IFACE in names:
             self._forget_characteristic(stop_notify=False)
 
-    def _on_battery1_changed(self, interface: object, changed: object, _invalidated=None) -> None:
+    def _on_battery1_changed(self, interface: object, changed: object, invalidated=None) -> None:
         if str(interface) == BATTERY1_IFACE and isinstance(changed, Mapping):
             if "Percentage" in changed:
                 self._note_discovery_change(self.device_path)
                 self._set_battery1(parse_battery1_percentage(changed["Percentage"]))
+            elif isinstance(invalidated, list | tuple) and "Percentage" in invalidated:
+                self._note_discovery_change(self.device_path)
+                self._set_battery1(None)
 
     def _set_battery1(self, value: int | None) -> None:
         if value == self._battery1:
             return
-        previous = self.percent
+        previous = (self.percent, self.source)
         self._battery1 = value
-        if self.percent != previous or value is None:
+        if (self.percent, self.source) != previous:
             self._changed()
 
     def _set_gatt(self, value: int | None) -> None:
         if value == self._gatt:
             return
-        previous = self.percent
+        previous = (self.percent, self.source)
         self._gatt = value
-        if self.percent != previous:
+        if (self.percent, self.source) != previous:
             self._changed()
 
     def _adopt_characteristic(self, path: str, properties: Mapping[Any, Any]) -> None:
@@ -349,7 +373,9 @@ class PhoneBattery:
             log.info("could not watch the iPhone's battery level", exc_info=True)
             self._char_path = None
             return
-        log.info("found the iPhone's GATT battery level")
+        log.info("found the iPhone's GATT battery characteristic")
+        if self._link_connected is False:
+            return
         cached = parse_battery_level(properties.get("Value"))
         if cached is not None:
             self._set_gatt(cached)
@@ -360,11 +386,32 @@ class PhoneBattery:
 
     def _subscribe(self, path: str) -> None:
         """Read once, then follow notifications (one session per D-Bus client)."""
+        revision = self._value_revision
+        read_succeeded = False
+
+        def read(value: object = None) -> None:
+            nonlocal read_succeeded
+            percent = parse_battery_level(value)
+            read_succeeded = percent is not None
+            if revision == self._value_revision:
+                self._set_gatt(percent)
+
+        def read_failed(error: Exception) -> None:
+            self._failed("ReadValue")(error)
+            if revision == self._value_revision:
+                self._set_gatt(None)
+
+        def notify_failed(error: Exception) -> None:
+            self._failed("StartNotify")(error)
+            # A successful current read is still useful on a read-only
+            # characteristic; only the unconfirmed cached value is suspect.
+            if not read_succeeded and revision == self._value_revision:
+                self._set_gatt(None)
+
         self._call(
             path, GATT_CHAR_IFACE, "ReadValue", "a{sv}",
             (dbus.Dictionary({}, signature="sv"),),
-            lambda value=None: self._set_gatt(parse_battery_level(value)),
-            self._failed("ReadValue"),
+            read, read_failed,
             characteristic=True,
         )
         if self._notifying:
@@ -374,16 +421,24 @@ class PhoneBattery:
             self._notifying = True
 
         self._call(
-            path, GATT_CHAR_IFACE, "StartNotify", "", (), started, self._failed("StartNotify"),
+            path, GATT_CHAR_IFACE, "StartNotify", "", (), started, notify_failed,
             characteristic=True,
         )
 
-    def _on_char_changed(self, interface: object, changed: object, _invalidated=None) -> None:
+    def _on_char_changed(self, interface: object, changed: object, invalidated=None) -> None:
+        if self._link_connected is False:
+            return
         if str(interface) == GATT_CHAR_IFACE and isinstance(changed, Mapping):
             if "Value" in changed:
+                self._value_revision += 1
                 if self._char_path is not None:
                     self._note_discovery_change(self._char_path)
                 self._set_gatt(parse_battery_level(changed["Value"]))
+            elif isinstance(invalidated, list | tuple) and "Value" in invalidated:
+                self._value_revision += 1
+                if self._char_path is not None:
+                    self._note_discovery_change(self._char_path)
+                self._set_gatt(None)
 
     def _forget_characteristic(self, *, stop_notify: bool) -> None:
         # Paths can be reused after removal; replies belong to an object
