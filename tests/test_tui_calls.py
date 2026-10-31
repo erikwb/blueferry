@@ -153,6 +153,9 @@ class _CallsMonitor:
         pending, self.pending = self.pending, False
         return pending
 
+    def take_tether_changed(self) -> bool:
+        return False
+
     def close(self) -> None:
         pass
 

@@ -41,6 +41,10 @@ Controls.ToolBar {
     }
 
     Accessible.name: qsTr("iPhone now playing")
+    // Sits flush inside the phone card rather than as a separate tool strip.
+    background: null
+    leftPadding: 0
+    rightPadding: 0
 
     contentItem: RowLayout {
         spacing: Kirigami.Units.smallSpacing
@@ -50,7 +54,6 @@ Controls.ToolBar {
             source: bar.stateIcon
             implicitWidth: Kirigami.Units.iconSizes.small
             implicitHeight: Kirigami.Units.iconSizes.small
-            Layout.leftMargin: Kirigami.Units.smallSpacing
         }
 
         Controls.Label {

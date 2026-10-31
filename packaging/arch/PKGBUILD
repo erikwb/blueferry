@@ -6,7 +6,7 @@ pkgname=(
   blueferry-qt
   blueferry-quickshell
 )
-pkgver=0.8.1
+pkgver=0.9.1
 pkgrel=1
 pkgdesc='BlueFerry Bluetooth bridge from iPhone to Linux'
 arch=('any')
@@ -96,7 +96,7 @@ check() {
   appstreamcli validate --no-net data/io.weirdware.BlueFerry.Qt.metainfo.xml
   appstreamcli validate --no-net data/io.weirdware.BlueFerry.Quickshell.metainfo.xml
   PYTHONPATH="$PWD/src" python -c 'from blueferry.qt.app import main'
-  /usr/lib/qt6/bin/qmllint src/blueferry/qt/qml/*.qml
+  /usr/lib/qt6/bin/qmllint src/blueferry/qt/qml/*.qml src/blueferry/qt/qml/ui/*.qml
   /usr/lib/qt6/bin/qmllint data/quickshell/*.qml
 }
 
@@ -110,6 +110,7 @@ package_blueferry-backend() {
     'bluez>=5.86'
     'bluez-obex'
     'bluez-utils'
+    'git'
     'libsecret'
     'org.freedesktop.secrets'
     'polkit'
