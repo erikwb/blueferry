@@ -42,7 +42,7 @@ Desktop-entry syntax, group `[BlueFerry Plugin]`:
 | `Id` | yes | Reverse-DNS id, e.g. `io.weirdware.blueferry.immich_photos`. |
 | `Name` | yes | Display name (plain text, ≤ 80 characters). |
 | `Version` | yes | The plugin's own version. |
-| `ApiVersion` | yes | Plugin contract version it implements: `MAJOR` or `MAJOR.MINOR` (currently `1.5`). Clients ignore unknown major versions, and a manifest that needs a newer minor than the running BlueFerry knows (`1.5` on a 1.4 BlueFerry) is ignored with a message. |
+| `ApiVersion` | yes | Plugin contract version it implements: `MAJOR` or `MAJOR.MINOR` (currently `1.6`). Clients ignore unknown major versions, and a manifest that needs a newer minor than the running BlueFerry knows (`1.6` on a 1.5 BlueFerry) is ignored with a message. |
 | `MinBlueFerry` | yes | Oldest BlueFerry release the plugin works with. |
 | `Capabilities` | yes | `;`-separated list. Known: `photos`, `card`, `share`, `notify` (1.2); reserved: `conversations`. Unknown entries are dropped; a manifest with none left is ignored. |
 | `Homepage`, `Source` | at least one | `https://` URLs. |
@@ -97,6 +97,7 @@ characters).
 | `Placeholder` | Sample value shown greyed out in the empty field, e.g. `https://cloud.example.com` (≤ 120). For a stored secret the client shows "Stored — leave empty to keep" instead. |
 | `Example` | One short example under the field, shown as "Example: …" (≤ 160). |
 | `HelpUrl` | "Where do I find this?" link under the field: an `https://` URL (≤ 300), opened in the browser through the desktop launcher. |
+| `HelpUrlLabel` | Since 1.6. The link's text, e.g. "Which port?" (≤ 40); only with `HelpUrl`. Without it clients say "More information". |
 | `Group` | Section name, `[a-z][a-z0-9_]{0,31}`. Built in without a declaration: `account` ("Account"), `options` ("Options"), `advanced` ("Advanced", folded). Others need a `[ConfigGroup <name>]` section. |
 | `Advanced` | `true`: short for `Group=advanced`. |
 | `Pattern` | Regular expression the whole value must match (`string`, `url`, `secret`; ≤ 200). Only plain syntax: no `(?…)` groups, no backreferences, no repeated group holding a quantifier (`(a+)+`, even through nested groups). Optional groups remain supported. Counted repeats are at most 4096, the maximum field length. The SDK uses `regex` in Version 0 mode with a 20 ms matching deadline; exceeding it is a validation error. |
@@ -203,6 +204,55 @@ Default=30
 Advanced=true
 ```
 
+### Settings buttons (`[ConfigAction <id>]`, ApiVersion 1.6)
+
+Some plugins need a step besides filling in fields: show a QR code for the
+iPhone, create a new token, approve the current network. A
+`[ConfigAction <id>]` section puts a button for it into the settings form
+(and `blueferry plugins config ID --action <id>` runs it from a shell).
+`<id>` follows the setting key rules (`[a-z][a-z0-9_]{0,31}`); at most 4
+buttons, in file order, above the fields. The manifest needs `[Config …]`
+settings, since the buttons live in that form.
+
+| Key | Meaning |
+| --- | --- |
+| `Label` | Required. The button text (≤ 40), e.g. "Set up iPhone". |
+| `Icon` | A freedesktop icon name such as `smartphone`; no paths. |
+| `Help` | One line under the button (≤ 300). |
+| `Primary` | `true` highlights the button; at most one per manifest. |
+
+```
+[ConfigAction setup_iphone]
+Label=Set up iPhone
+Icon=smartphone
+Primary=true
+Help=Shows a QR code that the iPhone scans to install the certificate and the shortcut.
+```
+
+A press calls `RunConfigAction(id)` (see the bus contract). The plugin
+works with its **stored** settings: clients keep the buttons disabled while
+the form has unsaved edits ("save your changes first") and send no form
+values. The answer is the one `InvokeAction` gives, `{ok, message?,
+open_uri?}`, checked by the same rules (one line of plain text; `open_uri`
+only http(s) or a file in the plugin's cache, e.g. a QR page on
+`http://127.0.0.1:<port>/<secret>/`). Clients show the message under the
+buttons, open the URI only when `ok` is true, and then read the settings
+and the status again, so an action may change them (a new token, an
+approved network). One action runs at a time. A 1.5 BlueFerry skips the
+sections; the plugin then still works, only without the buttons.
+
+```python
+from blueferry.plugin_api.service import PluginService
+from blueferry.plugin_api.surfaces import ActionResult
+
+class Shortcuts(PluginService):
+    def config_action(self, action_id):         # worker thread; declared ids only
+        if action_id == "setup_iphone":
+            page = self.start_setup_page()      # 127.0.0.1, random path
+            return ActionResult(True, "Scan the code with the iPhone camera.", page.url)
+        return ActionResult(False, "Unknown action")
+```
+
 #### Writing good settings text
 
 - **Label**: a short noun, 1 to 3 words, no colon or trailing period
@@ -229,6 +279,12 @@ Advanced=true
 - Messages from `TestConfig` and the sign-in are one line, in the user's
   terms ("The server answered, but the API key was refused."), and never
   contain the secret.
+- **HelpUrlLabel** asks the question the page answers ("Which port?",
+  "Where is my API key?"), not "Click here".
+- **Settings buttons** (`[ConfigAction]`) are for steps, not for settings:
+  a verb first ("Set up iPhone", "Create new token"). Their `Help` says what
+  happens and what the user has to do next. Anything that is a value
+  belongs into a field.
 
 ## Bus contract (ApiVersion 1)
 
@@ -251,6 +307,7 @@ Advanced=true
 | `ConfigLogin(s provider, s values)` | `→ s` | Since 1.3, with `ConfigLogin=<provider>`. Starts a browser sign-in. `values` is a JSON object with the form's typed **non-secret** values (not saved yet), so the plugin knows the server. Answers `{state: "open", login_id, open_uri, message?}`, `{state: "done", message}` (signed in without a browser) or `{state: "error", message}`. `login_id` matches `[A-Za-z0-9_.-]{1,64}`, `open_uri` is https (http only on localhost); clients refuse anything else. |
 | `ConfigLoginStatus(s login_id)` | `→ s` | `{state, message?}` with `state` `pending`, `done`, `error`, `expired` or `cancelled`. Clients poll every 2 s for at most 20 minutes. On `done` the plugin has already stored the credentials; `message` says "Connected as …". |
 | `ConfigLoginCancel(s login_id)` | `→ s` | The user cancelled or closed the form; stop polling the provider. Answers `{ok: true}`. |
+| `RunConfigAction(s action_id)` | `→ s` | Since 1.6, with `[ConfigAction <action_id>]`. The user pressed that settings button; the plugin works with its stored settings. Answers `{ok, message?, open_uri?}` like `InvokeAction`; clients open `open_uri` only with `ok: true`. Ids the manifest does not declare fail with `Failed`. Clients wait up to 60 s and, as before a card action, refuse a running plugin owned by another user. |
 
 `io.weirdware.BlueFerry.Photos1` (capability `photos`):
 
@@ -487,7 +544,10 @@ and `blueferry plugins log ID [--lines N] [--path]`.
 
 - Additive changes (a new optional JSON key, a new method, a new capability
   interface such as `Conversations1`) keep the major `ApiVersion` and raise
-  the minor (`1.5`). Clients ignore keys they do not know.
+  the minor (`1.6`). Clients ignore keys they do not know.
+- 1.6 added settings buttons (`[ConfigAction <id>]`,
+  `RunConfigAction`) and `HelpUrlLabel`. An older BlueFerry skips both, so
+  a plugin keeps working there without them.
 - 1.5 replaced the popup signal `Notify(s, s, s, s, s)` with the
   content-free `NotifyChanged()` plus `GetPendingNotification()`. Nothing
   can be misread: a 1.4 host does not hear `NotifyChanged`, a 1.5 host does
@@ -501,11 +561,21 @@ and `blueferry plugins log ID [--lines N] [--path]`.
 
 ## Security
 
+- Plugins, dependencies, and installation code run with the user's account
+  permissions. A virtual environment isolates Python packages, not access
+  to files, the network, or session services. Capabilities describe features;
+  they are not enforced permissions. Install and update confirmation shows
+  this trust requirement before any plugin code runs.
 - Clients use the **session bus** only and refuse a plugin whose bus name is
   owned by a different Unix user. The SDK transport activates the service
   without a plugin-method payload, checks its unique owner's Unix user,
   then sends the call to that exact connection. Changing the well-known
   name's owner cannot redirect settings, credentials, files or actions.
+- Exported SDK services also verify the caller's Unix UID before invoking
+  hooks or queuing work, including on shared buses. Missing or unverifiable
+  credentials are denied. Unexported in-process test services need no bus.
+  Plugins with their own SDK copy must update that dependency to receive
+  security fixes; upgrading BlueFerry does not replace SDKs in plugin venvs.
 - Plugin data is **untrusted**: replies over 512 KiB are rejected, JSON is
   validated field by field, surface ids match `[A-Za-z0-9_.-]{1,64}`, text
   is shown as plain text only (escaped where a Qt control would read it as
@@ -561,7 +631,9 @@ call the service in-process through the full validation,
 surfaces (see above) and the 1.3 settings helpers: `host.test_config(values)`,
 `host.sign_in(values)` (ConfigLogin, then ConfigLoginStatus until a final
 state; the opened URL lands in `host.opened`), `host.cancel_sign_in(id)`,
-`host.get_config()` and `host.set_config(values)`.
+`host.get_config()` and `host.set_config(values)`, and since 1.6
+`host.config_action(id)` (a settings button; a checked `open_uri` lands in
+`host.opened` too).
 
 ### Plugin from its own repository
 
@@ -587,16 +659,17 @@ Rules: import only `blueferry.plugin_api` from BlueFerry and depend on the
 
 ```toml
 dependencies = [
-  "blueferry-plugin-api @ git+https://github.com/erikwb/blueferry@plugin-api-v1.5.0#subdirectory=plugin-api",
+  "blueferry-plugin-api @ git+https://github.com/erikwb/blueferry@plugin-api-v1.6.0#subdirectory=plugin-api",
 ]
 ```
 
 Pin the dependency to a `plugin-api-v<version>` tag (the `version` in
-`plugin-api/pyproject.toml`), never to a branch. Until the plugin API is
-released upstream, the `plugin-api-v*` tags live in the fork
-`joshii-h/blueferry`; pin
-`git+https://github.com/joshii-h/blueferry@plugin-api-v1.5.0#subdirectory=plugin-api`
-there instead. Declare a
+`plugin-api/pyproject.toml`), never to a branch. The upstream
+`erikwb/blueferry` tag `plugin-api-v1.5.0` includes the caller-verification
+fix shipped with BlueFerry 0.9.0. Plugins still pinned to the earlier
+`joshii-h/blueferry` fork tag should update their dependency to the upstream
+repository and rebuild their environments. Plugins using settings actions
+need the upstream `plugin-api-v1.6.0` release. Declare a
 `[project.scripts]` entry point that serves the plugin and name it in `Exec=`
 (and `Cli=`). Ship exactly one manifest, in `data/` or as package data in
 `src/<package>/`.

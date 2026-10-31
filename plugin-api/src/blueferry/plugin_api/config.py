@@ -26,6 +26,16 @@ ApiVersion 1.3 adds optional presentation keys (``Placeholder``, ``Example``,
 a client-side pre-check (``Pattern``, ``Min``/``Max``, ``ErrorText``) and
 conditional fields (``ShowIf=<key>=<value>``). Older clients ignore them; the
 plugin's own :func:`validate` stays authoritative.
+
+ApiVersion 1.6 adds ``HelpUrlLabel`` (the text of a field's help link) and
+``[ConfigAction <id>]`` sections: buttons in the form that run
+``Plugin1.RunConfigAction(id)`` on the stored settings, for example "Set up
+iPhone"::
+
+    [ConfigAction setup_iphone]
+    Label=Set up iPhone
+    Icon=smartphone
+    Help=Shows a QR code that the iPhone scans.
 """
 from __future__ import annotations
 
@@ -38,9 +48,12 @@ import regex
 
 GROUP_PREFIX = "Config "
 SECTION_PREFIX = "ConfigGroup "
+ACTION_PREFIX = "ConfigAction "
 TYPES = frozenset({"string", "url", "secret", "bool", "int", "choice"})
 SECRET_MASK = "********"
 MAX_FIELDS = 24
+# Int bounds stay within 32 bits so every client's spin box can show them.
+INT32_MIN, INT32_MAX = -2**31, 2**31 - 1
 MAX_CONFIG_BYTES = 16 * 1024
 MAX_TEXT = 1024
 MAX_URL = 2048
@@ -62,6 +75,12 @@ PATTERN_TIMEOUT_SEC = 0.02
 MAX_HELP_URL = 300
 MAX_GROUP_LABEL = 40
 MAX_GROUPS = 8
+# ApiVersion 1.6: the help link's own text and the form's buttons.
+MAX_HELP_URL_LABEL = 40
+MAX_ACTIONS = 4
+MAX_ACTION_LABEL = 40
+# Freedesktop icon names: no paths, no URLs (as for card actions).
+_ICON = re.compile(r"^[A-Za-z0-9_.+-]{1,64}$")
 # Groups a field may name without declaring a [ConfigGroup] section.
 ADVANCED = "advanced"
 BUILTIN_GROUPS = {"account": "Account", "options": "Options", ADVANCED: "Advanced"}
@@ -103,6 +122,8 @@ class ConfigField:
     error_text: str = ""
     # (key, value): shown only while that earlier field has this value.
     show_if: tuple[str, str] | None = None
+    # ApiVersion 1.6: the text of the HelpUrl link ("" = the client's own).
+    help_url_label: str = ""
 
     @property
     def secret(self) -> bool:
@@ -172,6 +193,21 @@ class ConfigField:
             return True
         key, wanted = self.show_if
         return value_text(values.get(key)) == wanted
+
+
+@dataclass(frozen=True, slots=True)
+class ConfigAction:
+    """A button of the settings form (``[ConfigAction <id>]``, ApiVersion 1.6).
+
+    Pressing it calls ``Plugin1.RunConfigAction(id)``; the plugin works
+    with its stored settings, never with values typed into the form.
+    """
+
+    id: str
+    label: str
+    icon: str = ""
+    help: str = ""
+    primary: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -305,6 +341,44 @@ def _help_url(value: str, key: str) -> str:
     return value
 
 
+def _help_url_label(value: str, key: str, help_url: str) -> str:
+    label = _plain(value.strip(), MAX_HELP_URL_LABEL, f"Config {key}: HelpUrlLabel")
+    if label and not help_url:
+        raise ValueError(f"Config {key}: HelpUrlLabel needs a HelpUrl")
+    return label
+
+
+def parse_actions(
+    sections: Sequence[tuple[str, Mapping[str, str]]],
+) -> tuple[ConfigAction, ...]:
+    """``[ConfigAction <id>]`` sections in manifest order (ApiVersion 1.6)."""
+    if len(sections) > MAX_ACTIONS:
+        raise ValueError(f"more than {MAX_ACTIONS} config actions")
+    actions: list[ConfigAction] = []
+    for ident, values in sections:
+        if not _KEY.fullmatch(ident):
+            raise ValueError(
+                f"config action {ident[:40]!r} must be lowercase letters, digits or _",
+            )
+        if any(action.id == ident for action in actions):
+            raise ValueError(f"duplicate config action {ident}")
+        what = f"ConfigAction {ident}"
+        label = _plain(values.get("Label", "").strip(), MAX_ACTION_LABEL, f"{what}: Label")
+        if not label:
+            raise ValueError(f"{what}: missing Label")
+        icon = values.get("Icon", "").strip()
+        if icon and not _ICON.fullmatch(icon):
+            raise ValueError(f"{what}: Icon must be an icon name, not a path")
+        actions.append(ConfigAction(
+            id=ident, label=label, icon=icon,
+            help=_plain(values.get("Help", "").strip(), MAX_HELP, f"{what}: Help"),
+            primary=_flag(values.get("Primary", "false"), f"action {ident}", "Primary"),
+        ))
+    if sum(action.primary for action in actions) > 1:
+        raise ValueError("at most one config action can be Primary")
+    return tuple(actions)
+
+
 def parse_groups(
     sections: Sequence[tuple[str, Mapping[str, str]]],
 ) -> dict[str, ConfigGroup]:
@@ -398,6 +472,9 @@ def parse_fields(
                 maximum = int(values["Max"]) if values.get("Max") else None
             except ValueError:
                 raise ValueError(f"Config {key}: Min and Max must be integers") from None
+            if any(bound is not None and not INT32_MIN <= bound <= INT32_MAX
+                   for bound in (minimum, maximum)):
+                raise ValueError(f"Config {key}: Min and Max must fit in 32 bits")
         if kind not in ("int",) and (values.get("Min") or values.get("Max")):
             raise ValueError(f"Config {key}: Min and Max are only for int")
         if values.get("Pattern") and kind not in ("string", "url", "secret"):
@@ -425,6 +502,9 @@ def parse_fields(
                 values.get("ErrorText", ""), MAX_ERROR_TEXT, f"Config {key}: ErrorText",
             ),
             show_if=_show_if(values.get("ShowIf", ""), key, fields),
+            help_url_label=_help_url_label(
+                values.get("HelpUrlLabel", ""), key, values.get("HelpUrl", ""),
+            ),
         )
         if values.get("Default") not in (None, ""):
             if kind == "secret":

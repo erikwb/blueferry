@@ -27,7 +27,7 @@ blueferry tools eject
 ## Installing a plugin
 
 Open **Settings › Plugins** in the KDE client. The store lists curated
-plugins; **Install** shows the source, the version, what the plugin may do
+plugins; **Install** shows the source, the version, the features it provides
 (its capabilities) and the command it runs (the manifest's `Exec`), and
 asks first. You can also paste any https Git URL. From a terminal:
 
@@ -39,22 +39,31 @@ blueferry plugins list
 
 Each plugin gets its own Python environment under
 `~/.local/share/blueferry/plugins`; its dependencies come from the network.
-Everything runs as you, nothing asks for root. **Update**, **Remove** and the
-switch next to a plugin (or `blueferry plugins update`, `remove`,
-`disable`) stop a running plugin process BlueFerry installed.
+Plugins, their dependencies, and their installation code run with your user
+permissions. They are not sandboxed: capabilities describe features and do
+not restrict access to your files, network, or session services. Only install
+plugins and updates from sources you trust. Nothing asks for root.
+**Update**, **Remove** and the switch next to a plugin (or
+`blueferry plugins update`, `remove`, `disable`) stop a running plugin process
+BlueFerry installed.
 Disabling also stops BlueFerry from calling the plugin at once.
 
 ## Setting a plugin up
 
 **Settings** next to a plugin opens a form made from what the plugin asks
-for: fields with examples and "Where do I find this?" links, **Test
-connection**, and for some services a browser sign-in. Save only becomes
-available once the required fields are valid. Passwords and keys are never
-shown again, only typed anew. BlueFerry stores no plugin secrets: they go into the plugin,
-which keeps them itself (the published plugins use the desktop keyring).
+for: fields with examples and "More information" links (some plugins name
+them, e.g. "Which port?"), **Test connection**, and for some services a
+browser sign-in. Some plugins add their own buttons above the fields, such
+as **Set up iPhone**; they use the saved settings, so save your changes
+first. Save only becomes available once the required fields are valid.
+Passwords and keys are never shown again, only typed anew. BlueFerry stores
+no plugin secrets: they go into the plugin, which keeps them itself (the
+published plugins use the desktop keyring).
 
 ```bash
 blueferry plugins config immich --set url=https://photos.example.org --secret api_key --test
+blueferry plugins config ID                  # settings and own buttons
+blueferry plugins config ID --action ACTION  # press one of them
 ```
 
 ## What plugins add

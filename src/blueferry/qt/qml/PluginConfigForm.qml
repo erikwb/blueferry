@@ -10,7 +10,9 @@ import "ui"
 // ApiVersion 1.3): sections ("Advanced" folded), placeholders, examples, a
 // "Where do I find this?" link per field, inline errors from the client's
 // pre-check (bridge.checkPluginConfig) and from the plugin, "Test
-// connection", a browser sign-in and one status line. A stored secret is
+// connection", a browser sign-in and one status line. ApiVersion 1.6 adds
+// the plugin's own buttons ([ConfigAction …], e.g. "Set up iPhone") above
+// the fields and named help links (HelpUrlLabel). A stored secret is
 // never shown: its field stays empty ("leave empty to keep") and only a newly
 // typed value is sent. Save stays off until the visible required fields are
 // filled and valid. Everything a plugin says is plain text.
@@ -36,7 +38,12 @@ ColumnLayout {
     readonly property var actions: form.config.actions || ({})
     readonly property var status: form.config.status || ({})
     readonly property var serverErrors: form.config.errors || ({})
+    readonly property string loadError: form.config.loadError || ""
     readonly property bool ready: form.config.loaded === true && !form.busy
+    // The plugin's own buttons work with the stored settings: not while
+    // the form has unsaved edits.
+    readonly property var customActions: form.actions.custom || []
+    readonly property bool unsaved: Object.keys(form.draft).length > 0
     // Width of the label column: the widest label, at most 40 % of the form.
     readonly property real labelWidth: Math.min(form.naturalLabelWidth, form.width * 0.4)
     readonly property real naturalLabelWidth: {
@@ -116,13 +123,90 @@ ColumnLayout {
     Component.onCompleted: form.syncFields()
 
     Controls.Label {
-        visible: form.config.loaded !== true
+        objectName: "pluginConfigLoading"
+        visible: form.config.loaded !== true && form.loadError === ""
         text: qsTr("Loading the plugin's settings…")
+    }
+    Notice {
+        objectName: "pluginConfigLoadError"
+        type: Kirigami.MessageType.Error
+        plainText: form.loadError === "" ? ""
+            : qsTr("Could not load the plugin's settings: %1").arg(form.loadError)
+    }
+    Controls.Button {
+        objectName: "pluginConfigRetry"
+        text: qsTr("Retry")
+        icon.name: "view-refresh"
+        visible: form.loadError !== ""
+        enabled: !form.busy
+        onClicked: form.bridge.loadPluginConfig(form.config.id)
     }
     Notice {
         objectName: "pluginConfigFormError"
         type: Kirigami.MessageType.Error
         plainText: form.serverErrors[""] || ""
+    }
+
+    // [ConfigAction …] buttons first: they are usually the first thing to do.
+    ColumnLayout {
+        objectName: "pluginConfigActions"
+        Layout.fillWidth: true
+        visible: form.customActions.length > 0
+        spacing: Kirigami.Units.smallSpacing
+        Repeater {
+            model: form.customActions
+            delegate: ColumnLayout {
+                id: customAction
+                required property var modelData
+                Layout.fillWidth: true
+                spacing: 0
+                Controls.Button {
+                    objectName: "configAction_" + customAction.modelData.id
+                    text: customAction.modelData.label
+                    icon.name: customAction.modelData.icon || ""
+                    highlighted: customAction.modelData.primary === true
+                    enabled: form.ready && !form.unsaved && form.status.pending !== true
+                    onClicked: form.bridge.runPluginConfigAction(form.config.id, customAction.modelData.id)
+                }
+                Controls.Label {
+                    Layout.fillWidth: true
+                    Layout.topMargin: Kirigami.Units.smallSpacing / 2
+                    visible: (customAction.modelData.help || "") !== ""
+                    wrapMode: Text.Wrap
+                    textFormat: Text.PlainText
+                    font: Kirigami.Theme.smallFont
+                    color: Kirigami.Theme.disabledTextColor
+                    text: customAction.modelData.help || ""
+                }
+            }
+        }
+        Controls.Label {
+            objectName: "pluginConfigActionsUnsaved"
+            Layout.fillWidth: true
+            visible: form.unsaved
+            wrapMode: Text.Wrap
+            font: Kirigami.Theme.smallFont
+            color: Kirigami.Theme.disabledTextColor
+            text: qsTr("These buttons use the saved settings: save your changes first.")
+        }
+        RowLayout {
+            Layout.fillWidth: true
+            visible: form.status.kind === "action" && (form.status.text || "") !== ""
+            spacing: Kirigami.Units.smallSpacing
+            Controls.BusyIndicator {
+                objectName: "pluginConfigActionBusy"
+                running: form.status.kind === "action" && form.status.pending === true
+                visible: running
+                Layout.preferredHeight: Kirigami.Units.iconSizes.smallMedium
+                Layout.preferredWidth: Kirigami.Units.iconSizes.smallMedium
+            }
+            Notice {
+                objectName: "pluginConfigActionStatus"
+                type: form.status.pending === true ? Kirigami.MessageType.Information
+                    : (form.status.ok === true ? Kirigami.MessageType.Positive : Kirigami.MessageType.Error)
+                plainText: form.status.kind === "action" ? form.status.text || "" : ""
+            }
+        }
     }
 
     Repeater {
@@ -140,7 +224,7 @@ ColumnLayout {
 
             Kirigami.Separator {
                 Layout.fillWidth: true
-                visible: section.index > 0
+                visible: section.index > 0 || form.customActions.length > 0
             }
             SectionHeader {
                 visible: section.modelData.label !== ""
@@ -302,7 +386,8 @@ ColumnLayout {
                                 Layout.maximumWidth: parent.width
                                 visible: (fieldRow.modelData.helpUrl || "") !== ""
                                 icon.name: "help-contextual"
-                                text: qsTr("More information")
+                                // The plugin may name the link (HelpUrlLabel, 1.6).
+                                text: fieldRow.modelData.helpUrlLabel || qsTr("More information")
                                 display: Controls.AbstractButton.TextBesideIcon
                                 font: Kirigami.Theme.smallFont
                                 // Tooltips detect rich text: the escaped form of the URL.
@@ -319,7 +404,8 @@ ColumnLayout {
 
     RowLayout {
         Layout.fillWidth: true
-        visible: (form.status.text || "") !== ""
+        // An action's answer shows under its buttons instead.
+        visible: (form.status.text || "") !== "" && form.status.kind !== "action"
         spacing: Kirigami.Units.smallSpacing
         Controls.BusyIndicator {
             running: form.status.pending === true
