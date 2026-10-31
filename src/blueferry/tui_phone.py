@@ -35,7 +35,6 @@ from blueferry import phone_overview as overview
 from blueferry.i18n import _
 from blueferry.models import BackendStatus, CallHistoryEntry, phone_status_fields
 from blueferry.text_safety import terminal_text
-from blueferry.time_display import day_and_clock
 from blueferry.tui_tasks import TextualTaskRunner
 
 MAX_CALLS = 100
@@ -485,29 +484,21 @@ class RecentCallsScreen(ModalScreen[RecentCallsResult]):
             items.append(CallGroupItem(row))
         if items:
             await listing.extend(items)
-            listing.index = self._focus_index(items, now)
+            listing.index = self._focus_index(items)
         state.display = not items
         listing.display = bool(items)
         self._render_buttons()
 
-    def _focus_index(self, items: list[ListItem], now: Any) -> int:
-        """The row of the searched call, else the first row (after its day)."""
+    def _focus_index(self, items: list[ListItem]) -> int:
+        """The row folding the searched call (its ``ids``), else the first row."""
         call_id, self._focus_call_id = self._focus_call_id, ""
-        entry = next(
-            (entry for entry in self.entries if call_id and entry.call_id == call_id), None,
-        )
-        if entry is None:
-            if call_id and self.loaded and not self.error:
-                self.notify(_("This call is no longer in the recent calls."), markup=False)
+        if not call_id:
             return 1
-        day, _clock = day_and_clock(entry.timestamp, now=now)
-        key = entry.address or entry.display_caller
         for index, item in enumerate(items):
-            if isinstance(item, CallGroupItem) and (
-                item.row["key"] == key and item.row["direction"] == entry.direction
-                and item.row["day"] == (day or _("Earlier"))
-            ):
+            if isinstance(item, CallGroupItem) and call_id in item.row.get("ids", ()):
                 return index
+        if self.loaded and not self.error:
+            self.notify(_("This call is no longer in the recent calls."), markup=False)
         return 1
 
     def _selected(self) -> dict[str, Any] | None:

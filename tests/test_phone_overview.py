@@ -161,6 +161,20 @@ def test_call_groups_fold_repeats_and_label_days() -> None:
     assert day_and_clock("garbage") == ("", "")
 
 
+def test_call_groups_keep_the_ids_of_folded_calls() -> None:
+    def call(when, call_id):
+        return CallHistoryEntry.from_dict({
+            "direction": "missed", "timestamp": when, "address": "+41790000001",
+            **({"id": call_id} if call_id else {}),
+        })
+
+    rows = overview.call_groups([
+        call("2026-10-06T14:36:00", "a"), call("2026-10-06T14:30:00", "b"),
+        call("2026-10-06T14:10:00", ""),
+    ])
+    assert [row["ids"] for row in rows] == [["a", "b"]]
+
+
 def _snapshot(**changes) -> dict:
     snapshot = {
         "enabled": True,

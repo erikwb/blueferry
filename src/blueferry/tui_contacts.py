@@ -4,14 +4,13 @@
 pages through ``Messages1.ListContactCards`` with a search field and shows
 the card opened with Enter (``GetContact``): every number, email and postal
 address with its label. **Call**, **Send a Message** and **Copy** act on the
-selected detail row. Rows, sections and wording come from the shared
-:mod:`blueferry.contacts_view`, so the terminal says what Qt, GTK and
-Quickshell say.
-
-Card ids stay valid only within one daemon run; when ``contact_card_epoch``
-in ``GetStatus`` changes, the list is read again and an open card is
-dropped. A terminal cannot show the photo, so ``GetContact``'s photo bytes
-are ignored.
+selected detail row. Paging, the typing delay, superseded answers, the
+``contact_card_epoch`` (a new epoch reloads the list and reads an open card
+again) and stale ids come from the shared
+:class:`blueferry.contacts_model.ContactBook`, the one the Qt and GTK
+clients use; rows, sections and wording from :mod:`blueferry.contacts_view`.
+A terminal cannot show the photo, so ``GetContact``'s photo bytes are
+ignored.
 
 Every blocking backend call runs off the UI thread, and iPhone text is
 rendered as Rich ``Text`` after ``terminal_text``, so it carries neither
@@ -31,13 +30,10 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, Input, ListItem, ListView, Static
 
 from blueferry import contacts_view, phone_link_view
-from blueferry.client import ContactNotFoundError
+from blueferry.contacts_model import MAX_QUERY_CHARS, ContactBook
 from blueferry.i18n import _
-from blueferry.search_view import TYPING_DELAY_MS
 from blueferry.text_safety import terminal_text
-from blueferry.tui_tasks import TextualTaskRunner, TextualTimer
-
-_MAX_QUERY = 200
+from blueferry.tui_tasks import TextualTaskRunner, timer_factory
 
 ContactsResult = tuple[str, str] | None
 
@@ -126,31 +122,28 @@ class ContactsScreen(ModalScreen[ContactsResult]):
     ) -> None:
         super().__init__()
         self._shown = False
-        self._client = client
         self._status: Mapping[str, Any] = dict(status or {})
         self._open_request = open_id
-        self.query_text = ""
-        self.page: dict[str, Any] = contacts_view.normalize_page({})
-        self.rows: list[dict[str, Any]] = []
-        self.list_error = ""
-        self.loaded = False
-        self.card: dict[str, Any] | None = None
-        self.card_id = ""
-        self.card_note = ""
-        self._epoch = self._status.get(contacts_view.EPOCH_KEY)
-        self._generation = 0
-        self._card_generation = 0
-        self._loading_more = False
-        self._runner = TextualTaskRunner(self, group="contacts")
-        self._card_runner = TextualTaskRunner(self, group="contacts-card")
-        self._typing = TextualTimer(self, self._search_now)
+        self.book = ContactBook(
+            runner=TextualTaskRunner(self, group="contacts"),
+            timer=timer_factory(self),
+            fetch_page=client.contact_cards,
+            fetch_card=client.contact,
+            on_change=self._book_changed,
+        )
+        # What the widgets show; the model builds new objects on changes.
+        self._shown_rows: list[dict[str, Any]] | None = None
+        self._shown_list: tuple[Any, ...] = ()
+        self._shown_card: dict[str, Any] | None = None
+        self._dirty = False
+        self._rendering = False
 
     def compose(self) -> ComposeResult:
         with Vertical(id="contacts-dialog", classes="dialog"):
             yield Static(_("Contacts"), classes="dialog-title")
             yield Input(
                 placeholder=f"{contacts_view.search_placeholder()}  /",
-                id="contacts-search", max_length=_MAX_QUERY,
+                id="contacts-search", max_length=MAX_QUERY_CHARS,
             )
             yield Static("", id="contacts-count", classes="dialog-copy")
             with Horizontal(id="contacts-body"):
@@ -176,23 +169,22 @@ class ContactsScreen(ModalScreen[ContactsResult]):
         self.query_one("#contacts-list", ListView).display = False
         self.query_one("#contacts-detail", ListView).display = False
         self._render_buttons()
-        self.reload()
+        self.book.watch(True)
+        self.book.apply_status(self._status)  # reads the first page
         if self._open_request:
             self.open_card(self._open_request)
             self._open_request = ""
         self.query_one("#contacts-search", Input).focus()
 
+    def on_unmount(self) -> None:
+        self.book.watch(False)  # forget the cards with the screen
+
     # -- status --------------------------------------------------------
 
     def status_changed(self, status: Mapping[str, Any]) -> None:
         self._status = dict(status)
-        epoch = self._status.get(contacts_view.EPOCH_KEY)
-        if epoch != self._epoch:
-            # Ids from the old epoch may no longer resolve: read the list
-            # again and drop the open card.
-            self._epoch = epoch
-            self._clear_card(_("Press Enter on a contact to show its details."))
-            self.reload()
+        # A new contact_card_epoch reloads the list and rereads an open card.
+        self.book.apply_status(self._status)
         self._render_buttons()
 
     @property
@@ -201,53 +193,61 @@ class ContactsScreen(ModalScreen[ContactsResult]):
             self._status, str(self._status.get("calls_state") or "disabled"),
         )
 
-    # -- list ----------------------------------------------------------
+    # -- model ---------------------------------------------------------
+
+    @property
+    def rows(self) -> list[dict[str, Any]]:
+        return self.book.rows
+
+    @property
+    def card(self) -> dict[str, Any] | None:
+        """The loaded open card (``contacts_view.card_view``), else None."""
+        card = self.book.card
+        return card if card["open"] and card["title"] and not card["stale"] else None
 
     def reload(self) -> None:
         """Read the first page for the current query again."""
-        self._typing.stop()
-        self._generation += 1
-        self._loading_more = False
-        self._fetch(self._generation, 0, self.query_text)
-
-    def _fetch(self, generation: int, offset: int, query: str) -> None:
-        self._runner.submit(
-            lambda: self._client.contact_cards(offset, contacts_view.DEFAULT_PAGE, query),
-            lambda page: self._page_loaded(generation, offset, page),
-            lambda message: self._page_failed(generation, message),
-        )
+        self.book.reload()
 
     def load_more(self) -> None:
-        if self._loading_more or not contacts_view.has_more(self.page):
+        self.book.load_more()
+
+    def open_card(self, contact_id: str) -> None:
+        """Read one card with ``GetContact``; a stale id says so and reloads."""
+        self.book.open(contact_id)
+
+    def _book_changed(self) -> None:
+        if not self.is_attached:
             return
-        self._loading_more = True
-        self._fetch(self._generation, contacts_view.next_offset(self.page), self.query_text)
+        # One render at a time, never cancelled half-way through a ListView
+        # update; a change while it runs renders once more afterwards.
+        self._dirty = True
+        if not self._rendering:
+            self._rendering = True
+            self.run_worker(self._render_changes(), group="contacts-render")
 
-    def _page_loaded(self, generation: int, offset: int, payload: object) -> None:
-        if generation != self._generation:
-            return  # a newer query or reload superseded this answer
-        page = contacts_view.normalize_page(payload)
-        rows = contacts_view.list_rows(page)
-        if offset:
-            seen = {row["id"] for row in self.rows}
-            self.rows += [row for row in rows if row["id"] not in seen]
-        else:
-            self.rows = rows
-        self._loading_more = False
-        self.page, self.list_error, self.loaded = page, "", True
-        self._schedule_render(keep_index=bool(offset))
-
-    def _page_failed(self, generation: int, message: str) -> None:
-        if generation != self._generation:
-            return
-        self._loading_more = False
-        self.list_error, self.loaded = contacts_view.load_failed_text(message), True
-        self._schedule_render(keep_index=False)
-
-    def _schedule_render(self, *, keep_index: bool) -> None:
-        self.run_worker(
-            self._render_list(keep_index), group="contacts-render", exclusive=True,
-        )
+    async def _render_changes(self) -> None:
+        try:
+            while self._dirty and self.is_attached:
+                self._dirty = False
+                view = self.book.view()
+                state = (view["loaded"], view["error"], view["count_text"], view["hint"],
+                         view["has_more"])
+                if view["rows"] is not self._shown_rows or state != self._shown_list:
+                    previous = self._shown_rows or []
+                    # A further page keeps the highlighted row.
+                    appended = bool(previous) and view["rows"][:len(previous)] == previous
+                    self._shown_rows, self._shown_list = view["rows"], state
+                    await self._render_list(view, keep_index=appended)
+                card = self.book.card
+                if card is not self._shown_card:
+                    # Rereading the same card (a new epoch) keeps the selected row.
+                    same = (self._shown_card is not None
+                            and self._shown_card["id"] == card["id"])
+                    self._shown_card = card
+                    await self._render_card(card, keep_index=same)
+        finally:
+            self._rendering = False
 
     @property
     def body_text(self) -> str:
@@ -271,44 +271,40 @@ class ContactsScreen(ModalScreen[ContactsResult]):
                 lines.append(detail_row_text(item.row).plain)
         return "\n".join(line for line in lines if line)
 
-    async def _render_list(self, keep_index: bool) -> None:
+    async def _render_list(self, view: Mapping[str, Any], keep_index: bool) -> None:
         listing = self.query_one("#contacts-list", ListView)
         state = self.query_one("#contacts-state", Static)
         count = self.query_one("#contacts-count", Static)
         index = listing.index if keep_index else None
         await listing.clear()
-        if self.list_error:
-            state.update(Text(_plain(self.list_error)))
+        if view["error"]:
+            state.update(Text(_plain(view["error"])))
+            count.update("")
+        elif not view["loaded"]:
+            state.update(_("Loading…"))
             count.update("")
         else:
-            state.update(Text(_plain(contacts_view.empty_hint(self.page))))
-            count.update(Text(_plain(contacts_view.count_text(self.page))))
-        items: list[ListItem] = [ContactItem(row) for row in self.rows]
-        if items and contacts_view.has_more(self.page) and not self.list_error:
+            state.update(Text(_plain(view["hint"])))
+            count.update(Text(_plain(view["count_text"])))
+        items: list[ListItem] = [ContactItem(row) for row in view["rows"]]
+        if items and view["has_more"] and not view["error"]:
             items.append(MoreItem())
         if items:
             await listing.extend(items)
             listing.index = min(index or 0, len(items) - 1)
-        state.display = not items or bool(self.list_error)
+        state.display = not items or bool(view["error"])
         listing.display = bool(items)
 
     # -- search --------------------------------------------------------
 
     @on(Input.Changed, "#contacts-search")
     def search_changed(self, event: Input.Changed) -> None:
-        query = " ".join(event.value.split())
-        if query == self.query_text:
-            return
-        self.query_text = query
-        self._typing.start(TYPING_DELAY_MS)
+        self.book.set_query(event.value)  # reloads after the typing delay
 
     @on(Input.Submitted, "#contacts-search")
     def search_submitted(self) -> None:
-        self._search_now()
+        self.book.reload()
         self.query_one("#contacts-list", ListView).focus()
-
-    def _search_now(self) -> None:
-        self.reload()
 
     def action_focus_search(self) -> None:
         self.query_one("#contacts-search", Input).focus()
@@ -329,61 +325,22 @@ class ContactsScreen(ModalScreen[ContactsResult]):
         if isinstance(event.item, MoreItem):
             self.load_more()
 
-    def open_card(self, contact_id: str) -> None:
-        """Fetch one card with ``GetContact``; a stale id says so and reloads."""
-        if not contact_id:
-            return
-        self._card_generation += 1
-        generation = self._card_generation
-        self.card_id = contact_id
-        self.query_one("#contacts-detail-state", Static).update(_("Loading…"))
-
-        def fetch() -> tuple[str, object]:
-            try:
-                document, _photo = self._client.contact(contact_id)
-            except ContactNotFoundError:
-                return "stale", None
-            return "card", document
-
-        self._card_runner.submit(
-            fetch,
-            lambda result: self._card_loaded(generation, result),
-            lambda message: self._card_failed(generation, message),
-        )
-
-    def _card_loaded(self, generation: int, result: tuple[str, object]) -> None:
-        if generation != self._card_generation:
-            return
-        kind, document = result
-        if kind == "stale":
-            self._clear_card(contacts_view.stale_text())
-            self.reload()
-            return
-        self.card = contacts_view.card_view(document)
-        self.card_note = ""
-        self.run_worker(self._render_card(), group="contacts-card-render", exclusive=True)
-
-    def _card_failed(self, generation: int, message: str) -> None:
-        if generation != self._card_generation:
-            return
-        self._clear_card(contacts_view.load_failed_text(message))
-
-    def _clear_card(self, note: str) -> None:
-        self._card_generation += 1
-        self.card, self.card_id, self.card_note = None, "", note
-        self.run_worker(self._render_card(), group="contacts-card-render", exclusive=True)
-
-    async def _render_card(self) -> None:
+    async def _render_card(self, card: Mapping[str, Any], *, keep_index: bool) -> None:
         title = self.query_one("#contacts-detail-title", Static)
         subtitle = self.query_one("#contacts-detail-subtitle", Static)
         state = self.query_one("#contacts-detail-state", Static)
         details = self.query_one("#contacts-detail", ListView)
+        index = details.index if keep_index else None
         await details.clear()
-        card = self.card
-        if card is None:
+        loaded = card["open"] and bool(card["title"]) and not card["stale"]
+        if not loaded:
             title.update("")
             subtitle.update("")
-            state.update(Text(_plain(self.card_note)))
+            if not card["open"]:
+                note = _("Press Enter on a contact to show its details.")
+            else:
+                note = card["error"] or (_("Loading…") if card["loading"] else "")
+            state.update(Text(_plain(note)))
             state.display = True
             details.display = False
             self._render_buttons()
@@ -394,11 +351,14 @@ class ContactsScreen(ModalScreen[ContactsResult]):
         for section in card["sections"]:
             items.append(SectionItem(section["title"]))
             items.extend(DetailItem(section["id"], row) for row in section["rows"])
-        state.update(_("This card has no numbers or addresses.") if not items else "")
-        state.display = not items
+        # A failed reread keeps the card and says why above it.
+        note = card["error"] or (
+            "" if items else _("This card has no numbers or addresses."))
+        state.update(Text(_plain(note)))
+        state.display = bool(note)
         if items:
             await details.extend(items)
-            details.index = 1
+            details.index = min(index or 1, len(items) - 1)
         details.display = bool(items)
         self._render_buttons()
 

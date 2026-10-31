@@ -38,6 +38,10 @@
   holds in memory; there is no search index on disk. `ListCallHistory`
   entries gain an opaque `id`, and `GetStatus` reports `search_result_limit`.
   CLI: `blueferry search`.
+- Client models: `contacts_model` and `search_model` hold the paging,
+  typing delay, stale-id and busy handling of the contact list and the
+  global search for the KDE, GTK and terminal clients; recent-call rows
+  from `phone_overview.call_groups` carry the ids of the folded calls.
 - Terminal client: `C` (or **Contacts** in the command palette) lists the
   contact cards with a search field and paging, shows every number, email
   and postal address of the selected card, and calls, messages or copies the

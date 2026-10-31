@@ -252,9 +252,11 @@ Zeile der Karte ruft `c` (oder **Call**) die Nummer nach der Bestätigung an,
 `m` (oder **Send a Message**) beginnt eine neue Nachricht an die Nummer oder
 E-Mail-Adresse, und `y` (oder **Copy**) kopiert den Eintrag über das
 Terminal (OSC 52). Enter macht das Erste davon, das die Zeile anbietet.
-Kontaktfotos zeigt das Terminal nicht. Startet der Hintergrunddienst neu
-oder liest er die Kontakte neu ein, wird die Liste neu gelesen; eine Karte,
-die sich inzwischen geändert hat, sagt das.
+Kontaktfotos und das Schreiben einer E-Mail im Mail-Programm bietet das
+Terminal nicht an; kopiere die Adresse stattdessen. Startet der
+Hintergrunddienst neu oder liest er die Kontakte neu ein, werden die Liste
+und eine offene Karte neu gelesen; eine Karte, die sich inzwischen geändert
+hat, sagt das.
 
 `f` (oder **Search Everything** in der Palette) ist die [globale
 Suche](search.md): ein Feld für Unterhaltungen, Nachrichten, Kontakte und

@@ -8,10 +8,11 @@ screen with its ``target``; the app then opens the conversation, the
 contact card or the recent calls at that call. Sections, rows, hints and
 wording come from the shared :mod:`blueferry.search_view`.
 
-The daemon answers ``NotReady`` while several searches are still queued;
-the screen then tries the same query once more after the typing delay.
-Every blocking backend call runs off the UI thread, and iPhone text is
-rendered as Rich ``Text`` after ``terminal_text``.
+The typing delay, superseded answers and the daemon's ``NotReady`` (tried
+again after the typing delay, a few times, then "busy") come from the
+shared :class:`blueferry.search_model.GlobalSearch`, the one the Qt and GTK
+clients use. Every blocking backend call runs off the UI thread, and iPhone
+text is rendered as Rich ``Text`` after ``terminal_text``.
 """
 from __future__ import annotations
 
@@ -27,15 +28,10 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, Input, ListItem, ListView, Static
 
 from blueferry import search_view
-from blueferry.client import BackendError
 from blueferry.i18n import _
+from blueferry.search_model import MAX_QUERY_CHARS, GlobalSearch
 from blueferry.text_safety import terminal_text
-from blueferry.tui_tasks import TextualTaskRunner, TextualTimer
-
-# Hits per group the terminal asks for; the daemon caps it.
-RESULT_LIMIT = 20
-_MAX_QUERY = 200
-_NOT_READY = ".NotReady"
+from blueferry.tui_tasks import TextualTaskRunner, timer_factory
 
 SearchResult = dict[str, Any] | None
 
@@ -101,25 +97,26 @@ class SearchScreen(ModalScreen[SearchResult]):
         Binding("slash", "focus_search", "Search", show=False),
     ]
 
-    def __init__(self, client: SearchClient, *, query: str = "") -> None:
+    def __init__(
+        self, client: SearchClient, *, status: Mapping[str, Any] | None = None,
+        query: str = "",
+    ) -> None:
         super().__init__()
-        self._client = client
         self._initial = query
-        self.query_text = ""
-        self.payload: dict[str, Any] = search_view.normalize({})
-        self.error = ""
-        self.searching = False
-        self._generation = 0
-        self._retried = False
-        self._runner = TextualTaskRunner(self, group="search")
-        self._typing = TextualTimer(self, self.search_now)
+        self._status: Mapping[str, Any] = dict(status or {})
+        self.model = GlobalSearch(
+            runner=TextualTaskRunner(self, group="search"),
+            timer=timer_factory(self),
+            fetch=client.search,
+            on_change=self._changed,
+        )
 
     def compose(self) -> ComposeResult:
         with Vertical(id="search-dialog", classes="dialog"):
             yield Static(_("Search"), classes="dialog-title")
             yield Input(
                 value=self._initial, placeholder=search_view.placeholder(),
-                id="search-input", max_length=_MAX_QUERY,
+                id="search-input", max_length=MAX_QUERY_CHARS,
             )
             yield Static("", id="search-state", classes="dialog-copy")
             yield Static("", id="search-limit", classes="dialog-copy")
@@ -132,96 +129,43 @@ class SearchScreen(ModalScreen[SearchResult]):
         self.query_one("#search-results", ListView).display = False
         self.query_one("#search-limit", Static).display = False
         self.query_one("#search-input", Input).focus()
-        self.query_text = " ".join(self._initial.split())
-        if search_view.should_search(self.query_text):
-            self.search_now()
-        else:
-            self._show_idle()
+        self.model.apply_status(self._status)
+        self.model.set_query(self._initial)
+        if search_view.should_search(self.model.query):
+            self.model.run()  # a query handed in is searched at once
+        self._changed()
+
+    def on_unmount(self) -> None:
+        self.model.clear()  # forget the results with the screen
+
+    def status_changed(self, status: Mapping[str, Any]) -> None:
+        self._status = dict(status)
+        self.model.apply_status(self._status)
+
+    @property
+    def query_text(self) -> str:
+        return self.model.query
 
     # -- searching -----------------------------------------------------
 
     @on(Input.Changed, "#search-input")
     def query_changed(self, event: Input.Changed) -> None:
-        query = " ".join(event.value.split())
-        if query == self.query_text:
-            return
-        self.query_text = query
-        self._generation += 1  # an answer for the old text is no longer wanted
-        if search_view.should_search(query):
-            self._typing.start(search_view.TYPING_DELAY_MS)
-        else:
-            self._typing.stop()
-            self.payload, self.error = search_view.normalize({"query": query}), ""
-            self._show_idle()
+        self.model.set_query(event.value)  # searches after the typing delay
 
     @on(Input.Submitted, "#search-input")
     def query_submitted(self) -> None:
-        if search_view.should_search(self.query_text):
-            self.search_now()
+        if search_view.should_search(self.model.query):
+            self.model.run()
         results = self.query_one("#search-results", ListView)
         if results.display:
             results.focus()
 
     def search_now(self) -> None:
-        self._typing.stop()
-        query = self.query_text
-        if not search_view.should_search(query):
-            return
-        self._generation += 1
-        self._retried = False
-        self._submit(self._generation, query)
+        self.model.run()
 
-    def _submit(self, generation: int, query: str) -> None:
-        self.searching = True
-
-        def run() -> tuple[str, object]:
-            try:
-                return "ok", self._client.search(query, RESULT_LIMIT)
-            except BackendError as error:
-                if str(getattr(error, "dbus_name", "")).endswith(_NOT_READY):
-                    return "busy", str(error)
-                raise
-
-        self._runner.submit(
-            run,
-            lambda result: self._answered(generation, query, result),
-            lambda message: self._failed(generation, message),
-        )
-
-    def _answered(self, generation: int, query: str, result: tuple[str, object]) -> None:
-        if generation != self._generation:
-            return
-        kind, value = result
-        if kind == "busy":
-            # Several searches are still queued in the daemon: try this
-            # query once more after the typing delay, then give up.
-            if not self._retried:
-                self._retried = True
-                self.set_timer(
-                    search_view.TYPING_DELAY_MS / 1000,
-                    lambda: self._retry(generation, query),
-                )
-                return
-            self._failed(generation, str(value))
-            return
-        self.searching = False
-        self.payload = search_view.normalize(value)
-        self.error = ""
-        self.run_worker(self._render_results(), group="search-render", exclusive=True)
-
-    def _retry(self, generation: int, query: str) -> None:
-        if generation == self._generation:
-            self._submit(generation, query)
-
-    def _failed(self, generation: int, message: str) -> None:
-        if generation != self._generation:
-            return
-        self.searching = False
-        self.error = search_view.search_failed_text(message)
-        self.run_worker(self._render_results(), group="search-render", exclusive=True)
-
-    def _show_idle(self) -> None:
-        self.run_worker(self._render_results(), group="search-render", exclusive=True)
+    def _changed(self) -> None:
+        if self.is_attached:
+            self.run_worker(self._render_results(), group="search-render", exclusive=True)
 
     # -- rendering -----------------------------------------------------
 
@@ -240,21 +184,21 @@ class SearchScreen(ModalScreen[SearchResult]):
         state = self.query_one("#search-state", Static)
         limit = self.query_one("#search-limit", Static)
         results = self.query_one("#search-results", ListView)
+        view = self.model.view()
         await results.clear()
-        sections = [] if self.error else search_view.sections(self.payload)
         items: list[ListItem] = []
-        for section in sections:
+        for section in view["sections"]:
             items.append(SectionItem(section))
             items.extend(ResultItem(section["id"], row) for row in section["rows"])
-        if self.error:
-            message = self.error
-        elif not search_view.should_search(self.query_text):
-            message = f"{search_view.hint({'query': self.query_text})} {search_view.scope_text()}"
+        if view["error"]:
+            message = view["error"]
+        elif not search_view.should_search(view["query"]):
+            message = f"{view['hint']} {view['scope']}"
         else:
-            message = search_view.hint(self.payload)
+            message = view["hint"]
         state.update(Text(_plain(message)))
         state.display = bool(message)
-        limit_text = "" if self.error else search_view.limit_text(self.payload, RESULT_LIMIT)
+        limit_text = "" if view["error"] else view["limit_text"]
         limit.update(Text(_plain(limit_text)))
         limit.display = bool(limit_text)
         if items:

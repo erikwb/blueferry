@@ -27,10 +27,17 @@ Die IDs der Karten bleiben gleich, solange sich eine Karte nicht ändert und
 der Hintergrunddienst nicht neu startet. Nach einem Abgleich, der eine Karte
 geändert hat, gilt ihre alte ID nicht mehr; liste die Kontakte dann neu auf.
 
-Im Terminal-Client öffnet `C` die Kontakte mit Suche, den Details der Karte
-und Call, Send a Message und Copy (siehe
-[Clients](clients.md#kontakte-und-suche)). Die grafischen Clients bekommen
-eine Kontaktansicht mit einer separaten Änderung.
+Kontaktansicht in den Clients:
+
+- **KDE-Client:**
+  noch nicht; nutze die Kommandozeile.
+- **GTK-Client:**
+  noch nicht; nutze die Kommandozeile.
+- **Terminal-Client:**
+  `C` öffnet die Kontakte mit Suche, den Details der Karte und Call, Send a
+  Message und Copy (siehe [Clients](clients.md#kontakte-und-suche)).
+- **Quickshell-Panel:**
+  noch nicht; nutze die Kommandozeile.
 
 ## Fotos
 

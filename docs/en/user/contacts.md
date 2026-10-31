@@ -25,10 +25,17 @@ The card ids stay the same while a card is unchanged, until the background
 service restarts. After a sync that changed a card, its old id no longer
 works; list the contacts again.
 
-In the terminal client, `C` opens the contacts with search, the card
-details and Call, Send a Message and Copy (see
-[Clients](clients.md#contacts-and-search)). The graphical clients get a
-contact view in a separate change.
+Contact view in the clients:
+
+- **KDE client:**
+  not yet; use the command line.
+- **GTK client:**
+  not yet; use the command line.
+- **Terminal client:**
+  `C` opens the contacts with search, the card details and Call, Send a
+  Message and Copy (see [Clients](clients.md#contacts-and-search)).
+- **Quickshell panel:**
+  not yet; use the command line.
 
 ## Photos
 

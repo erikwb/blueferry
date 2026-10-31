@@ -6,9 +6,11 @@ import threading
 from rich.text import Text
 from textual.widgets import Button, Input
 
+from blueferry import search_view
 from blueferry.client import BackendError, ContactNotFoundError
 from blueferry.models import CallHistoryEntry
 from blueferry.protocol import ERROR_PREFIX
+from blueferry.search_model import BUSY_RETRIES
 from blueferry.tui import BlueFerryApp, HelpScreen, NewMessageScreen, TuiState
 from blueferry.tui_calls import DialConfirmScreen
 from blueferry.tui_contacts import ContactItem, ContactsScreen, DetailItem, MoreItem
@@ -259,15 +261,18 @@ def test_a_stale_card_says_so_and_a_new_epoch_reloads_the_list() -> None:
 
             screen.open_card("c0")
             await _until(pilot, lambda: screen.card is not None)
-            loads = len(backend.card_calls)
+            loads, reads = len(backend.card_calls), len(backend.opened)
             backend.extra["contact_card_epoch"] = 2
             app._load_data()
+            # A new epoch reloads the list and reads the open card again.
             await _until(pilot, lambda: len(backend.card_calls) == loads + 1)
-            assert screen.card is None
+            await _until(pilot, lambda: len(backend.opened) == reads + 1)
+            assert backend.opened[-1] == "c0" and screen.card is not None
             # The same status again does not read the list once more.
             app._load_data()
             await pilot.pause(0.3)
             assert len(backend.card_calls) == loads + 1
+            assert len(backend.opened) == reads + 1
 
     _run_headless(scenario())
 
@@ -449,7 +454,35 @@ def test_search_opens_contact_cards_and_recent_calls_at_the_hit() -> None:
     _run_headless(scenario())
 
 
-def test_search_retries_once_when_the_daemon_is_busy_then_reports() -> None:
+def test_a_call_hit_selects_the_row_that_folds_that_call() -> None:
+    """Two missed calls of one number on one day, apart: the hit's own row."""
+    backend = _ContactsBackend(call_history_enabled=True)
+    backend.history = [
+        CallHistoryEntry("missed", "2026-10-01T11:00:00+02:00", "+41790000001",
+                         extra={"id": "call-1"}),
+        CallHistoryEntry("outgoing", "2026-10-01T10:00:00+02:00", "+41790000009",
+                         extra={"id": "call-2"}),
+        CallHistoryEntry("missed", "2026-10-01T09:00:00+02:00", "+41790000001",
+                         extra={"id": "call-3"}),
+    ]
+
+    async def scenario() -> None:
+        app = BlueFerryApp(TuiState(backend), monitor_factory=lambda: None)
+        async with app.run_test(size=(130, 44)) as pilot:
+            await pilot.pause(0.2)
+            app._search_hit_chosen({"kind": "call", "call_id": "call-3"})
+            await _until(pilot, lambda: isinstance(app.screen, RecentCallsScreen))
+            recent = app.screen
+            await _until(pilot, lambda: len(list(recent.query(CallGroupItem))) == 3)
+            await pilot.pause(0.1)
+            highlighted = recent.query_one("#recent-calls-list").highlighted_child
+            assert isinstance(highlighted, CallGroupItem)
+            assert highlighted.row["ids"] == ["call-3"]
+
+    _run_headless(scenario())
+
+
+def test_search_retries_when_the_daemon_is_busy_then_says_so() -> None:
     backend = _ContactsBackend()
     backend.search_reply = BackendError(
         "[b]busy[/b]", dbus_name=f"{ERROR_PREFIX}.NotReady",
@@ -464,16 +497,17 @@ def test_search_retries_once_when_the_daemon_is_busy_then_reports() -> None:
             await _until(pilot, lambda: _search_screen(app) is not None)
             screen = app.screen
             await pilot.press(*"ana")
-            await _until(pilot, lambda: "[b]busy[/b]" in str(
+            await _until(pilot, lambda: search_view.search_busy_text() in str(
                 screen.query_one("#search-state").render()
             ))
-            assert backend.searches == [("ana", 20), ("ana", 20)]
+            # The shared model: the first try and BUSY_RETRIES more.
+            assert backend.searches == [("ana", 20)] * (BUSY_RETRIES + 1)
 
             backend.search_reply = BackendError("down")
             screen.query_one("#search-input", Input).value = "anna"
             await _until(pilot, lambda: "down" in str(screen.query_one("#search-state").render()))
             assert backend.searches[-1] == ("anna", 20)
-            assert len(backend.searches) == 3  # other errors are not retried
+            assert len(backend.searches) == BUSY_RETRIES + 2  # others are not retried
 
     _run_headless(scenario())
 

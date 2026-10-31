@@ -1175,7 +1175,7 @@ class BlueFerryApp(App[None]):
                         screen.status_changed(self.state.status)
                 elif isinstance(screen, (
                     PhoneOverviewScreen, CallsScreen, RecentCallsScreen, NotificationsScreen,
-                    ContactsScreen,
+                    ContactsScreen, SearchScreen,
                 )):
                     screen.status_changed(values)
         elif self.state.error != previous_error:
@@ -1914,7 +1914,10 @@ class BlueFerryApp(App[None]):
                 severity="warning", markup=False,
             )
             return
-        self.push_screen(SearchScreen(self.state.client), self._search_hit_chosen)
+        self.push_screen(
+            SearchScreen(self.state.client, status=self.state.status.to_dict()),
+            self._search_hit_chosen,
+        )
 
     def _search_hit_chosen(self, target: SearchResult) -> None:
         """Open where a search hit lives (``search_view`` row targets)."""

@@ -237,9 +237,10 @@ number, email and postal address with its label. On a detail row, `c` (or
 **Call**) calls the number after the confirmation, `m` (or **Send a
 Message**) starts a new message to the number or email address, and `y` (or
 **Copy**) copies the entry through the terminal (OSC 52). Enter does the
-first of these the row offers. Contact photos are not shown in the
-terminal. When the background service restarts or re-reads the contacts,
-the list is read again; a card that changed meanwhile says so.
+first of these the row offers. Contact photos and writing an email in a
+mail app are not offered in the terminal; copy the address instead. When
+the background service restarts or re-reads the contacts, the list and an
+open card are read again; a card that changed meanwhile says so.
 
 `f` (or **Search Everything** in the palette) is the [global
 search](search.md): one field for conversations, messages, contacts and
