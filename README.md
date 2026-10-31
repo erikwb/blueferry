@@ -476,9 +476,10 @@ Restart the user service after editing `local.env` settings.
 
 Three on/off switches without a setting of their own
 (`BLUEFERRY_SHOW_NOTIFICATION_CONTENT`, `BLUEFERRY_MARK_READ_ON_DISMISS`,
-`BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE`) can also be changed in the Qt settings
-or with `blueferry features` (`blueferry features off
-keep_phone_audio_on_phone`). They are stored in
+`BLUEFERRY_NOTIFICATION_HISTORY`)
+can also be changed in the Qt or GTK settings (both offer **Restart Service**
+while a change waits) or with `blueferry features` (`blueferry features off
+mark_read_on_dismiss`). They are stored in
 `~/.config/blueferry/settings.json`, override `local.env`, and apply after
 the service restarts; a variable set in the service's own environment still
 wins.
@@ -487,7 +488,7 @@ wins.
 
 With **All iPhone Notifications** selected, an iPhone app popup normally
 stays until it times out, even after you cleared the notification on the
-phone. Turn on **Sync notifications with iPhone** in the Qt client's iPhone
+phone. Turn on **Sync notifications with iPhone** in the Qt or GTK client's
 settings, or run `blueferry notifications sync enable`, and a notification
 removed or dismissed on the iPhone also closes its desktop popup. It only
 closes popups and never sends anything to the phone. The choice is saved as
@@ -568,7 +569,7 @@ terminal client does not show photos.
 ### Recent app notifications (opt-in)
 
 `BLUEFERRY_NOTIFICATION_HISTORY=true` (or **Keep recent iPhone notifications**
-in the Qt settings, or `blueferry features on notification_history`, after a
+in the Qt or GTK settings, or `blueferry features on notification_history`, after a
 service restart) keeps the last 200 non-Messages iPhone app notifications in
 the daemon's memory so the Qt client's Notifications tab and `blueferry
 notifications recent` can list them. The list itself is not written to disk:
@@ -603,8 +604,8 @@ blueferry notifications open-map list
 blueferry notifications open-map remove net.whatsapp.WhatsApp
 ```
 
-The Qt client edits the same rules under **Desktop Notifications** while all
-notifications are shown, and the terminal client in a panel opened with `l`.
+The Qt and GTK clients edit the same rules in their notification settings
+while all notifications are shown, and the terminal client in a panel opened with `l`.
 Rules are stored with the other popup preferences in
 `~/.config/blueferry/settings.json` (owner-only, not encrypted) and take
 effect without restarting the service.
@@ -792,7 +793,7 @@ connection line.
 An optional low-battery warning (off by default) fires once per discharge
 when the battery reaches the threshold, and again only after the phone has
 charged at least 20 % above it (and once more after a BlueFerry restart if
-the phone is still low). Switch it on in the Qt iPhone settings or with
+the phone is still low). Switch it on in the Qt or GTK settings or with
 `blueferry phone-status --warn`; the choice is saved in `settings.json`.
 `BLUEFERRY_PHONE_BATTERY_NOTIFY=true` seeds it and
 `BLUEFERRY_PHONE_BATTERY_LOW_PERCENT=20` (0-80) sets the threshold.
@@ -917,6 +918,9 @@ links or files in its own cache.
 A plugin can replace a companion tool: while the
 LocalSend plugin is enabled, the LocalSend app disappears from **Tools**,
 because both would answer on the same port.
+If a plugin replaces UxPlay while mirroring is already running, **Stop
+mirroring** stays available until that receiver exits. BlueFerry blocks
+new starts while the replacement is enabled.
 
 ## Lock when the iPhone goes away
 

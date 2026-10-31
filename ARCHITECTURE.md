@@ -68,8 +68,8 @@ All paths are relative to `src/blueferry/` unless noted.
 | `gio_dbus.py` | `GioBus`: a two-method seam (typed asynchronous `call`, `subscribe`) over a `Gio.DBusConnection`, with dbus-python-compatible error names; used by `phone_audio_route.py`. |
 | `notification_apps_view.py`, `cli_notifications.py` | Toolkit-free rows, hints and index toggles for the muted-apps list (`Messages1.ListNotificationApps`); `blueferry notifications apps/mute/unmute`. |
 | `phone_audio_view.py` | Toolkit-free wording of the PC/iPhone sound switch for every client. |
-| `features.py` | The `local.env` switches without a runtime setter of their own that clients may store in settings.json (`Messages1.GetFeatures/SetFeature`): notification content, mark read on dismiss, keeping iPhone audio on the phone. |
-| `doctor_report.py` | Runs `blueferry doctor` in a child process for the settings UIs and returns a plain-text report. |
+| `features.py` | The `local.env` switches without a runtime setter of their own that clients may store in settings.json (`Messages1.GetFeatures/SetFeature`): notification content, mark read on dismiss, and notification history. |
+| `doctor_report.py` | Runs `blueferry doctor` in an owned, cancellable child process for the settings UIs and returns a plain-text report; its state map and summary (`view()`) are shared by the Qt and GTK settings. |
 | `media_volume_view.py` | Toolkit-free iPhone volume up/down buttons and level label (from `GetNowPlaying`) for every client and `blueferry media volume`. |
 | `mpris.py` | Optional MPRIS2 player (`org.mpris.MediaPlayer2.blueferry_iphone`) over `media.py`, exported on its own private session-bus connection so the MPRIS name never addresses the BlueFerry object. |
 
@@ -190,17 +190,18 @@ All paths are relative to `src/blueferry/` unless noted.
 | `global_search.py` | `Messages1.Search` matching over the in-memory conversation projection, contact cards and call history; no index on disk. |
 | `search_view.py`, `cli_search.py` | Toolkit-free result sections, rows, highlights and jump targets for the global search; `blueferry search`. |
 | `contacts_view.py` | Toolkit-free list rows, card sections, labels and hints for the contact view (`Messages1.ListContactCards`, `GetContact`). |
+| `contacts_model.py`, `search_model.py` | Toolkit-neutral state of the contact list and the global search on the `client_tasks.py` seams, shared by the KDE, GTK and terminal clients: typing delay, paging without duplicates, only the newest answer shown, `contact_card_epoch` reloads, stale card ids (`NotFound`) and `NotReady` retries. |
 | `cli_call_history.py` | Opt-in `call-history` listing, enable, and disable. |
 | `cli_common.py` | Small CLI presentation helpers. |
 | `cli_proximity.py` | `proximity-lock` status, dry run, enable, and disable. |
 | `cli_reconnect.py` | `reconnect`: manual Classic reconnect that waits for the outcome. |
-| `reconnect_view.py` | Toolkit-neutral texts for the manual reconnect and rate limits (Qt banner and iPhone page, TUI key `b`, CLI). |
+| `reconnect_view.py` | Toolkit-neutral texts for the manual reconnect and rate limits (Qt banner and settings, GTK settings, TUI key `b`, CLI); `ManualReconnect` keeps the notice after Reconnect until the status shows the outcome (Qt and GTK). |
 | `cli_notifications.py` | `notifications open-map` rule editing, `notifications recent` and `pin`/`unpin`. |
 | `notification_pin_view.py` | Toolkit-neutral pin labels, row flags and error texts for the notification list (all clients). |
 | `cli_media.py` | `blueferry media` now-playing status, commands, and `enable`/`disable`. |
 | `cli_audio.py` | `blueferry audio [status\|pc\|phone]`. |
 | `cli_features.py` | `blueferry features [on\|off NAME]`. |
-| `features_view.py` | Toolkit-neutral state of the `GetFeatures`/`SetFeature` switches in Settings, shared by Qt and (soon) GTK: loaded or fallback for older daemons, and the restart/environment notice after a change. |
+| `features_view.py` | Toolkit-neutral state of the `GetFeatures`/`SetFeature` switches in Settings, shared by Qt and GTK: loaded or fallback for older daemons, the restart/environment notice after a change, and (`view()`) each switch row's state and note and whether a restart is pending. |
 | `plugin_api/` | Plugin contract: manifest parser and discovery, settings schema (`config.py`, with groups, a pre-check, `ShowIf` and the form's `[ConfigAction]` buttons), `TestConfig`/`ConfigLogin` replies (`config_flow.py`), surfaces (`card`, `share`, content-free `notify`) with checked `open_uri`, the standard log file, a validating `PluginClient`, `PluginService`/`PhotosService` bases (bounded worker pool, per-caller budget) and a test harness (`FakeHost`). Imports nothing else from `blueferry`. A symlink to `plugin-api/src/blueferry/plugin_api`, which `plugin-api/pyproject.toml` also builds as the distribution `blueferry-plugin-api` for plugins in their own repositories. |
 | `plugin_manager.py` | Installs plugins from https Git URLs: pinned ref, clone, confirmation, own venv, manifest and D-Bus service file; update, remove, enable/disable under a `flock`; validates `installs.json` on every read. |
 | `plugin_stopper.py` | After an update, removal or disabling, SIGTERMs the owner of the plugin's bus name if it runs as the user from the plugin's old venv (pidfd, never SIGKILL, never BlueFerry itself); blocking, worker thread or CLI only. |
@@ -212,7 +213,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `plugin_surfaces.py`, `cli_surfaces.py`, `qt/plugin_surfaces.py`, `qt/qml/PluginCardSection.qml` | Host side of the `card` and `share` surfaces: card rows, actions, "Send to…" targets, card actions that take files; `blueferry cards`/`blueferry send` and the Qt "From Plugins" section (which hears `CardChanged` only from enabled card plugins). Plugin calls run on worker threads with timeouts. |
 | `plugin_surfaces_model.py` | Toolkit-neutral state of "From Plugins" and "Send to…", shared by Qt and (soon) GTK: coalesced card reloads, actions that re-resolve the plugin before opening a page, one send at a time, targets resolved on the worker; it names the bus names the client must watch for `CardChanged`. `qt/plugin_surfaces.py` adds the `QThreadPool`, `QTimer`, URL conversion and QtDBus watching. |
 | `plugin_notify.py` | Daemon side of the `notify` capability: watches the content-free `Plugin1.NotifyChanged`, accepts it only from the owner of an enabled notify plugin's bus name running as the same user, fetches the popup with `GetPendingNotification` from that connection, rate-limits, and hands it to the libnotify sink; the popup button calls `InvokeAction` asynchronously. |
-| `photos_view.py`, `photos_model.py`, `cli_photos.py`, `qt/qml/PhotosTab.qml` | Client side of the `photos` capability: plugin lookup, loads for worker threads, plain-text labels and the tab's state map; `photos_model.py` is the toolkit-neutral Photos tab shared by Qt and (soon) GTK (loaded only while shown, an original fetched only from the plugin the list came from); `blueferry photos` and the Qt Photos tab. |
+| `photos_view.py`, `photos_model.py`, `cli_photos.py`, `qt/qml/PhotosTab.qml` | Client side of the `photos` capability: plugin lookup, loads for worker threads, plain-text labels and the tab's state map; `photos_model.py` is the toolkit-neutral Photos tab shared by Qt and (soon) GTK (a private worker queue and local busy state, coalesced reloads, generation guards across tab/plugin changes, and originals fetched only from the current plugin); `blueferry photos` and the Qt Photos tab. |
 | `cli_plugins.py` | `blueferry plugins …` and `blueferry plugins ALIAS …` (exec of the plugin's own CLI; refused for a disabled plugin). |
 | `desktop_open.py` | Opens a checked URI with the desktop's default handler for the CLIs. |
 | `companion_tools.py`, `cli_tools.py`, `qt/companion.py`, `qt/qml/CompanionToolsSection.qml` | Client-only launchers for UxPlay screen mirroring, LocalSend and the iPhone camera roll over USB (ifuse); `blueferry tools` and the Qt card's Tools section. Not part of the daemon or its D-Bus API. |
@@ -229,21 +230,25 @@ All paths are relative to `src/blueferry/` unless noted.
 | `tui_phone.py` | Opt-in Textual now-playing line and read-only recent-calls screen. |
 | `phone_overview.py` | Toolkit-free now-playing and recent-call rules shared by the GTK, TUI and Quickshell clients (mirrors the Qt QML rules). |
 | `ui/app.py` | GTK4/libadwaita application entry point. |
-| `ui/window.py` | Main GTK window. |
+| `ui/window.py` | Main GTK window; opens the settings dialog on a category. |
 | `ui/conversations.py` | GTK conversations page: history, group confirmation, replies. |
-| `ui/status.py` | GTK iPhone page: setup, health, preferences, maintenance. |
+| `ui/status.py` | GTK settings (`SettingsDialog`, an `AdwPreferencesDialog`): one page per category of the Qt settings (Phone, Notifications, Calls & Audio, Network, Security, About) with setup, health, preferences and maintenance. |
+| `ui/settings_presenter.py` | Pure rules of the settings dialog: categories, Diagnostics rows, switch subtitles. |
+| `ui/feature_switches.py` | GTK rows for the `GetFeatures`/`SetFeature` switches (`features_view.py`) and the restart notice with **Restart Service** on every settings page; cancels its pending reloads when the dialog closes. |
+| `ui/notification_rules.py` | Settings > Notifications: the notification click rules editor (`GetNotificationOpenMap`/`SetNotificationOpenTarget`), reread only when the status revision changes. |
+| `ui/doctor.py` | Settings > Phone > Diagnostics: runs `blueferry doctor` (`doctor_report.py`) on the client's local worker and shows the report as plain text with Copy. |
 | `ui/status_presenter.py` | Pure presentation rules for the status page (including the optional phone battery/signal suffix). |
 | `ui/phone.py` | GTK iPhone dialog: battery/signal/network, opt-in now playing and recent calls; fetches only while open. |
 | `ui/phone_presenter.py` | Pure presentation rules for the iPhone dialog. |
 | `ui/saved_choice.py` | Keeps a settings switch on the user's choice while its save and the next status settle. |
-| `ui/client.py` | Asynchronous GTK backend calls and D-Bus invalidations. |
+| `ui/client.py` | Asynchronous GTK backend calls and D-Bus invalidations; reads, mutations (including the service restart) and local work (`blueferry doctor`) each have their own worker. |
 | `ui/avatars.py` | Bounded GTK photo cache and worker-side thumbnail decoding; late results from earlier contact generations are discarded. |
 | `ui/setup_runner.py` | GTK-independent worker for blocking setup operations. |
 | `ui/util.py` | Small UI helpers. |
 | `qt/app.py` | PySide6/Kirigami entry point. |
 | `qt/controller.py` | Asynchronous `BridgeController` exposed to QML. |
 | `phone_overview.py`, `phone_link_view.py` | Toolkit-free rules behind the phone card and the Calls and Notifications tabs: opt-in hints that name the setting, day-grouped recent calls, notification rows; shared by Qt and (soon) GTK. |
-| `notification_history.py` | Toolkit-neutral state of the opt-in Notifications tab, shared by Qt and (soon) GTK: `ListNotifications` only while the tab is shown, coalesced reloads on `NotificationsChanged`, rows forgotten when hidden, errors kept in the tab. |
+| `notification_history.py` | Toolkit-neutral state of the opt-in Notifications tab, shared by Qt and (soon) GTK: `sync_status` supplies backend/privacy/storage/profile state; `ListNotifications` runs only while access is allowed and the tab is shown, with coalesced reloads and late replies fenced off after access or tab changes. |
 | `qt/tray.py`, `qt/tray_presenter.py` | `blueferry-tray`: standalone StatusNotifierItem (unread badge, battery/signal tooltip); asynchronous QtDBus calls with auto-start disabled, so it never starts the daemon; owns `io.weirdware.BlueFerry.Client.Tray`, which `qt/app.py` watches to hide its own icon; pure presenters. |
 | `tray_autostart.py` | The tray's opt-in per-user XDG autostart entry. |
 | `qt/tasks.py` | Qt worker primitive, and `QtTaskRunner`/`QtTimer`, the Qt side of `client_tasks.py`. |
@@ -251,9 +256,9 @@ All paths are relative to `src/blueferry/` unless noted.
 | `qt/activation.py` | Qt adapter for client activation. |
 | `qt/qml/Main.qml` | Kirigami window: navigation and composition. |
 | `qt/qml/ConversationLogic.qml` | Thread lookup, roster-warning dedup, participant parsing (also used by Quickshell). |
-| `qt/qml/SettingsPage.qml` | Settings with categories on the left (Phone, Notifications, Calls & Audio, Security, About), a drill-down list in a narrow window, and the restart notice for feature switches. |
-| `qt/qml/Settings*.qml` | One page per category; every control of the former single iPhone settings page lives in one of them. `SettingsPhone` also runs `blueferry doctor` (`doctor_report.py`, child process on its own pool; the report's state map is shared with GTK) and shows the report as plain text. |
-| `qt/qml/SubtitleSwitch.qml`, `qt/qml/FeatureSwitch.qml` | A switch row with a wrapped explanation; `FeatureSwitch` binds one `GetFeatures`/`SetFeature` switch and falls back to the `local.env` hint on older daemons. |
+| `qt/qml/SettingsPage.qml` | Settings with categories on the left (Phone, Notifications, Calls & Audio, Network, Security, About), a drill-down list in a narrow window, and the restart notice for feature switches. Keeps the Phone category alive to preserve pairing choices. |
+| `qt/qml/Settings*.qml` | One page per category; every control of the former single iPhone settings page lives in one of them. `SettingsPhone` also runs `blueferry doctor` (`doctor_report.py`, child process on its own pool; the report's state map and summary are shared with GTK) and shows the report as plain text. |
+| `qt/qml/SubtitleSwitch.qml`, `qt/qml/FeatureSwitch.qml` | A switch row with a wrapped explanation; `FeatureSwitch` binds one `GetFeatures`/`SetFeature` switch to its row in `features_view.view()`, which falls back to the `local.env` hint on older daemons. |
 | `qt/qml/PhoneAudioSettings.qml` | The PC/iPhone sound switch in Calls & Audio; loaded only for daemons that report `phone_audio_route`. |
 | `qt/qml/PhoneSettingsDialogs.qml` | Window-owned settings/pairing dialogs that outlive the page. |
 | `qt/qml/NotificationOpenMapEditor.qml` | Loaded editor for notification click rules (shown with the "all" policy). |

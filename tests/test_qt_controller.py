@@ -14,6 +14,12 @@ from blueferry.models import BackendStatus, Thread
 from blueferry.qt.controller import BridgeController
 from blueferry.setup_client import ConfigurationState
 from blueferry.tether_status import TetherStatus
+from tests.client_fakes import InlineRunner
+from tests.qt_settle import main_thread_gc
+
+# Controllers own timers too: collect their Python cycles on the UI thread,
+# never on a worker that happens to allocate during the following test.
+pytestmark = pytest.mark.usefixtures(main_thread_gc.__name__)
 
 
 def _apply_threads(controller, threads):
@@ -1823,6 +1829,8 @@ def test_feature_hints_point_to_the_setting_for_each_opt_in():
 
 def test_notification_failure_stays_in_the_tab(monkeypatch):
     controller = _inline_controller(monkeypatch, _PhoneLinkBackend(fail_notifications=True))
+    controller._status = _notification_status()
+    controller.statusChanged.emit()
     controller.watchNotifications(True)
     assert controller.notifications == []
     assert "locked" in controller.notificationsInfo["error"]
@@ -1832,6 +1840,8 @@ def test_notification_failure_stays_in_the_tab(monkeypatch):
 def test_notifications_are_fetched_only_while_watched_and_forgotten_after(monkeypatch):
     backend = _PhoneLinkBackend()
     controller = _inline_controller(monkeypatch, backend)
+    controller._status = _notification_status()
+    controller.statusChanged.emit()
     controller.refreshNotifications()
     controller._notificationsInvalidated()
     assert backend.notification_calls == 0
@@ -1848,6 +1858,153 @@ def test_notifications_are_fetched_only_while_watched_and_forgotten_after(monkey
 
     controller.watchNotifications(False)
     assert controller.notifications == []
+
+
+def _notification_status(**changes):
+    return {
+        "daemon": True, "notification_history_enabled": True,
+        "notification_content_shown": True, "storage_state": "ready",
+        "phone_profile_id": "11111111-1111-4111-8111-111111111111", **changes,
+    }
+
+
+def _notification_snapshot(body="private notification", **changes):
+    return {
+        "enabled": True, "content": True, "notifications": [
+            {"app_id": "com.example.chat", "title": "Private title",
+             "subtitle": "Private subtitle", "body": body},
+        ], **changes,
+    }
+
+
+@pytest.fixture
+def notification_controller(monkeypatch):
+    controller = BridgeController(backend=object(), setup=object(), subscribe=False, autostart=False)
+    controller._storage_unlock_attempted = True
+    pending = []
+
+    def run_deferred(operation, on_done=None, on_failed=None, *, busy=True):
+        assert busy is False
+        pending.append((on_done, on_failed))
+
+    monkeypatch.setattr(controller, "_run", run_deferred)
+
+    def status(**changes):
+        controller._apply_snapshot((ConversationSnapshot(
+            status=BackendStatus.from_dict(_notification_status(**changes)),
+        ), None))
+        controller._now_playing_timer.stop()
+
+    status()
+    yield controller, pending, status
+    controller._notification_history._timer.stop()
+    controller._now_playing_timer.stop()
+    controller.deleteLater()
+
+
+@pytest.mark.parametrize("change", [
+    {"daemon": False}, {"notification_history_enabled": False}, {"storage_state": "locked"},
+    {"notification_content_shown": False},
+    {"phone_profile_id": "22222222-2222-4222-8222-222222222222"},
+])
+@pytest.mark.parametrize("outcome", ["success", "error"])
+def test_notification_access_change_clears_rows_and_rejects_old_responses(
+    notification_controller, change, outcome,
+):
+    controller, pending, status = notification_controller
+    controller.watchNotifications(True)
+    pending.pop()[0](_notification_snapshot())
+    assert controller.notifications[0]["body"] == "private notification"
+    controller.refreshNotifications()
+    old_done, old_failed = pending.pop()
+
+    status(**change)
+    assert controller.notifications == []
+    assert controller.notificationsInfo["content"] is False
+    if outcome == "success":
+        old_done(_notification_snapshot("stale private text"))
+    else:
+        old_failed("stale error")
+    assert controller.notifications == []
+    assert controller.notificationsInfo["error"] == ""
+
+    if change.get("notification_content_shown") is False:
+        pending.pop()[0](_notification_snapshot())
+        assert controller.notifications[0]["app"] == "com.example.chat"
+        assert all(controller.notifications[0][field] == "" for field in ("title", "subtitle", "body"))
+    elif "phone_profile_id" in change:
+        pending.pop()[0](_notification_snapshot("new phone"))
+        assert controller.notifications[0]["body"] == "new phone"
+    else:
+        assert pending == []
+        status()
+        assert len(pending) == 1
+        pending.pop()[0](_notification_snapshot("recovered"))
+        assert controller.notifications[0]["body"] == "recovered"
+
+
+@pytest.mark.parametrize("outcome", ["success", "error"])
+def test_notification_response_cannot_cross_tab_visits(notification_controller, outcome):
+    controller, pending, _status = notification_controller
+    controller.watchNotifications(True)
+    done, failed = pending.pop()
+    controller.watchNotifications(False)
+    controller.watchNotifications(True)
+    assert pending == []  # Wait for the old operation before starting another.
+    if outcome == "success":
+        done(_notification_snapshot())
+    else:
+        failed("old visit failed")
+    assert controller.notifications == []
+    assert controller.notificationsInfo["error"] == ""
+    assert len(pending) == 1
+    pending.pop()[0](_notification_snapshot("current visit"))
+    assert controller.notifications[0]["body"] == "current visit"
+
+
+def test_notification_refreshes_coalesce_and_keep_recent_rows_on_bluetooth_loss(notification_controller):
+    controller, pending, status = notification_controller
+    controller.watchNotifications(True)
+    for _ in range(10):
+        controller.refreshNotifications()
+    assert len(pending) == 1
+    pending.pop()[0](_notification_snapshot())
+    assert len(pending) == 1
+    pending.pop()[0](_notification_snapshot("latest"))
+    assert pending == []
+    status(ancs=False, map=False, pbap=False)
+    assert controller.notifications[0]["body"] == "latest"
+    assert pending == []
+
+
+@pytest.mark.parametrize("change", [{"enabled": False}, {"content": False}])
+def test_notification_snapshot_respects_its_privacy_flags(notification_controller, change):
+    controller, pending, _status = notification_controller
+    controller.watchNotifications(True)
+    pending.pop()[0](_notification_snapshot(**change))
+    if change.get("enabled") is False:
+        assert controller.notifications == []
+    else:
+        assert controller.notifications[0]["body"] == ""
+        assert controller.notifications[0]["title"] == ""
+        assert controller.notifications[0]["subtitle"] == ""
+    assert controller.notificationsInfo["content"] is False
+
+
+def test_notifications_opened_before_backend_ready_load_when_it_returns(notification_controller):
+    controller, pending, status = notification_controller
+    status(daemon=False)
+    controller.watchNotifications(True)
+    controller.refreshNotifications()
+    assert pending == []
+    status()
+    pending.pop()[1]("backend restarting")
+    assert controller.notificationsInfo["error"] == "backend restarting"
+    status(daemon=False)
+    assert controller.notificationsInfo["error"] == ""
+    status()
+    pending.pop()[0](_notification_snapshot())
+    assert controller.notifications[0]["body"] == "private notification"
 
 
 def test_phone_name_comes_from_the_configured_device():
@@ -1899,10 +2056,10 @@ def test_photo_load_failure_stops_the_spinner(monkeypatch):
     controller = BridgeController(
         backend=_Backend(), setup=object(), subscribe=False, autostart=False,
     )
-    monkeypatch.setattr(
-        controller, "_run",
-        lambda _operation, _on_done=None, on_failed=None, **_kwargs: on_failed("boom"),
-    )
+    from blueferry import photos_view
+    controller._photos._runner = InlineRunner()
+    monkeypatch.setattr(photos_view, "find_plugin",
+                        lambda: (_ for _ in ()).throw(RuntimeError("boom")))
     controller.watchPhotos(True)
     assert controller.photos["loaded"] is True and controller.photos["hint"] == "boom"
 
@@ -1936,25 +2093,19 @@ def test_photos_load_only_while_watched_and_open_the_original(monkeypatch, tmp_p
     controller = BridgeController(
         backend=_Backend(), setup=object(), subscribe=False, autostart=False,
     )
-    busy_flags = []
-
-    def run(operation, on_done=None, *_args, busy=True, **_kwargs):
-        busy_flags.append(busy)
-        on_done(operation())
-
-    monkeypatch.setattr(controller, "_run", run)
+    controller._photos._runner = controller._photos._open_runner = InlineRunner()
     controller.refreshPhotos()
     assert controller.photos["loaded"] is False  # not watched: nothing loaded
     controller.watchPhotos(True)
     item = controller.photos["items"][0]
     assert item["video"] is True and item["thumbnail"].endswith("/t.webp")
     assert item["original"] == "" and controller.photos["ready"] is True
-    assert busy_flags == [False]  # the list loads without the busy indicator
+    assert not controller.busy
     # A thumbnail declaring 10 gigapixels never reaches QML's image loader.
     assert controller.photos["items"][1]["thumbnail"] == ""
     controller.openPhoto("a")
     assert fetched == ["a"] and opened == [str(original)]
-    assert busy_flags == [False, True]  # a download shows it
+    assert not controller.busy
     assert controller.photos["items"][0]["original"].endswith("/IMG_1.HEIC")
     controller.watchPhotos(False)
     assert controller.photos["items"] == []
@@ -1981,10 +2132,7 @@ def test_a_photo_of_a_plugin_disabled_meanwhile_is_not_fetched(monkeypatch, tmp_
     controller = BridgeController(
         backend=_Backend(), setup=object(), subscribe=False, autostart=False,
     )
-    monkeypatch.setattr(
-        controller, "_run",
-        lambda operation, on_done=None, *_args, **_kwargs: on_done(operation()),
-    )
+    controller._photos._runner = controller._photos._open_runner = InlineRunner()
     controller.watchPhotos(True)
     found[0] = None  # disabled after the list loaded
     controller.openPhoto("a")
@@ -2099,10 +2247,14 @@ def test_phone_links_only_ask_for_confirmation():
     controller.requestDialLink("tel:7042;phone-context=example.com")
     controller.requestDialLink("tel:+15550100000;ext=7")
     controller.requestDialLink("tel:+15550100000;m-routing=private")
+    controller.requestDialLink("Alice 2026")
+    controller.requestDialLink("+1 555 123 4567 ext 89")
+    controller.requestDialLink("0491570156")
     controller._pool.waitForDone(1000)
     assert requested == [
         ("+15550100000", ""), ("", "invalid"), ("112", "emergency"),
         ("", "invalid"), ("", "invalid"), ("", "invalid"),
+        ("", "invalid"), ("", "invalid"), ("0491570156", ""),
     ]
     assert backend.dialed == []
     assert controller.contactNameForNumber("+15550100000") == "Test Contact"
@@ -2252,9 +2404,18 @@ class _PinBackend(_PhoneLinkBackend):
         return muted
 
 
+def _allow_notifications(controller) -> None:
+    """A status under which the shared model may read and show the list."""
+    controller._notification_history.sync_status({
+        "daemon": True, "notification_history_enabled": True,
+        "storage_state": "ready", "notification_content_shown": True,
+    })
+
+
 def test_notification_rows_carry_pin_state_and_muted_apps(monkeypatch):
     backend = _PinBackend(muted={"com.example.mail"})
     controller = _inline_controller(monkeypatch, backend)
+    _allow_notifications(controller)
     controller._status = {"notification_muted_app_count": 1}
     controller.watchNotifications(True)
 
@@ -2282,6 +2443,7 @@ def test_a_dropped_notification_reply_never_pairs_rows_with_other_keys(monkeypat
 
     backend = _PinBackend()
     controller = BridgeController(backend=backend, setup=object(), subscribe=False, autostart=False)
+    _allow_notifications(controller)
     pending = []
     monkeypatch.setattr(
         controller, "_run",
@@ -2317,6 +2479,7 @@ def test_a_dropped_notification_reply_never_pairs_rows_with_other_keys(monkeypat
 def test_hiding_notifications_forgets_the_raw_answer_with_one_change(monkeypatch):
     backend = _PinBackend()
     controller = _inline_controller(monkeypatch, backend)
+    _allow_notifications(controller)
     assert {"pinLimitReached", "pinLimitText", "pinError"} <= set(
         controller.notificationsInfo)
     controller.watchNotifications(True)
@@ -2331,6 +2494,7 @@ def test_hiding_notifications_forgets_the_raw_answer_with_one_change(monkeypatch
 def test_muted_apps_are_chosen_on_the_gui_thread_before_the_read(monkeypatch):
     backend = _PinBackend(muted={"com.example.mail"})
     controller = BridgeController(backend=backend, setup=object(), subscribe=False, autostart=False)
+    _allow_notifications(controller)
     pending = []
     monkeypatch.setattr(
         controller, "_run",
@@ -2356,6 +2520,7 @@ def test_pinning_refreshes_the_list_and_explains_a_failure(monkeypatch):
 
     backend = _PinBackend()
     controller = _inline_controller(monkeypatch, backend)
+    _allow_notifications(controller)
     controller.watchNotifications(True)
     calls = backend.notification_calls
 
@@ -2388,6 +2553,7 @@ def test_muted_apps_are_read_only_while_shown_and_only_from_capable_daemons(monk
     monkeypatch.setattr(controller_module, "qt_timers", lambda _parent: timers.timer)
     backend = _PinBackend(muted={"com.example.chat"})
     controller = BridgeController(backend=backend, setup=object(), subscribe=False, autostart=False)
+    _allow_notifications(controller)
     _run_inline_any(controller, monkeypatch)
     # The first qt_timers timer is the notification list's (contacts and
     # search follow).
@@ -2452,6 +2618,7 @@ def test_notification_rows_without_pin_keys_hide_the_pin_control(monkeypatch):
         "enabled": True, "notifications": [{"app_id": "com.example.chat", "time": ""}, "junk"],
     }
     controller = _inline_controller(monkeypatch, backend)
+    _allow_notifications(controller)
     controller._status = {"notification_muted_app_count": 1}
     controller.watchNotifications(True)
 

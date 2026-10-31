@@ -304,6 +304,11 @@ def search_view(payload: object) -> dict[str, Any]:
     }
 
 
+def search_busy_text() -> str:
+    """The daemon kept answering ``NotReady`` (its search queue stayed full)."""
+    return _("The search is busy. Try again in a moment.")
+
+
 def search_failed_text(error: object) -> str:
     detail = str(error).strip()
     return detail or _("Search failed.")
