@@ -1,9 +1,14 @@
 """Companion tool launchers with fake which/Gio/subprocess; nothing is started."""
 from __future__ import annotations
 
+import dataclasses
+import errno
+import fcntl
 import os
 import signal
 import subprocess  # nosec B404 - only to raise TimeoutExpired from a fake
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -177,6 +182,153 @@ def test_mirroring_is_greyed_out_without_uxplay_and_launch_errors_are_plain(tmp_
     assert result == tools.ActionResult(False, "Could not start UxPlay.")
 
 
+def test_status_poll_cannot_discard_a_concurrent_launch(tmp_path, monkeypatch) -> None:
+    fake = Fake(tmp_path, installed={"uxplay"})
+    system = fake.system()
+    record = system.runtime_dir() / tools.MIRROR_PID_FILE
+    record.write_text("4242 1000")
+    record.chmod(0o600)
+    reading_old = threading.Event()
+    release_poll = threading.Event()
+    launch_attempted = threading.Event()
+    launch_waiting = threading.Event()
+    launched = threading.Event()
+    flock = fcntl.flock
+
+    def observed_flock(fd, operation):
+        try:
+            flock(fd, operation | fcntl.LOCK_NB)
+        except BlockingIOError:
+            launch_waiting.set()
+            launch_attempted.set()
+            flock(fd, operation)
+
+    monkeypatch.setattr(fcntl, "flock", observed_flock)
+
+    def paused_lookup(pid):
+        assert pid == 4242
+        reading_old.set()
+        assert release_poll.wait(5)
+        return None
+
+    class Launcher(FakeLauncher):
+        def launch(self):
+            launch_attempted.set()
+            launched.set()
+            fake.processes[4243] = ["uxplay"]
+            fake.starts[4243] = 2000
+            return 4243
+
+    poll_system = dataclasses.replace(system, process_argv=paused_lookup)
+    launch_system = dataclasses.replace(system, command_app=lambda argv: Launcher("new"))
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        poll = pool.submit(tools.mirroring_pid, poll_system)
+        try:
+            assert reading_old.wait(5)
+            launch = pool.submit(tools.toggle_mirroring, launch_system)
+            assert launch_attempted.wait(5)
+            assert launch_waiting.is_set() and not launched.is_set()
+        finally:
+            release_poll.set()
+        assert poll.result(timeout=5) is None
+        assert launch.result(timeout=5).ok
+    assert record.read_text() == "4243 2000"
+    assert tools.mirroring_pid(launch_system) == 4243
+
+
+def test_concurrent_toggle_waits_for_launch_record_before_stopping(tmp_path, monkeypatch):
+    fake = Fake(tmp_path, installed={"uxplay"})
+    system = fake.system()
+    launching = threading.Event()
+    release_launch = threading.Event()
+    second_attempted = threading.Event()
+    waiting = threading.Event()
+    launches = []
+    flock = fcntl.flock
+
+    def observed_flock(fd, operation):
+        try:
+            flock(fd, operation | fcntl.LOCK_NB)
+        except BlockingIOError:
+            waiting.set()
+            second_attempted.set()
+            flock(fd, operation)
+
+    monkeypatch.setattr(fcntl, "flock", observed_flock)
+
+    class Launcher(FakeLauncher):
+        def launch(self):
+            launches.append(4242 + len(launches))
+            pid = launches[-1]
+            if pid == 4242:
+                launching.set()
+                assert release_launch.wait(5)
+            else:
+                second_attempted.set()
+            fake.processes[pid] = ["uxplay"]
+            return pid
+
+    system = dataclasses.replace(system, command_app=lambda argv: Launcher("new"))
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(tools.toggle_mirroring, system)
+        try:
+            assert launching.wait(5)
+            second = pool.submit(tools.toggle_mirroring, system)
+            assert second_attempted.wait(5)
+            assert waiting.is_set() and launches == [4242]
+        finally:
+            release_launch.set()
+        assert first.result(timeout=5).ok
+        assert second.result(timeout=5).message == "Screen mirroring stopped."
+    assert fake.killed == [(4242, signal.SIGTERM)]
+    assert tools.mirroring_pid(system) is None
+
+
+def test_receiver_stays_tracked_until_sigterm_finishes(tmp_path):
+    fake = Fake(tmp_path, installed={"uxplay"})
+    system = fake.system()
+    assert tools.toggle_mirroring(system).ok
+    fake.processes[4242] = ["uxplay"]
+    launcher = next(iter(fake.commands.values()))
+    signals = []
+
+    def delayed_exit(pid, still_ours):
+        assert still_ours(pid)
+        signals.append(pid)
+
+    system = dataclasses.replace(system, terminate=delayed_exit)
+    for _click in range(2):
+        result = tools.toggle_mirroring(system)
+        assert result.ok and "stopping" in result.message
+        assert tools.mirroring_pid(system) == 4242
+    assert signals == [4242, 4242]
+    assert next(iter(fake.commands.values())) is launcher
+    fake.processes.clear()
+    assert tools.mirroring_pid(system) is None
+    assert not (fake.runtime / tools.MIRROR_PID_FILE).exists()
+
+
+@pytest.mark.parametrize("still_installed", [True, False])
+def test_replacement_keeps_stop_available_but_prevents_new_starts(tmp_path, still_installed):
+    fake = Fake(tmp_path, installed={"uxplay"}, desktop={tools.UXPLAY_DESKTOP_ID})
+    system = fake.system()
+    launcher = fake.desktop[tools.UXPLAY_DESKTOP_ID]
+    fake.starts[4242] = 1000
+    assert tools.perform(system, tools.MIRROR).ok
+    fake.processes[4242] = ["uxplay"]
+    fake.replaced = frozenset({"uxplay"})
+    if not still_installed:
+        fake.installed.clear()
+        fake.desktop.clear()
+    state = tools.snapshot(system, tools.PhotoProbe()).get(tools.MIRROR)
+    assert state.active and state.enabled and state.title == "Stop mirroring"
+    assert tools.perform(system, tools.MIRROR).ok
+    assert fake.killed == [(4242, signal.SIGTERM)]
+    assert tools.snapshot(system, tools.PhotoProbe()).get(tools.MIRROR) is None
+    assert not tools.perform(system, tools.MIRROR).ok
+    assert launcher.launches == 1
+
+
 # ---- LocalSend -------------------------------------------------------------------
 
 def test_localsend_prefers_the_flatpak_entry_then_path(tmp_path) -> None:
@@ -205,8 +357,9 @@ def test_a_plugin_replacing_localsend_hides_the_app_and_explains(tmp_path) -> No
     refused = tools.perform(system, tools.SEND)
     assert not refused.ok and "Send files" in refused.message
     assert fake.desktop[tools.LOCALSEND_DESKTOP_ID].launches == 0
-    # A client that knows what is hidden passes it and reads no manifests.
-    assert tools.perform(system, tools.SEND, hidden=frozenset()).ok
+    # Disabling the replacing plugin permits a new launch again.
+    fake.replaced = frozenset()
+    assert tools.perform(system, tools.SEND).ok
     assert fake.desktop[tools.LOCALSEND_DESKTOP_ID].launches == 1
     fake.replaced = frozenset({"uxplay"})
     assert "replaces" in tools.perform(fake.system(), tools.MIRROR).message
@@ -238,6 +391,59 @@ DEVICE = {("idevice_id", "-l"): CommandResult(0, "00008110-000A1B2C3D4E5F6G\n")}
 
 def _photos_fake(tmp_path, answers=None) -> Fake:
     return Fake(tmp_path, installed=PHOTO_TOOLS, answers={**DEVICE, **(answers or {})})
+
+
+def _mountinfo_line(path):
+    escaped = str(path).replace("\\", r"\134").replace(" ", r"\040")
+    escaped = escaped.replace("\t", r"\011").replace("\n", r"\012")
+    return f"42 22 0:80 / {escaped} rw,nosuid,nodev - fuse.ifuse ifuse rw,user_id=1000\n"
+
+
+@pytest.mark.parametrize("name", ["photos", "photos with spaces", "photos\\040\t\n"])
+def test_mount_table_handles_escaped_paths_and_exact_matches(tmp_path, name):
+    root = tmp_path / name
+    table = tmp_path / "mountinfo"
+    table.write_text("malformed\n" + _mountinfo_line(root / "nested"))
+    assert not tools.is_mounted(root, mountinfo=table)
+    table.write_text(_mountinfo_line(root))
+    assert tools.is_mounted(root, mountinfo=table)
+    # A symlink in XDG_RUNTIME_DIR's ancestors must match the canonical mount.
+    alias = tmp_path / "alias"
+    alias.symlink_to(tmp_path, target_is_directory=True)
+    assert tools.is_mounted(alias / name, mountinfo=table)
+
+
+@pytest.mark.parametrize("error", [errno.ENOTCONN, errno.EIO])
+def test_disconnected_mount_stays_visible_and_ejectable(tmp_path, monkeypatch, error):
+    fake = _photos_fake(tmp_path)
+    root = tools.photos_dir(fake.system())
+    table = tmp_path / "mountinfo"
+    table.write_text(_mountinfo_line(root))
+    system = dataclasses.replace(
+        fake.system(), is_mount=lambda path: tools.is_mounted(path, mountinfo=table),
+    )
+    original = os.lstat
+    touched = []
+
+    def disconnected(path, *args, **kwargs):
+        if os.fspath(path) == str(root):
+            touched.append(path)
+            raise OSError(error, "broken FUSE mount", str(root))
+        return original(path, *args, **kwargs)
+
+    # The filesystem cannot answer even a stat; the mount still needs eject.
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "lstat", disconnected)
+        photos, eject = tools.photos_states(tools.probe_photos(system))
+        assert photos.active and eject.enabled
+        assert tools.eject_photos(system).ok
+    assert touched == []
+    assert fake.ran[-1] == ["fusermount3", "-u", str(root)]
+
+
+def test_unreadable_mount_table_is_not_treated_as_no_mount(tmp_path):
+    with pytest.raises(OSError):
+        tools.is_mounted(tmp_path / "photos", mountinfo=tmp_path / "missing")
 
 
 def test_photos_need_ifuse_idevice_id_and_a_connected_device(tmp_path) -> None:

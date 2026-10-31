@@ -615,6 +615,8 @@ class Daemon:
         if le_connected and not self._battery_link_seen:
             # GATT notification sessions do not survive a dropped LE link.
             self.phone_battery.link_up()
+        elif self._battery_link_seen and not le_connected:
+            self.phone_battery.link_down()
         self._battery_link_seen = le_connected
         # Presence decides whether the LE battery value is shown at all.
         fields = self._phone_status()
