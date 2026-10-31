@@ -198,6 +198,8 @@ class QuickshellBridge:
         # The notice after "Reconnect", shared with Qt and GTK; it lasts
         # until a status shows the outcome. Workers run in parallel.
         self._manual_reconnect = ManualReconnect()
+        # This bridge's diagnostics children, stopped when the shell exits.
+        self.doctor = doctor_report.DoctorRunner()
         self._reconnect_lock = threading.Lock()
 
     def host_info(self) -> dict[str, str]:
@@ -398,7 +400,7 @@ class QuickshellBridge:
             restart_backend()
             return None
         if method == "doctor":
-            report = doctor_report.run_doctor()
+            report = self.doctor.run()
             return doctor_report.view(
                 doctor_report.finished_state(doctor_report.idle_state(), report)
             )
@@ -615,7 +617,7 @@ def main() -> int:
             if source is not None:
                 source.destroy()
         # A running diagnostics child would otherwise outlive the shell.
-        doctor_report.terminate_running()
+        bridge.doctor.stop()
         if activation is not None:
             activation.close()
         for match in signal_matches:

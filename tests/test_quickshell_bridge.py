@@ -1009,8 +1009,8 @@ def test_bridge_runs_diagnostics_with_the_shared_summary(monkeypatch) -> None:
     from blueferry import doctor_report
 
     monkeypatch.setattr(
-        doctor_report, "run_doctor",
-        lambda: doctor_report.DoctorReport(True, True, "WARNING: ancs"),
+        doctor_report.DoctorRunner, "run",
+        lambda _self: doctor_report.DoctorReport(True, True, "WARNING: ancs"),
     )
     reply = QuickshellBridge(SettingsClient()).dispatch("doctor", {})  # type: ignore[arg-type]
     assert reply == {
@@ -1074,7 +1074,7 @@ def test_bridge_stops_diagnostics_when_quickshell_terminates_it(monkeypatch, num
     read_end, write_end = os.pipe()
     monkeypatch.setattr(quickshell_bridge, "BackendClient", FakeClient)
     monkeypatch.setattr(quickshell_bridge, "_install_signal_receivers", lambda _bridge: [])
-    monkeypatch.setattr(doctor_report, "terminate_running", lambda: stopped.append(True))
+    monkeypatch.setattr(doctor_report.DoctorRunner, "stop", lambda _self: stopped.append(True))
     monkeypatch.setattr(GLib, "MainLoop", IteratingLoop)
     monkeypatch.setattr("sys.argv", ["blueferry-quickshell-bridge"])
     monkeypatch.setattr("sys.stdout", io.StringIO())
