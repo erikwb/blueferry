@@ -37,6 +37,8 @@ from PySide6.QtQml import QQmlComponent, QQmlEngine, qmlEngine
 from PySide6.QtQuick import QQuickWindow
 from PySide6.QtTest import QTest
 
+from blueferry import doctor_report, features_view
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -4547,13 +4549,13 @@ def test_settings_categories_switch_features_and_ask_for_a_restart(qml_engine, s
         "value": True, "running": False, "source": "environment",
         "variable": "BLUEFERRY_SHOW_NOTIFICATION_CONTENT", "restart_required": False,
     }
-    bridge.setProperty("features", {"loaded": True, "available": True, "items": {
+    bridge.setProperty("features", features_view.view({"loaded": True, "available": True, "items": {
         "mark_read_on_dismiss": {
             "value": False, "running": False, "source": "default",
             "variable": "BLUEFERRY_MARK_READ_ON_DISMISS", "restart_required": False,
         },
         "show_notification_content": pinned_item,
-    }})
+    }}))
     _open_category(qml_engine, window, "notifications")
     assert bridge.property("featureLoads") >= 1
     switch = _settings_object(window, "feature_mark_read_on_dismiss")
@@ -4569,18 +4571,18 @@ def test_settings_categories_switch_features_and_ask_for_a_restart(qml_engine, s
     notice = _settings_object(window, "restartNotice")
     assert notice.property("visible") is False
     # A switch the daemon does not report (older daemon) names the variable.
-    bridge.setProperty("features", {"loaded": True, "available": True, "items": {
+    bridge.setProperty("features", features_view.view({"loaded": True, "available": True, "items": {
         "show_notification_content": pinned_item,
-    }})
+    }}))
     QGuiApplication.processEvents()
     assert switch.property("enabled") is False
     assert "BLUEFERRY_MARK_READ_ON_DISMISS" in switch.property("subtitle")
-    bridge.setProperty("features", {"loaded": True, "available": True, "items": {
+    bridge.setProperty("features", features_view.view({"loaded": True, "available": True, "items": {
         "mark_read_on_dismiss": {
             "value": True, "running": False, "source": "settings",
             "variable": "BLUEFERRY_MARK_READ_ON_DISMISS", "restart_required": True,
         },
-    }})
+    }}))
     QGuiApplication.processEvents()
     assert notice.property("visible") is True
     _evaluate(qml_engine, "testWindow.closePhoneSettings()")
@@ -4614,8 +4616,9 @@ def test_settings_run_the_doctor_and_show_its_report_as_plain_text(qml_engine, s
     assert summary.property("visible") is False and report.property("visible") is False
     QMetaObject.invokeMethod(button, "clicked")
     assert _evaluate(qml_engine, "testBridge.calls")[-1] == {"method": "runDoctor", "args": []}
-    bridge.setProperty("doctor", {"running": False, "ran": True, "ok": True, "warnings": True,
-                                  "text": "WARNING doctor: <b>Adapter</b> CoD"})
+    bridge.setProperty("doctor", doctor_report.view({
+        "running": False, "ran": True, "ok": True, "warnings": True,
+        "text": "WARNING doctor: <b>Adapter</b> CoD"}))
     QGuiApplication.processEvents()
     assert summary.property("visible") is True
     assert "warnings" in summary.property("text")

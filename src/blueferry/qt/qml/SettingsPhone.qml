@@ -403,12 +403,11 @@ ColumnLayout {
         objectName: "doctorSummary"
         Layout.fillWidth: true
         visible: (iphonePage.bridge.doctor || ({})).ran === true
-        type: (iphonePage.bridge.doctor || ({})).ok !== true ? Kirigami.MessageType.Error
-            : (iphonePage.bridge.doctor || ({})).warnings === true
-                ? Kirigami.MessageType.Warning : Kirigami.MessageType.Positive
-        text: (iphonePage.bridge.doctor || ({})).ok !== true ? qsTr("One or more checks failed.")
-            : (iphonePage.bridge.doctor || ({})).warnings === true
-                ? qsTr("Checks completed with warnings.") : qsTr("All checks passed.")
+        // level and summary come from doctor_report.view(), shared with GTK.
+        type: (iphonePage.bridge.doctor || ({})).level === "ok" ? Kirigami.MessageType.Positive
+            : (iphonePage.bridge.doctor || ({})).level === "warning"
+                ? Kirigami.MessageType.Warning : Kirigami.MessageType.Error
+        text: (iphonePage.bridge.doctor || ({})).summary || ""
     }
     Controls.TextArea {
         objectName: "doctorReport"

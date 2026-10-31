@@ -35,7 +35,7 @@ from blueferry.conversation_state import (
     ReplyDisposition,
     fetch_conversation_snapshot,
 )
-from blueferry.doctor_report import DoctorReport, run_doctor
+from blueferry.doctor_report import DoctorReport, DoctorRunner
 from blueferry.i18n import _
 from blueferry.models import BackendStatus, CallsSnapshot
 from blueferry.notification_history import NotificationHistory
@@ -48,7 +48,7 @@ from blueferry.qt.plugin_settings import PluginSettings
 from blueferry.qt.plugin_surfaces import PluginSurfaces
 from blueferry.qt.tasks import QtTaskRunner, Task, qt_timers
 from blueferry.quirks_report import issue_report, issue_url
-from blueferry.reconnect_view import UNREACHABLE_TEXT, reconnect_view, result_text
+from blueferry.reconnect_view import ManualReconnect, reconnect_view
 from blueferry.service_manager import bluetooth_restart_command
 from blueferry.setup_client import (
     DISCOVERY_SECONDS,
@@ -155,7 +155,7 @@ class BridgeController(QObject):
         companion: CompanionTools | None = None,
         plugin_settings: PluginSettings | None = None,
         plugin_surfaces: PluginSurfaces | None = None,
-        doctor: Callable[[], DoctorReport] = run_doctor,
+        doctor: Callable[[], DoctorReport] | None = None,
     ) -> None:
         super().__init__(parent)
         self._backend = backend or BackendClient()
@@ -177,15 +177,17 @@ class BridgeController(QObject):
         # report; the doctor runs a local program on its own pool so the
         # D-Bus worker stays free.
         self._features: dict = features_view.initial()
-        self._doctor_runner = doctor
+        self._features_revision = 0
+        self._feature_saving: set[str] = set()
+        self._doctor_process = DoctorRunner()
+        self._doctor_runner = doctor or self._doctor_process.run
         self._doctor: dict = doctor_report.idle_state()
         self._local_pool = QThreadPool(self)
         self._local_pool.setMaxThreadCount(1)
         self._bluetooth_active = False
         self._busy_count = 0
         self._error_text = ""
-        self._reconnect_pending = False
-        self._reconnect_notice = ""
+        self._manual_reconnect = ManualReconnect()
         self._pairing_issue_report = ""
         self._compatibility: dict = {}
         self._configuration = ConfigurationState(False, "", "", "")
@@ -333,21 +335,16 @@ class BridgeController(QObject):
             "available": view.available,
             "offered": view.offered,
             "attention": view.attention,
-            "hint": self._reconnect_notice or view.hint,
+            "hint": self._manual_reconnect.hint(view),
         }
 
     @Slot()
     def reconnectPhone(self) -> None:
         """Skip the automatic backoff and page the iPhone once now."""
         def completed(value: object) -> None:
-            result = str(value)
-            if result == "unreachable":
-                self._reconnect_pending = False
-                self._reconnect_notice = ""
-                self._set_error(UNREACHABLE_TEXT)
-            else:
-                self._reconnect_pending = result in ("started", "profile-reset")
-                self._reconnect_notice = result_text(result)
+            error = self._manual_reconnect.answered(value)
+            if error:
+                self._set_error(error)
             self.statusChanged.emit()
             self.refresh()
 
@@ -355,15 +352,9 @@ class BridgeController(QObject):
 
     def _follow_manual_reconnect(self) -> None:
         """Turn the status outcome of a manual attempt into a clear message."""
-        if not self._reconnect_pending:
-            self._reconnect_notice = ""
-            return
-        state = self._status.get("phone_reconnect_state")
-        if state in ("connected", "unreachable", "waiting"):
-            self._reconnect_pending = False
-            self._reconnect_notice = ""
-        if state == "unreachable":
-            self._set_error(UNREACHABLE_TEXT)
+        error = self._manual_reconnect.follow(self._status)
+        if error:
+            self._set_error(error)
 
     @Property(int, notify=avatarsChanged)
     def avatarRevision(self) -> int:
@@ -1446,15 +1437,24 @@ class BridgeController(QObject):
 
     @Property("QVariantMap", notify=featuresChanged)
     def features(self):
-        return self._features
+        return features_view.view(self._features)
 
     @Slot()
     def loadFeatures(self) -> None:
+        if self._feature_saving:
+            return
+        self._features_revision += 1
+        revision = self._features_revision
+
         def done(value: object) -> None:
+            if revision != self._features_revision:
+                return
             self._features = features_view.loaded(self._features, value)
             self.featuresChanged.emit()
 
         def failed(message: str) -> None:
+            if revision != self._features_revision:
+                return
             # Older daemons have no GetFeatures; the UI falls back to hints.
             self._features = features_view.unavailable(self._features, message)
             self.featuresChanged.emit()
@@ -1463,17 +1463,38 @@ class BridgeController(QObject):
 
     @Slot(str, bool)
     def setFeature(self, name: str, enabled: bool) -> None:
+        if name in self._feature_saving:
+            return
+        self._features_revision += 1
+        self._feature_saving.add(name)
+        # Show the choice while it is saved; a failure puts the old state back.
+        previous = self._features
+        self._features = features_view.assume(previous, str(name), bool(enabled))
+        self.featuresChanged.emit()
+
         def done(value: object) -> None:
+            self._feature_saving.discard(name)
             self._features = features_view.with_notice(
                 self._features, features_view.set_notice(value))
             self.featuresChanged.emit()
             self.loadFeatures()
 
-        self._run(lambda: self._backend.set_feature(str(name), bool(enabled)), done)
+        def failed(message: str) -> None:
+            self._feature_saving.discard(name)
+            self._features = features_view.restore(self._features, previous, name)
+            self.featuresChanged.emit()
+            self._operation_failed(message)
+            self.loadFeatures()
+
+        self._run(lambda: self._backend.set_feature(str(name), bool(enabled)), done, failed)
 
     @Property("QVariantMap", notify=doctorChanged)
     def doctor(self):
-        return self._doctor
+        return doctor_report.view(self._doctor)
+
+    def stop_doctor(self) -> None:
+        """End the owned check when the application event loop has stopped."""
+        self._doctor_process.stop()
 
     @Slot()
     def runDoctor(self) -> None:
