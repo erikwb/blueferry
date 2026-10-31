@@ -1,9 +1,9 @@
 import QtQuick
 
 // Where the iPhone's media playback is heard: this computer or the iPhone.
-// An action, not a saved preference: the switch follows the route BlueZ
-// reports, and the subtitle says why it is unavailable or where the sound
-// actually plays.
+// The switch follows the route BlueZ reports; the backend remembers an
+// explicit choice for reconnects. The subtitle says why it is unavailable
+// or where the sound actually plays.
 SubtitleSwitch {
     id: phoneAudio
     objectName: "phoneAudioSwitch"

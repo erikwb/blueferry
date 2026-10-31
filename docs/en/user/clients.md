@@ -42,6 +42,7 @@ System Settings:
 | Phone | Pairing, connection health, **Run Diagnostics** (the same checks as `blueferry doctor`, shown in the window), contact sync, contact photos |
 | Notifications | Which events create popups, contacts only, click rules, notification content, action buttons, sync notifications with iPhone, mark read on dismiss |
 | Calls & Audio | Phone calls, call history, battery warning, [iPhone sound on this computer](phone-audio.md), media control |
+| Network | [Bluetooth tethering](bluetooth-tethering.md), share iPhone Internet, automatic hotspot connection |
 | Security | One-time codes, away lock, local storage and its encryption, Clear History |
 | About | Version, the background service, keyboard shortcuts, Quit |
 
@@ -69,6 +70,8 @@ blueferry features off mark_read_on_dismiss        # applies after a restart
 tray (a StatusNotifierItem on KDE Plasma). The icon shows the number of
 unread messages; the tooltip shows the connection, battery, signal, and
 network. Click it to open BlueFerry, or to bring an open window to the front.
+It opens the client you use: a running BlueFerry window first, otherwise the
+client you used last, otherwise the one that suits your desktop.
 
 Start it from the application menu as **BlueFerry Tray**. It does not start
 at login unless you ask for that: check **Start at login** in its menu, or
@@ -84,7 +87,8 @@ same file the desktop's own autostart settings show.
 The tray only follows a running background service; it never starts it.
 Without a BlueFerry setup the icon stays hidden. While the tray runs,
 `blueferry-qt` leaves out its own tray icon and quits when you close its
-window; the tray opens it again.
+window; the tray opens it again. **Quit Tray Icon** in its menu only removes
+the tray icon; BlueFerry and its open windows keep running.
 
 ## Quickshell
 

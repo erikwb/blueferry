@@ -8,12 +8,13 @@ import pytest
 
 pytest.importorskip("PySide6")
 
-from blueferry.client import BackendError
+from blueferry.client import BackendError, TetherUnsupportedError
 from blueferry.conversation_state import ConversationSnapshot
 from blueferry.models import BackendStatus, Thread
 from blueferry.qt import phone_link
 from blueferry.qt.controller import BridgeController
 from blueferry.setup_client import ConfigurationState
+from blueferry.tether_status import TetherStatus
 
 
 def _apply_threads(controller, threads):
@@ -1591,6 +1592,148 @@ def test_mpris_setting_is_forwarded_and_merged_into_status(monkeypatch):
     controller.setMprisPlayer(True)
     assert controller.status["media_mpris_enabled"] is True
 
+class _TetherBackend(_Backend):
+    def __init__(self, *, fail: str | None = None, unsupported: bool = False):
+        super().__init__()
+        self.fail = fail
+        self.unsupported = unsupported
+        self.tether_calls: list[str] = []
+        self.enabled = True
+        self.autoconnect = False
+
+    def _tether(self, name, state):
+        self.tether_calls.append(name)
+        if self.unsupported:
+            raise TetherUnsupportedError("the running backend does not support tethering")
+        if self.fail:
+            raise BackendError(self.fail)
+        return TetherStatus.from_dict(
+            {"enabled": self.enabled, "autoconnect": self.autoconnect, **state}
+        )
+
+    def tether_state(self):
+        return self._tether("state", {"state": "off"})
+
+    def tether_configure(self, enabled, autoconnect):
+        self.enabled, self.autoconnect = enabled, autoconnect
+        return self._tether(f"configure:{enabled}:{autoconnect}", {"state": "off"})
+
+    def tether_connect(self):
+        return self._tether("connect", {"state": "connecting", "backend": "networkmanager"})
+
+    def tether_disconnect(self):
+        return self._tether("disconnect", {"state": "disconnecting"})
+
+
+def _tether_controller(backend):
+    return BridgeController(backend=backend, setup=object(), subscribe=False, autostart=False)
+
+
+def _settle(controller) -> None:
+    """Finish worker tasks and deliver their queued results to the controller."""
+    from PySide6.QtCore import QCoreApplication
+    from PySide6.QtGui import QGuiApplication
+
+    # A GUI application: later QML tests in the same process need one, and
+    # Qt cannot replace a plain QCoreApplication once it exists.
+    application = QCoreApplication.instance() or QGuiApplication([])
+    controller._pool.waitForDone(1000)
+    for _ in range(5):
+        application.processEvents()
+
+
+def test_tether_state_is_exposed_with_shared_guidance():
+    backend = _TetherBackend()
+    controller = _tether_controller(backend)
+    assert controller.tether == {"available": False}
+
+    controller.refreshTether()
+    _settle(controller)
+
+    assert controller.tether["available"] is True
+    assert controller.tether["state"] == "off"
+    assert "Not sharing" in controller.tether["summary"]
+    assert backend.tether_calls == ["state"]
+    assert controller.busy is False
+
+
+def test_tether_toggle_sends_exactly_one_explicit_request():
+    backend = _TetherBackend()
+    controller = _tether_controller(backend)
+
+    controller.setTetherConnected(True)
+    controller.setTetherConnected(True)  # ignored while the first is pending
+    _settle(controller)
+
+    assert backend.tether_calls == ["connect"]
+    assert controller.tether["state"] == "connecting"
+    assert controller.tether["pending"] is False
+
+    controller.setTetherConnected(False)
+    _settle(controller)
+    assert backend.tether_calls == ["connect", "disconnect"]
+
+
+def test_backend_without_tether1_hides_the_control():
+    controller = _tether_controller(_TetherBackend(unsupported=True))
+    controller._tether = {"available": True, "state": "off"}
+    controller.refreshTether()
+    _settle(controller)
+    assert controller.tether == {"available": False}
+    assert controller.errorText == ""
+
+
+def test_transient_tether_read_failure_keeps_the_last_state():
+    backend = _TetherBackend()
+    controller = _tether_controller(backend)
+    controller.refreshTether()
+    _settle(controller)
+    before = dict(controller.tether)
+
+    backend.fail = "status timed out"
+    controller.refreshTether()
+    _settle(controller)
+
+    assert controller.tether == before
+    assert controller.tether["available"] is True
+    assert "status timed out" in controller.errorText
+
+
+def test_failed_tether_request_reports_and_clears_pending():
+    backend = _TetherBackend(fail="the iPhone is not connected over Bluetooth yet")
+    controller = _tether_controller(backend)
+    controller._tether = {"available": True, "state": "off"}
+
+    controller.setTetherConnected(True)
+    _settle(controller)
+
+    assert controller.tether["pending"] is False
+    assert "not connected over Bluetooth" in controller.errorText
+
+
+def test_tethering_opt_in_is_saved_and_reflected():
+    backend = _TetherBackend()
+    backend.enabled = False
+    controller = _tether_controller(backend)
+    controller.refreshTether()
+    _settle(controller)
+    assert controller.tether["enabled"] is False
+    assert "turned off" in controller.tether["summary"]
+
+    controller.setTethering(True, False)
+    controller.setTethering(False, False)  # ignored while the first is pending
+    _settle(controller)
+
+    assert backend.tether_calls == ["state", "configure:True:False"]
+    assert controller.tether["enabled"] is True
+    assert controller.tether["autoconnect"] is False
+    assert controller.tether["pending"] is False
+
+    controller.setTethering(True, True)
+    _settle(controller)
+    assert controller.tether["autoconnect"] is True
+
+
 
 class _AudioBackend(_Backend):
     def __init__(self):
@@ -1837,3 +1980,64 @@ def test_phone_links_only_ask_for_confirmation():
     assert backend.dialed == []
     assert controller.contactNameForNumber("+15550100000") == "Test Contact"
     assert controller.contactNameForNumber("+15550100009") == ""
+
+
+@pytest.mark.parametrize("read_outcome", ["success", "error", "unsupported"])
+def test_tether_read_completion_cannot_release_pending_command(read_outcome):
+    import threading
+    import time
+
+    from PySide6.QtGui import QGuiApplication
+
+    read_started, release_read = threading.Event(), threading.Event()
+    command_started, release_command = threading.Event(), threading.Event()
+    delivered = threading.Event()
+    commands = []
+
+    class Backend:
+        def tether_state(self):
+            read_started.set()
+            assert release_read.wait(5)
+            if read_outcome == "error":
+                raise BackendError("status timed out")
+            if read_outcome == "unsupported":
+                raise TetherUnsupportedError("older daemon")
+            return TetherStatus(enabled=True)
+
+        def tether_configure(self, enabled, automatic):
+            commands.append((enabled, automatic))
+            command_started.set()
+            assert release_command.wait(5)
+            return TetherStatus(enabled=enabled, autoconnect=automatic)
+
+    application = QGuiApplication.instance() or QGuiApplication([])
+    controller = _tether_controller(Backend())
+    controller._apply_tether(TetherStatus(enabled=False))
+    try:
+        controller.refreshTether()
+        assert read_started.wait(2)
+        controller.setTethering(True, True)
+        assert controller.tether["pending"] is True
+        controller.tetherChanged.connect(delivered.set)
+        controller.errorTextChanged.connect(delivered.set)
+        release_read.set()
+        assert command_started.wait(2)
+        deadline = time.monotonic() + 2
+        while not delivered.is_set() and time.monotonic() < deadline:
+            application.processEvents()
+        assert delivered.is_set()
+        if read_outcome == "unsupported":
+            assert controller.tether["available"] is False
+        else:
+            assert controller.tether["pending"] is True
+        # Even an unsupported read must not release the outstanding command.
+        controller.setTethering(False, False)
+    finally:
+        release_read.set()
+        release_command.set()
+        controller._pool.waitForDone(5000)
+        application.processEvents()
+    assert commands == [(True, True)]
+    assert controller.tether["enabled"] is True
+    assert controller.tether["autoconnect"] is True
+    assert controller.tether["pending"] is False
