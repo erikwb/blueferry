@@ -138,7 +138,7 @@ Controls.ScrollView {
             id: audioSwitch
             objectName: "phoneCardAudioSwitch"
             Layout.fillWidth: true
-            text: qsTr("Sound on this computer")
+            text: qsTr("Media sound on this computer")
             subtitle: [card.audio.hint || "", card.audio.sync || ""]
                 .filter(function(line) { return line !== "" }).join("\n")
             checked: card.audio.onPc === true
