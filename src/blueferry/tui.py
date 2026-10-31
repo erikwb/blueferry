@@ -19,26 +19,28 @@ from textual.message import Message
 from textual.screen import ModalScreen, Screen
 from textual.widgets import (
     Button,
+    Checkbox,
     Footer,
     Input,
     ListItem,
     ListView,
     Static,
+    Switch,
     TabbedContent,
     TextArea,
 )
 
-from blueferry import config, doctor_report, phone_link_view, phone_overview
+from blueferry import config, phone_link_view, phone_overview
 from blueferry.backend_lifecycle import BackendLifecycleError, ensure_backend_current
 from blueferry.bus import get_session_bus
-from blueferry.client import BackendClient, BackendError
+from blueferry.client import BackendClient, BackendError, TetherUnsupportedError
 from blueferry.conversation_state import (
     ConversationSnapshot,
     ConversationState,
     ReplyDisposition,
     fetch_conversation_snapshot,
 )
-from blueferry.doctor_report import DoctorReport, run_doctor
+from blueferry.doctor_report import DoctorReport
 from blueferry.i18n import _
 from blueferry.models import (
     BackendStatus,
@@ -50,7 +52,7 @@ from blueferry.models import (
 )
 from blueferry.onboarding import ancs_unavailable_detail
 from blueferry.phone_audio_view import phone_audio
-from blueferry.protocol import BUS_NAME, EVENTS_IFACE, OBJECT_PATH
+from blueferry.protocol import BUS_NAME, EVENTS_IFACE, OBJECT_PATH, TETHER_IFACE
 from blueferry.recipients import participant_lines
 from blueferry.reconnect_view import (
     UNSUPPORTED_AUTO_RESET_TEXT,
@@ -58,6 +60,7 @@ from blueferry.reconnect_view import (
     reconnect_view,
     result_text,
 )
+from blueferry.tether_status import TetherStatus
 from blueferry.text_safety import terminal_text
 from blueferry.time_display import format_message_timestamp
 from blueferry.tui_calls import CallsScreen
@@ -79,7 +82,17 @@ _NARROW_WIDTH = 82
 _MAX_INPUT = 4096
 
 
-class _Client(Protocol):
+class _TetherClient(Protocol):
+    def tether_state(self) -> TetherStatus: ...
+
+    def tether_connect(self) -> TetherStatus: ...
+
+    def tether_disconnect(self) -> TetherStatus: ...
+
+    def tether_configure(self, enabled: bool, autoconnect: bool) -> TetherStatus: ...
+
+
+class _Client(_TetherClient, Protocol):
     def status(self) -> BackendStatus: ...
 
     def threads(self, limit: int = 1000) -> list[Thread]: ...
@@ -157,6 +170,8 @@ class _Client(Protocol):
 
 class _Monitor(Protocol):
     def pump(self) -> tuple[bool, str | None]: ...
+
+    def take_tether_changed(self) -> bool: ...
 
     def close(self) -> None: ...
 
@@ -279,6 +294,7 @@ class _EventMonitor:
         self.handles: deque[str] = deque()
         self.invalidated = False
         self.calls_changed = False
+        self.tether_changed = False
         self.now_playing_changed = False
         self.call_history_changed = False
         self.notifications_changed = False
@@ -310,6 +326,14 @@ class _EventMonitor:
                 self._calls_changed,
                 signal_name="CallsChanged",
                 **common,
+            ),
+            # Content-free; the tethering dialog refetches Tether1.GetState.
+            bus.add_signal_receiver(
+                lambda: setattr(self, "tether_changed", True),
+                signal_name="TetherChanged",
+                dbus_interface=TETHER_IFACE,
+                bus_name=BUS_NAME,
+                path=OBJECT_PATH,
             ),
             # Content-free; details come from GetNowPlaying / ListCallHistory.
             bus.add_signal_receiver(
@@ -357,6 +381,10 @@ class _EventMonitor:
             self._context.iteration(False)
         invalidated, self.invalidated = self.invalidated, False
         return invalidated, (self.handles.pop() if self.handles else None)
+
+    def take_tether_changed(self) -> bool:
+        changed, self.tether_changed = self.tether_changed, False
+        return changed
 
     def close(self) -> None:
         for match in self._matches:
@@ -675,6 +703,7 @@ class HelpScreen(ModalScreen[None]):
             "[bold #7dd3fc]Star conversation[/]  s\n"
             "[bold #7dd3fc]Delete conversation[/]  Delete\n"
             f"{calls_line}"
+            "[bold #7dd3fc]Internet sharing[/]  t\n"
             "[bold #7dd3fc]Settings · diagnostics · restart service[/]  o\n"
             "[bold #7dd3fc]Notification click rules[/]  l\n"
             "[bold #7dd3fc]iPhone overview · iPhone notifications[/]  Ctrl+P\n"
@@ -699,6 +728,159 @@ class HelpScreen(ModalScreen[None]):
         self.dismiss(None)
 
 
+class TetherScreen(ModalScreen[None]):
+    """Opt-in Bluetooth tethering, matching the Qt Internet Sharing section.
+
+    Only the "Enable Bluetooth tethering" checkbox is shown until the user
+    enables the feature; the connect switch and automatic tethering appear
+    afterwards. Every backend call runs in a worker thread.
+    """
+
+    BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("escape,t", "close", "Close", show=False),
+    ]
+
+    def __init__(self, client: _TetherClient) -> None:
+        super().__init__()
+        self.client = client
+        self.status: TetherStatus | None = None
+        self.unsupported = False
+        self.pending = False
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="tether-dialog", classes="dialog"):
+            yield Static("Internet sharing", classes="dialog-title")
+            yield Static("Loading…", id="tether-unsupported", classes="dialog-copy")
+            yield Checkbox("Enable Bluetooth tethering", id="tether-enable")
+            yield Static(
+                "While this is off, BlueFerry leaves Bluetooth network "
+                "connections alone, including ones started elsewhere.",
+                id="tether-explain",
+            )
+            with Horizontal(id="tether-connect-row"):
+                yield Switch(id="tether-connect")
+                yield Static("Share iPhone Internet", id="tether-connect-label")
+            yield Checkbox(
+                "Connect automatically when the iPhone is connected",
+                id="tether-autoconnect",
+            )
+            yield Static("", id="tether-summary")
+            yield Button("Close", id="tether-close")
+
+    def on_mount(self) -> None:
+        self._render_state()
+        self.refresh_state()
+
+    def refresh_state(self) -> None:
+        self._request(lambda: self.client.tether_state(), command=False)
+
+    def _request(self, call: Callable[[], TetherStatus], *, command: bool = True) -> None:
+        if command:
+            if self.pending:
+                return
+            self.pending = True
+            self._render_state()
+        self.run_worker(
+            lambda: self._call(call, command),
+            thread=True,
+            group="tether",
+            exit_on_error=False,
+        )
+
+    def _call(self, call: Callable[[], TetherStatus], command: bool) -> None:
+        status: TetherStatus | None = None
+        error = ""
+        unsupported = False
+        try:
+            status = call()
+        except TetherUnsupportedError:
+            unsupported = True
+        except BackendError as failure:
+            error = _one_line(failure)
+        self.app.call_from_thread(self._finished, status, error, unsupported, command)
+
+    def _finished(
+        self, status: TetherStatus | None, error: str, unsupported: bool, command: bool,
+    ) -> None:
+        if command:
+            # A read (e.g. after TetherChanged) must not release the guard of
+            # a command that is still in flight.
+            self.pending = False
+        self.unsupported = unsupported
+        if status is not None:
+            self.status = status
+        self._render_state(error)
+
+    def _render_state(self, error: str = "") -> None:
+        status = self.status
+        loaded = status is not None and not self.unsupported
+        enabled = bool(status and status.enabled)
+        busy = self.pending or bool(
+            status and status.state in {"connecting", "disconnecting"}
+        )
+        note = self.query_one("#tether-unsupported", Static)
+        note.update(
+            "Bluetooth tethering is not offered by this backend."
+            if self.unsupported else "Loading…"
+        )
+        note.display = not loaded
+        checkbox = self.query_one("#tether-enable", Checkbox)
+        checkbox.display = loaded
+        checkbox.disabled = self.pending
+        self.query_one("#tether-explain").display = loaded and not enabled
+        row = self.query_one("#tether-connect-row")
+        row.display = loaded and enabled
+        switch = self.query_one("#tether-connect", Switch)
+        switch.disabled = busy
+        automatic = self.query_one("#tether-autoconnect", Checkbox)
+        automatic.display = loaded and enabled
+        automatic.disabled = self.pending
+        summary = self.query_one("#tether-summary", Static)
+        summary.display = loaded and (enabled or bool(error))
+        text = status.summary() if status is not None and enabled else ""
+        summary.update(Text(_one_line(error or text)))
+        # Reflect the daemon's state, not the click. Programmatic updates must
+        # not post Changed messages: one handled after a newer state arrived
+        # would look like a user toggle.
+        with self.prevent(Checkbox.Changed, Switch.Changed):
+            checkbox.value = enabled
+            switch.value = self._wants_connection()
+            automatic.value = bool(status and status.autoconnect)
+
+    def _wants_connection(self) -> bool:
+        return bool(self.status and self.status.state in {"connecting", "connected"})
+
+    @on(Checkbox.Changed, "#tether-enable")
+    def enable_changed(self, event: Checkbox.Changed) -> None:
+        if self.status is None or event.value == self.status.enabled:
+            return
+        enabled, autoconnect = event.value, self.status.autoconnect
+        self._request(lambda: self.client.tether_configure(enabled, autoconnect))
+
+    @on(Checkbox.Changed, "#tether-autoconnect")
+    def autoconnect_changed(self, event: Checkbox.Changed) -> None:
+        if self.status is None or event.value == self.status.autoconnect:
+            return
+        value = event.value
+        self._request(lambda: self.client.tether_configure(True, value))
+
+    @on(Switch.Changed, "#tether-connect")
+    def connect_changed(self, event: Switch.Changed) -> None:
+        if self.status is None or event.value == self._wants_connection():
+            return
+        if event.value:
+            self._request(lambda: self.client.tether_connect())
+        else:
+            self._request(lambda: self.client.tether_disconnect())
+
+    @on(Button.Pressed, "#tether-close")
+    def close_button(self) -> None:
+        self.dismiss(None)
+
+    def action_close(self) -> None:
+        self.dismiss(None)
+
+
 class BlueFerryApp(App[None]):
     TITLE = "BlueFerry"
     SUB_TITLE = "Messages over Bluetooth"
@@ -715,6 +897,7 @@ class BlueFerryApp(App[None]):
         Binding("s", "toggle_star", "Star"),
         Binding("delete", "delete_thread", "Delete"),
         Binding("c", "calls", "Calls", show=False),
+        Binding("t", "tethering", "Tethering"),
         Binding("o", "options", "Settings"),
         Binding("l", "click_rules", "Click rules", show=False),
         Binding("a", "phone_audio", "Sound", show=False),
@@ -733,7 +916,7 @@ class BlueFerryApp(App[None]):
         *,
         monitor_factory: Callable[[], _Monitor | None] = _EventMonitor,
         restart: Callable[[], None] | None = None,
-        doctor: Callable[[], DoctorReport] = run_doctor,
+        doctor: Callable[[], DoctorReport] | None = None,
         phone_name: Callable[[], str] = load_phone_name,
     ) -> None:
         super().__init__()
@@ -827,7 +1010,9 @@ class BlueFerryApp(App[None]):
             self._monitor.close()
         # A diagnostics run still going would hold up interpreter exit
         # until its timeout.
-        doctor_report.terminate_running()
+        for screen in self.screen_stack:
+            if isinstance(screen, DoctorScreen):
+                screen.cancel()
 
     def on_resize(self, event: events.Resize) -> None:
         self._update_responsive(event.size.width)
@@ -845,6 +1030,8 @@ class BlueFerryApp(App[None]):
         take_calls = getattr(self._monitor, "take_calls_changed", None)
         if take_calls is not None and take_calls():
             self._calls_changed()
+        if self._monitor.take_tether_changed() and isinstance(self.screen, TetherScreen):
+            self.screen.refresh_state()
         take_media = getattr(self._monitor, "take_now_playing_changed", None)
         if take_media is not None and take_media():
             self._load_now_playing()
@@ -1331,6 +1518,12 @@ class BlueFerryApp(App[None]):
             self.screen.query_one("#options-tabs", TabbedContent).active = f"options-{category}"
             return
         self._push_options(category)
+
+    def action_tethering(self) -> None:
+        focused = self.focused
+        if isinstance(focused, Input | TextArea) or isinstance(self.screen, ModalScreen):
+            return
+        self.push_screen(TetherScreen(self.state.client))
 
     def action_new_message(self) -> None:
         self.push_screen(NewMessageScreen(), self._new_message_ready)

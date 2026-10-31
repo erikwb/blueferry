@@ -685,7 +685,10 @@ def _exercise_recent_calls():
     window.destroy()
 
 
-NOTIFICATIONS_ON = {"daemon": True, "map": True, "notification_history_enabled": True}
+NOTIFICATIONS_ON = {
+    "daemon": True, "map": True, "notification_history_enabled": True,
+    "storage_state": "ready",
+}
 
 
 def _exercise_notifications():
@@ -698,9 +701,8 @@ def _exercise_notifications():
     assert "notifications" not in client.names(), "hidden tab: nothing is read"
     window.show_tab("notifications")
     _settle()
-    _call, done, _failed = client.take("notifications")
-    done({"enabled": False, "notifications": []})
-    # Off: why, and the way to the setting.
+    # Off: nothing is read; why, and the way to the setting.
+    assert "notifications" not in client.names()
     assert page.stack.get_visible_child_name() == "placeholder"
     assert page.placeholder.get_title() == "Notification List Is Off"
     assert "Keep recent iPhone notifications" in page.placeholder.get_description()
@@ -715,13 +717,16 @@ def _exercise_notifications():
     ]})
     assert page.stack.get_visible_child_name() == "list"
     [row] = _rows(page.list)
-    assert (row.get_title(), row.get_subtitle()) == ("<b>Chat</b>", "Kim · Group")
+    # Content off: app name and time only, even if a reply carried text.
+    assert (row.get_title(), row.get_subtitle()) == ("<b>Chat</b>", "")
     assert page.content_banner.get_revealed()
     assert "Show message content in popups" in page.content_banner.get_title()
     # NotificationsChanged reloads once, after a short delay.
+    starts = timer.starts
     client.emit("notifications-changed")
     client.emit("notifications-changed")
-    assert timer.active and timer.starts == 2 and "notifications" not in client.names()
+    assert timer.active and timer.starts == starts + 2
+    assert "notifications" not in client.names()
     timer.fire()
     client.take("notifications")[2]("Access denied")
     assert page.placeholder.get_title() == "Notifications Are Unavailable"
