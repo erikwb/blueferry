@@ -4,6 +4,18 @@
 
 ### Added
 
+- Terminal client plugins: the iPhone overview shows **From Plugins** (card
+  items with their buttons; `CardChanged` heard only from enabled card
+  plugins while it is open) and **Send to…** with a path field that
+  completes paths; card buttons with `sendTo` ask only for paths. Settings ›
+  Plugins installs, updates, removes and switches plugins (every install
+  shows what it runs first), manages the plugin lists, opens the guided
+  settings form (sections, ShowIf, Test Connection, browser sign-in, the
+  plugin's own buttons; stored secrets never shown) and shows a plugin's log
+  in the terminal (`g`). **Photos** in the command palette lists a photo
+  plugin's newest items and opens one in the image viewer. The GTK plugin
+  settings presenter moved to `blueferry.plugin_settings_presenter` so the
+  terminal client shares it without loading GTK.
 - `blueferry media volume up|down` sends one iPhone volume step and confirms
   it with the last reported level; `blueferry media volume` prints the level.
   A shared presenter (`media_volume_view`) prepares the volume buttons for the

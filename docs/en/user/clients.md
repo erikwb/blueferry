@@ -182,6 +182,7 @@ tabs. A setting appears only when the running background service offers it.
 | Notifications | Which events create popups, contacts only, **Click Rules** (also `l`), [muted apps](notification-mute.md), notification content, action buttons, sync notifications with iPhone, mark read on dismiss, keeping recent iPhone notifications |
 | Calls & Audio | Phone calls, call history and missed-call popups, battery warning, iPhone sound on this computer (also `a`), media control and MPRIS |
 | Security | One-time codes, away lock, the local storage setting (shown; change it with `blueferry storage-policy-set`) |
+| Plugins | Installed [plugins](plugins.md) (Space on/off, Enter **Settings**, `u` update, Delete remove, `g` the log in the terminal), the plugin lists with install and update, your own Git URL and the lists themselves. Every install asks first. A plugin's **Settings** open as a form of their own |
 | About | Version, the background service with **Restart Service**, the keyboard map |
 
 The switches that need a restart (see above) show the restart notice at the
@@ -192,9 +193,16 @@ each switch greyed out with the `local.env` variable to set instead.
 Report** puts it on the clipboard through the terminal (OSC 52); where the
 terminal does not pass that on, select the text with the mouse instead.
 
+A plugin's settings form follows what the plugin asks for, like the Qt and
+GTK forms: sections (folded ones open with **Show**), fields that appear only
+for some choices, examples and help links, **Test Connection**, a browser
+sign-in and the plugin's own buttons. **Save** (or `Ctrl+S`) becomes
+available once the required fields are valid. A stored password or key is
+never shown: its field stays empty and masked, and leaving it empty keeps it.
+
 The command palette (`Ctrl+P`) also has **Settings: Phone** … **Settings:
 About** and **Run Diagnostics**. Pairing stays with `blueferry pair-setup`
-or a graphical client; the terminal client has no plugin settings yet.
+or a graphical client.
 
 ### iPhone, calls and notifications
 
@@ -208,6 +216,22 @@ without Shift) step the volume too.
 The volume moves one iPhone step at a time, and the level the iPhone last
 reported is shown next to the title. Its other buttons open the
 notification list, the recent calls, the calls panel and Settings.
+
+Below, **From Plugins** lists what your [plugins](plugins.md) offer, for
+example a calendar entry, AirPods or a LocalSend device, with their buttons;
+Enter runs the highlighted one. **Send to…** asks for a target and the
+paths of the files to send (→ completes a path). It is read only while the
+overview is open. **Photos** in the palette lists the newest items of a
+photo plugin; Enter opens one in your image viewer, `c` copies its path.
+
+| | Qt | GTK | TUI | Quickshell | CLI |
+|---|---|---|---|---|---|
+| Plugin cards with their buttons | ✓ | ✓ | ✓ iPhone overview | see the Quickshell section | ✓ `blueferry cards` |
+| Plugin management and settings | ✓ | ✓ | ✓ Settings › Plugins | — | ✓ `blueferry plugins` |
+| Send to… | ✓ | ✓ | ✓ file paths | — | ✓ `blueferry send` |
+| Dropping files on the window or a card item | ✓ | ✓ | — a terminal gets no file drops | — | — |
+| Photos | ✓ thumbnails | ✓ thumbnails | ✓ list without thumbnails | — | ✓ `blueferry photos` |
+| Companion tools | ✓ | ✓ | — | — | ✓ `blueferry tools` |
 
 **iPhone Notifications** (in the palette and the overview) lists the recent
 iPhone app notifications that **Keep recent iPhone notifications** keeps:

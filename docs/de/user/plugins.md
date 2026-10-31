@@ -28,7 +28,7 @@ blueferry tools eject
 
 ## Ein Plugin installieren
 
-Im GTK- oder KDE-Client **Settings › Plugins** öffnen. Der Store listet ausgewählte
+Im GTK-, KDE- oder Terminal-Client **Settings › Plugins** öffnen. Der Store listet ausgewählte
 Plugins; **Install** zeigt Quelle, Version, welche Funktionen das
 Plugin anbietet (seine Fähigkeiten) und den Befehl, den es ausführt (`Exec` aus seinem Manifest),
 und fragt vorher nach. Man kann auch jede https-Git-URL einfügen. Im
@@ -51,6 +51,13 @@ Schalter neben einem Plugin (oder `blueferry plugins update`, `remove`,
 `disable`) beenden einen laufenden Plugin-Prozess, den BlueFerry
 installiert hat. Deaktivieren sorgt außerdem dafür, dass BlueFerry das
 Plugin sofort nicht mehr aufruft.
+
+Im Terminal-Client (`o`, Reiter **Plugins**) wirken die Tasten auf das
+markierte installierte Plugin: Leertaste schaltet es ein oder aus, Enter
+öffnet seine Einstellungen, `u` sucht ein Update, Entf entfernt es nach
+einer Rückfrage und `g` zeigt sein Protokoll direkt im Terminal. Enter auf
+einem Plugin der Liste installiert oder aktualisiert es; die Rückfrage
+zeigt dieselben Angaben wie in den grafischen Clients.
 
 ## Ein Plugin einrichten
 
@@ -79,6 +86,12 @@ blueferry plugins config ID --action ACTION  # einen davon drücken
 - **Send to…** am Ende dieses Abschnitts: gibt Dateien an ein Plugin-Ziel
   wie „iPhone (LocalSend)“; manche Einträge der Karte nehmen Dateien direkt
   an (darauf ziehen).
+- **Im Terminal-Client** hat die iPhone-Übersicht (Befehlspalette:
+  **iPhone Overview**) denselben Abschnitt **From Plugins**: Enter führt den
+  markierten Knopf aus. **Send to…** fragt nach einem Ziel und den
+  Dateipfaden (→ ergänzt einen Pfad); ein Kartenknopf, der Dateien annimmt,
+  fragt nur nach den Pfaden. Auf ein Terminal lassen sich keine Dateien
+  ziehen.
 - **Karteneinträge und Send to** auf der Kommandozeile: `blueferry cards`
   und `blueferry send`.
 - **Popups**, die deinen Mitteilungseinstellungen folgen.
@@ -99,6 +112,11 @@ blueferry plugins config ID --action ACTION  # einen davon drücken
 
   Nach der Installation den Client neu starten.
 
+  Der Terminal-Client zeigt keine Vorschaubilder: **Photos** in seiner
+  Befehlspalette listet die neuesten Einträge nach Datum und Art; Enter
+  lädt das Original und öffnet es im Bildbetrachter, `c` kopiert seinen
+  Pfad.
+
 ```bash
 blueferry cards
 blueferry send photo.jpg --to localsend
@@ -108,7 +126,8 @@ blueferry photos recent
 ## Protokolle und Datenschutz
 
 Plugins schreiben `~/.local/state/blueferry/plugins/<id>.log` (nur für dich
-lesbar, Geheimnisse maskiert); **Show Log** oder `blueferry plugins log ID` öffnet es.
+lesbar, Geheimnisse maskiert); **Show Log** (`g` im Terminal-Client) oder
+`blueferry plugins log ID` öffnet es.
 BlueFerry zeigt Plugin-Text als reinen Text und lässt ein Plugin nur
 Weblinks oder Dateien aus seinem eigenen Cache öffnen. Popups eines Plugins
 folgen deinen Mitteilungseinstellungen: keine bei **None**, nur der Name

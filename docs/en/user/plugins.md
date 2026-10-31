@@ -27,7 +27,7 @@ blueferry tools eject
 
 ## Installing a plugin
 
-Open **Settings › Plugins** in the GTK or KDE client. The store lists curated
+Open **Settings › Plugins** in the GTK, KDE or terminal client. The store lists curated
 plugins; **Install** shows the source, the version, the features it
 provides (its capabilities) and the command it runs (the manifest's `Exec`), and
 asks first. You can also paste any https Git URL. From a terminal:
@@ -47,6 +47,13 @@ plugins and updates from sources you trust. Nothing asks for root. **Update**, *
 switch next to a plugin (or `blueferry plugins update`, `remove`,
 `disable`) stop a running plugin process BlueFerry installed.
 Disabling also stops BlueFerry from calling the plugin at once.
+
+In the terminal client (`o`, tab **Plugins**) the keys act on the
+highlighted installed plugin: Space turns it on or off, Enter opens its
+settings, `u` checks for an update, Delete removes it after a question and
+`g` shows its log right in the terminal. Enter on a plugin of the list
+installs or updates it; the install question shows the same details as the
+graphical clients.
 
 ## Setting a plugin up
 
@@ -74,6 +81,11 @@ blueferry plugins config ID --action ACTION  # press one of them
 - **Send to…** at the end of that section: hands files to a plugin target
   such as "iPhone (LocalSend)"; some card items take files directly (drop
   them on the item).
+- **In the terminal client** the iPhone overview (command palette: **iPhone
+  Overview**) has the same **From Plugins** section: Enter runs the
+  highlighted button. **Send to…** asks for a target and file paths
+  (→ completes a path); a card button that takes files asks only for the
+  paths. Files cannot be dropped on a terminal.
 - **Card items and Send to** on the command line: `blueferry cards` and
   `blueferry send`.
 - **Popups** that follow your notification settings.
@@ -93,6 +105,10 @@ blueferry plugins config ID --action ACTION  # press one of them
 
   Restart the client after installing the loader.
 
+  The terminal client shows no thumbnails: **Photos** in its command
+  palette lists the newest items by date and type; Enter downloads the
+  original and opens it in your image viewer, `c` copies its path.
+
 ```bash
 blueferry cards
 blueferry send photo.jpg --to localsend
@@ -102,7 +118,8 @@ blueferry photos recent
 ## Logs and privacy
 
 Plugins write `~/.local/state/blueferry/plugins/<id>.log` (only you can read
-it, secrets masked); **Show Log** or `blueferry plugins log ID` opens it.
+it, secrets masked); **Show Log** (`g` in the terminal client) or
+`blueferry plugins log ID` opens it.
 BlueFerry shows plugin text as plain text and only lets a plugin open web
 links or files in its own cache. A plugin's popups follow your notification
 settings: none with **None**, only the plugin's name while notification
