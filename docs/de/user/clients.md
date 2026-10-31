@@ -13,6 +13,25 @@ Desktops.
 
 ![GTK-Client](../../images/gtk.png)
 
+**Settings** (Hauptmenü, `Strg+,`) hat dieselben Kategorien wie der
+KDE-Client, je eine Seite; die Umschaltleiste sitzt in der Kopfzeile, in
+einem schmalen Fenster unten, und der Suchknopf findet jede Einstellung:
+
+| Kategorie | Inhalt |
+| --- | --- |
+| Phone | Kopplung, Verbindungszustand mit **Reconnect**, **Run Diagnostics** (dieselben Prüfungen wie `blueferry doctor`; der Bericht öffnet sich in einem eigenen Dialog mit Kopierknopf), Kopplungsbericht, Kontaktabgleich, Kontaktfotos |
+| Notifications | Welche Ereignisse Popups erzeugen, nur Kontakte, Klickregeln, Mitteilungsinhalt, Aktionsknöpfe, Mitteilungen mit dem iPhone abgleichen, beim Wegklicken als gelesen markieren, letzte Mitteilungen behalten |
+| Calls & Audio | Anrufe, Anrufliste, Akku-Warnung, [iPhone-Ton am Computer](phone-audio.md), Mediensteuerung |
+| Network | Optionales [Bluetooth-Tethering](bluetooth-tethering.md) |
+| Security | Einmalcodes, Abwesenheitssperre, lokale Daten und ihre Verschlüsselung, Verlauf löschen |
+| About | Version, Hintergrunddienst, About BlueFerry, Tastenkürzel, **Restart Service**, Beenden |
+
+Die Schalter, die einen Neustart brauchen (unten), funktionieren wie im
+KDE-Client: Solange eine Änderung auf den Neustart wartet, beginnt jede
+Seite mit einem Hinweis und **Restart Service**. Die Plugin-Einstellungen
+hat der GTK-Client noch nicht; dafür gibt es den KDE-Client oder
+`blueferry plugins`.
+
 ## KDE Plasma (Kirigami)
 
 `blueferry-qt` ist eine Kirigami-App für KDE Plasma. Unter Ubuntu 24.04,
