@@ -26,7 +26,7 @@ from blueferry.plugin_api import SUPPORTED_API_VERSIONS
 from blueferry.plugin_api.client import PluginClient, PluginError
 from blueferry.plugin_api.config import SECRET_MASK
 from blueferry.plugin_api.config_flow import LOGIN_POLL_SECONDS, LOGIN_TIMEOUT_SECONDS
-from blueferry.plugin_api.manifest import Discovery, discover
+from blueferry.plugin_api.manifest import Discovery, PluginManifest, discover
 from blueferry.plugin_index import (
     DEFAULT_INDEX_URL,
     IndexFetchError,
@@ -216,7 +216,8 @@ def _remove(manager: PluginManager, plugin_id: str, yes: bool) -> None:
 
 
 def _config(manager: PluginManager, plugin_id: str, assignments: Sequence[str],
-            secrets: Sequence[str], *, test: bool = False, login: bool = False) -> None:
+            secrets: Sequence[str], *, test: bool = False, login: bool = False,
+            action: str | None = None) -> None:
     plugin = _hooks["discover"]().find(plugin_id)
     if plugin is None:
         _fail(f"No plugin {plugin_id} is installed.", 2)
@@ -227,6 +228,13 @@ def _config(manager: PluginManager, plugin_id: str, assignments: Sequence[str],
         _fail(_disabled_note(plugin.name, plugin.id), 2)
         return
     client = _hooks["client"](plugin)
+    if action is not None:
+        if assignments or secrets or test or login:
+            _fail("--action uses the saved settings; save with --set first, "
+                  "then run it on its own.", 2)
+            return
+        _config_action(plugin, client, action)
+        return
     fields = {field.key: field for field in plugin.config}
     update: dict[str, object] = {}
     for assignment in assignments:
@@ -274,6 +282,34 @@ def _config(manager: PluginManager, plugin_id: str, assignments: Sequence[str],
             shown = "(stored)" if shown == SECRET_MASK else "(not set)"
         _echo(f"{field.key} = {json.dumps(shown) if not field.secret else shown}"
               f"  # {field.label}{' (required)' if field.required else ''}")
+    for button in plugin.config_actions:
+        _echo(f"--action {button.id}  # {button.label}"
+              + (f": {button.help}" if button.help else ""))
+
+
+def _config_action(plugin: PluginManifest, client: PluginClient, action_id: str) -> None:
+    """``--action ID``: a ``[ConfigAction …]`` button of the settings form
+    (plugin API 1.6). The plugin works with its saved settings."""
+    if plugin.config_action(action_id) is None:
+        known = ", ".join(button.id for button in plugin.config_actions)
+        _fail(f"{plugin.name} has no settings action {action_id!r}"
+              + (f"; it offers: {known}" if known else "; it offers none"), 2)
+        return
+    try:
+        result = client.run_config_action(action_id)
+    except PluginError as error:
+        _fail(error)
+        return
+    if not result.ok:
+        _fail(result.message or f"{plugin.name} could not do that.")
+        return
+    _echo(result.message or "Done.")
+    if result.open_uri:
+        _echo(f"Opening: {result.open_uri}")
+        try:
+            _hooks["open_uri"](result.open_uri)
+        except Exception:  # a missing browser is fine: the address is printed
+            _echo("Open the address above yourself.")
 
 
 def _test_config(client: PluginClient, update: dict[str, object]) -> None:
@@ -418,6 +454,9 @@ def _parser() -> argparse.ArgumentParser:
                         help="let the plugin check these values without saving them")
     config.add_argument("--login", action="store_true",
                         help="sign in through the browser (plugins with ConfigLogin)")
+    config.add_argument("--action", metavar="ACTION",
+                        help="run one of the plugin's settings actions, e.g. setup_iphone "
+                             "(listed by `config ID`)")
     log = commands.add_parser("log", help="show a plugin's log file")
     log.add_argument("id")
     log.add_argument("--lines", "-n", type=int, default=plugin_logs.DEFAULT_LINES,
@@ -460,7 +499,7 @@ def manage(args: Sequence[str]) -> None:
             _note(outcome, restarts=False)
         elif command == "config":
             _config(manager, options.id, options.set, options.secret,
-                    test=options.test, login=options.login)
+                    test=options.test, login=options.login, action=options.action)
         elif command == "log":
             _log(options.id, options.lines, options.path)
         elif command in ("available", "search"):

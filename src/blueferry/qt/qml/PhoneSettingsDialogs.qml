@@ -2,6 +2,7 @@ pragma ComponentBehavior: Bound
 
 import QtQuick
 import QtQuick.Controls as Controls
+import QtQuick.Layouts
 import org.kde.kirigami as Kirigami
 
 // Owned by the window so pairing prompts survive closing the settings page.
@@ -98,16 +99,18 @@ Item {
         }]
     }
 
-    Kirigami.PromptDialog {
+    // The pairing code is the one thing to compare, so it is shown large,
+    // in groups, like the iPhone shows it.
+    Kirigami.Dialog {
         id: pairingConfirmationDialog
         objectName: "pairingConfirmationDialog"
         property string passkey: ""
-        title: passkey === "" ? qsTr("Approve Bluetooth Pairing?")
-            : qsTr("Do the Bluetooth Codes Match?")
-        subtitle: passkey === ""
+        readonly property string subtitle: passkey === ""
             ? qsTr("Approve only if you started this pairing from BlueFerry.")
             : qsTr("Confirm that %1 is shown on both this computer and the iPhone.").arg(passkey)
-        dialogType: Kirigami.PromptDialog.Information
+        title: passkey === "" ? qsTr("Approve Bluetooth Pairing?")
+            : qsTr("Do the Bluetooth Codes Match?")
+        preferredWidth: Kirigami.Units.gridUnit * 22
         standardButtons: Kirigami.Dialog.NoButton
         closePolicy: Controls.Popup.NoAutoClose
         customFooterActions: [
@@ -128,6 +131,39 @@ Item {
                 }
             }
         ]
+
+        ColumnLayout {
+            spacing: Kirigami.Units.largeSpacing
+            Kirigami.Icon {
+                Layout.alignment: Qt.AlignHCenter
+                Layout.topMargin: Kirigami.Units.largeSpacing
+                implicitWidth: Kirigami.Units.iconSizes.huge
+                implicitHeight: implicitWidth
+                source: "network-bluetooth"
+            }
+            Kirigami.Heading {
+                objectName: "pairingPasskey"
+                Layout.alignment: Qt.AlignHCenter
+                visible: pairingConfirmationDialog.passkey !== ""
+                level: 1
+                font.family: "monospace"
+                font.letterSpacing: Kirigami.Units.smallSpacing
+                textFormat: Text.PlainText
+                text: pairingConfirmationDialog.passkey.replace(/^(\d{3})(\d{3})$/, "$1 $2")
+            }
+            Controls.Label {
+                Layout.fillWidth: true
+                Layout.leftMargin: Kirigami.Units.largeSpacing
+                Layout.rightMargin: Kirigami.Units.largeSpacing
+                Layout.bottomMargin: Kirigami.Units.largeSpacing
+                horizontalAlignment: Text.AlignHCenter
+                wrapMode: Text.Wrap
+                textFormat: Text.PlainText
+                text: pairingConfirmationDialog.passkey === ""
+                    ? pairingConfirmationDialog.subtitle
+                    : qsTr("Check that the iPhone shows the same code, then confirm on both.")
+            }
+        }
     }
 
     Kirigami.PromptDialog {
