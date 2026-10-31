@@ -425,6 +425,8 @@ def main() -> int:
     system_tray = _create_system_tray(application, window)
     terminal_signal_timer = _install_terminal_signal_handlers(application)
     exit_code = application.exec()
+    # A running doctor check must not keep the process alive after quitting.
+    controller.stop_doctor()
     terminal_signal_timer.stop()
     activation.close()
     if system_tray is not None:

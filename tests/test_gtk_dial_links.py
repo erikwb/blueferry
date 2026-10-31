@@ -87,10 +87,10 @@ def window(monkeypatch):
         AlertDialog=_AlertDialog,
         ResponseAppearance=SimpleNamespace(SUGGESTED="suggested"),
     ))
-    requests = {"status": [], "dial": [], "toasts": [], "settings": 0}
+    requests = {"status": [], "dial": [], "toasts": [], "settings": []}
 
-    def present_phone_settings():
-        requests["settings"] += 1
+    def present_phone_settings(category=""):
+        requests["settings"].append(category)
 
     win = SimpleNamespace(
         _dial_request_serial=0,
@@ -148,7 +148,8 @@ def test_disabled_or_unreachable_calls_offer_the_settings(window, reply):
     dialog = _AlertDialog.shown[-1]
     assert dialog.responses == ["cancel", "settings"]
     dialog.respond("settings")
-    assert requests["settings"] == 1 and requests["dial"] == []
+    # The settings open on the category with the phone calls switch.
+    assert requests["settings"] == ["calls"] and requests["dial"] == []
 
 
 @pytest.mark.parametrize("stale_reply", ["success", "error"])

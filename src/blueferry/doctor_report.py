@@ -11,8 +11,11 @@ import os
 import re
 import subprocess  # nosec B404
 import sys
+import threading
 from dataclasses import dataclass
 from typing import Any
+
+from blueferry.i18n import _
 
 from . import config
 
@@ -28,25 +31,77 @@ class DoctorReport:
     text: str
 
 
-def run_doctor(timeout: float = TIMEOUT_SEC) -> DoctorReport:
-    """*Blocking.* ``blueferry doctor`` in a child process."""
-    # config injects local.env and saved settings into this process's environ.
-    # Let the child read the current files, preserving only genuine overrides.
-    environment = {
-        key: value for key, value in os.environ.items()
-        if key not in config.LOCAL_ENV_KEYS or key in config.EXPLICIT_ENV_KEYS
-    }
-    environment.update(NO_COLOR="1", TERM="dumb")
+class DoctorRunner:
+    """Own a client's doctor children and cancel even a run still starting.
+
+    Stopping is permanent for this owner, so work queued before shutdown
+    cannot start a new check afterwards. Other clients/runners are unaffected.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._stopped = False
+        self._running: set[subprocess.Popen] = set()
+
+    def run(self, timeout: float = TIMEOUT_SEC, command: list[str] | None = None) -> DoctorReport:
+        """*Blocking.* Run on a worker thread, never on a toolkit thread."""
+        with self._lock:
+            if self._stopped:
+                return DoctorReport(False, False, "blueferry doctor was cancelled")
+        # config injects file-backed settings into our environment. The child
+        # must reread current files, preserving only genuine overrides.
+        environment = {
+            key: value for key, value in os.environ.items()
+            if key not in config.LOCAL_ENV_KEYS or key in config.EXPLICIT_ENV_KEYS
+        }
+        environment.update(NO_COLOR="1", TERM="dumb")
+        try:
+            process = subprocess.Popen(  # nosec B603
+                command or [sys.executable, "-m", "blueferry", "doctor"],
+                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, errors="replace", env=environment,
+            )
+        except OSError as error:
+            return _unfinished(error)
+        with self._lock:
+            self._running.add(process)
+            # stop() may have run while Popen was creating this process.
+            if self._stopped:
+                _kill(process)
+        try:
+            stdout, stderr = process.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired as error:
+            _kill(process)
+            process.communicate()
+            return _unfinished(error)
+        finally:
+            with self._lock:
+                self._running.discard(process)
+        return parse_output(process.returncode, stdout + stderr)
+
+    def stop(self) -> None:
+        """Cancel this owner's checks without waiting on the UI thread."""
+        with self._lock:
+            self._stopped = True
+            processes = list(self._running)
+        for process in processes:
+            _kill(process)
+
+
+def _kill(process: subprocess.Popen) -> None:
     try:
-        completed = subprocess.run(  # nosec B603
-            [sys.executable, "-m", "blueferry", "doctor"],
-            capture_output=True, text=True, timeout=timeout, check=False,
-            stdin=subprocess.DEVNULL, env=environment,
-        )
-    except (OSError, subprocess.TimeoutExpired) as error:
-        reason = type(error).__name__
-        return DoctorReport(False, False, f"blueferry doctor did not finish: {reason}")
-    return parse_output(completed.returncode, completed.stdout + completed.stderr)
+        process.kill()
+    except OSError:
+        pass  # It may already have exited; the worker still reaps it.
+
+
+def run_doctor(timeout: float = TIMEOUT_SEC, command: list[str] | None = None) -> DoctorReport:
+    """Run a standalone check; UIs use their own stoppable DoctorRunner."""
+    return DoctorRunner().run(timeout, command)
+
+
+def _unfinished(error: Exception) -> DoctorReport:
+    return DoctorReport(False, False, f"blueferry doctor did not finish: {type(error).__name__}")
 
 
 def parse_output(returncode: int, output: str) -> DoctorReport:
@@ -80,3 +135,19 @@ def finished_state(state: dict[str, Any], report: object) -> dict[str, Any]:
 
 def failed_state(message: str) -> dict[str, Any]:
     return {"running": False, "ran": True, "ok": False, "warnings": False, "text": message}
+
+
+def summary(state: dict[str, Any]) -> tuple[str, str]:
+    """``(level, text)`` for a finished run; level is ``error``, ``warning``
+    or ``ok``."""
+    if state.get("ok") is not True:
+        return "error", _("One or more checks failed.")
+    if state.get("warnings") is True:
+        return "warning", _("Checks completed with warnings.")
+    return "ok", _("All checks passed.")
+
+
+def view(state: dict[str, Any]) -> dict[str, Any]:
+    """``state`` plus the ``level`` and ``summary`` of :func:`summary`."""
+    level, text = summary(state)
+    return {**state, "level": level, "summary": text}

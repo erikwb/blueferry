@@ -14,12 +14,12 @@ from blueferry.ui.status_presenter import (
 def test_backend_incompatibility_is_preserved_on_the_status_page():
     from types import SimpleNamespace
 
-    from blueferry.ui.status import IPhonePage
+    from blueferry.ui.status import SettingsDialog
 
     rendered = []
     page = SimpleNamespace(_apply_status=rendered.append)
     message = backend_compatibility_error({})
-    IPhonePage._status_failed(page, message)
+    SettingsDialog._status_failed(page, message)
     assert connection_subtitle(rendered[0].to_dict(), reachable=False) == message
     assert "incompatible" not in connection_subtitle(BackendStatus().to_dict(), reachable=False)
 
@@ -28,7 +28,7 @@ def test_gtk_pairing_blocks_incompatible_hardware_but_allows_unverified_hardware
     from types import SimpleNamespace
 
     from blueferry.setup_client import BluetoothCompatibility
-    from blueferry.ui.status import IPhonePage
+    from blueferry.ui.status import SettingsDialog
 
     enabled = []
     widget = SimpleNamespace(set_sensitive=lambda _value: None, set_spinning=lambda _value: None)
@@ -46,9 +46,9 @@ def test_gtk_pairing_blocks_incompatible_hardware_but_allows_unverified_hardware
             "available": available, "pairing_ready": pairing_ready,
             "notifications_supported": False,
         })
-        IPhonePage._set_pairing_busy(page, False)
+        SettingsDialog._set_pairing_busy(page, False)
     assert enabled == [False, True, True]
-    IPhonePage._set_pairing_busy(page, True)
+    SettingsDialog._set_pairing_busy(page, True)
     assert enabled[-1] is False
 
 
@@ -60,7 +60,7 @@ def test_gtk_configured_phone_surfaces_incompatibility_instead_of_permission_tas
     from unittest.mock import Mock
 
     from blueferry.setup_client import BluetoothCompatibility, ConfigurationState
-    from blueferry.ui.status import IPhonePage
+    from blueferry.ui.status import SettingsDialog
 
     page = SimpleNamespace(
         _configuration=ConfigurationState.from_dict({
@@ -78,8 +78,8 @@ def test_gtk_configured_phone_surfaces_incompatibility_instead_of_permission_tas
         _iphone_setup_rows={key: Mock() for key in ("message-notifications", "contacts")},
         _iphone_setup_group=Mock(),
     )
-    page._update_iphone_setup_tasks = lambda: IPhonePage._update_iphone_setup_tasks(page)
-    IPhonePage._update_phone_controls(page)
+    page._update_iphone_setup_tasks = lambda: SettingsDialog._update_iphone_setup_tasks(page)
+    SettingsDialog._update_phone_controls(page)
 
     page._hardware_group.set_visible.assert_called_with(not pairing_ready)
     page._pairing_group.set_visible.assert_called_with(False)
@@ -126,7 +126,7 @@ def test_gtk_phone_calls_switch_sends_the_choice():
     from unittest.mock import Mock
 
     from blueferry.ui.saved_choice import SavedChoice
-    from blueferry.ui.status import IPhonePage
+    from blueferry.ui.status import SettingsDialog
 
     calls = []
     page = SimpleNamespace(
@@ -139,7 +139,7 @@ def test_gtk_phone_calls_switch_sends_the_choice():
         ),
     )
 
-    IPhonePage._calls_enabled_changed(page, None, None)
+    SettingsDialog._calls_enabled_changed(page, None, None)
 
     assert calls == [True]
     page._calls_enabled_row.set_sensitive.assert_called_with(False)
@@ -148,19 +148,19 @@ def test_gtk_phone_calls_switch_sends_the_choice():
 def test_gtk_phone_calls_switch_ignores_updates_from_a_status_refresh():
     from types import SimpleNamespace
 
-    from blueferry.ui.status import IPhonePage
+    from blueferry.ui.status import SettingsDialog
 
     # No client or widgets: a refresh must return before touching either.
     page = SimpleNamespace(_applying_calls_enabled=True)
 
-    IPhonePage._calls_enabled_changed(page, None, None)
+    SettingsDialog._calls_enabled_changed(page, None, None)
 
 
 def test_gtk_phone_calls_switch_holds_the_choice_until_the_save_settles():
     from types import SimpleNamespace
 
     from blueferry.ui.saved_choice import SavedChoice
-    from blueferry.ui.status import IPhonePage
+    from blueferry.ui.status import SettingsDialog
 
     refreshes = []
     saved = {}
@@ -177,7 +177,7 @@ def test_gtk_phone_calls_switch_holds_the_choice_until_the_save_settles():
         _refresh=lambda: refreshes.append(True),
     )
 
-    IPhonePage._calls_enabled_changed(page, None, None)
+    SettingsDialog._calls_enabled_changed(page, None, None)
     # While the save is running, a status still reporting "off" is not shown.
     assert choice.saving and choice.resolve(False) == (True, False)
 
@@ -192,7 +192,7 @@ def test_gtk_phone_calls_switch_reverts_and_reports_a_failed_save():
     from types import SimpleNamespace
 
     from blueferry.ui.saved_choice import SavedChoice
-    from blueferry.ui.status import IPhonePage
+    from blueferry.ui.status import SettingsDialog
 
     toasts = []
     applied = []
@@ -212,7 +212,7 @@ def test_gtk_phone_calls_switch_reverts_and_reports_a_failed_save():
         _apply_status=applied.append,
     )
 
-    IPhonePage._calls_enabled_changed(page, None, None)
+    SettingsDialog._calls_enabled_changed(page, None, None)
     failed["err"]("oFono is missing")
 
     assert not choice.saving
@@ -248,10 +248,10 @@ def _gtk_actions_page():
 
 
 def test_gtk_action_buttons_switch_is_hidden_for_daemons_without_the_setting():
-    from blueferry.ui.status import IPhonePage
+    from blueferry.ui.status import SettingsDialog
 
     page = _gtk_actions_page()
-    IPhonePage._apply_ancs_actions(
+    SettingsDialog._apply_ancs_actions(
         page, BackendStatus.from_dict({"notification_policy": "all"}), True
     )
 
@@ -272,10 +272,10 @@ def test_gtk_action_buttons_switch_is_hidden_for_daemons_without_the_setting():
 def test_gtk_action_buttons_switch_shows_the_saved_choice_and_when_it_applies(
     status, saved, sensitive
 ):
-    from blueferry.ui.status import IPhonePage
+    from blueferry.ui.status import SettingsDialog
 
     page = _gtk_actions_page()
-    IPhonePage._apply_ancs_actions(
+    SettingsDialog._apply_ancs_actions(
         page,
         BackendStatus.from_dict({**status, "ancs_actions_preference": saved}),
         True,
@@ -289,10 +289,10 @@ def test_gtk_action_buttons_switch_shows_the_saved_choice_and_when_it_applies(
 
 
 def test_gtk_action_buttons_switch_is_inactive_while_the_daemon_is_unreachable():
-    from blueferry.ui.status import IPhonePage
+    from blueferry.ui.status import SettingsDialog
 
     page = _gtk_actions_page()
-    IPhonePage._apply_ancs_actions(
+    SettingsDialog._apply_ancs_actions(
         page,
         BackendStatus.from_dict({
             "notification_policy": "all", "ancs_actions_preference": False,
@@ -307,7 +307,7 @@ def test_gtk_action_buttons_switch_saves_the_choice():
     from types import SimpleNamespace
     from unittest.mock import Mock
 
-    from blueferry.ui.status import IPhonePage
+    from blueferry.ui.status import SettingsDialog
 
     calls = []
     toasts = []
@@ -325,7 +325,7 @@ def test_gtk_action_buttons_switch_saves_the_choice():
         _refresh=lambda: refreshes.append(True),
     )
 
-    IPhonePage._ancs_actions_changed(page, None, None)
+    SettingsDialog._ancs_actions_changed(page, None, None)
 
     assert calls == [True]
     page._ancs_actions_row.set_sensitive.assert_called_with(False)
@@ -337,7 +337,7 @@ def test_gtk_action_buttons_switch_restores_the_status_after_a_failed_save():
     from types import SimpleNamespace
     from unittest.mock import Mock
 
-    from blueferry.ui.status import IPhonePage
+    from blueferry.ui.status import SettingsDialog
 
     rendered = []
     toasts = []
@@ -356,7 +356,7 @@ def test_gtk_action_buttons_switch_restores_the_status_after_a_failed_save():
         _apply_status=rendered.append,
     )
 
-    IPhonePage._ancs_actions_changed(page, None, None)
+    SettingsDialog._ancs_actions_changed(page, None, None)
 
     assert rendered == [last]
     assert toasts == ["Could not save action button preference: denied"]
@@ -365,12 +365,12 @@ def test_gtk_action_buttons_switch_restores_the_status_after_a_failed_save():
 def test_gtk_action_buttons_switch_ignores_updates_from_a_status_refresh():
     from types import SimpleNamespace
 
-    from blueferry.ui.status import IPhonePage
+    from blueferry.ui.status import SettingsDialog
 
     # No client or widgets: a refresh must return before touching either.
     page = SimpleNamespace(_applying_ancs_actions=True)
 
-    IPhonePage._ancs_actions_changed(page, None, None)
+    SettingsDialog._ancs_actions_changed(page, None, None)
 
 
 def test_connection_summary_appends_optional_phone_battery_and_signal() -> None:
@@ -436,20 +436,20 @@ def _media_switch_page(**overrides):
         set_mpris_player_async=lambda enabled, ok, err: page.saves.append(
             ("mpris", enabled, ok, err)),
     )
-    from blueferry.ui.status import IPhonePage
+    from blueferry.ui.status import SettingsDialog
 
     for name in ("_show_saved_choice", "_save_switch"):
-        setattr(page, name, getattr(IPhonePage, name).__get__(page))
+        setattr(page, name, getattr(SettingsDialog, name).__get__(page))
     for name, value in overrides.items():
         setattr(page, name, value)
     return page
 
 
 def test_gtk_media_switches_follow_the_daemon_and_the_player_needs_media_control():
-    from blueferry.ui.status import IPhonePage
+    from blueferry.ui.status import SettingsDialog
 
     page = _media_switch_page()
-    apply = lambda values, reachable=True: IPhonePage._apply_media_switches(  # noqa: E731
+    apply = lambda values, reachable=True: SettingsDialog._apply_media_switches(  # noqa: E731
         page, BackendStatus.from_dict(values), reachable)
 
     # Daemons that do not report the keys do not support the settings.
@@ -478,20 +478,20 @@ def test_gtk_media_switches_follow_the_daemon_and_the_player_needs_media_control
 
 
 def test_gtk_media_switch_ignores_updates_from_a_status_refresh():
-    from blueferry.ui.status import IPhonePage
+    from blueferry.ui.status import SettingsDialog
 
     page = _media_switch_page(_applying_saved_switches=True)
-    IPhonePage._media_control_changed(page, page._media_control_switch, None)
-    IPhonePage._mpris_player_changed(page, page._mpris_player_switch, None)
+    SettingsDialog._media_control_changed(page, page._media_control_switch, None)
+    SettingsDialog._mpris_player_changed(page, page._mpris_player_switch, None)
     assert page.saves == []
 
 
 def test_gtk_mpris_switch_holds_the_choice_until_the_save_settles():
-    from blueferry.ui.status import IPhonePage
+    from blueferry.ui.status import SettingsDialog
 
     page = _media_switch_page()
     page._mpris_player_switch.active = True
-    IPhonePage._mpris_player_changed(page, page._mpris_player_switch, None)
+    SettingsDialog._mpris_player_changed(page, page._mpris_player_switch, None)
     choice = page._mpris_player_choice
     assert [(save[0], save[1]) for save in page.saves] == [("mpris", True)]
     assert page._mpris_player_row.sensitive is False
@@ -509,12 +509,12 @@ def test_gtk_mpris_switch_holds_the_choice_until_the_save_settles():
 
 
 def test_gtk_media_control_switch_reverts_and_reports_a_failed_save():
-    from blueferry.ui.status import IPhonePage
+    from blueferry.ui.status import SettingsDialog
 
     last = BackendStatus.from_dict({"media_control_enabled": False})
     page = _media_switch_page(_last_status=last)
     page._media_control_switch.active = True
-    IPhonePage._media_control_changed(page, page._media_control_switch, None)
+    SettingsDialog._media_control_changed(page, page._media_control_switch, None)
     assert [(save[0], save[1]) for save in page.saves] == [("media", True)]
 
     page.saves[0][3]("no LE link")
@@ -530,7 +530,7 @@ def test_gtk_away_lock_switch_opts_in_and_keeps_the_saved_grace_period():
     from unittest.mock import Mock
 
     from blueferry.ui.saved_choice import SavedChoice
-    from blueferry.ui.status import IPhonePage
+    from blueferry.ui.status import SettingsDialog
 
     calls = []
     page = SimpleNamespace(
@@ -548,7 +548,7 @@ def test_gtk_away_lock_switch_opts_in_and_keeps_the_saved_grace_period():
         ),
     )
 
-    IPhonePage._proximity_lock_changed(page, None, None)
+    SettingsDialog._proximity_lock_changed(page, None, None)
 
     assert calls == [(True, 120)]
     page._proximity_lock_row.set_sensitive.assert_called_with(False)
@@ -557,19 +557,19 @@ def test_gtk_away_lock_switch_opts_in_and_keeps_the_saved_grace_period():
 def test_gtk_away_lock_switch_ignores_updates_from_a_status_refresh():
     from types import SimpleNamespace
 
-    from blueferry.ui.status import IPhonePage
+    from blueferry.ui.status import SettingsDialog
 
     # No client or widgets: a refresh must return before touching either.
     page = SimpleNamespace(_applying_proximity_lock=True)
 
-    IPhonePage._proximity_lock_changed(page, None, None)
+    SettingsDialog._proximity_lock_changed(page, None, None)
 
 
 def test_gtk_away_lock_switch_holds_the_choice_against_a_stale_status():
     from types import SimpleNamespace
 
     from blueferry.ui.saved_choice import SavedChoice
-    from blueferry.ui.status import IPhonePage
+    from blueferry.ui.status import SettingsDialog
 
     refreshes = []
     saved = {}
@@ -589,10 +589,10 @@ def test_gtk_away_lock_switch_holds_the_choice_against_a_stale_status():
     )
 
     def status_reports(reported):
-        IPhonePage._show_saved_choice(page, switch, page._proximity_lock_choice, reported)
+        SettingsDialog._show_saved_choice(page, switch, page._proximity_lock_choice, reported)
         return positions[-1]
 
-    IPhonePage._proximity_lock_changed(page, None, None)
+    SettingsDialog._proximity_lock_changed(page, None, None)
     assert page._proximity_lock_choice.saving
     # While the save is running, a status still reporting "off" is not shown.
     assert status_reports(False) is True
@@ -635,7 +635,7 @@ def test_saved_choice_returns_to_the_report_after_a_failed_save():
 
 def _call_history_switch_page():
     from blueferry.ui.saved_choice import SavedChoice
-    from blueferry.ui.status import IPhonePage
+    from blueferry.ui.status import SettingsDialog
 
     page = _media_switch_page()
     switch, row = type(page._media_control_switch), type(page._media_control_row)
@@ -648,7 +648,7 @@ def _call_history_switch_page():
     page._call_history_group = row()
     page._client.set_call_history_async = lambda enabled, popups, ok, err: page.saves.append(
         ("history", enabled, popups, ok, err))
-    page.apply = lambda values, reachable=True: IPhonePage._apply_call_history_switches(
+    page.apply = lambda values, reachable=True: SettingsDialog._apply_call_history_switches(
         page, BackendStatus.from_dict(values), reachable)
     return page
 
@@ -680,12 +680,12 @@ def test_gtk_call_history_switches_follow_the_daemon():
 
 
 def test_gtk_call_history_switches_save_both_values_together():
-    from blueferry.ui.status import IPhonePage
+    from blueferry.ui.status import SettingsDialog
 
     page = _call_history_switch_page()
     page.apply({"call_history_enabled": False, "missed_call_notifications": False})
     page._call_history_switch.active = True
-    IPhonePage._call_history_changed(page, page._call_history_switch, None)
+    SettingsDialog._call_history_changed(page, page._call_history_switch, None)
     assert page.saves[-1][:3] == ("history", True, False)
     assert page._call_history_row.sensitive is False
     choice = page._call_history_choice
@@ -697,7 +697,7 @@ def test_gtk_call_history_switches_save_both_values_together():
 
     # The popup switch keeps call history on.
     page._missed_call_popups_switch.active = True
-    IPhonePage._missed_call_popups_changed(page, page._missed_call_popups_switch, None)
+    SettingsDialog._missed_call_popups_changed(page, page._missed_call_popups_switch, None)
     assert page.saves[-1][:3] == ("history", True, True)
 
     page._last_status = BackendStatus.from_dict({"call_history_enabled": True})
@@ -778,7 +778,7 @@ def test_tether_failure_is_a_warning_only_while_enabled():
 
 
 class _TetherPage:
-    """Borrows IPhonePage's tethering handlers without building widgets."""
+    """Borrows SettingsDialog's tethering handlers without building widgets."""
 
     def __init__(self, tether) -> None:
         from types import SimpleNamespace
@@ -814,13 +814,13 @@ class _TetherPage:
 
 
 def _borrow():
-    from blueferry.ui.status import IPhonePage
+    from blueferry.ui.status import SettingsDialog
 
     for name in (
         "_tether_request", "_tether_enable_changed",
         "_tether_connect_changed", "_tether_auto_changed",
     ):
-        setattr(_TetherPage, name, getattr(IPhonePage, name))
+        setattr(_TetherPage, name, getattr(SettingsDialog, name))
 
 
 def test_gtk_enable_switch_saves_the_opt_in_and_keeps_automatic_choice():
@@ -909,10 +909,10 @@ def _phone_audio_page():
 
 
 def test_gtk_phone_audio_switch_follows_the_reported_route():
-    from blueferry.ui.status import IPhonePage
+    from blueferry.ui.status import SettingsDialog
 
     page = _phone_audio_page()
-    apply = lambda values, reachable=True: IPhonePage._apply_phone_audio(  # noqa: E731
+    apply = lambda values, reachable=True: SettingsDialog._apply_phone_audio(  # noqa: E731
         page, BackendStatus.from_dict(values), reachable)
 
     apply({})
@@ -935,16 +935,16 @@ def test_gtk_phone_audio_switch_follows_the_reported_route():
 
 
 def test_gtk_phone_audio_switch_sends_the_route_and_restores_on_failure():
-    from blueferry.ui.status import IPhonePage
+    from blueferry.ui.status import SettingsDialog
 
     page = _phone_audio_page()
     page._applying_phone_audio = True
-    IPhonePage._phone_audio_changed(page, page._phone_audio_switch, None)
+    SettingsDialog._phone_audio_changed(page, page._phone_audio_switch, None)
     assert page.routes == []
 
     page._applying_phone_audio = False
     page._phone_audio_switch.active = True
-    IPhonePage._phone_audio_changed(page, page._phone_audio_switch, None)
+    SettingsDialog._phone_audio_changed(page, page._phone_audio_switch, None)
     route, ok, err = page.routes[0]
     assert route == "pc" and page._phone_audio_row.sensitive is False
     ok("pc")
@@ -956,31 +956,30 @@ def test_gtk_phone_audio_switch_sends_the_route_and_restores_on_failure():
 
 def test_gtk_auto_profile_reset_switch_follows_the_daemon_and_saves():
     from blueferry.ui.saved_choice import SavedChoice
-    from blueferry.ui.status import IPhonePage
+    from blueferry.ui.status import SettingsDialog
 
     page = _media_switch_page()
     page._auto_profile_reset_choice = SavedChoice()
     page._auto_profile_reset_switch = type(page._media_control_switch)()
     page._auto_profile_reset_row = type(page._media_control_row)()
-    page._connection_group = type(page._media_control_row)()
     page._client.set_auto_profile_reset_async = lambda enabled, ok, err: page.saves.append(
         ("reset", enabled, ok, err))
-    apply = lambda values, reachable=True: IPhonePage._apply_connection_switches(  # noqa: E731
+    apply = lambda values, reachable=True: SettingsDialog._apply_connection_switches(  # noqa: E731
         page, BackendStatus.from_dict(values), reachable)
 
     # Daemons without the profile reset do not show the setting.
     apply({})
-    assert page._connection_group.visible is False
+    assert page._auto_profile_reset_row.visible is False
 
     apply({"profile_reset_auto": True})
-    assert page._connection_group.visible is True
+    assert page._auto_profile_reset_row.visible is True
     assert page._auto_profile_reset_switch.active is True
     assert page._auto_profile_reset_row.sensitive is True
     apply({"profile_reset_auto": True}, reachable=False)
     assert page._auto_profile_reset_row.sensitive is False
 
     page._auto_profile_reset_switch.set_active(False)
-    IPhonePage._auto_profile_reset_changed(page, page._auto_profile_reset_switch, None)
+    SettingsDialog._auto_profile_reset_changed(page, page._auto_profile_reset_switch, None)
     kind, enabled, ok, _err = page.saves[-1]
     assert (kind, enabled) == ("reset", False)
     ok({"profile_reset_auto": False})
@@ -1011,7 +1010,7 @@ def _photos_page():
     from types import SimpleNamespace
 
     from blueferry.ui.saved_choice import SavedChoice
-    from blueferry.ui.status import IPhonePage
+    from blueferry.ui.status import SettingsDialog
 
     calls = []
     page = SimpleNamespace(
@@ -1027,11 +1026,11 @@ def _photos_page():
     page._toast = page.toasts.append
     page._refresh = lambda: page.refreshes.append(True)
     for name in ("_show_saved_choice", "_save_switch"):
-        setattr(page, name, getattr(IPhonePage, name).__get__(page))
-    page._apply_contact_photos = lambda status, *, reachable: IPhonePage._apply_contact_photos(
+        setattr(page, name, getattr(SettingsDialog, name).__get__(page))
+    page._apply_contact_photos = lambda status, *, reachable: SettingsDialog._apply_contact_photos(
         page, status, reachable=reachable,
     )
-    page._contact_photos_changed = lambda *args: IPhonePage._contact_photos_changed(page, *args)
+    page._contact_photos_changed = lambda *args: SettingsDialog._contact_photos_changed(page, *args)
     return page, calls
 
 
@@ -1106,7 +1105,7 @@ def _otp_page():
     from types import SimpleNamespace
 
     from blueferry.ui.saved_choice import SavedChoice
-    from blueferry.ui.status import IPhonePage
+    from blueferry.ui.status import SettingsDialog
 
     calls = []
     page = SimpleNamespace(
@@ -1122,11 +1121,11 @@ def _otp_page():
     page._toast = page.toasts.append
     page._refresh = lambda: page.refreshes.append(True)
     for name in ("_show_saved_choice", "_save_switch"):
-        setattr(page, name, getattr(IPhonePage, name).__get__(page))
-    page._apply_otp_autocopy = lambda status, *, reachable: IPhonePage._apply_otp_autocopy(
+        setattr(page, name, getattr(SettingsDialog, name).__get__(page))
+    page._apply_otp_autocopy = lambda status, *, reachable: SettingsDialog._apply_otp_autocopy(
         page, status, reachable=reachable,
     )
-    page._otp_autocopy_changed = lambda *args: IPhonePage._otp_autocopy_changed(page, *args)
+    page._otp_autocopy_changed = lambda *args: SettingsDialog._otp_autocopy_changed(page, *args)
     return page, calls
 
 
