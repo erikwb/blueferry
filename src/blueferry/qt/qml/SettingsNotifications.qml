@@ -70,7 +70,6 @@ ColumnLayout {
         Layout.fillWidth: true
         bridge: section.bridge
         feature: "show_notification_content"
-        variable: "BLUEFERRY_SHOW_NOTIFICATION_CONTENT"
         text: qsTr("Show message content in popups")
         description: qsTr("Off: popups name the sender only.")
     }
@@ -110,7 +109,6 @@ ColumnLayout {
         Layout.fillWidth: true
         bridge: section.bridge
         feature: "mark_read_on_dismiss"
-        variable: "BLUEFERRY_MARK_READ_ON_DISMISS"
         text: qsTr("Mark read when a popup is dismissed")
     }
 
@@ -119,7 +117,6 @@ ColumnLayout {
         Layout.fillWidth: true
         bridge: section.bridge
         feature: "notification_history"
-        variable: "BLUEFERRY_NOTIFICATION_HISTORY"
         text: qsTr("Keep recent iPhone notifications")
         description: qsTr("Lists other apps' notifications in the Notifications tab (memory only).")
     }

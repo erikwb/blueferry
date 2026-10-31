@@ -180,3 +180,29 @@ def test_reconnect_saves_the_automatic_reset_choice(monkeypatch) -> None:
     result = _run(monkeypatch, failing, "--no-auto-reset")
     assert result.exit_code == 2
     assert "Could not save the setting" in result.output
+
+
+def test_manual_reconnect_notice_lasts_until_the_status_shows_the_outcome():
+    from blueferry.reconnect_view import (
+        PROFILE_RESET_TEXT,
+        STARTED_TEXT,
+        UNREACHABLE_TEXT,
+        ManualReconnect,
+        reconnect_view,
+    )
+
+    manual = ManualReconnect()
+    waiting = {"daemon": True, "phone_reconnect_state": "waiting"}
+    assert manual.answered("started") == "" and manual.pending
+    assert manual.hint(reconnect_view(waiting)) == STARTED_TEXT
+    # Still connecting: keep the notice.
+    assert manual.follow({**waiting, "phone_reconnect_state": "connecting"}) == ""
+    assert manual.notice == STARTED_TEXT
+    assert manual.follow({**waiting, "phone_reconnect_state": "connected"}) == ""
+    assert not manual.pending and manual.notice == ""
+    assert manual.answered("profile-reset") == "" and manual.notice == PROFILE_RESET_TEXT
+    assert manual.follow({**waiting, "phone_reconnect_state": "unreachable"}) == UNREACHABLE_TEXT
+    # A reply that ends the attempt at once is not pending.
+    assert manual.answered("in-progress") == "" and not manual.pending
+    assert manual.follow(waiting) == "" and manual.notice == ""
+    assert manual.answered("unreachable") == UNREACHABLE_TEXT and manual.notice == ""
