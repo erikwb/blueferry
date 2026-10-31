@@ -42,9 +42,18 @@ from . import (
     KNOWN_TOOLS,
     SUPPORTED_API_VERSIONS,
 )
+from .config import ACTION_PREFIX as CONFIG_ACTION_PREFIX
 from .config import GROUP_PREFIX as CONFIG_GROUP_PREFIX
 from .config import SECTION_PREFIX as CONFIG_SECTION_PREFIX
-from .config import ConfigField, ConfigGroup, form_groups, parse_fields, parse_groups
+from .config import (
+    ConfigAction,
+    ConfigField,
+    ConfigGroup,
+    form_groups,
+    parse_actions,
+    parse_fields,
+    parse_groups,
+)
 
 GROUP = "BlueFerry Plugin"
 SUFFIX = ".plugin"
@@ -94,6 +103,12 @@ class PluginManifest:
     config_login: str = ""
     # ApiVersion 1.4: companion tools (KNOWN_TOOLS) this plugin replaces.
     replaces_tools: tuple[str, ...] = ()
+    # ApiVersion 1.6: buttons of the settings form (``[ConfigAction <id>]``).
+    config_actions: tuple[ConfigAction, ...] = ()
+
+    def config_action(self, action_id: str) -> ConfigAction | None:
+        """The declared settings action with this id, else None."""
+        return next((action for action in self.config_actions if action.id == action_id), None)
 
     @property
     def bus_name(self) -> str:
@@ -143,12 +158,14 @@ def version_tuple(value: str) -> tuple[int, ...]:
 _Groups = list[tuple[str, dict[str, str]]]
 
 
-def _keyfile(text: str) -> tuple[dict[str, str], _Groups, _Groups]:
-    """The ``[BlueFerry Plugin]`` keys, the ``[Config <key>]`` groups and
-    the ``[ConfigGroup <name>]`` sections."""
+def _keyfile(text: str) -> tuple[dict[str, str], _Groups, _Groups, _Groups]:
+    """The ``[BlueFerry Plugin]`` keys, the ``[Config <key>]`` groups, the
+    ``[ConfigGroup <name>]`` sections and the ``[ConfigAction <id>]``
+    buttons. Other groups are skipped, so older clients ignore newer ones."""
     values: dict[str, str] = {}
     config: _Groups = []
     sections: _Groups = []
+    actions: _Groups = []
     target: dict[str, str] | None = None
     group = None
     for raw in text.splitlines():
@@ -165,6 +182,9 @@ def _keyfile(text: str) -> tuple[dict[str, str], _Groups, _Groups]:
             elif group.startswith(CONFIG_SECTION_PREFIX):
                 target = {}
                 sections.append((group[len(CONFIG_SECTION_PREFIX):].strip(), target))
+            elif group.startswith(CONFIG_ACTION_PREFIX):
+                target = {}
+                actions.append((group[len(CONFIG_ACTION_PREFIX):].strip(), target))
             else:
                 target = None
             continue
@@ -182,7 +202,7 @@ def _keyfile(text: str) -> tuple[dict[str, str], _Groups, _Groups]:
         target[key] = value.strip()
     if group is None and not values:
         raise ManifestError(f"missing [{GROUP}] group")
-    return values, config, sections
+    return values, config, sections, actions
 
 
 def _config_flag(value: str, key: str) -> bool:
@@ -215,7 +235,7 @@ def parse_manifest(
     """Parse and validate one manifest; raise ManifestError to skip it."""
     if len(text.encode("utf-8", "surrogatepass")) > MAX_MANIFEST_BYTES:
         raise ManifestError("manifest is too large")
-    values, config_groups, config_sections = _keyfile(text)
+    values, config_groups, config_sections, config_action_sections = _keyfile(text)
     missing = [key for key in _REQUIRED if not values.get(key)]
     if missing:
         raise ManifestError("missing " + ", ".join(missing))
@@ -265,6 +285,7 @@ def parse_manifest(
     try:
         sections = parse_groups(config_sections)
         config = parse_fields(config_groups, sections)
+        config_actions = parse_actions(config_action_sections)
     except ValueError as error:
         raise ManifestError(str(error)) from None
     config_test = _config_flag(values.get("ConfigTest", ""), "ConfigTest")
@@ -273,6 +294,9 @@ def parse_manifest(
         raise ManifestError("ConfigLogin must be a short lowercase provider name")
     if (config_test or config_login) and not config:
         raise ManifestError("ConfigTest and ConfigLogin need [Config …] settings")
+    if config_actions and not config:
+        # The buttons live in the settings form, which needs settings.
+        raise ManifestError("[ConfigAction …] needs [Config …] settings")
     replaces = []
     for part in values.get("ReplacesTools", "").split(";"):
         tool = part.strip()
@@ -301,6 +325,7 @@ def parse_manifest(
         config_test=config_test,
         config_login=config_login,
         replaces_tools=tuple(replaces),
+        config_actions=config_actions,
     )
 
 

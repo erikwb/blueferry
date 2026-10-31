@@ -5,8 +5,8 @@ import QtQuick.Controls as Controls
 import QtQuick.Layouts
 import org.kde.kirigami as Kirigami
 
-// Confirmation for a clicked tel:/callto: link. The link comes from any
-// application, so this dialog only ever dials after the user chose Call.
+// Confirmation for a dial-pad entry, recent call, or clicked tel:/callto:
+// link. This dialog only ever dials after the user chose Call.
 // The number was validated by the bridge (tel_links.dial_request); the
 // contact name is untrusted phone data and is shown as plain text only.
 Kirigami.Dialog {
@@ -80,7 +80,7 @@ Kirigami.Dialog {
     function bodyText(): string {
         switch (dialog.shownKind) {
         case "invalid":
-            return qsTr("This link does not contain a phone number BlueFerry can call. "
+            return qsTr("This does not contain a phone number BlueFerry can call. "
                 + "Only plain numbers (an optional + and digits) are dialed.")
         case "emergency":
             return qsTr("Emergency numbers are not dialed through BlueFerry. "

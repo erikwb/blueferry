@@ -19,9 +19,11 @@ API_VERSION = 1
 # key ``ReplacesTools`` and the standard plugin log file; 5 made popups
 # content-free: the ``notify`` capability emits ``NotifyChanged()`` and the
 # host fetches the popup with ``GetPendingNotification()`` (the 1.2 signal
-# ``Notify`` that carried the text on the bus is gone). A manifest that
-# needs a newer minor than this is ignored with a message.
-API_MINOR = 5
+# ``Notify`` that carried the text on the bus is gone); 6 added buttons in
+# the settings form (``[ConfigAction <id>]`` with Plugin1.RunConfigAction)
+# and named help links (``HelpUrlLabel``). A manifest that needs a newer
+# minor than this is ignored with a message.
+API_MINOR = 6
 SUPPORTED_API_VERSIONS = frozenset({1})
 
 BUS_NAME_PREFIX = "io.weirdware.BlueFerry.Plugin."
@@ -49,6 +51,8 @@ METHOD_TEST_CONFIG = "TestConfig"
 METHOD_CONFIG_LOGIN = "ConfigLogin"
 METHOD_CONFIG_LOGIN_STATUS = "ConfigLoginStatus"
 METHOD_CONFIG_LOGIN_CANCEL = "ConfigLoginCancel"
+# ApiVersion 1.6: a button of the settings form (``[ConfigAction <id>]``).
+METHOD_RUN_CONFIG_ACTION = "RunConfigAction"
 # Browser sign-in flows clients know how to label; others are ignored.
 LOGIN_NEXTCLOUD = "nextcloud"
 LOGIN_PROVIDERS = frozenset({LOGIN_NEXTCLOUD})
@@ -93,6 +97,7 @@ __all__ = [
     "METHOD_GET_CARD_ITEMS",
     "METHOD_GET_PENDING_NOTIFICATION",
     "METHOD_INVOKE_ACTION",
+    "METHOD_RUN_CONFIG_ACTION",
     "METHOD_SEND_FILES",
     "METHOD_SHARE_TARGETS",
     "METHOD_TEST_CONFIG",
