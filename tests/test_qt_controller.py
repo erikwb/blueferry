@@ -15,6 +15,11 @@ from blueferry.qt import phone_link
 from blueferry.qt.controller import BridgeController
 from blueferry.setup_client import ConfigurationState
 from blueferry.tether_status import TetherStatus
+from tests.qt_settle import main_thread_gc
+
+# Controllers own timers too: collect their Python cycles on the UI thread,
+# never on a worker that happens to allocate during the following test.
+pytestmark = pytest.mark.usefixtures(main_thread_gc.__name__)
 
 
 def _apply_threads(controller, threads):
@@ -2045,6 +2050,130 @@ class _PhoneLinkBackend:
             {"id": 1, "app_id": "com.example.chat", "app_name": "",
              "time": "2026-10-06T10:00:00+00:00"},
         ]}
+
+
+def test_photo_load_failure_stops_the_spinner(monkeypatch):
+    controller = BridgeController(
+        backend=_Backend(), setup=object(), subscribe=False, autostart=False,
+    )
+    monkeypatch.setattr(
+        controller, "_run_photo",
+        lambda _operation, _on_done=None, on_failed=None, **_kwargs: on_failed("boom"),
+    )
+    controller.watchPhotos(True)
+    assert controller.photos["loaded"] is True and controller.photos["hint"] == "boom"
+
+
+def test_photos_load_only_while_watched_and_open_the_original(monkeypatch, tmp_path):
+    from blueferry import photos_view
+    from blueferry.plugin_api.client import Photo
+    from blueferry.plugin_api.testing import manifest
+
+    from .photo_fixtures import png
+    from .test_photo_thumbnails import png_bomb
+
+    plugin = manifest()
+    thumb = tmp_path / "t.webp"
+    thumb.write_bytes(png(2, 2))
+    bomb = tmp_path / "bomb.png"
+    bomb.write_bytes(png_bomb(100_000, 100_000))
+    original = tmp_path / "IMG_1.HEIC"
+    snapshot = photos_view.PhotosSnapshot(True, True, "1 recent items", [
+        Photo("a", "2026-10-06T16:21:00Z", "video", thumb),
+        Photo("b", "2026-10-06T16:22:00Z", "image", bomb),
+    ])
+    monkeypatch.setattr(photos_view, "find_plugin", lambda: plugin)
+    monkeypatch.setattr(photos_view, "load_recent", lambda manifest: snapshot)
+    fetched = []
+    monkeypatch.setattr(photos_view, "fetch_original",
+                        lambda manifest, photo_id: fetched.append(photo_id) or original)
+    opened = []
+    from PySide6.QtGui import QDesktopServices
+    monkeypatch.setattr(QDesktopServices, "openUrl", lambda url: opened.append(url.toLocalFile()))
+    controller = BridgeController(
+        backend=_Backend(), setup=object(), subscribe=False, autostart=False,
+    )
+    monkeypatch.setattr(
+        controller, "_run_photo",
+        lambda operation, on_done=None, *_args, **_kwargs: on_done(operation()),
+    )
+    controller.refreshPhotos()
+    assert controller.photos["loaded"] is False  # not watched: nothing loaded
+    controller.watchPhotos(True)
+    item = controller.photos["items"][0]
+    assert item["video"] is True and item["thumbnail"].endswith("/t.webp")
+    assert item["original"] == "" and controller.photos["ready"] is True
+    # A thumbnail declaring 10 gigapixels never reaches QML's image loader.
+    assert controller.photos["items"][1]["thumbnail"] == ""
+    controller.openPhoto("a")
+    assert fetched == ["a"] and opened == [str(original)]
+    assert controller.photos["items"][0]["original"].endswith("/IMG_1.HEIC")
+    controller.watchPhotos(False)
+    assert controller.photos["items"] == []
+
+
+def test_a_photo_of_a_plugin_disabled_meanwhile_is_not_fetched(monkeypatch, tmp_path):
+    from blueferry import photos_view
+    from blueferry.plugin_api.client import Photo
+    from blueferry.plugin_api.testing import manifest
+
+    plugin = manifest()
+    found = [plugin]
+    snapshot = photos_view.PhotosSnapshot(True, True, "1 recent items", [
+        Photo("a", "2026-10-06T16:21:00Z", "photo", tmp_path / "t.webp"),
+    ])
+    monkeypatch.setattr(photos_view, "find_plugin", lambda: found[0])
+    monkeypatch.setattr(photos_view, "load_recent", lambda manifest: snapshot)
+    fetched = []
+    monkeypatch.setattr(photos_view, "fetch_original",
+                        lambda manifest, photo_id: fetched.append(photo_id) or tmp_path / "a")
+    opened = []
+    from PySide6.QtGui import QDesktopServices
+    monkeypatch.setattr(QDesktopServices, "openUrl", lambda url: opened.append(url))
+    controller = BridgeController(
+        backend=_Backend(), setup=object(), subscribe=False, autostart=False,
+    )
+    monkeypatch.setattr(
+        controller, "_run_photo",
+        lambda operation, on_done=None, *_args, **_kwargs: on_done(operation()),
+    )
+    controller.watchPhotos(True)
+    found[0] = None  # disabled after the list loaded
+    controller.openPhoto("a")
+    assert fetched == [] and opened == []
+
+    controller._plugin_set = (("io.example.demo", True),)
+    monkeypatch.setattr(controller._plugin_settings, "state",
+                        lambda: {"loaded": True,
+                                 "plugins": [{"id": "io.example.demo", "enabled": False}]})
+    monkeypatch.setattr(photos_view, "load_recent",
+                        lambda manifest: photos_view.PhotosSnapshot(False, False, "none", []))
+    controller._plugin_set_changed()
+    assert controller._photos_plugin is None and controller.photos["items"] == []
+
+
+def test_installing_the_first_plugin_reloads_cards_and_photos(monkeypatch):
+    controller = BridgeController(
+        backend=_Backend(), setup=object(), subscribe=False, autostart=False,
+    )
+    reloads = []
+    photo_refreshes = []
+    monkeypatch.setattr(controller._plugin_surfaces, "schedule_reload",
+                        lambda: reloads.append(True))
+    monkeypatch.setattr(controller, "refreshPhotos", lambda: photo_refreshes.append(True))
+    state = {"loaded": False, "plugins": []}
+    monkeypatch.setattr(controller._plugin_settings, "state", lambda: dict(state))
+
+    controller._plugin_set_changed()  # list not loaded yet: nothing known
+    assert controller._plugin_set is None and reloads == []
+    state["loaded"] = True
+    controller._plugin_set_changed()  # first load: no plugin installed
+    assert controller._plugin_set == () and reloads == []
+    state["plugins"] = [{"id": "io.example.demo", "enabled": True}]
+    controller._plugin_set_changed()  # the very first plugin was installed
+    assert reloads == [True] and photo_refreshes == [True]
+    controller._plugin_set_changed()  # unchanged: no second reload
+    assert reloads == [True]
 
 
 def test_manual_reconnect_reports_an_unreachable_phone(monkeypatch):

@@ -798,13 +798,15 @@ bus, not inside the backend (see [PLUGINS.md](PLUGINS.md)). Nothing is
 installed by default.
 
 - **Install** with `blueferry plugins install URL` (any https Git URL) or
-  pick one from the curated store (`blueferry plugins available`). Every install and update
+  pick one from the curated store (`blueferry plugins available`), or from
+  **Settings › Plugins** in the Qt client. Every install and update
   shows the source, the pinned ref and commit, the capabilities and the
   command the plugin's manifest runs (`Exec`), and asks first. Each plugin
   gets its own virtual environment under `~/.local/share/blueferry/plugins`;
   pip fetches its dependencies from the network. Everything runs as you;
   nothing asks for root.
-- **Settings** of a plugin come from its schema:
+- **Settings** of a plugin come from its schema: a form in the Qt client with
+  help links, **Test connection** and, where offered, a browser sign-in, or
   `blueferry plugins config ID --set KEY=VALUE --secret KEY` (`--test`,
   `--login`). BlueFerry stores no plugin secrets; each plugin keeps its own
   (the published plugins use the desktop keyring).
@@ -814,6 +816,10 @@ installed by default.
   example the next calendar entry or a running transfer, with their
   actions; `blueferry send FILE --to TARGET` hands files to a plugin target
   such as "iPhone (LocalSend)".
+- **From Plugins** in the Qt phone card shows the same items with buttons;
+  a plugin that fails shows a dimmed line. **Send to…** at the end of that
+  section hands files to a plugin target, and an item can also take files
+  directly (file dialog or drop).
 - **Popups** from plugins follow BlueFerry's notification setting: off with
   "None", only the plugin name while notification content is hidden, at most
   six a minute per plugin. The popup's text never travels on a D-Bus
@@ -821,9 +827,9 @@ installed by default.
 - **Photos**: with a plugin that has the `photos` capability, such as
   [blueferry-plugin-immich](https://github.com/joshii-h/blueferry-plugin-immich)
   for a self-hosted Immich server, `blueferry photos recent` lists the newest
-  photos and videos.
+  photos and videos and the Qt client's **Photos** tab shows them.
 - **Logs**: plugins write `~/.local/state/blueferry/plugins/<id>.log`
-  (owner-only, rotated, secrets masked); `blueferry plugins log ID`.
+  (owner-only, rotated, secrets masked); `blueferry plugins log ID` or **Show Log** in the settings.
 
 ```bash
 blueferry plugins list

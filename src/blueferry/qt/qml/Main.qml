@@ -136,9 +136,11 @@ Kirigami.ApplicationWindow {
     readonly property int messagesTab: 0
     readonly property int callsTab: 1
     readonly property int notificationsTab: 2
+    readonly property int photosTab: 3
     property int currentTab: messagesTab
     property bool callHistoryWatched: false
     property bool notificationsWatched: false
+    property bool photosWatched: false
     readonly property bool tabsVisible: root.visible && root.visibility !== Window.Minimized
         && root.iphoneSettingsPage === null && tabsContent.visible
     onCurrentTabChanged: {
@@ -161,6 +163,11 @@ Kirigami.ApplicationWindow {
         if (notifications !== root.notificationsWatched) {
             root.notificationsWatched = notifications
             bridge.watchNotifications(notifications)
+        }
+        const photos = root.tabsVisible && root.currentTab === root.photosTab
+        if (photos !== root.photosWatched) {
+            root.photosWatched = photos
+            bridge.watchPhotos(photos)
         }
     }
 
@@ -617,6 +624,11 @@ Kirigami.ApplicationWindow {
                                 text: qsTr("Notifications")
                                 icon.name: "notifications"
                             }
+                            Controls.TabButton {
+                                objectName: "photosTabButton"
+                                text: qsTr("Photos")
+                                icon.name: "folder-pictures"
+                            }
                         }
 
                         StackLayout {
@@ -999,6 +1011,10 @@ Kirigami.ApplicationWindow {
                             }
 
                             NotificationsTab {
+                                bridge: root.bridge
+                            }
+
+                            PhotosTab {
                                 bridge: root.bridge
                             }
                         }

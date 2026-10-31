@@ -17,7 +17,7 @@ from PySide6.QtCore import (
 )
 from PySide6.QtDBus import QDBusConnection
 
-from blueferry import __version__, phone_audio_view, phone_overview
+from blueferry import __version__, phone_audio_view, phone_overview, photos_view
 from blueferry.backend_lifecycle import ensure_backend_current, restart_backend
 from blueferry.bluetooth_devices import iphone_candidates
 from blueferry.client import BackendClient, TetherUnsupportedError
@@ -31,9 +31,13 @@ from blueferry.doctor_report import DoctorReport, run_doctor
 from blueferry.i18n import _
 from blueferry.models import BackendStatus, CallsSnapshot
 from blueferry.onboarding import OnboardingState, effective_compatibility
+from blueferry.plugin_api.client import Photo
+from blueferry.plugin_api.manifest import PluginManifest
 from blueferry.protocol import BUS_NAME, EVENTS_IFACE, OBJECT_PATH, TETHER_IFACE
 from blueferry.qt import phone_link
 from blueferry.qt.avatars import avatar_url
+from blueferry.qt.plugin_settings import PluginSettings
+from blueferry.qt.plugin_surfaces import PluginSurfaces
 from blueferry.qt.tasks import Task
 from blueferry.quirks_report import issue_report, issue_url
 from blueferry.reconnect_view import UNREACHABLE_TEXT, reconnect_view, result_text
@@ -81,6 +85,9 @@ class BridgeController(QObject):
     callHistoryChanged = Signal()
     nowPlayingChanged = Signal()
     notificationsChanged = Signal()
+    photosChanged = Signal()
+    pluginSettingsChanged = Signal()
+    pluginSurfacesChanged = Signal()
     phoneIdentityChanged = Signal()
     featuresChanged = Signal()
     doctorChanged = Signal()
@@ -98,6 +105,8 @@ class BridgeController(QObject):
         subscribe: bool = True,
         autostart: bool = True,
         parent: QObject | None = None,
+        plugin_settings: PluginSettings | None = None,
+        plugin_surfaces: PluginSurfaces | None = None,
         doctor: Callable[[], DoctorReport] = run_doctor,
     ) -> None:
         super().__init__(parent)
@@ -205,6 +214,21 @@ class BridgeController(QObject):
         self.statusChanged.connect(self._sync_notifications)
         self.devicesChanged.connect(self.phoneIdentityChanged)
         self.configuredChanged.connect(self.phoneIdentityChanged)
+        # The Photos tab (a plugin with the photos capability).
+        # Plugin downloads can take minutes: never share the backend worker
+        # or its busy flag. Keep at most one photo operation and one refresh.
+        self._photos_pool = QThreadPool(self)
+        self._photos_pool.setMaxThreadCount(1)
+        self._photos_working = False
+        self._photos_again = False
+        self._photos_generation = 0
+        self._photos_watched = False
+        self._photos_plugin: PluginManifest | None = None
+        self._photos: dict = {"present": False, "ready": False, "loaded": False,
+                              "hint": "", "items": [], "busy": False}
+        # Plugin management runs git, pip and plugin calls on its own queue.
+        self._plugin_settings = plugin_settings or PluginSettings(parent=self)
+        self._plugin_settings.changed.connect(self.pluginSettingsChanged)
         self._tether: dict = {"available": False}
         self._tether_pending = False
         self._tether_timer = QTimer(self)
@@ -212,6 +236,16 @@ class BridgeController(QObject):
         self._tether_timer.setInterval(100)
         self._tether_timer.timeout.connect(self.refreshTether)
         self._bus = QDBusConnection.sessionBus() if subscribe else None
+        # "From Plugins" and "Send to…", on their own pool.
+        self._plugin_surfaces = plugin_surfaces or PluginSurfaces(
+            bus=self._bus, parent=self,
+        )
+        self._plugin_surfaces.changed.connect(self.pluginSurfacesChanged)
+        # Enabling, installing or removing a plugin changes the card. None
+        # until the first plugin list has loaded; an empty tuple means "no
+        # plugin installed", so installing the very first one still reloads.
+        self._plugin_set: tuple | None = None
+        self._plugin_settings.changed.connect(self._plugin_set_changed)
         if subscribe:
             self._subscribe()
         if autostart:
@@ -469,6 +503,291 @@ class BridgeController(QObject):
             if mac and device.get("mac") == mac and device.get("name"):
                 return str(device["name"])
         return "iPhone"
+
+    @Property("QVariantMap", notify=pluginSettingsChanged)
+    def pluginSettings(self):
+        return self._plugin_settings.state()
+
+    @Slot()
+    def loadPlugins(self) -> None:
+        self._plugin_settings.load()
+
+    @Slot(str, bool)
+    def setPluginEnabled(self, plugin_id: str, enabled: bool) -> None:
+        self._plugin_settings.set_enabled(str(plugin_id), bool(enabled))
+
+    @Slot(str, str)
+    def preparePluginInstall(self, url: str, ref: str) -> None:
+        self._plugin_settings.prepare_install(str(url), str(ref))
+
+    @Slot(str)
+    def installStorePlugin(self, plugin_id: str) -> None:
+        self._plugin_settings.install_from_store(str(plugin_id))
+
+    @Slot(str)
+    def preparePluginUpdate(self, plugin_id: str) -> None:
+        self._plugin_settings.prepare_update(str(plugin_id))
+
+    @Slot()
+    def confirmPluginInstall(self) -> None:
+        self._plugin_settings.confirm_install()
+
+    @Slot()
+    def cancelPluginInstall(self) -> None:
+        self._plugin_settings.cancel_install()
+
+    @Slot(str)
+    def removePlugin(self, plugin_id: str) -> None:
+        self._plugin_settings.remove(str(plugin_id))
+
+    @Slot(str)
+    def loadPluginConfig(self, plugin_id: str) -> None:
+        self._plugin_settings.load_config(str(plugin_id))
+
+    @Slot(str, "QVariantMap")
+    def savePluginConfig(self, plugin_id: str, values: dict) -> None:
+        self._plugin_settings.save_config(str(plugin_id), dict(values or {}))
+
+    @Slot()
+    def closePluginConfig(self) -> None:
+        self._plugin_settings.close_config()
+
+    @Slot(str, "QVariantMap", result="QVariantMap")
+    def checkPluginConfig(self, plugin_id: str, values: dict) -> dict:
+        return self._plugin_settings.check_config(str(plugin_id), dict(values or {}))
+
+    @Slot(str, "QVariantMap")
+    def testPluginConfig(self, plugin_id: str, values: dict) -> None:
+        self._plugin_settings.test_config(str(plugin_id), dict(values or {}))
+
+    @Slot(str, "QVariantMap")
+    def signInPlugin(self, plugin_id: str, values: dict) -> None:
+        self._plugin_settings.sign_in(str(plugin_id), dict(values or {}))
+
+    @Slot()
+    def cancelPluginSignIn(self) -> None:
+        self._plugin_settings.cancel_sign_in()
+
+    @Slot(str)
+    def openPluginLog(self, plugin_id: str) -> None:
+        self._plugin_settings.open_log(str(plugin_id))
+
+    @Slot(str, str)
+    def openPluginHelp(self, plugin_id: str, key: str) -> None:
+        self._plugin_settings.open_help(str(plugin_id), str(key))
+
+    @Slot(bool)
+    def loadPluginStore(self, refresh: bool) -> None:
+        self._plugin_settings.load_store(bool(refresh))
+
+    @Slot("QVariantList")
+    def setPluginIndexes(self, urls: list) -> None:
+        self._plugin_settings.set_indexes([str(url) for url in urls or []])
+
+    @Slot()
+    def clearPluginMessage(self) -> None:
+        self._plugin_settings.clear_message()
+
+    def _plugin_set_changed(self) -> None:
+        state = self._plugin_settings.state()
+        if not state.get("loaded"):
+            return
+        current = tuple(
+            (row.get("id"), row.get("enabled")) for row in state.get("plugins", [])
+        )
+        if current != self._plugin_set:
+            known = self._plugin_set is not None
+            self._plugin_set = current
+            if known:
+                self._plugin_surfaces.schedule_reload()
+                # The photo plugin may be gone or disabled now: forget it
+                # until the next load finds it again.
+                self._clear_photos()
+                self.refreshPhotos()
+
+    @Property("QVariantMap", notify=pluginSurfacesChanged)
+    def pluginSurfaces(self):
+        """cards (per plugin: name, ok, hint, items with actions), busy,
+        message, targets for "Send to…"; everything plain text."""
+        return self._plugin_surfaces.state()
+
+    @Slot()
+    def refreshPluginCards(self) -> None:
+        self._plugin_surfaces.reload()
+
+    @Slot(str, str, str)
+    def invokePluginAction(self, plugin_id: str, item_id: str, action_id: str) -> None:
+        self._plugin_surfaces.invoke(str(plugin_id), str(item_id), str(action_id))
+
+    @Slot()
+    def clearPluginCardMessage(self) -> None:
+        self._plugin_surfaces.clear_message()
+
+    @Slot()
+    def loadShareTargets(self) -> None:
+        self._plugin_surfaces.load_targets()
+
+    @Slot(str, "QVariantList")
+    def sendToTarget(self, key: str, urls: list) -> None:
+        self._plugin_surfaces.send(str(key), list(urls or []))
+
+    @Slot(str, str, str, "QVariantList")
+    def sendFromPluginCard(self, plugin_id: str, target_id: str, label: str, urls: list) -> None:
+        """A card action with send_to, or files dropped on a card item."""
+        self._plugin_surfaces.send_from_card(
+            str(plugin_id), str(target_id), str(label), list(urls or []))
+
+    @Property("QVariantMap", notify=photosChanged)
+    def photos(self):
+        """present, ready, loaded, hint and items (id, label, video, thumbnail, original)."""
+        return self._photos
+
+    @Slot(bool)
+    def watchPhotos(self, watched: bool) -> None:
+        """The Photos tab became visible (load) or hidden (forget the list)."""
+        if self._photos_watched == bool(watched):
+            return
+        self._photos_watched = bool(watched)
+        if self._photos_watched:
+            self.refreshPhotos()
+            return
+        self._clear_photos()
+
+    def _clear_photos(self) -> None:
+        self._photos_generation += 1
+        self._photos_again = False
+        self._photos_plugin = None
+        self._photos = {"present": False, "ready": False, "loaded": False,
+                        "hint": "", "items": [], "busy": self._photos_working}
+        self.photosChanged.emit()
+
+    def _current_photos(self, generation: int) -> bool:
+        return self._photos_watched and generation == self._photos_generation
+
+    def _run_photo(
+        self, operation: Callable[[], object], on_done: Callable[[object], None],
+        on_failed: Callable[[str], None],
+    ) -> None:
+        self._photos_working = True
+        self._photos = {**self._photos, "busy": True}
+        self.photosChanged.emit()
+
+        def finished() -> None:
+            self._photos_working = False
+            self._photos = {**self._photos, "busy": False}
+            self.photosChanged.emit()
+            if self._photos_again:
+                self._photos_again = False
+                self.refreshPhotos()
+
+        def completed(value: object) -> None:
+            try:
+                on_done(value)
+            finally:
+                finished()
+
+        def failed(message: str) -> None:
+            try:
+                on_failed(message)
+            finally:
+                finished()
+
+        task = Task(operation)
+        self._tasks.add(task)
+        task.signals.done.connect(completed)
+        task.signals.failed.connect(failed)
+        task.signals.finished.connect(lambda: self._tasks.discard(task))
+        self._photos_pool.start(task)
+
+    @Slot()
+    def refreshPhotos(self) -> None:
+        if not self._photos_watched:
+            return
+        if self._photos_working:
+            self._photos_again = True
+            return
+        generation = self._photos_generation
+
+        def load():
+            if not self._current_photos(generation):
+                return None
+            manifest = photos_view.find_plugin()
+            # Oversized or unreadable thumbnails become placeholders here, off
+            # the UI thread and before QML's image loader ever sees them.
+            return manifest, photos_view.with_safe_thumbnails(photos_view.load_recent(manifest))
+
+        def completed(value: object) -> None:
+            if not self._current_photos(generation) or value is None:
+                return
+            manifest, snapshot = value  # type: ignore[misc]
+            self._photos_plugin = manifest
+            self._photos = {
+                **self._photos,
+                "present": snapshot.present,
+                "ready": snapshot.ready,
+                "loaded": True,
+                "hint": snapshot.hint,
+                "items": [_photo_item(photo) for photo in snapshot.photos],
+            }
+            self.photosChanged.emit()
+
+        def failed(message: str) -> None:
+            if not self._current_photos(generation):
+                return
+            # Never leave the tab spinning: show why instead.
+            self._photos = {
+                **self._photos,
+                "present": self._photos_plugin is not None, "ready": False, "loaded": True,
+                "hint": message or _("Photos unavailable"), "items": [],
+            }
+            self.photosChanged.emit()
+
+        self._run_photo(load, completed, failed)
+
+    @Slot(str)
+    def openPhoto(self, photo_id: str) -> None:
+        """Download the original (plugin) and open it in the default viewer."""
+        manifest = self._photos_plugin
+        if manifest is None or not self._photos_watched or self._photos_working:
+            return
+        if not any(item["id"] == photo_id for item in self._photos["items"]):
+            return
+        generation = self._photos_generation
+
+        def fetch() -> object:
+            if not self._current_photos(generation):
+                return None
+            # Disabled or removed since the list loaded: never call it (a call
+            # would start a disabled plugin again by D-Bus activation).
+            current = photos_view.find_plugin()
+            if current is None or current.id != manifest.id:
+                return None
+            original = photos_view.fetch_original(current, str(photo_id))
+            current = photos_view.find_plugin()
+            if current is None or current.id != manifest.id:
+                return None
+            return original
+
+        def completed(value: object) -> None:
+            from PySide6.QtCore import QUrl
+            from PySide6.QtGui import QDesktopServices
+
+            if value is None or not self._current_photos(generation):
+                return
+            url = QUrl.fromLocalFile(str(value))
+            items = [
+                {**item, "original": url.toString()} if item["id"] == photo_id else item
+                for item in self._photos["items"]
+            ]
+            self._photos = {**self._photos, "items": items}
+            self.photosChanged.emit()
+            QDesktopServices.openUrl(url)
+
+        def failed(message: str) -> None:
+            if self._current_photos(generation):
+                self._operation_failed(message)
+
+        self._run_photo(fetch, completed, failed)
 
     @Property("QVariantList", notify=notificationsChanged)
     def notifications(self):
@@ -1904,3 +2223,19 @@ class BridgeController(QObject):
 
         adapter = self._configuration.adapter.strip() or None
         self._run(lambda: self._setup.forget(mac, adapter=adapter), completed)
+
+
+def _photo_item(photo: Photo) -> dict[str, object]:
+    """One grid cell; paths become file URLs, text stays plain."""
+    from PySide6.QtCore import QUrl
+
+    def url(path: object) -> str:
+        return QUrl.fromLocalFile(str(path)).toString() if path else ""
+
+    return {
+        "id": photo.id,
+        "label": photos_view.label(photo),
+        "video": photo.type == "video",
+        "thumbnail": url(photo.thumbnail),
+        "original": url(photo.original),
+    }

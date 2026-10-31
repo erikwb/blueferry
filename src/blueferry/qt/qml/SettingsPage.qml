@@ -33,6 +33,7 @@ Kirigami.Page {
         { "key": "calls", "name": qsTr("Calls & Audio"), "icon": "call-start" },
         { "key": "network", "name": qsTr("Network"), "icon": "network-wireless" },
         { "key": "security", "name": qsTr("Security"), "icon": "preferences-security" },
+        { "key": "plugins", "name": qsTr("Plugins"), "icon": "preferences-plugin" },
         { "key": "about", "name": qsTr("About"), "icon": "help-about" }
     ]
     readonly property var features: (settingsPage.bridge.features || ({})).items || ({})
@@ -182,6 +183,7 @@ Kirigami.Page {
                             : settingsPage.category === "calls" ? callsComponent
                             : settingsPage.category === "network" ? networkComponent
                             : settingsPage.category === "security" ? securityComponent
+                            : settingsPage.category === "plugins" ? pluginsComponent
                             : settingsPage.category === "about" ? aboutComponent
                             : null
                     }
@@ -220,6 +222,10 @@ Kirigami.Page {
             onStoragePolicyRequested: policy => settingsPage.storagePolicyRequested(policy)
             onClearHistoryRequested: settingsPage.clearHistoryRequested()
         }
+    }
+    Component {
+        id: pluginsComponent
+        SettingsPlugins { bridge: settingsPage.bridge }
     }
     Component {
         id: aboutComponent
