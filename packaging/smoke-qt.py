@@ -45,6 +45,7 @@ def main() -> int:
             """Keep single-instance activation off the deliberately absent bus."""
 
             requested = Signal(str, str)
+            dialRequested = Signal(str, str)
             primary = True
 
             def ready(self):

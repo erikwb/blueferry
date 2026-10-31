@@ -80,6 +80,7 @@ class NotificationsScreen(ModalScreen[str | None]):
             fetch=client.notifications,
             on_change=self._update_view,
         )
+        self._status: Mapping[str, Any] = dict(status)
 
     def compose(self) -> ComposeResult:
         with Vertical(id="notifications-dialog", classes="dialog"):
@@ -96,6 +97,8 @@ class NotificationsScreen(ModalScreen[str | None]):
 
     def on_mount(self) -> None:
         self._shown = True
+        # Access, privacy and phone profile gate every read and every row.
+        self.history.sync_status(self._status)
         self.history.watch(True)
         self._update_view()
         self.query_one("#notifications-close", Button).focus()
@@ -107,10 +110,11 @@ class NotificationsScreen(ModalScreen[str | None]):
 
     def status_changed(self, status: Mapping[str, Any]) -> None:
         """A new GetStatus: was the list switched on or off?"""
+        self._status = dict(status)
+        self.history.sync_status(self._status)
         hint = phone_link_view.feature_hints(status).get("notifications", "")
         if hint != self._opt_in_hint:
             self._opt_in_hint = hint
-            self.history.refresh()
             self._update_view()
 
     def invalidated(self) -> None:

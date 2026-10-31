@@ -13,15 +13,17 @@ from gi.repository import GLib, GObject
 
 from blueferry.backend_lifecycle import ensure_backend_current, restart_backend
 from blueferry.bus import get_session_bus
-from blueferry.client import BackendClient, CompatibilityCache
-from blueferry.doctor_report import DoctorReport, run_doctor, terminate_running
+from blueferry.client import BackendClient, CompatibilityCache, TetherUnsupportedError
+from blueferry.doctor_report import DoctorReport, DoctorRunner
 from blueferry.models import BackendStatus
 from blueferry.protocol import (
     BUS_NAME,
     EVENTS_IFACE,
     OBJECT_PATH,
+    TETHER_IFACE,
 )
 from blueferry.setup_client import SetupClient
+from blueferry.tether_status import TetherStatus
 
 log = logging.getLogger(__name__)
 T = TypeVar("T")
@@ -55,6 +57,7 @@ class DaemonClient(GObject.Object):
         "status-invalidated": (GObject.SignalFlags.RUN_FIRST, None, ()),
         "availability-changed": (GObject.SignalFlags.RUN_FIRST, None, (bool,)),
         "open-message-requested": (GObject.SignalFlags.RUN_FIRST, None, (str,)),
+        "tether-invalidated": (GObject.SignalFlags.RUN_FIRST, None, ()),
         # Content-free invalidations of the opt-in media, call history and
         # notification list.
         "now-playing-changed": (GObject.SignalFlags.RUN_FIRST, None, ()),
@@ -78,6 +81,7 @@ class DaemonClient(GObject.Object):
         )
         # Local work that does not talk to the daemon and may take long
         # (``blueferry doctor``), so it never holds up reads or mutations.
+        self._doctor_runner = DoctorRunner()
         self._local_executor = ThreadPoolExecutor(
             max_workers=1,
             thread_name_prefix="blueferry-gtk-local",
@@ -122,6 +126,16 @@ class DaemonClient(GObject.Object):
                 path=OBJECT_PATH,
             )
         )
+        # Optional Tether1: content-free, clients refetch with GetState.
+        self._matches.append(
+            self._bus.add_signal_receiver(
+                lambda: self.emit("tether-invalidated"),
+                dbus_interface=TETHER_IFACE,
+                signal_name="TetherChanged",
+                bus_name=BUS_NAME,
+                path=OBJECT_PATH,
+            )
+        )
         for signal_name, gobject_signal in (
             ("NowPlayingChanged", "now-playing-changed"),
             ("CallHistoryChanged", "call-history-changed"),
@@ -151,7 +165,7 @@ class DaemonClient(GObject.Object):
         self._local_executor.shutdown(wait=False, cancel_futures=True)
         # The interpreter joins the worker at exit: end a doctor run now
         # instead of waiting for its timeout.
-        terminate_running()
+        self._doctor_runner.stop()
 
     def _call_backend(self, operation: Callable[[BackendClient], T]) -> T:
         """Call the shared backend facade on a worker-owned connection."""
@@ -664,6 +678,51 @@ class DaemonClient(GObject.Object):
             mutation=True,
         )
 
+    def _tether_operation(
+        self, request: Callable[[BackendClient], TetherStatus]
+    ) -> Callable[[], TetherStatus | None]:
+        """Run a Tether1 call; ``None`` means the daemon does not offer it."""
+        def operation() -> TetherStatus | None:
+            try:
+                return self._call_backend(request)
+            except TetherUnsupportedError:
+                return None
+
+        return operation
+
+    def get_tether_async(self, on_ok, on_err=None) -> None:
+        self._submit(
+            self._tether_operation(lambda backend: backend.tether_state()),
+            on_ok,
+            on_err,
+        )
+
+    def set_tether_connected_async(self, connected: bool, on_ok, on_err) -> None:
+        """Explicit user action; the daemon never tethers without one."""
+        self._submit(
+            self._tether_operation(
+                lambda backend: backend.tether_connect()
+                if connected
+                else backend.tether_disconnect()
+            ),
+            on_ok,
+            on_err,
+            mutation=True,
+        )
+
+    def configure_tether_async(
+        self, enabled: bool, autoconnect: bool, on_ok, on_err
+    ) -> None:
+        """Save the opt-in; off makes the daemon ignore PAN links entirely."""
+        self._submit(
+            self._tether_operation(
+                lambda backend: backend.tether_configure(enabled, autoconnect)
+            ),
+            on_ok,
+            on_err,
+            mutation=True,
+        )
+
     # ---- opt-in iPhone media and call history ---------------------------
 
     def now_playing_async(self, on_ok, on_err=None) -> None:
@@ -751,7 +810,7 @@ class DaemonClient(GObject.Object):
         self._submit(restart_backend, on_ok, on_err, mutation=True)
 
     def run_doctor_async(
-        self, on_ok, on_err, runner: Callable[[], DoctorReport] = run_doctor,
+        self, on_ok, on_err, runner: Callable[[], DoctorReport] | None = None,
     ) -> None:
         """Run ``blueferry doctor`` in a child process off the GTK thread."""
-        self._submit(runner, on_ok, on_err, local=True)
+        self._submit(runner or self._doctor_runner.run, on_ok, on_err, local=True)

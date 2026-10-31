@@ -20,7 +20,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, Static, TextArea
 
 from blueferry import doctor_report
-from blueferry.doctor_report import DoctorReport, run_doctor
+from blueferry.doctor_report import DoctorReport, DoctorRunner
 from blueferry.i18n import _
 from blueferry.text_safety import terminal_text
 from blueferry.tui_tasks import TextualTaskRunner
@@ -35,8 +35,14 @@ class DoctorScreen(ModalScreen[None]):
         Binding("escape", "close", _("Close"), show=False),
     ]
 
-    def __init__(self, runner: Callable[[], DoctorReport] = run_doctor) -> None:
+    def __init__(self, runner: Callable[[], DoctorReport] | None = None) -> None:
         super().__init__()
+        # Each screen owns its children, so closing it ends a check still
+        # running without affecting later screens. A test seam skips this.
+        self._owner: DoctorRunner | None = None
+        if runner is None:
+            self._owner = DoctorRunner()
+            runner = self._owner.run
         self._runner = runner
         self.state: dict[str, Any] = doctor_report.idle_state()
 
@@ -69,7 +75,12 @@ class DoctorScreen(ModalScreen[None]):
         # Leaving while the check runs: end the child instead of letting it
         # run into its timeout behind a closed screen.
         if self.state.get("running") is True:
-            doctor_report.terminate_running()
+            self.cancel()
+
+    def cancel(self) -> None:
+        """End this screen's check for good; later runs need a new screen."""
+        if self._owner is not None:
+            self._owner.stop()
 
     def run_check(self) -> None:
         if self.state.get("running") is True:

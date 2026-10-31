@@ -58,7 +58,7 @@ jobs:
           if command -v systemd-analyze >/dev/null; then
             systemd-analyze verify --man=no bluetooth.service
           fi
-          grep -Fx 'ExecStart=/usr/lib/bluetooth/bluetoothd -E' \
+          grep -Fx 'ExecStart=/usr/lib/bluetooth/bluetoothd -E -P hfp' \
             /usr/lib/systemd/system/bluetooth.service.d/blueferry.conf
           test -x /usr/lib/bluetooth/bluetoothd
           /usr/lib/bluetooth/bluetoothd --help 2>&1 | grep -F experimental
@@ -66,6 +66,8 @@ jobs:
             /usr/share/libalpm/hooks/70-blueferry-restart-bluetooth.hook
           blueferry version
           python -c 'import blueferry; print(blueferry.__version__)'
+      - name: Check plugin installation prerequisites
+        run: sh packaging/smoke-plugin-env.sh
       - name: Load the installed Qt client
         run: timeout 30s /usr/bin/python3 -I packaging/smoke-qt.py
       - uses: actions/upload-artifact@v4
@@ -99,7 +101,7 @@ jobs:
           if command -v systemd-analyze >/dev/null; then
             systemd-analyze verify --man=no bluetooth.service
           fi
-          grep -Fx 'ExecStart=/usr/lib/bluetooth/bluetoothd -E' \
+          grep -Fx 'ExecStart=/usr/lib/bluetooth/bluetoothd -E -P hfp' \
             /usr/lib/systemd/system/bluetooth.service.d/blueferry.conf
           test -x /usr/lib/bluetooth/bluetoothd
           /usr/lib/bluetooth/bluetoothd --help 2>&1 | grep -F experimental
@@ -113,6 +115,8 @@ jobs:
           smoke_tui blueferry-tui
           smoke_tui blueferry tui
 
+      - name: Check plugin installation prerequisites
+        run: sh packaging/smoke-plugin-env.sh
       - name: Load the installed Qt client
         run: timeout 30s /usr/bin/python3 -I packaging/smoke-qt.py
 
@@ -164,6 +168,8 @@ jobs:
           }
           smoke_tui blueferry-tui
           smoke_tui blueferry tui
+      - name: Check plugin installation prerequisites
+        run: sh packaging/smoke-plugin-env.sh
       - name: Load the installed Qt client
         run: timeout 30s /usr/bin/python3 -I packaging/smoke-qt.py
       - uses: actions/upload-artifact@v4
@@ -254,6 +260,8 @@ jobs:
           smoke_tui blueferry-tui
           smoke_tui blueferry tui
 
+      - name: Check plugin installation prerequisites
+        run: sh packaging/smoke-plugin-env.sh
       - name: Load the installed Qt client
         if: matrix.qt == true
         run: timeout 30s /usr/bin/python3 -I packaging/smoke-qt.py
@@ -303,6 +311,8 @@ jobs:
           }
           smoke_tui blueferry-tui
           smoke_tui blueferry tui
+      - name: Check plugin installation prerequisites
+        run: sh packaging/smoke-plugin-env.sh
       - name: Load the installed Qt client
         run: timeout 30s /usr/bin/python3 -I packaging/smoke-qt.py
       - uses: actions/upload-artifact@v4
@@ -347,7 +357,7 @@ jobs:
           if command -v systemd-analyze >/dev/null; then
             systemd-analyze verify --man=no bluetooth.service
           fi
-          grep -Fx 'ExecStart=/usr/libexec/bluetooth/bluetoothd -E' \
+          grep -Fx 'ExecStart=/usr/libexec/bluetooth/bluetoothd -E -P hfp' \
             /usr/lib/systemd/system/bluetooth.service.d/blueferry.conf
           test -x /usr/libexec/bluetooth/bluetoothd
           /usr/libexec/bluetooth/bluetoothd --help 2>&1 | grep -F experimental
@@ -363,6 +373,8 @@ jobs:
           smoke_tui blueferry-tui
           smoke_tui blueferry tui
 
+      - name: Check plugin installation prerequisites
+        run: sh packaging/smoke-plugin-env.sh
       - name: Load the installed Qt client
         run: timeout 30s /usr/bin/python3 -I packaging/smoke-qt.py
 
