@@ -745,7 +745,10 @@ def _exercise_pins():
     from tests.client_fakes import ManualRunner
 
     runner = ManualRunner()
-    status = {**NOTIFICATIONS_ON, "notification_muted_app_count": 1}
+    status = {
+        **NOTIFICATIONS_ON, "notification_muted_app_count": 1,
+        "notification_content_shown": True,
+    }
     factory, made = _recording(runner.timer)
     window, client = _window(status, timer=factory)
     page = window.notifications
