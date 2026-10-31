@@ -7,8 +7,8 @@ läuft im Hintergrunddienst, und nichts ist ab Werk installiert.
 ## Ein Plugin installieren
 
 Im KDE-Client **Settings › Plugins** öffnen. Der Store listet ausgewählte
-Plugins; **Install** zeigt Quelle, Version, was das Plugin darf (seine
-Fähigkeiten) und den Befehl, den es ausführt (`Exec` aus seinem Manifest),
+Plugins; **Install** zeigt Quelle, Version, welche Funktionen das Plugin anbietet
+(seine Fähigkeiten), und den Befehl, den es ausführt (`Exec` aus seinem Manifest),
 und fragt vorher nach. Man kann auch jede https-Git-URL einfügen. Im
 Terminal:
 
@@ -20,9 +20,14 @@ blueferry plugins list
 
 Jedes Plugin bekommt eine eigene Python-Umgebung unter
 `~/.local/share/blueferry/plugins`; seine Abhängigkeiten kommen aus dem
-Netz. Alles läuft als du, nichts fragt nach root. **Update**, **Remove** und der
-Schalter neben einem Plugin (oder `blueferry plugins update`, `remove`,
-`disable`) beenden einen laufenden Plugin-Prozess, den BlueFerry
+Netz. Plugins, ihre Abhängigkeiten und ihr Installationscode laufen mit
+deinen Benutzerrechten. Sie sind nicht in einer Sandbox: Fähigkeiten
+beschreiben Funktionen und beschränken den Zugriff auf deine Dateien, das
+Netzwerk oder Sitzungsdienste nicht. Installiere Plugins und Updates nur
+aus Quellen, denen du vertraust. Nichts fragt nach root.
+**Update**, **Remove** und der Schalter neben einem Plugin (oder
+`blueferry plugins update`, `remove`, `disable`) beenden einen laufenden
+Plugin-Prozess, den BlueFerry
 installiert hat. Deaktivieren sorgt außerdem dafür, dass BlueFerry das
 Plugin sofort nicht mehr aufruft.
 

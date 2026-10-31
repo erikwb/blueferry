@@ -497,6 +497,15 @@ def isolate_bluez_main_conf(tmp_path_factory, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def isolate_sys_class_net(tmp_path_factory, monkeypatch):
+    """Never let tether link checks see the host's network interfaces."""
+    from blueferry import tether
+
+    empty = tmp_path_factory.mktemp("sys-class-net")
+    monkeypatch.setattr(tether, "SYS_CLASS_NET", str(empty))
+
+
+@pytest.fixture(autouse=True)
 def pin_init_system(monkeypatch):
     """Describe systemd hosts unless a test opts into another init system.
 
