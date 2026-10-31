@@ -9,7 +9,6 @@ from blueferry.plugin_api.surfaces import Action, CardItem
 from blueferry.plugin_surfaces_model import PluginSurfacesModel
 from blueferry.tui_phone import PhoneOverviewScreen
 from blueferry.tui_plugins import (
-    CardChangeWatcher,
     PluginCardsPanel,
     SendToScreen,
     card_options,
@@ -225,25 +224,6 @@ def test_overview_shows_the_plugin_panel_only_when_asked() -> None:
             await _until(pilot, lambda: bus.removed)  # closing stops the watching
 
     _run_headless(scenario())
-
-
-def test_watcher_follows_the_named_plugins_and_survives_a_missing_bus() -> None:
-    bus = _Bus()
-    changes: list[None] = []
-    watcher = CardChangeWatcher(lambda: changes.append(None), lambda: bus)
-    watcher.watch(["a.b", "c.d", ""])
-    assert watcher.names == ["a.b", "c.d"]
-    watcher.watch(["c.d"])
-    assert bus.removed == ["a.b"] and watcher.names == ["c.d"]
-    bus.receivers["c.d"]()
-    assert changes == [None]
-
-    def no_bus():
-        raise RuntimeError("no session bus")
-
-    broken = CardChangeWatcher(lambda: None, no_bus)
-    broken.watch(["a.b"])
-    assert broken.names == []
 
 
 def test_split_and_complete_paths(tmp_path) -> None:

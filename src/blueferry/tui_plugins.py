@@ -10,10 +10,10 @@
   type file paths (→ takes the path completion). A card action with
   ``sendTo`` (ApiVersion 1.4, for example "Send files…" on a LocalSend
   device) opens it with only that target.
-- :class:`CardChangeWatcher` hears ``Plugin1.CardChanged`` only from the
-  owners of the enabled card plugins' bus names, like the Qt and GTK
-  watchers, so no other session-bus client can make the overview call
-  every plugin in a loop.
+- ``Plugin1.CardChanged`` is heard only from the owners of the enabled
+  card plugins' bus names
+  (:class:`blueferry.plugin_card_watch.CardChangeWatcher`), so no other
+  session-bus client can make the overview call every plugin in a loop.
 
 The panel loads only while the overview is open; closing it stops the
 watcher and a pending reload. Plugin calls run on worker threads with the
@@ -23,7 +23,6 @@ core's timeouts. Plugin text is rendered as Rich ``Text`` after
 from __future__ import annotations
 
 import asyncio
-import logging
 import os
 import shlex
 from collections.abc import Callable, Mapping, Sequence
@@ -40,12 +39,10 @@ from textual.widgets import Button, Input, OptionList, Static
 from textual.widgets.option_list import Option
 
 from blueferry.i18n import _
-from blueferry.plugin_api import OBJECT_PATH, SIGNAL_CARD_CHANGED, SURFACES_INTERFACE
+from blueferry.plugin_card_watch import CardChangeWatcher
 from blueferry.plugin_surfaces_model import PluginSurfacesModel
 from blueferry.text_safety import terminal_text
 from blueferry.tui_tasks import TextualTaskRunner, timer_factory
-
-log = logging.getLogger(__name__)
 
 # (on_change, opener, watch) -> model; tests pass fakes.
 SurfacesFactory = Callable[
@@ -97,61 +94,6 @@ def card_options(cards: Sequence[Mapping[str, Any]]) -> tuple[list[Option], list
     return options, actions
 
 
-# ---- CardChanged ----------------------------------------------------------------
-
-
-class CardChangeWatcher:
-    """Hears ``CardChanged`` only from the owners of the watched bus names.
-
-    dbus-python matches a well-known ``bus_name`` against its current
-    owner. Signals arrive while the app pumps the GLib context, so
-    ``on_changed`` runs on the UI thread.
-    """
-
-    def __init__(self, on_changed: Callable[[], None], bus: Callable[[], Any] | None = None):
-        self._on_changed = on_changed
-        self._bus = bus
-        self._matches: dict[str, Any] = {}
-
-    @property
-    def names(self) -> list[str]:
-        return sorted(self._matches)
-
-    def watch(self, names: Sequence[str]) -> None:
-        wanted = {str(name) for name in names if name}
-        for name in sorted(set(self._matches) - wanted):
-            self._remove(self._matches.pop(name))
-        missing = sorted(wanted - set(self._matches))
-        if not missing:
-            return
-        try:
-            if self._bus is None:
-                from blueferry.bus import get_session_bus
-
-                self._bus = get_session_bus
-            bus = self._bus()
-            for name in missing:
-                self._matches[name] = bus.add_signal_receiver(
-                    lambda *_args: self._on_changed(),
-                    signal_name=SIGNAL_CARD_CHANGED, dbus_interface=SURFACES_INTERFACE,
-                    bus_name=name, path=OBJECT_PATH,
-                )
-        except Exception:  # without a session bus no plugin can answer either
-            log.warning("cannot watch plugin cards", exc_info=True)
-
-    @staticmethod
-    def _remove(match: Any) -> None:
-        try:
-            match.remove()
-        except Exception:
-            log.debug("cannot remove a CardChanged match", exc_info=True)
-
-    def stop(self) -> None:
-        for match in self._matches.values():
-            self._remove(match)
-        self._matches.clear()
-
-
 # ---- opening what a plugin hands over ---------------------------------------------
 
 
@@ -198,7 +140,8 @@ class PluginCardsPanel(Vertical):
         super().__init__(id=id)
         self._surfaces = surfaces
         self._opener = opener
-        self.watcher = CardChangeWatcher(self._card_changed, watcher_bus)
+        self.watcher = (CardChangeWatcher(self._card_changed, watcher_bus) if watcher_bus
+                        else CardChangeWatcher(self._card_changed))
         self.model: PluginSurfacesModel | None = None
         self.card_actions: list[tuple] = []
         self._cards_key: object = None
