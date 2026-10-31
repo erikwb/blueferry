@@ -32,6 +32,7 @@ from blueferry.i18n import _
 from blueferry.models import BackendStatus, CallsSnapshot
 from blueferry.onboarding import OnboardingState, effective_compatibility
 from blueferry.plugin_api.client import Photo
+from blueferry.plugin_api.manifest import PluginManifest
 from blueferry.protocol import BUS_NAME, EVENTS_IFACE, OBJECT_PATH, TETHER_IFACE
 from blueferry.qt import phone_link
 from blueferry.qt.avatars import avatar_url
@@ -214,10 +215,17 @@ class BridgeController(QObject):
         self.devicesChanged.connect(self.phoneIdentityChanged)
         self.configuredChanged.connect(self.phoneIdentityChanged)
         # The Photos tab (a plugin with the photos capability).
+        # Plugin downloads can take minutes: never share the backend worker
+        # or its busy flag. Keep at most one photo operation and one refresh.
+        self._photos_pool = QThreadPool(self)
+        self._photos_pool.setMaxThreadCount(1)
+        self._photos_working = False
+        self._photos_again = False
+        self._photos_generation = 0
         self._photos_watched = False
-        self._photos_plugin: object = None
+        self._photos_plugin: PluginManifest | None = None
         self._photos: dict = {"present": False, "ready": False, "loaded": False,
-                              "hint": "", "items": []}
+                              "hint": "", "items": [], "busy": False}
         # Plugin management runs git, pip and plugin calls on its own queue.
         self._plugin_settings = plugin_settings or PluginSettings(parent=self)
         self._plugin_settings.changed.connect(self.pluginSettingsChanged)
@@ -594,7 +602,7 @@ class BridgeController(QObject):
                 self._plugin_surfaces.schedule_reload()
                 # The photo plugin may be gone or disabled now: forget it
                 # until the next load finds it again.
-                self._photos_plugin = None
+                self._clear_photos()
                 self.refreshPhotos()
 
     @Property("QVariantMap", notify=pluginSurfacesChanged)
@@ -637,31 +645,84 @@ class BridgeController(QObject):
     @Slot(bool)
     def watchPhotos(self, watched: bool) -> None:
         """The Photos tab became visible (load) or hidden (forget the list)."""
+        if self._photos_watched == bool(watched):
+            return
         self._photos_watched = bool(watched)
         if self._photos_watched:
             self.refreshPhotos()
             return
-        if self._photos["items"]:
-            self._photos = {**self._photos, "items": []}
+        self._clear_photos()
+
+    def _clear_photos(self) -> None:
+        self._photos_generation += 1
+        self._photos_again = False
+        self._photos_plugin = None
+        self._photos = {"present": False, "ready": False, "loaded": False,
+                        "hint": "", "items": [], "busy": self._photos_working}
+        self.photosChanged.emit()
+
+    def _current_photos(self, generation: int) -> bool:
+        return self._photos_watched and generation == self._photos_generation
+
+    def _run_photo(
+        self, operation: Callable[[], object], on_done: Callable[[object], None],
+        on_failed: Callable[[str], None],
+    ) -> None:
+        self._photos_working = True
+        self._photos = {**self._photos, "busy": True}
+        self.photosChanged.emit()
+
+        def finished() -> None:
+            self._photos_working = False
+            self._photos = {**self._photos, "busy": False}
             self.photosChanged.emit()
+            if self._photos_again:
+                self._photos_again = False
+                self.refreshPhotos()
+
+        def completed(value: object) -> None:
+            try:
+                on_done(value)
+            finally:
+                finished()
+
+        def failed(message: str) -> None:
+            try:
+                on_failed(message)
+            finally:
+                finished()
+
+        task = Task(operation)
+        self._tasks.add(task)
+        task.signals.done.connect(completed)
+        task.signals.failed.connect(failed)
+        task.signals.finished.connect(lambda: self._tasks.discard(task))
+        self._photos_pool.start(task)
 
     @Slot()
     def refreshPhotos(self) -> None:
         if not self._photos_watched:
             return
+        if self._photos_working:
+            self._photos_again = True
+            return
+        generation = self._photos_generation
 
         def load():
+            if not self._current_photos(generation):
+                return None
             manifest = photos_view.find_plugin()
             # Oversized or unreadable thumbnails become placeholders here, off
             # the UI thread and before QML's image loader ever sees them.
             return manifest, photos_view.with_safe_thumbnails(photos_view.load_recent(manifest))
 
         def completed(value: object) -> None:
+            if not self._current_photos(generation) or value is None:
+                return
             manifest, snapshot = value  # type: ignore[misc]
             self._photos_plugin = manifest
-            if not self._photos_watched:
-                return
             self._photos = {
+                **self._photos,
                 "present": snapshot.present,
                 "ready": snapshot.ready,
                 "loaded": True,
@@ -671,35 +732,47 @@ class BridgeController(QObject):
             self.photosChanged.emit()
 
         def failed(message: str) -> None:
+            if not self._current_photos(generation):
+                return
             # Never leave the tab spinning: show why instead.
             self._photos = {
+                **self._photos,
                 "present": self._photos_plugin is not None, "ready": False, "loaded": True,
                 "hint": message or _("Photos unavailable"), "items": [],
             }
             self.photosChanged.emit()
 
-        self._run(load, completed, failed, busy=False)
+        self._run_photo(load, completed, failed)
 
     @Slot(str)
     def openPhoto(self, photo_id: str) -> None:
         """Download the original (plugin) and open it in the default viewer."""
         manifest = self._photos_plugin
-        if manifest is None:
+        if manifest is None or not self._photos_watched or self._photos_working:
             return
+        if not any(item["id"] == photo_id for item in self._photos["items"]):
+            return
+        generation = self._photos_generation
 
         def fetch() -> object:
+            if not self._current_photos(generation):
+                return None
             # Disabled or removed since the list loaded: never call it (a call
             # would start a disabled plugin again by D-Bus activation).
             current = photos_view.find_plugin()
-            if current is None or current.id != manifest.id:  # type: ignore[attr-defined]
+            if current is None or current.id != manifest.id:
                 return None
-            return photos_view.fetch_original(current, str(photo_id))
+            original = photos_view.fetch_original(current, str(photo_id))
+            current = photos_view.find_plugin()
+            if current is None or current.id != manifest.id:
+                return None
+            return original
 
         def completed(value: object) -> None:
             from PySide6.QtCore import QUrl
             from PySide6.QtGui import QDesktopServices
 
-            if value is None:
+            if value is None or not self._current_photos(generation):
                 return
             url = QUrl.fromLocalFile(str(value))
             items = [
@@ -710,7 +783,11 @@ class BridgeController(QObject):
             self.photosChanged.emit()
             QDesktopServices.openUrl(url)
 
-        self._run(fetch, completed)
+        def failed(message: str) -> None:
+            if self._current_photos(generation):
+                self._operation_failed(message)
+
+        self._run_photo(fetch, completed, failed)
 
     @Property("QVariantList", notify=notificationsChanged)
     def notifications(self):

@@ -5129,6 +5129,17 @@ def test_photos_tab_loads_while_shown_and_hints_without_a_plugin(qml_engine, set
     _click_control(window, _settings_object(window, "photosRefresh"))
     assert _evaluate(qml_engine, "testBridge.calls")[-1] == {"method": "refreshPhotos", "args": []}
 
+    _evaluate(qml_engine, "testBridge.photos = Object.assign({}, testBridge.photos, {busy: true})")
+    QGuiApplication.processEvents()
+    assert _settings_object(window, "photosGrid").property("enabled") is False
+    assert _settings_object(window, "photosRefresh").property("enabled") is False
+    assert _settings_object(window, "photosBusyIndicator").property("running") is True
+    _evaluate(qml_engine, "testBridge.photos = Object.assign({}, testBridge.photos, {busy: false})")
+    QGuiApplication.processEvents()
+    assert _settings_object(window, "photosGrid").property("enabled") is True
+    assert _settings_object(window, "photosRefresh").property("enabled") is True
+    assert _settings_object(window, "photosBusyIndicator").property("running") is False
+
     _evaluate(qml_engine, "testWindow.currentTab = testWindow.messagesTab")
     QGuiApplication.processEvents()
     assert _evaluate(qml_engine, "testBridge.calls")[-1] == {

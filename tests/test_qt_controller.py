@@ -15,6 +15,11 @@ from blueferry.qt import phone_link
 from blueferry.qt.controller import BridgeController
 from blueferry.setup_client import ConfigurationState
 from blueferry.tether_status import TetherStatus
+from tests.qt_settle import main_thread_gc
+
+# Controllers own timers too: collect their Python cycles on the UI thread,
+# never on a worker that happens to allocate during the following test.
+pytestmark = pytest.mark.usefixtures(main_thread_gc.__name__)
 
 
 def _apply_threads(controller, threads):
@@ -2052,7 +2057,7 @@ def test_photo_load_failure_stops_the_spinner(monkeypatch):
         backend=_Backend(), setup=object(), subscribe=False, autostart=False,
     )
     monkeypatch.setattr(
-        controller, "_run",
+        controller, "_run_photo",
         lambda _operation, _on_done=None, on_failed=None, **_kwargs: on_failed("boom"),
     )
     controller.watchPhotos(True)
@@ -2089,7 +2094,7 @@ def test_photos_load_only_while_watched_and_open_the_original(monkeypatch, tmp_p
         backend=_Backend(), setup=object(), subscribe=False, autostart=False,
     )
     monkeypatch.setattr(
-        controller, "_run",
+        controller, "_run_photo",
         lambda operation, on_done=None, *_args, **_kwargs: on_done(operation()),
     )
     controller.refreshPhotos()
@@ -2129,7 +2134,7 @@ def test_a_photo_of_a_plugin_disabled_meanwhile_is_not_fetched(monkeypatch, tmp_
         backend=_Backend(), setup=object(), subscribe=False, autostart=False,
     )
     monkeypatch.setattr(
-        controller, "_run",
+        controller, "_run_photo",
         lambda operation, on_done=None, *_args, **_kwargs: on_done(operation()),
     )
     controller.watchPhotos(True)
