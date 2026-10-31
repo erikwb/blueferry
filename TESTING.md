@@ -59,9 +59,11 @@ style dependencies fail this check even when CLI/TUI startup still succeeds.
 - The toolkit-neutral client models (`client_tasks.py` seams) are tested
   without Qt or GTK on `tests/client_fakes.py`: a `ManualRunner` queues the
   work and runs it, with its callbacks, only when the test drains it, and its
-  timers fire only on request. Late answers are produced by holding work
-  back, not by thread gates. The Qt adapter tests keep only the pool, timer
-  and signal wiring.
+  timers fire only on request. `start_next()` runs an operation and returns
+  a delivery callback, allowing a test to change tabs or permissions before
+  its answer arrives. Keep queued-work cancellation distinct from replies
+  to work already started. Qt tests verify pool, timer and signal wiring
+  and retain regressions for privacy, cancellation and slow photo plugins.
 - Unit tests never arm real GLib timer or idle sources. The autouse
   `glib_source_guard` in `tests/conftest.py` refuses such a call on the
   test's thread with an `AssertionError` at the call site, and also fails

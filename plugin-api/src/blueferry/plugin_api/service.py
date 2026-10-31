@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import threading
 import time
 from collections import deque
@@ -184,8 +185,34 @@ class PluginService(dbus.service.Object):
             )
         self._executor.submit(work)
 
+    def _authorize(self, sender: str | None) -> None:
+        """Only the service's Unix user may invoke an exported plugin.
+
+        Ask the bus about the message's unique sender, never a well-known
+        name whose owner can change. Check each call so exporting the object
+        on another connection cannot reuse credentials from an earlier bus.
+        An unexported object has only in-process callers (the SDK harness).
+        """
+        connection = getattr(self, "_connection", None)
+        if connection is None:
+            return
+        identity = str(sender or "")
+        if not identity.startswith(":"):
+            raise AccessDeniedError("D-Bus caller identity is unavailable")
+        try:
+            uid = int(connection.call_blocking(
+                "org.freedesktop.DBus", "/org/freedesktop/DBus",
+                "org.freedesktop.DBus", "GetConnectionUnixUser", "s", (identity,),
+                timeout=1.0,
+            ))
+        except Exception:
+            raise AccessDeniedError("D-Bus caller credentials could not be verified") from None
+        if uid != os.getuid():
+            raise AccessDeniedError("D-Bus caller is not authorized")
+
     def admit(self, sender: str | None) -> None:
-        """Count one call; raise RateLimitedError over the budget."""
+        """Authorize and count a call before running hooks or queuing work."""
+        self._authorize(sender)
         now = self._clock()
         self.last_activity = now
         key = str(sender)
