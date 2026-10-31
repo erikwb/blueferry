@@ -238,4 +238,10 @@ def test_split_and_complete_paths(tmp_path) -> None:
     assert complete_path(base + ".h") == base + ".hidden"
     assert complete_path(base + "'Pi") is None
     assert complete_path("") is None
+    # An escaped space or a quote keeps the last word together: no
+    # completion of its tail against the current directory.
+    assert complete_path(base + "Photo\\ on") is None
+    assert complete_path(f'x "{tmp_path}/Photo on') is None
+    quoted = f'"{tmp_path}/a \\" b" {tmp_path}/'
+    assert complete_path(quoted + "Pi") == quoted + "Pictures/"
     assert split_paths(complete_path(base + "Ph") or "")[1] == f"{tmp_path}/Photo one.jpg"

@@ -278,6 +278,31 @@ def split_paths(text: str) -> list[str]:
     return [os.path.expanduser(part) for part in shlex.split(text)]
 
 
+def _last_word(value: str) -> str | None:
+    """The last shell word of ``value`` as typed, or None inside a quote.
+
+    Spaces escaped with a backslash or inside quotes do not split words,
+    so ``…/Photo\\ on`` is one word (which :func:`complete_path` then
+    leaves alone) rather than ``on``.
+    """
+    start, quote, index = 0, "", 0
+    while index < len(value):
+        char = value[index]
+        if quote:
+            if char == "\\" and quote == '"':
+                index += 1  # \" stays inside double quotes
+            elif char == quote:
+                quote = ""
+        elif char == "\\":
+            index += 1
+        elif char in "'\"":
+            quote = char
+        elif char.isspace():
+            start = index + 1
+        index += 1
+    return None if quote else value[start:]
+
+
 def complete_path(value: str, *, limit: int = _MAX_COMPLETION_ENTRIES) -> str | None:
     """``value`` with its last path completed as far as it is unambiguous.
 
@@ -285,7 +310,7 @@ def complete_path(value: str, *, limit: int = _MAX_COMPLETION_ENTRIES) -> str | 
     in the completion is escaped so :func:`split_paths` reads it back.
     *Blocking* (lists one directory).
     """
-    word = value.rpartition(" ")[2]
+    word = _last_word(value)
     if not word or any(char in word for char in "'\"\\"):
         return None
     expanded = os.path.expanduser(word)
