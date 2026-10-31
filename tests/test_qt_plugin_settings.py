@@ -465,6 +465,59 @@ def test_a_second_press_is_dropped_while_one_runs(with_actions) -> None:
     assert _ActionClient.ran == []
 
 
+@pytest.mark.parametrize("reply", ["success", "failure", "error"])
+def test_reopening_the_same_form_discards_old_action_results(with_actions, monkeypatch, reply):
+    from blueferry.plugin_api.surfaces import ActionResult
+
+    settings, opened = with_actions
+    settings.load_config("io.example.setup")
+    _wait(lambda: settings.state()["config"].get("loaded") and _idle(settings))
+    started, release = threading.Event(), threading.Event()
+
+    def run(_client, _action_id):
+        started.set()
+        assert release.wait(5)
+        if reply == "error":
+            raise RuntimeError("old failure")
+        return ActionResult(reply == "success", "old answer", "https://example.org/old")
+
+    monkeypatch.setattr(_ActionClient, "run_config_action", run)
+    settings.run_action("io.example.setup", "setup_iphone")
+    try:
+        _wait(started.is_set)
+        settings.close_config()
+        settings.load_config("io.example.setup")
+        statuses = []
+        settings.changed.connect(lambda: statuses.append(settings.state()["config"]["status"]))
+    finally:
+        release.set()
+    _wait(lambda: not settings._tasks and not settings._queue)
+    assert settings.state()["config"]["loaded"] is True
+    assert all(status == {} for status in statuses)
+    assert opened == []
+
+
+@pytest.mark.parametrize("leave", ["close", "disable", "reopen"])
+def test_a_queued_action_never_calls_a_plugin_after_its_form_is_gone(with_actions, leave):
+    settings, opened = with_actions
+    settings.load_config("io.example.setup")
+    _wait(lambda: settings.state()["config"].get("loaded") and _idle(settings))
+    release = threading.Event()
+    settings._work("list", lambda: release.wait(5), lambda _result: None)
+    settings.run_action("io.example.setup", "setup_iphone")
+    try:
+        settings.close_config()
+        if leave == "disable":
+            settings._disabled.add("io.example.setup")
+        elif leave == "reopen":
+            settings.load_config("io.example.setup")
+    finally:
+        release.set()
+    _wait(lambda: not settings._tasks and not settings._queue)
+    assert _ActionClient.ran == []
+    assert opened == []
+
+
 def test_an_answer_never_lands_in_another_form(with_actions) -> None:
     from blueferry.plugin_api.testing import manifest
 
@@ -475,6 +528,9 @@ def test_an_answer_never_lands_in_another_form(with_actions) -> None:
     settings.load_config("io.example.setup")
     _wait(lambda: settings.state()["config"].get("loaded"))
     settings.run_action("io.example.setup", "setup_iphone")
+    # Finish the worker without dispatching its reply to the UI thread yet.
+    # Otherwise the new execution guard can correctly skip this call entirely.
+    assert settings._pool.waitForDone(5000)
     # The user switches to another plugin's form before the answer arrives.
     settings._update(config=settings._form(other, other.id, {}, loaded=True))
     _wait(lambda: _idle(settings) and _ActionClient.ran == ["setup_iphone"])

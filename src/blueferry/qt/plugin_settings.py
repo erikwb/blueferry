@@ -507,13 +507,25 @@ class PluginSettings(QObject):
             return
         if self._state["config"].get("status", {}).get("pending"):
             return
+        generation = self._form_generation
+
+        def current() -> bool:
+            return generation == self._form_generation and self._current(plugin_id) is not None
+
+        def run() -> Any:
+            # A queued action must not activate a plugin after its form was
+            # closed or replaced, including a new form for the same plugin.
+            if not current():
+                return None
+            return self._client(manifest).run_config_action(action_id)
+
         self._set_status("action", True, _("Working…"), pending=True)
 
         def done(result: Any) -> None:
             # The user may have closed this form, opened another one or
             # disabled the plugin meanwhile: the answer, and any page it
             # asks to open, belongs to this form only.
-            if self._current(plugin_id) is None:
+            if not current() or result is None:
                 return
             if result.ok and result.open_uri:
                 self._open(result.open_uri)
@@ -524,11 +536,10 @@ class PluginSettings(QObject):
             self._reload()
 
         def failed(text: str) -> None:
-            if self._current(plugin_id) is not None:
+            if current():
                 self._set_status("action", False, text)
 
-        self._work("action", lambda: self._client(manifest).run_config_action(action_id), done,
-                   on_error=failed)
+        self._work("action", run, done, on_error=failed)
 
     def open_help(self, plugin_id: str, key: str) -> None:
         """"Where do I find this?": the field's https HelpUrl, nothing else."""
