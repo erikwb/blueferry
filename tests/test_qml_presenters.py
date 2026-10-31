@@ -4851,7 +4851,8 @@ def test_short_calls_windows_scroll_the_dialer_and_keep_history_visible(
     bridge.setProperty("callHistoryRows", {"all": [
         {"key": "one", "day": "Today", "clock": "10:00", "caller": "Test",
          "address": "+15551234567", "known": True, "direction": "incoming",
-         "missed": False, "count": 1},
+         "missed": False, "count": 1, "title": "Test",
+         "detail": "Incoming · +15551234567", "direction_label": "Incoming"},
     ]})
     _evaluate(qml_engine, "testWindow.currentTab = testWindow.callsTab")
     QTest.qWait(100)
