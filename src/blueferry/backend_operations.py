@@ -273,6 +273,8 @@ class NotificationLog(Protocol):
     def snapshot(self, limit: int) -> list[dict[str, object]]: ...
 
     def clear(self) -> None: ...
+
+
 class QuickReplyControl(Protocol):
     """Saved texts for declining a call (see ``blueferry.calls.quick_replies``)."""
 
