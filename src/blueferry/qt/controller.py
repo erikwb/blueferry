@@ -576,6 +576,10 @@ class BridgeController(QObject):
     def openPluginHelp(self, plugin_id: str, key: str) -> None:
         self._plugin_settings.open_help(str(plugin_id), str(key))
 
+    @Slot(str, str)
+    def runPluginConfigAction(self, plugin_id: str, action_id: str) -> None:
+        self._plugin_settings.run_action(str(plugin_id), str(action_id))
+
     @Slot(bool)
     def loadPluginStore(self, refresh: bool) -> None:
         self._plugin_settings.load_store(bool(refresh))

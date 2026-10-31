@@ -450,6 +450,8 @@ def test_manifest_reads_the_settings_schema_in_order() -> None:
     ("[Config a]\nLabel=x\nType=secret\nDefault=hunter2\n", "secret cannot"),
     ("[Config a]\nLabel=x\nType=choice\n", "Choices"),
     ("[Config a]\nLabel=x\nType=int\nMin=a\n", "integers"),
+    ("[Config a]\nLabel=x\nType=int\nMax=2147483648\n", "32 bits"),
+    ("[Config a]\nLabel=x\nType=int\nMin=-2147483649\n", "32 bits"),
     ("[Config a]\nLabel=x\nType=int\nMax=3\nDefault=9\n", "invalid Default"),
     ("[Config a]\nLabel=x\nType=bool\nRequired=maybe\n", "Required"),
     ("[Config a]\nLabel=x\nType=string\n[Config a]\nLabel=y\nType=string\n", "duplicate"),
@@ -457,6 +459,17 @@ def test_manifest_reads_the_settings_schema_in_order() -> None:
 def test_bad_settings_schema_ignores_the_manifest(group, reason) -> None:
     with pytest.raises(ManifestError, match=reason):
         parse_manifest(VALID + group)
+
+
+@pytest.mark.parametrize("value", [-2**31, 2**31 - 1])
+def test_integer_settings_accept_both_signed_32_bit_endpoints(value) -> None:
+    from blueferry.plugin_settings_view import form_fields
+
+    plugin = parse_manifest(VALID + (
+        f"[Config edge]\nLabel=Edge\nType=int\nMin={value}\nMax={value}\nDefault={value}\n"
+    ))
+    row, = form_fields(plugin, {})
+    assert (row["minimum"], row["maximum"], row["value"]) == (value, value, value)
 
 
 def test_validate_merges_checks_and_keeps_stored_secrets() -> None:

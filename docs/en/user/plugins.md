@@ -31,14 +31,19 @@ Disabling also stops BlueFerry from calling the plugin at once.
 ## Setting a plugin up
 
 **Settings** next to a plugin opens a form made from what the plugin asks
-for: fields with examples and "Where do I find this?" links, **Test
-connection**, and for some services a browser sign-in. Save only becomes
-available once the required fields are valid. Passwords and keys are never
-shown again, only typed anew. BlueFerry stores no plugin secrets: they go into the plugin,
-which keeps them itself (the published plugins use the desktop keyring).
+for: fields with examples and "More information" links (some plugins name
+them, e.g. "Which port?"), **Test connection**, and for some services a
+browser sign-in. Some plugins add their own buttons above the fields, such
+as **Set up iPhone**; they use the saved settings, so save your changes
+first. Save only becomes available once the required fields are valid.
+Passwords and keys are never shown again, only typed anew. BlueFerry stores
+no plugin secrets: they go into the plugin, which keeps them itself (the
+published plugins use the desktop keyring).
 
 ```bash
 blueferry plugins config immich --set url=https://photos.example.org --secret api_key --test
+blueferry plugins config ID                  # settings and own buttons
+blueferry plugins config ID --action ACTION  # press one of them
 ```
 
 ## What plugins add

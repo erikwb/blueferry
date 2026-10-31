@@ -1,6 +1,7 @@
 """Plugin API 1.3: the guided settings form, TestConfig and ConfigLogin."""
 from __future__ import annotations
 
+import dataclasses
 import json
 import subprocess
 import sys
@@ -430,7 +431,9 @@ def test_form_rows_groups_and_actions() -> None:
     assert groups[-1]["collapsed"] is True
     assert view.form_actions(parsed) == {
         "test": True, "login": "nextcloud", "loginLabel": "Sign in with Nextcloud",
+        "custom": [],
     }
+    assert rows["url"]["helpUrlLabel"] == ""
     assert view.help_link(parsed, "url").startswith("https://")
     assert view.help_link(parsed, "token") == "" and view.help_link(parsed, "nope") == ""
 
@@ -492,7 +495,10 @@ def test_plugin_rows_escape_link_and_tooltip_texts() -> None:
 def test_int_bounds_beyond_32_bits_are_clamped_for_the_spin_box() -> None:
     from blueferry import plugin_settings_view as view
 
-    plugin = manifest(extra="[Config big]\nLabel=Big\nType=int\nMin=-2147483649\n"
-                            "Max=2147483648\nDefault=0\n")
+    # The manifest parser rejects such bounds; the form still clamps fields
+    # from an older plugin API that did not.
+    plugin = manifest(extra="[Config big]\nLabel=Big\nType=int\nMin=-5\nMax=5\nDefault=0\n")
+    wide = dataclasses.replace(plugin.config[0], minimum=-2**31 - 1, maximum=2**31)
+    plugin = dataclasses.replace(plugin, config=(wide,))
     field = view.form_fields(plugin, {})[0]
     assert (field["minimum"], field["maximum"]) == (-2_147_483_648, 2_147_483_647)

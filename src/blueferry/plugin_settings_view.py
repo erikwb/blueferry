@@ -174,6 +174,8 @@ def form_fields(manifest: PluginManifest, values: Mapping[str, object]) -> list[
             # https only; the manifest parser refuses anything else.
             "helpUrl": field.help_url,
             "helpUrlText": control_text(field.help_url),
+            # ApiVersion 1.6: the link's own text; "" = "More information".
+            "helpUrlLabel": control_text(field.help_url_label),
             "group": field.group,
             "showIfKey": show_key,
             "showIfValue": show_value,
@@ -194,12 +196,21 @@ def form_groups(manifest: PluginManifest) -> list[dict[str, Any]]:
 
 
 def form_actions(manifest: PluginManifest) -> dict[str, Any]:
-    """Which helper buttons the form shows: "Test connection", "Sign in"."""
+    """Which helper buttons the form shows: "Test connection", "Sign in"
+    and the plugin's own ``[ConfigAction …]`` buttons (ApiVersion 1.6)."""
     provider = manifest.config_login if manifest.config_login in LOGIN_PROVIDERS else ""
     return {
         "test": manifest.config_test,
         "login": provider,
         "loginLabel": LOGIN_LABELS.get(provider, ""),
+        "custom": [{
+            "id": action.id,
+            # A button detects rich text: escaped like every plugin text on one.
+            "label": control_text(action.label),
+            "icon": action.icon,
+            "help": action.help,
+            "primary": action.primary,
+        } for action in manifest.config_actions],
     }
 
 
@@ -271,6 +282,14 @@ def help_link(manifest: PluginManifest, key: str) -> str:
     field = next((field for field in manifest.config if field.key == key), None)
     url = field.help_url if field is not None else ""
     return url if url.startswith("https://") else ""
+
+
+def config_action_text(ok: bool, message: str | None, name: str) -> str:
+    """One status line after a settings button; the plugin's message wins."""
+    text = plain_text(message or "", 200)
+    if text:
+        return text
+    return _("Done.") if ok else _("{name} could not do that.").format(name=name)
 
 
 def login_text(state: str, message: str = "") -> str:

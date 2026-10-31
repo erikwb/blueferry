@@ -34,15 +34,20 @@ Plugin sofort nicht mehr aufruft.
 ## Ein Plugin einrichten
 
 **Settings** neben einem Plugin öffnet ein Formular aus dem, was das Plugin
-braucht: Felder mit Beispielen und „Where do I find this?“-Links, **Test
-connection** und bei manchen Diensten eine Anmeldung im Browser. Speichern
+braucht: Felder mit Beispielen und „More information“-Links (manche Plugins
+benennen sie selbst, etwa „Which port?“), **Test connection** und bei
+manchen Diensten eine Anmeldung im Browser. Manche Plugins setzen eigene
+Knöpfe über die Felder, etwa **Set up iPhone**; sie arbeiten mit den
+gespeicherten Einstellungen, also Änderungen vorher speichern. Speichern
 geht erst, wenn die Pflichtfelder gültig sind. Passwörter und Schlüssel
-werden nie wieder angezeigt, nur neu eingegeben. BlueFerry speichert keine Geheimnisse von
-Plugins: sie gehen ins Plugin, das sie selbst aufbewahrt (die
-veröffentlichten Plugins nutzen den Schlüsselbund des Desktops).
+werden nie wieder angezeigt, nur neu eingegeben. BlueFerry speichert keine
+Geheimnisse von Plugins: sie gehen ins Plugin, das sie selbst aufbewahrt
+(die veröffentlichten Plugins nutzen den Schlüsselbund des Desktops).
 
 ```bash
 blueferry plugins config immich --set url=https://photos.example.org --secret api_key --test
+blueferry plugins config ID                  # Einstellungen, eigene Knöpfe
+blueferry plugins config ID --action ACTION  # einen davon drücken
 ```
 
 ## Was Plugins hinzufügen

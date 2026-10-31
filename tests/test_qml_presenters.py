@@ -861,6 +861,7 @@ def settings_window(qml_engine):
             function signInPlugin(id, values) { record("signInPlugin", [id, values]); }
             function cancelPluginSignIn() { record("cancelPluginSignIn", []); }
             function openPluginHelp(id, key) { record("openPluginHelp", [id, key]); }
+            function runPluginConfigAction(id, action) { record("runPluginConfigAction", [id, action]); }
             function openPluginLog(id) { record("openPluginLog", [id]); }
             function setPluginIndexes(urls) { record("setPluginIndexes", [urls]); }
             function clearPluginMessage() { record("clearPluginMessage", []); }
@@ -5321,6 +5322,135 @@ def test_guided_plugin_form_groups_checks_tests_and_signs_in(qml_engine, setting
     QMetaObject.invokeMethod(cancel, "clicked")
     assert _evaluate(qml_engine, "testBridge.calls")[-1]["method"] == "cancelPluginSignIn"
     assert _visual_find(form, "configField_url").property("text") == "https://cloud.example"
+    _evaluate(qml_engine, "testWindow.closePhoneSettings()")
+
+
+def test_plugin_form_buttons_need_saved_settings_and_links_carry_names(
+    qml_engine, settings_window,
+):
+    window, bridge = settings_window
+    bridge.setProperty("status", {"daemon": True})
+    plugin = {"id": "io.example.setup", "name": "Setup", "version": "1.0", "capabilities": [],
+              "source": "https://git.example.org/setup", "ref": "", "managed": True,
+              "enabled": True, "state": "ok", "stateText": "Ready", "detail": "",
+              "hasConfig": True}
+    config = {
+        "id": "io.example.setup", "name": "Setup", "loaded": True, "errors": {},
+        "groups": [{"name": "", "label": "", "help": "", "collapsed": False}],
+        "actions": {"test": False, "login": "", "loginLabel": "", "custom": [
+            {"id": "setup_iphone", "label": "Set up &lt;b&gt;iPhone&lt;/b&gt;",
+             "icon": "smartphone", "help": "Shows a <i>QR</i> code.", "primary": True},
+            {"id": "approve", "label": "Approve this network", "icon": "", "help": "",
+             "primary": False},
+        ]},
+        "status": {},
+        "fields": [
+            _guided_field("port", "Port", "int", value=47801,
+                          helpUrl="https://docs.example.com/port", helpUrlLabel="Which port?"),
+            _guided_field("host", "Host", "string", helpUrl="https://docs.example.com/host"),
+        ],
+    }
+    bridge.setProperty("pluginSettings", {
+        "loaded": True, "busy": "", "message": "", "messageOk": True, "plugins": [plugin],
+        "ignored": [], "pending": {}, "config": config,
+        "store": {"loaded": True, "problems": [], "items": []}, "indexes": [],
+        "defaultIndex": "https://example.org/index.json",
+    })
+    bridge.setProperty("checkErrors", {})
+    _open_category(qml_engine, window, "plugins")
+    form = _settings_object(window, "pluginConfigForm")
+    engine = qmlEngine(form)
+    engine.globalObject().setProperty("actionForm", engine.newQObject(form))
+    # The plugin names one help link; the other keeps the client's text.
+    assert _visual_find(form, "configHelp_port").property("text") == "Which port?"
+    assert _visual_find(form, "configHelp_host").property("text") == "More information"
+    setup = _visual_find(form, "configAction_setup_iphone")
+    assert setup.property("text") == "Set up &lt;b&gt;iPhone&lt;/b&gt;"
+    assert setup.property("highlighted") is True and setup.property("enabled") is True
+    assert _visual_find(form, "configAction_approve").property("highlighted") is False
+    QMetaObject.invokeMethod(setup, "clicked")
+    assert _evaluate(qml_engine, "testBridge.calls")[-1] == {
+        "method": "runPluginConfigAction", "args": ["io.example.setup", "setup_iphone"]}
+    # An unsaved edit turns the buttons off and says why.
+    hint = _visual_find(form, "pluginConfigActionsUnsaved")
+    assert hint.property("visible") is False
+    _evaluate(engine, "actionForm.set('port', 47900)")
+    assert setup.property("enabled") is False and hint.property("visible") is True
+    _evaluate(engine, "actionForm.draft = ({})")
+    assert setup.property("enabled") is True
+    # The answer shows under the buttons, escaped; the bottom line stays empty.
+    state = bridge.property("pluginSettings")
+    state = state.toVariant() if hasattr(state, "toVariant") else state
+    bridge.setProperty("pluginSettings", {**state, "config": {**config, "status": {
+        "kind": "action", "ok": True, "pending": False, "text": "Scan the <b>code</b>"}}})
+    QGuiApplication.processEvents()
+    status = _visual_find(form, "pluginConfigActionStatus")
+    assert status.property("visible") and "&lt;b&gt;" in status.property("text")
+    assert _visual_find(form, "pluginConfigActionBusy").property("visible") is False
+    assert _visual_find(form, "pluginConfigStatus").property("visible") is False
+    # While an action runs, no second one starts.
+    bridge.setProperty("pluginSettings", {**state, "config": {**config, "status": {
+        "kind": "action", "ok": True, "pending": True, "text": "Working…"}}})
+    QGuiApplication.processEvents()
+    assert _visual_find(form, "pluginConfigActionBusy").property("visible") is True
+    assert _visual_find(form, "configAction_approve").property("enabled") is False
+    _evaluate(qml_engine, "testWindow.closePhoneSettings()")
+
+
+def test_failed_plugin_settings_reload_disables_controls_and_offers_read_retry(
+    qml_engine, settings_window,
+):
+    window, bridge = settings_window
+    bridge.setProperty("status", {"daemon": True})
+    plugin = {"id": "io.example.setup", "name": "Setup", "version": "1.0", "capabilities": [],
+              "source": "", "ref": "", "managed": True, "enabled": True,
+              "state": "ok", "stateText": "Ready", "detail": "", "hasConfig": True}
+    config = {
+        "id": plugin["id"], "name": "Setup", "loaded": False, "errors": {}, "status": {},
+        "loadError": "read <failed>",
+        "groups": [{"name": "", "label": "", "help": "", "collapsed": False}],
+        "actions": {"test": True, "loginLabel": "Sign in", "custom": [
+            {"id": "setup", "label": "Set up iPhone"},
+        ]},
+        "fields": [_guided_field("host", "Host", "string", value="old.example")],
+    }
+    state = {
+        "loaded": True, "busy": "", "message": "", "messageOk": True, "plugins": [plugin],
+        "ignored": [], "pending": {}, "config": config,
+        "store": {"loaded": True, "problems": [], "items": []}, "indexes": [],
+        "defaultIndex": "https://example.org/index.json",
+    }
+    bridge.setProperty("pluginSettings", state)
+    _open_category(qml_engine, window, "plugins")
+    form = _settings_object(window, "pluginConfigForm")
+    for name in ("pluginConfigSave", "pluginConfigTest", "pluginConfigSignIn",
+                 "configAction_setup", "configField_host"):
+        assert _visual_find(form, name).property("enabled") is False
+    assert _visual_find(form, "pluginConfigLoading").property("visible") is False
+    error = _visual_find(form, "pluginConfigLoadError")
+    assert error.property("visible") and "&lt;failed&gt;" in error.property("text")
+    retry = _visual_find(form, "pluginConfigRetry")
+    assert retry.property("visible") and retry.property("enabled")
+    QMetaObject.invokeMethod(retry, "clicked")
+    assert _evaluate(qml_engine, "testBridge.calls")[-1] == {
+        "method": "loadPluginConfig", "args": [plugin["id"]]}
+
+    bridge.setProperty("pluginSettings", {
+        **state, "busy": "config", "config": {**config, "loadError": ""},
+    })
+    QGuiApplication.processEvents()
+    assert _visual_find(form, "pluginConfigLoading").property("visible") is True
+    assert retry.property("visible") is False
+    assert _visual_find(form, "configAction_setup").property("enabled") is False
+
+    bridge.setProperty("pluginSettings", {**state, "config": {
+        **config, "loaded": True, "loadError": "",
+        "fields": [_guided_field("host", "Host", "string", value="new.example")],
+    }})
+    QGuiApplication.processEvents()
+    assert _visual_find(form, "configField_host").property("text") == "new.example"
+    assert _visual_find(form, "configAction_setup").property("enabled") is True
+    assert error.property("visible") is False and retry.property("visible") is False
     _evaluate(qml_engine, "testWindow.closePhoneSettings()")
 
 

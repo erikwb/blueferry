@@ -346,6 +346,321 @@ def test_show_log_opens_the_plugin_log_or_explains(app, tmp_path, monkeypatch) -
     _settle(settings)
 
 
+class _ActionClient:
+    """A 1.6 plugin with two settings buttons."""
+
+    ran: ClassVar[list[str]] = []
+    port: ClassVar[int] = 47801
+
+    def __init__(self, manifest) -> None:
+        self.manifest = manifest
+
+    def get_config(self):
+        return {"port": _ActionClient.port}
+
+    def status(self):
+        return PluginStatus("ok")
+
+    def run_config_action(self, action_id):
+        from blueferry.plugin_api.client import PluginError
+        from blueferry.plugin_api.surfaces import ActionResult
+
+        _ActionClient.ran.append(action_id)
+        if action_id == "setup_iphone":
+            return ActionResult(True, None, "http://127.0.0.1:4711/abc/")
+        if action_id == "broken":
+            raise PluginError("the plugin did not answer in time")
+        _ActionClient.port += 1
+        return ActionResult(False, "No network to approve.")
+
+
+ACTIONS = """
+[Config port]
+Label=Port
+Type=int
+HelpUrl=https://docs.example.com/port
+HelpUrlLabel=Which port?
+
+[ConfigAction setup_iphone]
+Label=Set up <b>iPhone</b>
+Icon=smartphone
+Primary=true
+Help=Shows a QR code.
+
+[ConfigAction approve]
+Label=Approve this network
+
+[ConfigAction broken]
+Label=Broken
+"""
+
+
+class _OneManager(_NoManager):
+    def __init__(self, plugin) -> None:
+        self.plugin = plugin
+
+    def entries(self):
+        from blueferry.plugin_manager import PluginEntry
+
+        return [PluginEntry(self.plugin, None, True)], []
+
+
+@pytest.fixture
+def with_actions(app):
+    from blueferry.plugin_api.testing import manifest
+
+    plugin = manifest("io.example.setup", capabilities="card;", api_version="1.6",
+                      extra=ACTIONS)
+    opened: list[str] = []
+    _ActionClient.ran, _ActionClient.port = [], 47801
+    settings = PluginSettings(manager=lambda: _OneManager(plugin), index=lambda: None,
+                              client=_ActionClient, opener=opened.append)
+    settings._manifests = {plugin.id: plugin}
+    yield settings, opened
+    _settle(settings)
+
+
+def test_settings_buttons_run_open_and_reload_the_form(with_actions) -> None:
+    settings, opened = with_actions
+    settings.load_config("io.example.setup")
+    _wait(lambda: settings.state()["config"].get("loaded"))
+    config = settings.state()["config"]
+    assert config["actions"]["custom"] == [
+        {"id": "setup_iphone", "label": "Set up &lt;b&gt;iPhone&lt;/b&gt;", "icon": "smartphone",
+         "help": "Shows a QR code.", "primary": True},
+        {"id": "approve", "label": "Approve this network", "icon": "", "help": "",
+         "primary": False},
+        {"id": "broken", "label": "Broken", "icon": "", "help": "", "primary": False},
+    ]
+    assert config["fields"][0]["helpUrlLabel"] == "Which port?"
+    settings.run_action("io.example.setup", "setup_iphone")
+    _wait(lambda: settings.state()["config"]["status"].get("pending") is False and _idle(settings))
+    assert settings.state()["config"]["status"] == {
+        "kind": "action", "ok": True, "text": "Done.", "pending": False}
+    assert opened == ["http://127.0.0.1:4711/abc/"]
+    settings.run_action("io.example.setup", "approve")
+    _wait(lambda: settings.state()["config"]["fields"][0]["value"] == 47802)
+    status = settings.state()["config"]["status"]
+    assert (status["ok"], status["text"]) == (False, "No network to approve.")
+    assert opened == ["http://127.0.0.1:4711/abc/"]  # nothing to open on failure
+    _wait(lambda: _idle(settings))
+    settings.run_action("io.example.setup", "broken")
+    _wait(lambda: settings.state()["config"]["status"].get("pending") is False)
+    assert settings.state()["config"]["status"]["text"] == "the plugin did not answer in time"
+    # Undeclared ids, other forms and disabled plugins are never called.
+    _wait(lambda: _idle(settings))
+    settings.run_action("io.example.setup", "nope")
+    settings.run_action("io.example.other", "setup_iphone")
+    settings._disabled.add("io.example.setup")
+    settings.run_action("io.example.setup", "setup_iphone")
+    assert _ActionClient.ran == ["setup_iphone", "approve", "broken"]
+
+
+def test_a_second_press_is_dropped_while_one_runs(with_actions) -> None:
+    settings, _opened = with_actions
+    settings.load_config("io.example.setup")
+    _wait(lambda: settings.state()["config"].get("loaded"))
+    settings._set_status("action", True, "Working…", pending=True)
+    settings.run_action("io.example.setup", "approve")
+    assert _ActionClient.ran == []
+
+
+@pytest.mark.parametrize("action_ok", [True, False])
+def test_failed_action_refresh_requires_a_read_retry(with_actions, monkeypatch, action_ok):
+    from blueferry.plugin_api.client import PluginError
+    from blueferry.plugin_api.surfaces import ActionResult
+
+    settings, _opened = with_actions
+    settings.load_config("io.example.setup")
+    _wait(lambda: settings.state()["config"].get("loaded") and _idle(settings))
+    read_started, release = threading.Event(), threading.Event()
+    original_read = _ActionClient.get_config
+
+    def changed(_client, action_id):
+        _ActionClient.ran.append(action_id)
+        _ActionClient.port = 47802
+        return ActionResult(action_ok, "Changed the saved settings")
+
+    def failed_read(_client):
+        read_started.set()
+        assert release.wait(5)
+        raise PluginError("could not read the new settings")
+
+    monkeypatch.setattr(_ActionClient, "run_config_action", changed)
+    monkeypatch.setattr(_ActionClient, "get_config", failed_read)
+    settings.run_action("io.example.setup", "approve")
+    try:
+        _wait(read_started.is_set)
+        assert settings.state()["config"]["loaded"] is False
+        assert settings.state()["config"]["loadError"] == ""
+    finally:
+        release.set()
+    _wait(lambda: not settings._tasks and not settings._queue)
+    config = settings.state()["config"]
+    assert config["loaded"] is False
+    assert config["loadError"] == "could not read the new settings"
+    assert config["status"]["text"] == "Changed the saved settings"
+    assert settings._stored == {}
+    # Neither a second action nor another settings operation can use the old form.
+    settings.run_action("io.example.setup", "approve")
+    settings.save_config("io.example.setup", {"port": 47803})
+    settings.sign_in("io.example.setup", {})
+    assert not settings._tasks and not settings._queue
+    assert settings.check_config("io.example.setup", {})["valid"] is False
+    assert _ActionClient.ran == ["approve"]
+
+    monkeypatch.setattr(_ActionClient, "get_config", original_read)
+    settings.load_config("io.example.setup")  # the Retry button only reloads
+    _wait(lambda: not settings._tasks and not settings._queue)
+    config = settings.state()["config"]
+    assert config["loaded"] is True and config["loadError"] == ""
+    assert config["fields"][0]["value"] == 47802
+    assert settings._stored == {"port": 47802}
+    assert _ActionClient.ran == ["approve"]
+
+
+@pytest.mark.parametrize("next_form", ["closed", "same", "other"])
+def test_a_late_settings_read_failure_stays_out_of_a_replaced_form(
+    with_actions, monkeypatch, next_form,
+):
+    from blueferry.plugin_api.testing import manifest
+
+    settings, _opened = with_actions
+    started, release = threading.Event(), threading.Event()
+    first = True
+    original_read = _ActionClient.get_config
+
+    def read(client):
+        nonlocal first
+        if first:
+            first = False
+            started.set()
+            assert release.wait(5)
+            raise RuntimeError("old read failed")
+        return original_read(client)
+
+    monkeypatch.setattr(_ActionClient, "get_config", read)
+    settings.load_config("io.example.setup")
+    try:
+        _wait(started.is_set)
+        settings.close_config()
+        if next_form == "same":
+            settings.load_config("io.example.setup")
+        elif next_form == "other":
+            other = manifest("io.example.other", extra=ACTIONS)
+            settings._manifests[other.id] = other
+            settings.load_config(other.id)
+    finally:
+        release.set()
+    _wait(lambda: not settings._tasks and not settings._queue)
+    config = settings.state()["config"]
+    assert settings.state()["message"] == ""
+    if next_form == "closed":
+        assert config == {}
+    else:
+        assert config["loaded"] is True and config["loadError"] == ""
+        assert config["id"] == ("io.example.setup" if next_form == "same" else "io.example.other")
+
+
+@pytest.mark.parametrize("reply", ["success", "failure", "error"])
+def test_reopening_the_same_form_discards_old_action_results(with_actions, monkeypatch, reply):
+    from blueferry.plugin_api.surfaces import ActionResult
+
+    settings, opened = with_actions
+    settings.load_config("io.example.setup")
+    _wait(lambda: settings.state()["config"].get("loaded") and _idle(settings))
+    started, release = threading.Event(), threading.Event()
+
+    def run(_client, _action_id):
+        started.set()
+        assert release.wait(5)
+        if reply == "error":
+            raise RuntimeError("old failure")
+        return ActionResult(reply == "success", "old answer", "https://example.org/old")
+
+    monkeypatch.setattr(_ActionClient, "run_config_action", run)
+    settings.run_action("io.example.setup", "setup_iphone")
+    try:
+        _wait(started.is_set)
+        settings.close_config()
+        settings.load_config("io.example.setup")
+        statuses = []
+        settings.changed.connect(lambda: statuses.append(settings.state()["config"]["status"]))
+    finally:
+        release.set()
+    _wait(lambda: not settings._tasks and not settings._queue)
+    assert settings.state()["config"]["loaded"] is True
+    assert all(status == {} for status in statuses)
+    assert opened == []
+
+
+@pytest.mark.parametrize("leave", ["close", "disable", "reopen"])
+def test_a_queued_action_never_calls_a_plugin_after_its_form_is_gone(with_actions, leave):
+    settings, opened = with_actions
+    settings.load_config("io.example.setup")
+    _wait(lambda: settings.state()["config"].get("loaded") and _idle(settings))
+    release = threading.Event()
+    settings._work("list", lambda: release.wait(5), lambda _result: None)
+    settings.run_action("io.example.setup", "setup_iphone")
+    try:
+        settings.close_config()
+        if leave == "disable":
+            settings._disabled.add("io.example.setup")
+        elif leave == "reopen":
+            settings.load_config("io.example.setup")
+    finally:
+        release.set()
+    _wait(lambda: not settings._tasks and not settings._queue)
+    assert _ActionClient.ran == []
+    assert opened == []
+
+
+def test_an_answer_never_lands_in_another_form(with_actions) -> None:
+    from blueferry.plugin_api.testing import manifest
+
+    settings, opened = with_actions
+    other = manifest("io.example.other", capabilities="card;", api_version="1.6",
+                     extra="[Config port]\nLabel=Port\nType=int\n")
+    settings._manifests[other.id] = other
+    settings.load_config("io.example.setup")
+    _wait(lambda: settings.state()["config"].get("loaded"))
+    settings.run_action("io.example.setup", "setup_iphone")
+    # Finish the worker without dispatching its reply to the UI thread yet.
+    # Otherwise the new execution guard can correctly skip this call entirely.
+    assert settings._pool.waitForDone(5000)
+    # The user switches to another plugin's form before the answer arrives.
+    settings._update(config=settings._form(other, other.id, {}, loaded=True))
+    _wait(lambda: _idle(settings) and _ActionClient.ran == ["setup_iphone"])
+    _wait(lambda: _idle(settings))
+    assert settings.state()["config"]["id"] == "io.example.other"
+    assert settings.state()["config"]["status"] == {}
+    assert opened == []  # nothing opens for a form that is no longer shown
+
+
+def test_a_test_result_never_lands_in_another_or_a_closed_form(guided) -> None:
+    from blueferry.plugin_api.testing import manifest
+
+    settings, _opened = guided
+    other = manifest("io.example.other", capabilities="card;", api_version="1.3",
+                     extra="[Config port]\nLabel=Port\nType=int\n")
+    settings._manifests[other.id] = other
+    settings.load_config("io.example.cloud")
+    _wait(lambda: settings.state()["config"].get("loaded"))
+    settings.test_config("io.example.cloud", {"url": "https://down.example"})
+    settings._update(config=settings._form(other, other.id, {}, loaded=True))
+    _wait(lambda: _idle(settings))
+    config = settings.state()["config"]
+    assert config["id"] == "io.example.other"
+    assert config["status"] == {} and config["errors"] == {}
+    # Closed meanwhile: the answer does not bring a form back.
+    settings.load_config("io.example.cloud")
+    _wait(lambda: settings.state()["config"].get("loaded") and _idle(settings))
+    settings.test_config("io.example.cloud", {"url": "https://down.example"})
+    settings.close_config()
+    _wait(lambda: _idle(settings))
+    assert settings.state()["config"] == {}
+
+
 class _GatedClient(_GuidedClient):
     """Holds GetConfig, SetConfig and ConfigLogin until the test releases them."""
 

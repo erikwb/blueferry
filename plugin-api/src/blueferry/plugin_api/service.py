@@ -163,6 +163,18 @@ class PluginService(dbus.service.Object):
     def config_login_cancel(self, login_id: str) -> None:
         """Blocking; worker thread. Stop the flow; no answer expected."""
 
+    def config_action(self, action_id: str) -> surfaces.ActionResult | dict[str, object]:
+        """Blocking; worker thread. ApiVersion 1.6: the user pressed the
+        settings form's button ``[ConfigAction <action_id>]``.
+
+        Work with the stored settings (the client disables the buttons
+        while the form has unsaved edits). Return ``ActionResult(ok,
+        message, open_uri)``; an ``open_uri`` is opened like a card
+        action's (http(s), or a file in the plugin's cache directory). The
+        form reloads the settings afterwards, so an action may change them.
+        """
+        raise PluginCallError("this plugin has no settings actions")
+
     # ---- helpers ---------------------------------------------------------
 
     def _submit(self, work: Callable[[], None]) -> None:
@@ -357,6 +369,28 @@ class PluginService(dbus.service.Object):
             return json.dumps({"ok": True})
 
         self.run_async(work, reply, error)
+
+    @dbus.service.method(
+        PLUGIN_INTERFACE, in_signature="s", out_signature="s",
+        async_callbacks=("reply", "error"), sender_keyword="sender",
+    )
+    def RunConfigAction(self, action_id, reply, error, sender=None) -> None:
+        self.admit(sender)
+        ident = str(action_id)
+        self.run_async(lambda: self._run_config_action(ident), reply, error)
+
+    def _run_config_action(self, action_id: str) -> str:
+        self._fields()
+        # Only the buttons the manifest declares; anything else never
+        # reaches the hook.
+        if self.manifest.config_action(action_id) is None:
+            raise PluginCallError("this plugin has no such settings action")
+        result = self.config_action(action_id)
+        log.info("plugin settings action run")
+        try:
+            return surfaces.result_json(result)
+        except TypeError as failure:
+            raise PluginCallError(str(failure)) from None
 
     def _fields(self):
         if not self.manifest.config:
