@@ -5,6 +5,7 @@ import json
 import os
 import threading
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -169,7 +170,8 @@ def _on_a_bus(owner: str | None) -> NotifyService:
     """A service that believes it is exported, with a known daemon owner."""
     service = inline_service(NotifyService, NOTIFY)
     service.NotifyChanged = lambda: None
-    service._connection = object()  # exported, but no watch: owner stays as set
+    # Exported with same-user callers, but no watch: owner stays as set.
+    service._connection = SimpleNamespace(call_blocking=lambda *args, **kwargs: os.getuid())
     service._host_owner = owner
     return service
 

@@ -52,7 +52,7 @@ from textual.widgets.select import NoSelection
 
 from blueferry import __version__, call_audio_view, features_view, quick_reply_view
 from blueferry.backend_lifecycle import restart_backend
-from blueferry.doctor_report import DoctorReport, run_doctor
+from blueferry.doctor_report import DoctorReport
 from blueferry.i18n import _, ngettext
 from blueferry.models import BackendStatus
 from blueferry.phone_audio_view import phone_audio
@@ -469,7 +469,7 @@ class OptionsScreen(ModalScreen[None]):
         *,
         category: str = "phone",
         restart: Callable[[], None] | None = None,
-        doctor: Callable[[], DoctorReport] = run_doctor,
+        doctor: Callable[[], DoctorReport] | None = None,
         restart_state: RestartState | None = None,
     ) -> None:
         super().__init__()

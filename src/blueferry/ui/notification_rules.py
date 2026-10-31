@@ -34,7 +34,12 @@ class NotificationRules:
         self._client = client
         self._toast = toast
         self._reachable = False
+        self._shown = False
+        self._revision: object = _UNREAD
         self._loaded_revision: object = _UNREAD
+        self._loading_revision: object = _UNREAD
+        self._read_serial = 0
+        self._pending = False
         self.rules: list[dict[str, str]] = []
         self._rule_rows: list[Adw.ActionRow] = []
         self.group = Adw.PreferencesGroup(
@@ -85,40 +90,83 @@ class NotificationRules:
         )
         for group in self.groups:
             group.set_visible(shown)
-        # Rule edits from the CLI or another client bump the revision; reread
-        # only then, not on every status refresh.
+        if not shown and self._shown:
+            self._read_serial += 1
+            self._loaded_revision = self._loading_revision = _UNREAD
+        self._shown = shown
+        self._revision = revision
+        # Only a successful read acknowledges a revision. Failed reads retry
+        # on the next status update; older replies cannot replace newer rules.
         if shown and revision != self._loaded_revision:
-            self._loaded_revision = revision
             self.reload()
         self._render_form()
 
     def reload(self) -> None:
-        self._client.notification_open_map_async(self._updated, self._failed)
+        if not self._shown or self._pending or self._loading_revision == self._revision:
+            return
+        self._read_serial += 1
+        serial, revision = self._read_serial, self._revision
+        self._loading_revision = revision
+
+        def loaded(rules: object) -> None:
+            if serial != self._read_serial:
+                return
+            self._loading_revision = _UNREAD
+            if isinstance(rules, list):
+                self._loaded_revision = revision
+                self._updated(rules)
+
+        def failed(message: str) -> None:
+            if serial != self._read_serial:
+                return
+            self._loading_revision = _UNREAD
+            self._toast(_("Could not load the notification rules: {error}").format(error=message))
+
+        self._client.notification_open_map_async(loaded, failed)
 
     def add(self) -> None:
         bundle, target = self._drafts()
         if not self._can_add(bundle, target):
             return
+        self._begin_change()
         self._client.set_notification_open_target_async(
-            bundle, target, self._updated, self._failed,
+            bundle, target, self._changed, self._failed,
         )
 
     def remove(self, bundle: str) -> None:
+        if not self._shown or self._pending:
+            return
+        self._begin_change()
         self._client.remove_notification_open_target_async(
-            bundle, lambda _removed: self.reload(), self._failed,
+            bundle, self._changed, self._failed,
         )
+
+    def _begin_change(self) -> None:
+        self._pending = True
+        self._read_serial += 1
+        self._loaded_revision = self._loading_revision = _UNREAD
+        self._render_form()
+
+    def _changed(self, rules: object) -> None:
+        self._pending = False
+        if self._shown:
+            self._updated(rules)
+        self._render_form()
+        self.reload()
 
     def _drafts(self) -> tuple[str, str]:
         return self.bundle_entry.get_text().strip(), self.target_entry.get_text().strip()
 
     def _can_add(self, bundle: str, target: str) -> bool:
         return (
-            self._reachable
+            self._shown and self._reachable and not self._pending
             and _valid(validate_bundle_id, bundle)
             and _valid(parse_target, target)
         )
 
     def _failed(self, message: str) -> None:
+        self._pending = False
+        self._render_form()
         self._toast(_("Could not change the notification rules: {error}").format(error=message))
 
     def _updated(self, rules: object) -> None:
@@ -155,6 +203,8 @@ class NotificationRules:
 
     def _render_form(self) -> None:
         bundle, target = self._drafts()
+        self.group.set_sensitive(not self._pending)
+        self.form.set_sensitive(self._reachable and not self._pending)
         self.add_button.set_sensitive(self._can_add(bundle, target))
         for entry, check, text in (
             (self.bundle_entry, validate_bundle_id, bundle),

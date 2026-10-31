@@ -164,6 +164,8 @@ class PreparedInstall:
                     f" (commit {short(self.commit)})"),
             ("Capabilities", ", ".join(plugin.capabilities)),
             ("Runs", shlex.join(plugin.exec)),
+            ("Trust", "Plugin and dependency code runs with your user permissions, "
+                      "including during installation. Capabilities do not restrict access."),
         ]
         if plugin.config:
             rows.append(("Settings", ", ".join(f.label for f in plugin.config)))
