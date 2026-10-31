@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "blueferry"
-version = "0.9.0"
+version = "0.9.1"
 description = "BlueFerry brings iPhone messages, notifications, and contacts to Linux"
 authors = [
   {name = "Erik Bourget", email = "erik@ebourget.net"},
@@ -64,7 +64,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "blueferry" = ["tui.tcss"]
-"blueferry.qt" = ["qml/*.qml"]
+"blueferry.qt" = ["qml/*.qml", "qml/ui/*.qml"]
 
 [tool.pytest.ini_options]
 # Without this, a bare `pytest` from the repo root recurses the whole tree
