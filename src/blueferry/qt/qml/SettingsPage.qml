@@ -1,0 +1,232 @@
+pragma ComponentBehavior: Bound
+
+import QtQuick
+import QtQuick.Controls as Controls
+import QtQuick.Layouts
+import org.kde.kirigami as Kirigami
+
+// Settings behind the gear: categories on the left, like KDE's System
+// Settings. In a narrow window the categories are a list and a category
+// opens on its own (drill-down) with a back button.
+Kirigami.Page {
+    id: settingsPage
+    objectName: "phoneSettingsPage"
+    title: qsTr("Settings")
+    padding: 0
+    required property var bridge
+    signal closeRequested()
+    signal clearHistoryRequested()
+    signal shortcutsRequested()
+    signal aboutRequested()
+    signal bluetoothRestartRequested()
+    signal pairingIssueRequested()
+    signal forgetRequested(string mac)
+    signal storagePolicyRequested(string policy)
+    signal pairingRequested(string mac, bool paired, bool compatibilityMode, bool explicitPairing)
+
+    property string category: "phone"
+    property bool drilled: false
+    readonly property bool narrow: width < Kirigami.Units.gridUnit * 34
+    readonly property var categories: [
+        { "key": "phone", "name": qsTr("Phone"), "icon": "smartphone" },
+        { "key": "notifications", "name": qsTr("Notifications"), "icon": "preferences-desktop-notification" },
+        { "key": "calls", "name": qsTr("Calls & Audio"), "icon": "call-start" },
+        { "key": "network", "name": qsTr("Network"), "icon": "network-wireless" },
+        { "key": "security", "name": qsTr("Security"), "icon": "preferences-security" },
+        { "key": "about", "name": qsTr("About"), "icon": "help-about" }
+    ]
+    readonly property var features: (settingsPage.bridge.features || ({})).items || ({})
+    readonly property bool restartPending: {
+        for (const name in settingsPage.features) {
+            if (settingsPage.features[name].restart_required === true)
+                return true
+        }
+        return false
+    }
+
+    function categoryName(key) {
+        for (const entry of settingsPage.categories) {
+            if (entry.key === key)
+                return entry.name
+        }
+        return ""
+    }
+
+    function open(key) {
+        settingsPage.category = key
+        settingsPage.drilled = true
+    }
+
+    readonly property bool daemonAvailable: settingsPage.bridge.status.daemon === true
+
+    function loadFeaturesIfVisible() {
+        if (settingsPage.visible && settingsPage.daemonAvailable)
+            settingsPage.bridge.loadFeatures()
+    }
+
+    // The page is created before the backend is ready and reused on reopen.
+    onVisibleChanged: settingsPage.loadFeaturesIfVisible()
+    onDaemonAvailableChanged: settingsPage.loadFeaturesIfVisible()
+    Component.onCompleted: settingsPage.loadFeaturesIfVisible()
+
+    actions: [
+        Kirigami.Action {
+            objectName: "settingsBackAction"
+            text: qsTr("All Settings")
+            icon.name: "go-previous"
+            visible: settingsPage.narrow && settingsPage.drilled
+            onTriggered: settingsPage.drilled = false
+        },
+        Kirigami.Action {
+            text: qsTr("Close Settings")
+            icon.name: "window-close"
+            displayHint: Kirigami.DisplayHint.IconOnly
+            onTriggered: settingsPage.closeRequested()
+        }
+    ]
+
+    RowLayout {
+        anchors.fill: parent
+        spacing: 0
+
+        Controls.ScrollView {
+            objectName: "settingsCategories"
+            Layout.fillHeight: true
+            Layout.fillWidth: settingsPage.narrow
+            Layout.preferredWidth: settingsPage.narrow ? -1 : Kirigami.Units.gridUnit * 12
+            visible: !settingsPage.narrow || !settingsPage.drilled
+
+            ListView {
+                id: categoryList
+                model: settingsPage.categories
+                clip: true
+                delegate: Controls.ItemDelegate {
+                    id: categoryItem
+                    required property var modelData
+                    objectName: "category_" + categoryItem.modelData.key
+                    width: ListView.view.width
+                    text: categoryItem.modelData.name
+                    icon.name: categoryItem.modelData.icon
+                    highlighted: !settingsPage.narrow
+                        && settingsPage.category === categoryItem.modelData.key
+                    onClicked: settingsPage.open(categoryItem.modelData.key)
+                }
+            }
+        }
+
+        Kirigami.Separator {
+            Layout.fillHeight: true
+            visible: !settingsPage.narrow
+        }
+
+        Controls.ScrollView {
+            id: detail
+            objectName: "settingsDetail"
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            visible: !settingsPage.narrow || settingsPage.drilled
+            contentWidth: availableWidth
+            Controls.ScrollBar.horizontal.policy: Controls.ScrollBar.AlwaysOff
+
+            ColumnLayout {
+                width: detail.availableWidth
+                spacing: Kirigami.Units.largeSpacing
+
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    Layout.margins: Kirigami.Units.largeSpacing
+                    spacing: Kirigami.Units.largeSpacing
+
+                    Kirigami.Heading {
+                        text: settingsPage.categoryName(settingsPage.category)
+                        level: 1
+                    }
+                    Kirigami.InlineMessage {
+                        Layout.fillWidth: true
+                        visible: settingsPage.bridge.errorText !== ""
+                        text: String(settingsPage.bridge.errorText || "")
+                            .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+                        type: Kirigami.MessageType.Error
+                    }
+                    Kirigami.InlineMessage {
+                        objectName: "restartNotice"
+                        Layout.fillWidth: true
+                        visible: settingsPage.restartPending
+                        type: Kirigami.MessageType.Information
+                        text: ((settingsPage.bridge.features || ({})).notice || "") !== ""
+                            ? settingsPage.bridge.features.notice
+                            : qsTr("Some changes apply after the BlueFerry service restarts.")
+                        actions: [
+                            Kirigami.Action {
+                                text: qsTr("Restart Service")
+                                icon.name: "system-reboot"
+                                enabled: !settingsPage.bridge.busy
+                                onTriggered: settingsPage.bridge.restartBackend()
+                            }
+                        ]
+                    }
+
+                    // Keep in-progress pairing choices when visiting another category.
+                    Loader {
+                        Layout.fillWidth: true
+                        visible: settingsPage.category === "phone"
+                        sourceComponent: phoneComponent
+                    }
+                    Loader {
+                        id: categoryLoader
+                        objectName: "categoryLoader"
+                        Layout.fillWidth: true
+                        active: settingsPage.category !== "phone"
+                        visible: active
+                        sourceComponent: settingsPage.category === "notifications" ? notificationsComponent
+                            : settingsPage.category === "calls" ? callsComponent
+                            : settingsPage.category === "network" ? networkComponent
+                            : settingsPage.category === "security" ? securityComponent
+                            : settingsPage.category === "about" ? aboutComponent
+                            : null
+                    }
+                }
+            }
+        }
+    }
+
+    Component {
+        id: phoneComponent
+        SettingsPhone {
+            bridge: settingsPage.bridge
+            onBluetoothRestartRequested: settingsPage.bluetoothRestartRequested()
+            onPairingIssueRequested: settingsPage.pairingIssueRequested()
+            onForgetRequested: mac => settingsPage.forgetRequested(mac)
+            onPairingRequested: (mac, paired, compatibilityMode, explicitPairing) =>
+                settingsPage.pairingRequested(mac, paired, compatibilityMode, explicitPairing)
+        }
+    }
+    Component {
+        id: notificationsComponent
+        SettingsNotifications { bridge: settingsPage.bridge }
+    }
+    Component {
+        id: callsComponent
+        SettingsCallsAudio { bridge: settingsPage.bridge }
+    }
+    Component {
+        id: networkComponent
+        SettingsNetwork { bridge: settingsPage.bridge }
+    }
+    Component {
+        id: securityComponent
+        SettingsSecurity {
+            bridge: settingsPage.bridge
+            onStoragePolicyRequested: policy => settingsPage.storagePolicyRequested(policy)
+            onClearHistoryRequested: settingsPage.clearHistoryRequested()
+        }
+    }
+    Component {
+        id: aboutComponent
+        SettingsAbout {
+            bridge: settingsPage.bridge
+            onShortcutsRequested: settingsPage.shortcutsRequested()
+            onAboutRequested: settingsPage.aboutRequested()
+        }
+    }
+}

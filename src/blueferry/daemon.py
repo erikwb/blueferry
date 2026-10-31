@@ -70,6 +70,7 @@ from blueferry.dbus_service import MessagesService, claim_bus_name
 from blueferry.errors import BlueFerryError, NotReadyError
 from blueferry.event_dispatcher import EventDispatcher
 from blueferry.events import SmsEvent
+from blueferry.features import FeatureSettings
 from blueferry.gio_dbus import GioDBus
 from blueferry.gio_dbus import system_bus as gio_system_bus
 from blueferry.glib_timers import schedule_periodic
@@ -933,6 +934,7 @@ class Daemon:
                 tether=self.tether,
                 set_tethering=self._set_tethering,
                 phone_audio=self.audio_preference,
+                features=FeatureSettings(),
                 contact_photos=self._contact_photos_enabled,
                 set_contact_photos=self._set_contact_photos,
                 set_otp_autocopy=self._set_otp_autocopy,

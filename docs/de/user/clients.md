@@ -20,6 +20,35 @@ Linux Mint 22.3 und Pop!_OS 24.04 gibt es sie nicht.
 
 ![KDE-Client](../../images/qt.png)
 
+**Settings** (im Menü) hat links Kategorien, wie KDEs Systemeinstellungen:
+
+| Kategorie | Inhalt |
+| --- | --- |
+| Phone | Kopplung, Verbindungszustand, **Run Diagnostics** (dieselben Prüfungen wie `blueferry doctor`, im Fenster angezeigt), Kontaktabgleich, Kontaktfotos |
+| Notifications | Welche Ereignisse Popups erzeugen, nur Kontakte, Klickregeln, Mitteilungsinhalt, Aktionsknöpfe, Mitteilungen mit dem iPhone abgleichen, beim Wegklicken als gelesen markieren |
+| Calls & Audio | Anrufe, Anrufliste, Akku-Warnung, [iPhone-Ton am Computer](phone-audio.md), Mediensteuerung |
+| Network | [Bluetooth-Tethering](bluetooth-tethering.md), iPhone-Internet teilen, automatische Hotspot-Verbindung |
+| Security | Einmalcodes, Abwesenheitssperre, lokale Daten und ihre Verschlüsselung, Verlauf löschen |
+| About | Version, Hintergrunddienst, Tastenkürzel, Beenden |
+
+In einem schmalen Fenster werden die Kategorien zur Liste; eine Kategorie
+öffnet sich einzeln, **All Settings** führt zurück.
+
+### Schalter, die einen Neustart brauchen
+
+Einige Ein/Aus-Einstellungen brauchten bisher eine Änderung in
+`~/.config/blueferry/local.env`: Mitteilungsinhalt anzeigen und eine Nachricht
+beim Wegklicken des Popups als gelesen markieren. Die Einstellungsseite und `blueferry features` speichern sie
+jetzt in `~/.config/blueferry/settings.json`, wo sie `local.env`
+überschreiben. Sie gelten nach einem Neustart des Hintergrunddienstes; die
+Seite sagt das und bietet **Restart Service** an. Eine Variable aus der
+Umgebung des Dienstes gewinnt weiterhin, der Schalter sagt dann das.
+
+```bash
+blueferry features                                 # alle Schalter mit Wert und Quelle
+blueferry features off mark_read_on_dismiss        # gilt nach einem Neustart
+```
+
 ### Symbol im Systemabschnitt der Kontrollleiste
 
 `blueferry-tray` kommt mit `blueferry-qt` und legt ein Telefon-Symbol in den

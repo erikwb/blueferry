@@ -64,6 +64,8 @@ All paths are relative to `src/blueferry/` unless noted.
 | `phone_audio_route.py` | Content-free iPhone A2DP route (`pc`/`phone`/`unavailable`) from BlueZ `MediaTransport1`/`Device1` over GDBus, switched through `ConnectProfile`/`DisconnectProfile`; also where the sound plays (`phone_audio_playing`) from `MediaTransport1.State` and the AMS playback state, debounced. |
 | `gio_dbus.py` | `GioBus`: a two-method seam (typed asynchronous `call`, `subscribe`) over a `Gio.DBusConnection`, with dbus-python-compatible error names; used by `phone_audio_route.py`. |
 | `phone_audio_view.py` | Toolkit-free wording of the PC/iPhone sound switch for every client. |
+| `features.py` | The `local.env` switches without a runtime setter of their own that clients may store in settings.json (`Messages1.GetFeatures/SetFeature`): notification content and mark read on dismiss. |
+| `doctor_report.py` | Runs `blueferry doctor` in a child process for the settings UIs and returns a plain-text report. |
 | `mpris.py` | Optional MPRIS2 player (`org.mpris.MediaPlayer2.blueferry_iphone`) over `media.py`, exported on its own private session-bus connection so the MPRIS name never addresses the BlueFerry object. |
 
 ### Bluetooth transports and supervision
@@ -196,6 +198,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `cli_plugins.py` | `blueferry plugins …` and `blueferry plugins ALIAS …` (exec of the plugin's own CLI; refused for a disabled plugin). |
 | `desktop_open.py` | Opens a checked URI with the desktop's default handler for the CLIs. |
 | `cli_audio.py` | `blueferry audio [status\|pc\|phone]`. |
+| `cli_features.py` | `blueferry features [on\|off NAME]`. |
 | `cli_notification_actions.py` | `notification-actions` status, enable, and disable for the opt-in iPhone action buttons. |
 | `cli_calls.py` | Optional `blueferry calls` commands over `Calls1` and `blueferry phone-status` (battery, signal, network from `GetStatus`). |
 | `cli_tether.py` | `blueferry tether [status\|enable\|disable\|on\|off]`. |
@@ -228,7 +231,10 @@ All paths are relative to `src/blueferry/` unless noted.
 | `qt/activation.py` | Qt adapter for client activation. |
 | `qt/qml/Main.qml` | Kirigami window: navigation and composition. |
 | `qt/qml/ConversationLogic.qml` | Thread lookup, roster-warning dedup, participant parsing (also used by Quickshell). |
-| `qt/qml/PhoneSettingsPage.qml` | Qt setup and preferences page. |
+| `qt/qml/SettingsPage.qml` | Settings with categories on the left (Phone, Notifications, Calls & Audio, Network, Security, About), a drill-down list in a narrow window, and the restart notice for feature switches. Keeps the Phone category alive to preserve pairing choices. |
+| `qt/qml/Settings*.qml` | One page per category; every control of the former single iPhone settings page lives in one of them. `SettingsPhone` also runs `blueferry doctor` (`doctor_report.py`, child process on its own pool) and shows the report as plain text. |
+| `qt/qml/SubtitleSwitch.qml`, `qt/qml/FeatureSwitch.qml` | A switch row with a wrapped explanation; `FeatureSwitch` binds one `GetFeatures`/`SetFeature` switch and falls back to the `local.env` hint on older daemons. |
+| `qt/qml/PhoneAudioSettings.qml` | The PC/iPhone sound switch in Calls & Audio; loaded only for daemons that report `phone_audio_route`. |
 | `qt/qml/PhoneSettingsDialogs.qml` | Window-owned settings/pairing dialogs that outlive the page. |
 | `qt/qml/NotificationOpenMapEditor.qml` | Loaded editor for notification click rules (shown with the "all" policy). |
 | `qt/qml/OnboardingSummary.qml` | Renders the onboarding stage message. |

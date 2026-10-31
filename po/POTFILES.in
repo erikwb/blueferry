@@ -15,7 +15,14 @@ src/blueferry/qt/controller.py
 src/blueferry/qt/tray.py
 src/blueferry/qt/tray_presenter.py
 src/blueferry/qt/qml/Main.qml
-src/blueferry/qt/qml/PhoneSettingsPage.qml
+src/blueferry/qt/qml/SettingsPage.qml
+src/blueferry/qt/qml/SettingsPhone.qml
+src/blueferry/qt/qml/SettingsNotifications.qml
+src/blueferry/qt/qml/SettingsCallsAudio.qml
+src/blueferry/qt/qml/SettingsNetwork.qml
+src/blueferry/qt/qml/SettingsSecurity.qml
+src/blueferry/qt/qml/SettingsAbout.qml
+src/blueferry/qt/qml/FeatureSwitch.qml
 src/blueferry/qt/qml/PhoneSettingsDialogs.qml
 src/blueferry/qt/qml/NotificationOpenMapEditor.qml
 src/blueferry/qt/qml/MessageBubble.qml

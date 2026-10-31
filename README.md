@@ -463,6 +463,15 @@ physical iPhone.
 
 Restart the user service after editing `local.env` settings.
 
+Two on/off switches without a setting of their own
+(`BLUEFERRY_SHOW_NOTIFICATION_CONTENT`, `BLUEFERRY_MARK_READ_ON_DISMISS`)
+can also be changed in the Qt settings
+or with `blueferry features` (`blueferry features off
+mark_read_on_dismiss`). They are stored in
+`~/.config/blueferry/settings.json`, override `local.env`, and apply after
+the service restarts; a variable set in the service's own environment still
+wins.
+
 ### Sync notifications with iPhone (opt-in)
 
 With **All iPhone Notifications** selected, an iPhone app popup normally
