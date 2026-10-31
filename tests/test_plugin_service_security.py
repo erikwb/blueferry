@@ -50,6 +50,7 @@ def plugin(**kwargs):
     ("GetInfo", ()), ("Status", ()), ("GetConfig", ()), ("SetConfig", ("{}",)),
     ("TestConfig", ("{}",)), ("ConfigLogin", ("nextcloud", "{}")),
     ("ConfigLoginStatus", ("login",)), ("ConfigLoginCancel", ("login",)),
+    ("RunConfigAction", ("setup_iphone",)),
     ("ListRecent", (1,)), ("FetchOriginal", ("photo",)), ("GetCardItems", ()),
     ("InvokeAction", ("card", "action", "{}")), ("ShareTargets", ()),
     ("SendFiles", ("target", ["/must-not-be-read"])), ("GetPendingNotification", ()),

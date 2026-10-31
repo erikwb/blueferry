@@ -53,7 +53,7 @@ TYPES = frozenset({"string", "url", "secret", "bool", "int", "choice"})
 SECRET_MASK = "********"
 MAX_FIELDS = 24
 # Int bounds stay within 32 bits so every client's spin box can show them.
-INT_LIMIT = 2**31 - 1
+INT32_MIN, INT32_MAX = -2**31, 2**31 - 1
 MAX_CONFIG_BYTES = 16 * 1024
 MAX_TEXT = 1024
 MAX_URL = 2048
@@ -472,7 +472,8 @@ def parse_fields(
                 maximum = int(values["Max"]) if values.get("Max") else None
             except ValueError:
                 raise ValueError(f"Config {key}: Min and Max must be integers") from None
-            if any(bound is not None and abs(bound) > INT_LIMIT for bound in (minimum, maximum)):
+            if any(bound is not None and not INT32_MIN <= bound <= INT32_MAX
+                   for bound in (minimum, maximum)):
                 raise ValueError(f"Config {key}: Min and Max must fit in 32 bits")
         if kind not in ("int",) and (values.get("Min") or values.get("Max")):
             raise ValueError(f"Config {key}: Min and Max are only for int")
