@@ -724,16 +724,12 @@ ShellRoot {
         root.errorText = message
       } else if (method === "mark_thread_read") {
         // Keep the conversation open even if MAP write-back fails.
-      } else if (method === "plugin_cards") {
+      } else if (method === "plugin_cards" || method === "plugin_action") {
+        // BackendBridge always supplies a message (its own when the bridge
+        // sent none); a hidden panel keeps its cards forgotten.
+        if (method === "plugin_action") root.pluginActionBusy = false
         if (root.pluginCardsWatched) root.pluginCards = ({
-          cards: root.pluginCards.cards || [], message: message || "Plugins are unavailable.",
-          messageOk: false
-        })
-      } else if (method === "plugin_action") {
-        root.pluginActionBusy = false
-        root.pluginCards = ({
-          cards: root.pluginCards.cards || [], message: message || "The plugin did not answer.",
-          messageOk: false
+          cards: root.pluginCards.cards || [], message: message || "", messageOk: false
         })
       } else if (method === "now_playing") {
         root.nowPlaying = ({})
