@@ -28,11 +28,15 @@ tabs:
   chat.
 - **Calls**: [phone calls](calls.md) with a dial pad and running calls as
   cards (answer, hold, hang up), and the [call history](call-history.md)
-  grouped by day, with All and Missed.
+  grouped by day, with All and Missed. Dialing asks you to confirm the number;
+  names and numbers with extensions are never converted into another number.
 - **Notifications**: the [recent iPhone notifications](notification-history.md)
   of other apps.
 
 In a narrow window the card folds behind the phone button in the header.
+Messages are marked read only while their conversation is visible and the
+window has focus. The phone card's sound switch controls media playback;
+it does not switch the audio of a phone call.
 
 **Settings** (the gear in the header) has categories on the left, like KDE's
 System Settings:

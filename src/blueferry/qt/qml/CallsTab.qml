@@ -19,23 +19,15 @@ GridLayout {
     readonly property bool callsEnabled: (callsTab.bridge.status || {}).calls_enabled === true
     readonly property bool callsReady: callsTab.bridge.callsState === "ready"
     readonly property var phoneCalls: callsTab.bridge.phoneCalls || []
-    readonly property var audio: callsTab.bridge.phoneAudio || ({})
-    readonly property string dialText: callsTab.dialable(dialField.text)
-    readonly property bool searching: /[^0-9+*#\s()\-.\/]/.test(dialField.text)
-
-    // HFP dialing accepts digits, +, * and # only.
-    function dialable(value: string): string {
-        return String(value || "").replace(/[^0-9+*#]/g, "").slice(0, 32)
-    }
-
     function append(key: string): void {
-        dialField.text = callsTab.dialable(dialField.text + key)
+        dialField.text += key
     }
 
     function dial(): void {
-        const number = callsTab.dialable(dialField.text)
-        if (number !== "" && callsTab.callsReady)
-            callsTab.bridge.dialCall(number)
+        // Preserve the input for validation and confirmation. Discarding
+        // letters or extensions here could turn it into a different number.
+        if (dialField.text.trim() !== "" && callsTab.callsReady && !callsTab.bridge.busy)
+            callsTab.bridge.requestDialLink(dialField.text)
     }
 
     function notReadyText(): string {
@@ -126,21 +118,6 @@ GridLayout {
                         onClicked: callsTab.bridge.hangupCall(activeCall.modelData.call_id)
                     }
                 ]
-                Controls.Switch {
-                    objectName: "callsAudioSwitch"
-                    text: qsTr("Sound on this computer")
-                    // Where the sound plays right now, as on the phone card.
-                    readonly property string hint: callsTab.audio.hint || ""
-                    Controls.ToolTip.text: hint
-                    Controls.ToolTip.visible: hovered && hint !== ""
-                    Accessible.description: hint
-                    checked: callsTab.audio.onPc === true
-                    enabled: callsTab.audio.available === true && callsTab.audio.pending !== true
-                    onToggled: {
-                        callsTab.bridge.setPhoneAudioRoute(checked ? "pc" : "phone")
-                        checked = Qt.binding(function() { return callsTab.audio.onPc === true })
-                    }
-                }
             }
         }
 
@@ -167,7 +144,6 @@ GridLayout {
                     horizontalAlignment: Text.AlignHCenter
                     font.pointSize: Kirigami.Theme.defaultFont.pointSize * 1.8
                     background: null
-                    maximumLength: 64
                     placeholderText: qsTr("Number or name")
                     Accessible.name: qsTr("Phone number or contact name")
                     onTextEdited: searchTimer.restart()
@@ -214,7 +190,7 @@ GridLayout {
                         }
                     }
                     onClicked: {
-                        dialField.text = callsTab.dialable(suggestion.modelData.address)
+                        dialField.text = suggestion.modelData.address
                         callsTab.bridge.findContacts("")
                     }
                 }
@@ -297,7 +273,7 @@ GridLayout {
                 icon.height: Kirigami.Units.iconSizes.medium
                 text: qsTr("Call")
                 display: Controls.AbstractButton.IconOnly
-                enabled: callsTab.callsReady && callsTab.dialText !== "" && !callsTab.bridge.busy
+                enabled: callsTab.callsReady && dialField.text.trim() !== "" && !callsTab.bridge.busy
                 opacity: enabled ? 1 : 0.45
                 background: Rectangle {
                     radius: width / 2
@@ -325,7 +301,7 @@ GridLayout {
             visible: active
             sourceComponent: RecentCallsPage {
                 bridge: callsTab.bridge
-                onCallRequested: number => callsTab.bridge.dialCall(callsTab.dialable(number))
+                onCallRequested: number => callsTab.bridge.requestDialLink(number)
                 onMessageRequested: address => callsTab.messageRequested(address)
             }
         }

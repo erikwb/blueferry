@@ -194,10 +194,15 @@ class BridgeController(QObject):
         self._notifications: list[dict] = []
         self._notifications_info: dict = {"enabled": False, "content": False, "error": ""}
         self._notifications_watched = False
+        self._notifications_generation = 0
+        self._notifications_loading = False
+        self._notifications_again = False
+        self._notifications_status_key: tuple[object, ...] | None = None
         self._notifications_timer = QTimer(self)
         self._notifications_timer.setSingleShot(True)
         self._notifications_timer.setInterval(150)
         self._notifications_timer.timeout.connect(self.refreshNotifications)
+        self.statusChanged.connect(self._sync_notifications)
         self.devicesChanged.connect(self.phoneIdentityChanged)
         self.configuredChanged.connect(self.phoneIdentityChanged)
         self._tether: dict = {"available": False}
@@ -476,44 +481,107 @@ class BridgeController(QObject):
     @Slot(bool)
     def watchNotifications(self, watched: bool) -> None:
         """The Notifications tab became visible (load) or hidden (forget)."""
+        if self._notifications_watched == bool(watched):
+            return
         self._notifications_watched = bool(watched)
         if self._notifications_watched:
             self.refreshNotifications()
             return
+        self._clear_notifications()
+
+    def _notifications_available(self) -> bool:
+        return (
+            self._status.get("daemon") is True
+            and self._status.get("notification_history_enabled") is True
+            and (
+                self._status.get("storage_policy") == "none"
+                or self._status.get("storage_state") == "ready"
+            )
+        )
+
+    def _clear_notifications(self) -> None:
+        # A late response must not repopulate private rows after the tab was
+        # hidden, storage locked, or the daemon/phone changed.
+        self._notifications_generation += 1
+        self._notifications_again = False
         self._notifications_timer.stop()
-        if self._notifications:
-            self._notifications = []
-            self.notificationsChanged.emit()
+        self._notifications = []
+        self._notifications_info = {"enabled": False, "content": False, "error": ""}
+        self.notificationsChanged.emit()
+
+    def _sync_notifications(self) -> None:
+        current = (
+            self._notifications_available(),
+            self._status.get("notification_content_shown") is True,
+            self._status.get("phone_profile_id"),
+        )
+        if current == self._notifications_status_key:
+            return
+        self._notifications_status_key = current
+        self._clear_notifications()
+        # A tab opened before the backend was available recovers without
+        # needing another notification or a manual tab switch.
+        self.refreshNotifications()
 
     @Slot()
     def refreshNotifications(self) -> None:
-        if not self._notifications_watched:
+        if not self._notifications_watched or not self._notifications_available():
             return
+        if self._notifications_loading:
+            self._notifications_again = True
+            return
+        self._notifications_loading = True
+        self._notifications_timer.stop()
+        generation = self._notifications_generation
+
+        def current() -> bool:
+            return (
+                generation == self._notifications_generation
+                and self._notifications_watched and self._notifications_available()
+            )
+
+        def finished() -> None:
+            self._notifications_loading = False
+            if self._notifications_again:
+                self._notifications_again = False
+                self.refreshNotifications()
 
         def completed(value: object) -> None:
-            if not self._notifications_watched:
-                return
-            snapshot = value if isinstance(value, dict) else {}
-            self._notifications = phone_link.notification_rows(snapshot.get("notifications"))
-            self._notifications_info = {
-                "enabled": snapshot.get("enabled") is True,
-                "content": snapshot.get("content") is True,
-                "error": "",
-            }
-            self.notificationsChanged.emit()
+            try:
+                if not current():
+                    return
+                snapshot = value if isinstance(value, dict) else {}
+                enabled = snapshot.get("enabled") is True
+                content = (
+                    enabled and snapshot.get("content") is True
+                    and self._status.get("notification_content_shown") is True
+                )
+                self._notifications = phone_link.notification_rows(
+                    snapshot.get("notifications") if enabled else [], content=content,
+                )
+                self._notifications_info = {"enabled": enabled, "content": content, "error": ""}
+                self.notificationsChanged.emit()
+            finally:
+                finished()
 
         def failed(message: str) -> None:
-            self._notifications = []
-            self._notifications_info = {
-                **self._notifications_info, "error": message or _("Notifications are unavailable"),
-            }
-            self.notificationsChanged.emit()
+            try:
+                if not current():
+                    return
+                self._notifications = []
+                self._notifications_info = {
+                    **self._notifications_info,
+                    "error": message or _("Notifications are unavailable"),
+                }
+                self.notificationsChanged.emit()
+            finally:
+                finished()
 
         self._run(lambda: self._backend.notifications(100), completed, failed, busy=False)
 
     @Slot()
     def _notificationsInvalidated(self) -> None:
-        if self._notifications_watched:
+        if self._notifications_watched and self._notifications_available():
             self._notifications_timer.start()
 
     @Property(str, notify=callHistoryChanged)
