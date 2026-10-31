@@ -25,10 +25,18 @@ The card ids stay the same while a card is unchanged, until the background
 service restarts. After a sync that changed a card, its old id no longer
 works; list the contacts again.
 
-In the Quickshell panel, the search button (or `Ctrl+F`) finds a contact
-and calls or writes to one of its numbers or addresses (see
-[Clients](clients.md#contacts-and-search-in-the-panel)). The other clients get a contact
-view in a separate change.
+Contact view in the clients:
+
+- **KDE client:**
+  not yet; use the command line.
+- **GTK client:**
+  not yet; use the command line.
+- **Terminal client:**
+  not yet; use the command line.
+- **Quickshell panel:**
+  the search button (or `Ctrl+F`) finds a contact and calls or writes to one
+  of its numbers or addresses (see
+  [Clients](clients.md#contacts-and-search-in-the-panel)).
 
 ## Photos
 

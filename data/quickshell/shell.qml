@@ -90,6 +90,8 @@ ShellRoot {
   property var searchResults: ({})
   property string searchQuery: ""
   property string searchError: ""
+  // NotReady answers retried for the current query (search_model.BUSY_RETRIES).
+  property int searchBusyRetries: 0
   property bool contactCardsBusy: false
   property bool dialBusy: false
   property var contactCardEpoch: undefined
@@ -380,6 +382,7 @@ ShellRoot {
     root.searchResults = ({})
     root.searchQuery = ""
     root.searchError = ""
+    root.searchBusyRetries = 0
     root.contactCardsBusy = false
   }
 
@@ -638,8 +641,19 @@ ShellRoot {
         // A stale id: the shared text is shown and the list is read again.
         if (root.contactCard.found !== true) root.runSearch(root.searchQuery)
       } else if (method === "search") {
-        if (searchPopup.visible && typeof result === "object" && result !== null)
-          root.searchResults = result
+        if (!searchPopup.visible || typeof result !== "object" || result === null) return
+        if (result.busy === true) {
+          // The daemon's search queue is full: the same query again after
+          // the typing delay, three times, then the shared busy text.
+          if (root.searchBusyRetries < 3) {
+            root.searchBusyRetries += 1
+            searchTimer.restart()
+          } else {
+            root.searchError = String(result.error || "")
+          }
+          return
+        }
+        root.searchResults = result
       } else if (method === "dial") {
         root.dialBusy = false
         dialConfirmPopup.close()
@@ -1907,7 +1921,10 @@ ShellRoot {
             busy: root.contactCardsBusy
             error: root.searchError
             dialHint: String(root.backendStatus.dial_hint || "")
-            onQueryEdited: searchTimer.restart()
+            onQueryEdited: {
+              root.searchBusyRetries = 0
+              searchTimer.restart()
+            }
             onMoreContactsRequested: root.loadContactCards(Number(root.contactCards.next_offset || 0))
             onContactRequested: contactId => backendBridge.requestLatest("contact_card", {id: contactId})
             onCardClosed: {

@@ -1077,8 +1077,8 @@ def test_bridge_runs_diagnostics_with_the_shared_summary(monkeypatch) -> None:
     from blueferry import doctor_report
 
     monkeypatch.setattr(
-        doctor_report, "run_doctor",
-        lambda: doctor_report.DoctorReport(True, True, "WARNING: ancs"),
+        doctor_report.DoctorRunner, "run",
+        lambda _self: doctor_report.DoctorReport(True, True, "WARNING: ancs"),
     )
     reply = QuickshellBridge(SettingsClient()).dispatch("doctor", {})  # type: ignore[arg-type]
     assert reply == {
@@ -1142,7 +1142,7 @@ def test_bridge_stops_diagnostics_when_quickshell_terminates_it(monkeypatch, num
     read_end, write_end = os.pipe()
     monkeypatch.setattr(quickshell_bridge, "BackendClient", FakeClient)
     monkeypatch.setattr(quickshell_bridge, "_install_signal_receivers", lambda _bridge: [])
-    monkeypatch.setattr(doctor_report, "terminate_running", lambda: stopped.append(True))
+    monkeypatch.setattr(doctor_report.DoctorRunner, "stop", lambda _self: stopped.append(True))
     monkeypatch.setattr(GLib, "MainLoop", IteratingLoop)
     monkeypatch.setattr("sys.argv", ["blueferry-quickshell-bridge"])
     monkeypatch.setattr("sys.stdout", io.StringIO())
@@ -1694,6 +1694,28 @@ def test_bridge_flattens_search_hits_with_the_match_and_the_call_number() -> Non
     short = bridge.dispatch("search", {"query": "a"})
     assert short["rows"] == [] and "two characters" in short["hint"]
     assert len(client.calls) == 1
+
+
+def test_bridge_answers_a_full_search_queue_as_busy() -> None:
+    from blueferry import search_view
+
+    client = ContactsClient()
+    bridge = QuickshellBridge(client)  # type: ignore[arg-type]
+    errors = [_backend_error("io.weirdware.BlueFerry.Error.NotReady", "search is busy")]
+
+    def search(query, limit=20):
+        if errors:
+            raise errors.pop()
+        return {"query": query}
+
+    client.search = search  # type: ignore[method-assign]
+    busy = bridge.dispatch("search", {"query": "ana"})
+    assert busy["busy"] is True and busy["rows"] == []
+    assert busy["error"] == search_view.search_busy_text()
+    assert "busy" not in bridge.dispatch("search", {"query": "ana"})
+    errors.append(_backend_error("io.weirdware.BlueFerry.Error.Failed", "boom"))
+    with pytest.raises(Exception, match="boom"):
+        bridge.dispatch("search", {"query": "ana"})
 
 
 def test_bridge_dials_only_digits_and_reports_the_calls_hint() -> None:

@@ -16,14 +16,22 @@ Nummer) und Anrufe (Name oder Nummer). Jede Gruppe zeigt, wie viele Treffer
 wegen des Limits fehlen. Groß-/Kleinschreibung, Akzente und
 Schreibvarianten spielen keine Rolle: `muller` findet `Müller`. Nummern
 werden über ihre Ziffern gefunden, sobald die Suche mindestens drei Ziffern
-enthält, auch bei Unterhaltungen. Pro Gruppe werden höchstens 50 Treffer
-angezeigt. Suchen mit weniger als zwei
+enthält, auch bei Unterhaltungen. Der Hintergrunddienst liefert pro Gruppe
+höchstens 50 Treffer (`-n 50`). Suchen mit weniger als zwei
 Zeichen finden nichts.
 
-Im Quickshell-Panel sucht der Suchknopf (oder `Strg+F`) beim Tippen und
-öffnet aus einem Treffer die Unterhaltung oder die Kontaktkarte (siehe
-[Clients](clients.md#kontakte-und-suche-im-panel)). Die anderen Clients
-bekommen ein Suchfeld mit einer separaten Änderung.
+Suche in den Clients:
+
+- **KDE-Client:**
+  noch nicht; nutze die Kommandozeile.
+- **GTK-Client:**
+  noch nicht; nutze die Kommandozeile.
+- **Terminal-Client:**
+  noch nicht; nutze die Kommandozeile.
+- **Quickshell-Panel:**
+  der Suchknopf (oder `Strg+F`) sucht beim Tippen, zeigt je Gruppe bis zu 10
+  Treffer und öffnet aus einem Treffer die Unterhaltung oder die
+  Kontaktkarte (siehe [Clients](clients.md#kontakte-und-suche-im-panel)).
 
 ## Was durchsucht wird
 

@@ -15,13 +15,22 @@ contacts (name, company, mail, postal address or number) and calls (caller
 name or number). Each group shows how many matches the limit left out.
 Case, accents and spelling variants do not matter: `muller` finds
 `Müller`. Numbers match by their digits once the query has at least three
-digits, also for conversations. At most 50 hits per group are shown.
-Queries shorter than two characters find nothing.
+digits, also for conversations. The background service returns at most
+50 hits per group (`-n 50`). Queries shorter than two characters find
+nothing.
 
-In the Quickshell panel, the search button (or `Ctrl+F`) searches as you
-type and opens a conversation or contact card from a hit (see
-[Clients](clients.md#contacts-and-search-in-the-panel)). The other clients get a search
-field in a separate change.
+Search in the clients:
+
+- **KDE client:**
+  not yet; use the command line.
+- **GTK client:**
+  not yet; use the command line.
+- **Terminal client:**
+  not yet; use the command line.
+- **Quickshell panel:**
+  the search button (or `Ctrl+F`) searches as you type, shows up to 10 hits
+  per group and opens a conversation or contact card from a hit (see
+  [Clients](clients.md#contacts-and-search-in-the-panel)).
 
 ## What is searched
 

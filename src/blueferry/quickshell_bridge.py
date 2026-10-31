@@ -347,6 +347,16 @@ def search_reply(payload: object) -> dict[str, Any]:
     }
 
 
+def search_busy_reply(query: str) -> dict[str, Any]:
+    """The daemon's search queue is full (``NotReady``): the panel tries the
+    same query again after the typing delay and shows ``error`` once it
+    gives up."""
+    return {
+        "query": query, "busy": True, "error": search_view.search_busy_text(),
+        "count": 0, "hint": "", "limit_text": "", "rows": [],
+    }
+
+
 def now_playing_view(snapshot: object) -> dict[str, Any]:
     """Reduce GetNowPlaying for the shell without arrays or translated text.
 
@@ -410,6 +420,8 @@ class QuickshellBridge:
         # The notice after "Reconnect", shared with Qt and GTK; it lasts
         # until a status shows the outcome. Workers run in parallel.
         self._manual_reconnect = ManualReconnect()
+        # This bridge's diagnostics children, stopped when the shell exits.
+        self.doctor = doctor_report.DoctorRunner()
         self._reconnect_lock = threading.Lock()
         # SetNotificationAppMuted takes an app ID, the panel sends a row
         # index: each toggle rereads the list right before it writes, one
@@ -732,7 +744,7 @@ class QuickshellBridge:
             restart_backend()
             return None
         if method == "doctor":
-            report = doctor_report.run_doctor()
+            report = self.doctor.run()
             return doctor_report.view(
                 doctor_report.finished_state(doctor_report.idle_state(), report)
             )
@@ -754,7 +766,14 @@ class QuickshellBridge:
             query = _text(args, "query")
             if not search_view.should_search(query):
                 return search_reply({"query": query})
-            return search_reply(self.client.search(query, SEARCH_LIMIT))
+            try:
+                payload = self.client.search(query, SEARCH_LIMIT)
+            except BackendError as error:
+                name, _message = _dbus_error(error)
+                if name.endswith(".NotReady"):
+                    return search_busy_reply(query)
+                raise
+            return search_reply(payload)
         if method == "dial":
             number = phone_link_view.dialable(_text(args, "number"))
             if not number:
@@ -990,7 +1009,7 @@ def main() -> int:
             if source is not None:
                 source.destroy()
         # A running diagnostics child would otherwise outlive the shell.
-        doctor_report.terminate_running()
+        bridge.doctor.stop()
         if activation is not None:
             activation.close()
         for match in signal_matches:

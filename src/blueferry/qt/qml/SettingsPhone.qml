@@ -374,6 +374,19 @@ ColumnLayout {
         text: onboardingSummary.ancsUnavailableHint()
     }
 
+    // Loaded only when the running daemon offers Tether1, so older
+    // backends and clients without the feature show nothing extra.
+    Loader {
+        objectName: "tetherLoader"
+        Layout.fillWidth: true
+        active: iphonePage.bridge.tether !== undefined
+            && iphonePage.bridge.tether.available === true
+        visible: active
+        sourceComponent: Component {
+            TetherSection { bridge: iphonePage.bridge }
+        }
+    }
+
     Kirigami.Heading { text: qsTr("Diagnostics"); level: 2 }
     Controls.Label {
         Layout.fillWidth: true
