@@ -258,7 +258,9 @@ class CallsScreen(ModalScreen[None]):
             self._filled = self._initial_number
             self.call_after_refresh(self.dial)
         self.query_one("#calls-suggestions", OptionList).display = False
-        self.query_one("#calls-number", Input).focus()
+        # At once, not through Widget.focus (deferred): a snapshot with an
+        # active call may arrive first, and the field must then give it up.
+        self.set_focus(self.query_one("#calls-number", Input))
         self._update_view()
         self.refresh_calls()
         self.set_interval(self._poll_seconds, self.refresh_calls)
