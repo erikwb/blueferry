@@ -27,6 +27,16 @@ bottom in a narrow window:
 - **Notifications**: the [recent iPhone notifications](notification-history.md)
   of other apps. When the list is off, the tab says why and opens the
   setting.
+- **Photos**: the newest photos and videos of a [photo plugin](plugins.md),
+  with All, Photos and Videos; a click downloads the original and opens it,
+  and an opened one can be dragged into other apps.
+
+**Plugins & Tools** on the card unfolds what the KDE client shows below
+its switches: **From Plugins** (the items [plugins](plugins.md) offer, with
+their buttons, and **Send to…**; files dropped on a device item are sent to
+it) and **Tools** (screen mirroring, LocalSend, the iPhone's photos over
+USB). It stays as you left it and unfolds by itself when a plugin brings
+something new, such as a running transfer.
 
 **Settings** (main menu, `Ctrl+,`) has the same categories as the KDE
 client, one page each; the switcher sits in the header bar, or at the
@@ -38,13 +48,12 @@ bottom in a narrow window, and the search button finds any setting:
 | Notifications | Which events create popups, contacts only, click rules, notification content, action buttons, sync notifications with iPhone, mark read on dismiss, keeping recent notifications |
 | Calls & Audio | Phone calls, call history, battery warning, [iPhone sound on this computer](phone-audio.md), media control |
 | Security | One-time codes, away lock, local storage and its encryption, Clear History |
+| Plugins | Installed [plugins](plugins.md) with their switch, **Show Log**, **Check for Update** and **Remove**; the store, your own Git URL and the plugin lists. Every install asks first. A plugin's **Settings** open as a page of their own |
 | About | Version, the background service, About BlueFerry, keyboard shortcuts, **Restart Service**, Quit |
 
 The switches that need a restart (below) work as in the KDE client: while a
 change waits for the restart, every page starts with a notice and
-**Restart Service**. The GTK client doesn't have the plugin settings and
-the Photos tab yet; use the KDE client, or `blueferry plugins` and
-`blueferry photos` on the command line, for those.
+**Restart Service**.
 
 ## KDE Plasma (Kirigami)
 
