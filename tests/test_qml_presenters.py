@@ -6351,12 +6351,13 @@ def test_quickshell_search_without_contact_cards_shows_the_search_hint(qml_engin
         close()
 
 
-def test_quickshell_search_popup_reads_only_while_open(tmp_path, quickshell_environment):
-    """The real shell: contact cards and search are read while the popup is
-    open, a new epoch rereads, a stale card rereads, Call is confirmed and
-    Message prefills the recipient; closing forgets everything."""
+def _quickshell_test_shell(tmp_path) -> str:
+    """Copy the real shell next to fake transports; returns the executable.
+
+    The fake BackendBridge logs requests (``latest:``/``cancel:`` prefixes)
+    for ``take(prefix)`` and keeps the last arguments in ``lastArgs``.
+    """
     import shutil
-    import subprocess
 
     executable = shutil.which("quickshell")
     if executable is None:
@@ -6396,6 +6397,16 @@ Item {
   }
 }
 ''')
+    return executable
+
+
+def test_quickshell_search_popup_reads_only_while_open(tmp_path, quickshell_environment):
+    """The real shell: contact cards and search are read while the popup is
+    open, a new epoch rereads, a stale card rereads, Call is confirmed and
+    Message prefills the recipient; closing forgets everything."""
+    import subprocess
+
+    executable = _quickshell_test_shell(tmp_path)
     config = tmp_path / "shell.qml"
     source = config.read_text()
     probe = r'''
@@ -6559,3 +6570,95 @@ def test_quickshell_plugin_cards_render_the_bridge_reply(qml_engine) -> None:
         section.deleteLater()
         window.deleteLater()
         QGuiApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+
+
+def test_quickshell_plugin_cards_coalesce_changes_and_follow_the_watch(
+    tmp_path, quickshell_environment,
+):
+    """The real shell: plugin-cards-changed bursts become one read, hiding
+    the cards cancels the read and forgets them, and late replies or
+    failures while hidden leave them forgotten."""
+    import subprocess
+
+    executable = _quickshell_test_shell(tmp_path)
+    config = tmp_path / "shell.qml"
+    source = config.read_text()
+    probe = r"""
+  Timer {
+    id: probeLater
+    interval: 600
+    onTriggered: {
+      function check(value, message) { if (!value) throw new Error(message); }
+      try {
+        // The burst became one read after the delay.
+        check(!pluginCardsReload.running, "reload still pending")
+        check(backendBridge.take("latest:plugin_cards") === 1, "burst not read once")
+
+        // Hidden (iPhone settings shown): cancelled and forgotten.
+        root.phoneSettingsVisible = true
+        check(!root.pluginCardsWatched, "still watched behind the settings")
+        check(backendBridge.take("cancel:plugin_cards") === 1, "read not cancelled")
+        check(root.pluginCards.cards === undefined, "hidden cards kept")
+        backendBridge.eventReceived("plugin-cards-changed", {})
+        check(!pluginCardsReload.running, "reload while hidden")
+        backendBridge.response("plugin_cards", 5, {cards: [{id: "late"}], message: ""})
+        check(root.pluginCards.cards === undefined, "late reply shown while hidden")
+        root.pluginActionBusy = true
+        backendBridge.failure("plugin_action", 6, "gone")
+        check(!root.pluginActionBusy, "action stays busy")
+        check(root.pluginCards.cards === undefined && root.pluginCards.message === undefined,
+          "hidden action failure shown")
+        backendBridge.failure("plugin_cards", 7, "gone")
+        check(root.pluginCards.message === undefined, "hidden read failure shown")
+
+        // Shown again: read again; failures show the bridge's message.
+        root.phoneSettingsVisible = false
+        check(backendBridge.take("latest:plugin_cards") === 1, "not read again when shown")
+        backendBridge.response("plugin_cards", 8, {cards: [{id: "a"}], message: ""})
+        root.runPluginAction("io.example.a", "item", "act")
+        check(backendBridge.take("plugin_action") === 1 && root.pluginActionBusy,
+          "action not sent")
+        backendBridge.failure("plugin_action", 9, "No answer.")
+        check(!root.pluginActionBusy && root.pluginCards.message === "No answer."
+          && root.pluginCards.messageOk === false && root.pluginCards.cards.length === 1,
+          "action failure not shown with the cards")
+        backendBridge.failure("plugin_cards", 10, "Unavailable.")
+        check(root.pluginCards.message === "Unavailable.", "read failure not shown")
+        console.log("BLUEFERRY_QS_PLUGIN_CARDS_OK")
+      } catch (error) {
+        console.error(error);
+      }
+      Qt.quit();
+    }
+  }
+  Timer {
+    interval: 200; running: true
+    onTriggered: {
+      function check(value, message) { if (!value) throw new Error(message); }
+      try {
+        setupController.configured = true
+        root.presentWindow()
+        check(root.pluginCardsWatched, "cards not watched with the window shown")
+        check(backendBridge.take("latest:plugin_cards") === 1, "cards not read when shown")
+        backendBridge.response("plugin_cards", 1, {cards: [{id: "a"}], message: ""})
+        check(root.pluginCards.cards.length === 1, "reply ignored")
+        for (let burst = 0; burst < 3; ++burst)
+          backendBridge.eventReceived("plugin-cards-changed", {})
+        check(pluginCardsReload.running, "change did not schedule a read")
+        check(backendBridge.take("latest:plugin_cards") === 0, "read before the delay")
+        probeLater.start()
+      } catch (error) {
+        console.error(error);
+        Qt.quit();
+      }
+    }
+  }
+"""
+    config.write_text(source[:source.rfind("}")] + probe + "}\n")
+    result = subprocess.run(
+        [executable, "--path", str(config)], env=quickshell_environment,
+        capture_output=True, text=True, timeout=10, check=False,
+    )
+    log = result.stdout + result.stderr
+    assert result.returncode == 0 and "BLUEFERRY_QS_PLUGIN_CARDS_OK" in log, log
+    assert "ReferenceError" not in log and "TypeError" not in log, log
