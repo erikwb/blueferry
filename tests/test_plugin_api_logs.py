@@ -62,7 +62,9 @@ def clean_root_logger():
 
 def test_setup_logging_writes_a_private_rotating_redacted_file(tmp_path, clean_root_logger):
     env = {"XDG_STATE_HOME": str(tmp_path / "state")}
-    path = plugin_logs.setup_logging("io.example.x", environ=env, max_bytes=400, backups=1)
+    # Verify the complete redacted output before testing rotation: traceback
+    # length depends on where the checkout/package builder extracted us.
+    path = plugin_logs.setup_logging("io.example.x", environ=env, max_bytes=0, backups=1)
     assert path == plugin_logs.log_path("io.example.x", env)
     assert plugin_logs.setup_logging("io.example.x", environ=env) == path  # idempotent
     assert sum(getattr(h, "blueferry_plugin_id", "") == "io.example.x"
@@ -80,6 +82,9 @@ def test_setup_logging_writes_a_private_rotating_redacted_file(tmp_path, clean_r
     assert "RuntimeError" in text and "pw1" not in text
     assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
     assert stat.S_IMODE(os.stat(path.parent).st_mode) == 0o700
+    handler = next(h for h in clean_root_logger.handlers
+                   if getattr(h, "blueferry_plugin_id", "") == "io.example.x")
+    handler.maxBytes = 400
     for _ in range(20):
         logger.info("filler line to rotate the file")
     assert path.with_name(path.name + ".1").exists()
