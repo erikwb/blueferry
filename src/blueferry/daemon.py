@@ -70,6 +70,7 @@ from blueferry.dbus_service import MessagesService, claim_bus_name
 from blueferry.errors import BlueFerryError, NotReadyError
 from blueferry.event_dispatcher import EventDispatcher
 from blueferry.events import SmsEvent
+from blueferry.features import FeatureSettings
 from blueferry.gio_dbus import GioDBus
 from blueferry.gio_dbus import system_bus as gio_system_bus
 from blueferry.glib_timers import schedule_periodic
@@ -79,6 +80,7 @@ from blueferry.history import (
     mark_event_handles_read,
 )
 from blueferry.media import MediaController, MediaControlSettings
+from blueferry.notification_log import NotificationLog
 from blueferry.notification_policy import (
     ALL_NOTIFICATIONS,
     NotificationPolicyStore,
@@ -345,6 +347,13 @@ class Daemon:
             on_powered_failed=self.profile_reset.hfp_powered_failed,
             on_powered=self.profile_reset.hfp_powered,
         )
+        # Opt-in, memory-only list of recent iPhone app notifications.
+        self.notification_log: NotificationLog | None = (
+            NotificationLog(
+                show_content=config.SHOW_NOTIFICATION_CONTENT, idle=GLib.idle_add,
+            )
+            if config.NOTIFICATION_HISTORY else None
+        )
         # Where the iPhone's media playback goes, using the desktop's roles.
         self.phone_audio_route = PhoneAudioRoute(
             GioDBus(gio_system_bus),
@@ -606,6 +615,8 @@ class Daemon:
         if le_connected and not self._battery_link_seen:
             # GATT notification sessions do not survive a dropped LE link.
             self.phone_battery.link_up()
+        elif self._battery_link_seen and not le_connected:
+            self.phone_battery.link_down()
         self._battery_link_seen = le_connected
         # Presence decides whether the LE battery value is shown at all.
         fields = self._phone_status()
@@ -940,11 +951,18 @@ class Daemon:
                 tether=self.tether,
                 set_tethering=self._set_tethering,
                 phone_audio=self.audio_preference,
+                notification_log=self.notification_log,
+                notification_content=config.SHOW_NOTIFICATION_CONTENT,
+                features=FeatureSettings(),
                 contact_photos=self._contact_photos_enabled,
                 set_contact_photos=self._set_contact_photos,
                 set_otp_autocopy=self._set_otp_autocopy,
             ),
         )
+        if self.notification_log is not None:
+            self.notification_log.set_listener(
+                self._dbus_service.emit_notifications_changed
+            )
         self.events.set_dbus_service(self._dbus_service)
         self.audio_preference.start()
         self._publish_media()
@@ -1395,6 +1413,8 @@ class Daemon:
         # Sinks don't need the OBEX sessions — set them up now so ANCS events
         # still reach the desktop while MAP/PBAP are degraded.
         self.events.setup()
+        if self.notification_log is not None and self.notification_log not in self.events.sinks:
+            self.events.sinks.append(self.notification_log)
         self._start_plugin_popups()
         # Optional calls only observe oFono; failures there never degrade
         # messaging, and a missing oFono is retried in the background.
@@ -1933,6 +1953,7 @@ class Daemon:
             "storage_detail": self.storage.status.detail,
             **self._media_status(),
             **self.phone_audio_route.snapshot(),
+            "notification_history_enabled": self.notification_log is not None,
             **self.audio_preference.snapshot(),
             **self._controller_identity(),
             **self.connectivity.snapshot(),

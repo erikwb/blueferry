@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def _qml_bundle(directory: Path) -> str:
     """Return a domain bundle without coupling tests to one root filename."""
     return "\n".join(
-        path.read_text() for path in sorted(directory.glob("*.qml"))
+        path.read_text() for path in sorted(directory.rglob("*.qml"))
     )
 
 
@@ -166,7 +166,7 @@ def test_qt_package_ships_the_kirigami_ui_and_dependencies() -> None:
     project = (ROOT / "pyproject.toml").read_text()
     pkgbuild = (ROOT / "packaging/arch/PKGBUILD").read_text()
 
-    assert '"blueferry.qt" = ["qml/*.qml"]' in project
+    assert '"blueferry.qt" = ["qml/*.qml", "qml/ui/*.qml"]' in project
     assert "'kirigami'" in pkgbuild
     assert "'qqc2-desktop-style'" in pkgbuild
     qt_app = (ROOT / "src" / "blueferry" / "qt" / "app.py").read_text()
@@ -239,10 +239,10 @@ def test_remote_qml_text_is_rendered_as_plain_text() -> None:
     qt_qml = _qml_bundle(ROOT / "src/blueferry/qt/qml")
     quickshell = (ROOT / "data/quickshell/shell.qml").read_text()
 
-    assert (
-        "text: contactDelegate.text\n"
-        "textFormat: Text.PlainText"
-    ) in "\n".join(line.strip() for line in qt_qml.splitlines())
+    # Contact suggestions are ListRows, whose labels are all plain text.
+    assert "title: contactDelegate.modelData.name" in qt_qml
+    list_row = (ROOT / "src/blueferry/qt/qml/ui/ListRow.qml").read_text()
+    assert list_row.count("textFormat: Text.PlainText") == 4
     assert "text: deviceCombo.displayText" not in qt_qml
     assert (
         "text: deviceOption.modelData.display_name\n"

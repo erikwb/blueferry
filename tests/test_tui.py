@@ -997,6 +997,11 @@ def test_textual_sound_switch_moves_the_iphone_audio_and_explains_refusals() -> 
             app.action_phone_audio()
             await app.workers.wait_for_complete()
             assert backend.routes == ["pc"]
+            # The audio worker starts a refresh, which starts a render worker.
+            # Wait for that result before run_test tears down the workspace.
+            await _wait_for_static_text_containing(
+                app, pilot, "#connection-summary", "sound here",
+            )
 
     _run_headless(scenario())
 
