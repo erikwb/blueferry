@@ -59,9 +59,11 @@ style dependencies fail this check even when CLI/TUI startup still succeeds.
 - The toolkit-neutral client models (`client_tasks.py` seams) are tested
   without Qt or GTK on `tests/client_fakes.py`: a `ManualRunner` queues the
   work and runs it, with its callbacks, only when the test drains it, and its
-  timers fire only on request. Late answers are produced by holding work
-  back, not by thread gates. The Qt adapter tests keep only the pool, timer
-  and signal wiring.
+  timers fire only on request. `start_next()` runs an operation and returns
+  a delivery callback, allowing a test to change tabs or permissions before
+  its answer arrives. Keep queued-work cancellation distinct from replies
+  to work already started. Qt tests verify pool, timer and signal wiring
+  and retain regressions for privacy, cancellation and slow photo plugins.
 - The Textual adapters (`tui_tasks.py`) are tested in a headless
   `App.run_test()`: callbacks arrive on the UI thread, done or error before
   finished, a removed screen gets no late answer, and timers restart and

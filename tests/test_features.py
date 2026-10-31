@@ -122,3 +122,18 @@ def test_backend_operations_validate(tmp_path) -> None:
         operations.set_feature("calls_enabled", True)  # has its own setter
     assert operations.set_feature("mark_read_on_dismiss", False) == "restart-required"
     assert operations.get_features()["mark_read_on_dismiss"]["value"] is False
+
+
+@pytest.mark.parametrize("raw", ["false", "0", " NO ", "OFF", "true", "yes", "1", ""])
+def test_snapshot_reads_current_local_env_after_it_changes(tmp_path, monkeypatch, raw) -> None:
+    variable = "BLUEFERRY_MARK_READ_ON_DISMISS"
+    monkeypatch.setenv(variable, raw)
+    expected = config._env_bool(variable, True)
+    store = FeatureSettings(
+        tmp_path / "settings.json", running=_running(mark_read_on_dismiss=not expected),
+        explicit=frozenset(), local_env=lambda: {variable: raw},
+    )
+    entry = store.snapshot()["mark_read_on_dismiss"]
+    assert entry["value"] is expected
+    assert entry["running"] is not expected
+    assert entry["restart_required"] is True

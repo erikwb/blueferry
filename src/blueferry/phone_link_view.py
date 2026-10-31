@@ -277,7 +277,7 @@ def notifications_view(info: Mapping[str, Any], opt_in_hint: str) -> dict[str, s
     return {"title": title, "explanation": explanation, "contentHint": content_hint}
 
 
-def notification_rows(records: object) -> list[dict[str, str]]:
+def notification_rows(records: object, *, content: bool = True) -> list[dict[str, str]]:
     """Normalize ListNotifications records for the Notifications tab."""
     rows: list[dict[str, str]] = []
     if not isinstance(records, list):
@@ -286,8 +286,8 @@ def notification_rows(records: object) -> list[dict[str, str]]:
         if not isinstance(record, Mapping):
             continue
         app = str(record.get("app_name") or record.get("app_id") or _("iPhone app"))
-        title = str(record.get("title") or "")
-        subtitle = str(record.get("subtitle") or "")
+        title = str(record.get("title") or "") if content else ""
+        subtitle = str(record.get("subtitle") or "") if content else ""
         rows.append({
             "app": app,
             "time": format_message_timestamp(str(record.get("time") or "")),
@@ -295,6 +295,6 @@ def notification_rows(records: object) -> list[dict[str, str]]:
             "subtitle": subtitle,
             # The line under the app name: title and subtitle, as present.
             "summary": " · ".join(part for part in (title, subtitle) if part),
-            "body": str(record.get("body") or ""),
+            "body": str(record.get("body") or "") if content else "",
         })
     return rows
