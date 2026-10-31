@@ -519,10 +519,14 @@ def _quit_on_signals(loop: Any) -> list[int]:
         return GLib.SOURCE_CONTINUE  # main removes the sources
 
     try:  # PyGObject 3.52+ moved it and deprecated the old name.
+        import gi
+
+        gi.require_version("GLibUnix", "2.0")
         from gi.repository import GLibUnix
 
         signal_add: Callable[..., int] = GLibUnix.signal_add
-    except ImportError:
+    except (ImportError, ValueError, AttributeError):
+        # Older GLib lacks GLibUnix or, as on Ubuntu 24.04, its signal_add.
         signal_add = GLib.unix_signal_add
     return [
         signal_add(GLib.PRIORITY_HIGH, number, quit_loop)
