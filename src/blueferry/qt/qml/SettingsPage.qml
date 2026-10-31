@@ -36,14 +36,7 @@ Kirigami.Page {
         { "key": "plugins", "name": qsTr("Plugins"), "icon": "preferences-plugin" },
         { "key": "about", "name": qsTr("About"), "icon": "help-about" }
     ]
-    readonly property var features: (settingsPage.bridge.features || ({})).items || ({})
-    readonly property bool restartPending: {
-        for (const name in settingsPage.features) {
-            if (settingsPage.features[name].restart_required === true)
-                return true
-        }
-        return false
-    }
+    readonly property bool restartPending: (settingsPage.bridge.features || ({})).restart_pending === true
 
     function categoryName(key) {
         for (const entry of settingsPage.categories) {
@@ -154,9 +147,7 @@ Kirigami.Page {
                         Layout.fillWidth: true
                         visible: settingsPage.restartPending
                         type: Kirigami.MessageType.Information
-                        text: ((settingsPage.bridge.features || ({})).notice || "") !== ""
-                            ? settingsPage.bridge.features.notice
-                            : qsTr("Some changes apply after the BlueFerry service restarts.")
+                        text: (settingsPage.bridge.features || ({})).restart_notice || ""
                         actions: [
                             Kirigami.Action {
                                 text: qsTr("Restart Service")
