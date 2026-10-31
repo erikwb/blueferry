@@ -1,7 +1,8 @@
 """Toolkit-neutral plugin management (settings category "Plugins").
 
-Shared by the Qt client (``qt/plugin_settings.py``) and, soon, the GTK
-client. Git, pip, the plugin indexes and calls into plugins all block, so
+Shared by the Qt client (``qt/plugin_settings.py``), the GTK client and
+the terminal client (``tui_plugin_settings.py``). Git, pip, the plugin
+indexes and calls into plugins all block, so
 they run on the client's :class:`~blueferry.client_tasks.TaskRunner`, one
 step at a time (the runner should use a single worker thread). Clients see
 one plain ``state`` map (see :meth:`PluginSettingsModel.state`) and are told
