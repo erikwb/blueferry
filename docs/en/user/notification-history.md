@@ -50,3 +50,7 @@ blueferry notifications recent --limit 100
 The list is only handed out through BlueFerry's authenticated, rate-limited
 D-Bus method; the change signal carries no content. Nothing about these
 notifications is stored in BlueFerry's history, which keeps only Messages.
+The KDE client fetches the list only while its tab is visible and clears its
+copy when the tab is hidden, the service becomes unavailable, or access is
+revoked. Turning off content also clears any text already shown in the client
+when that setting takes effect after the service restarts.

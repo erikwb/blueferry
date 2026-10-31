@@ -28,7 +28,7 @@ from blueferry import (
 )
 from blueferry.backend_lifecycle import ensure_backend_current, restart_backend
 from blueferry.bluetooth_devices import iphone_candidates
-from blueferry.client import BackendClient
+from blueferry.client import BackendClient, TetherUnsupportedError
 from blueferry.conversation_state import (
     ConversationSnapshot,
     ConversationState,
@@ -41,12 +41,12 @@ from blueferry.models import BackendStatus, CallsSnapshot
 from blueferry.notification_history import NotificationHistory
 from blueferry.onboarding import OnboardingState, effective_compatibility
 from blueferry.photos_model import PhotosTabModel
-from blueferry.protocol import BUS_NAME, EVENTS_IFACE, OBJECT_PATH
+from blueferry.protocol import BUS_NAME, EVENTS_IFACE, OBJECT_PATH, TETHER_IFACE
 from blueferry.qt.avatars import avatar_url
 from blueferry.qt.companion import CompanionTools
 from blueferry.qt.plugin_settings import PluginSettings
 from blueferry.qt.plugin_surfaces import PluginSurfaces
-from blueferry.qt.tasks import Task, qt_timers
+from blueferry.qt.tasks import QtTaskRunner, Task, qt_timers
 from blueferry.quirks_report import issue_report, issue_url
 from blueferry.reconnect_view import UNREACHABLE_TEXT, reconnect_view, result_text
 from blueferry.service_manager import bluetooth_restart_command
@@ -56,6 +56,7 @@ from blueferry.setup_client import (
     SetupClient,
 )
 from blueferry.tel_links import dial_request, known_contact_name
+from blueferry.tether_status import TetherStatus
 
 # Bounds on the per-window avatar cache (least recently used entries are
 # dropped). The count covers a long list of small photos; the byte bound
@@ -92,13 +93,17 @@ class _WorkerRunner:
             return
 
         def done(value: object) -> None:
-            if on_done is not None:
-                on_done(value)
-            on_finished()
+            try:
+                if on_done is not None:
+                    on_done(value)
+            finally:
+                on_finished()
 
         def failed(message: str) -> None:
-            (on_error or controller._operation_failed)(message)
-            on_finished()
+            try:
+                (on_error or controller._operation_failed)(message)
+            finally:
+                on_finished()
 
         controller._run(operation, done, failed, busy=self._busy)
 
@@ -134,6 +139,7 @@ class BridgeController(QObject):
     featuresChanged = Signal()
     doctorChanged = Signal()
     phoneCallsChanged = Signal()
+    tetherChanged = Signal()
     # (number, problem) of a clicked tel:/callto: link to confirm; see
     # tel_links.dial_request. Never dials by itself.
     dialLinkRequested = Signal(str, str)
@@ -245,13 +251,17 @@ class BridgeController(QObject):
             fetch=lambda limit: self._backend.notifications(limit),
             on_change=self.notificationsChanged.emit,
         )
+        self.statusChanged.connect(
+            lambda: self._notification_history.sync_status(self._status))
         self.devicesChanged.connect(self.phoneIdentityChanged)
         self.configuredChanged.connect(self.phoneIdentityChanged)
         # The Photos tab (a plugin with the photos capability).
+        self._photos_pool = QThreadPool(self)
+        self._photos_pool.setMaxThreadCount(1)
         self._photos = PhotosTabModel(
-            runner=_WorkerRunner(self), open_runner=_WorkerRunner(self, busy=True),
+            runner=QtTaskRunner(self._photos_pool),
             url=_file_url, open_file=_open_file,
-            on_change=self.photosChanged.emit,
+            on_change=self.photosChanged.emit, on_error=self._operation_failed,
         )
         # UxPlay, LocalSend and iPhone photos: client-side, no daemon involved.
         self._companion = companion or CompanionTools(parent=self)
@@ -259,6 +269,12 @@ class BridgeController(QObject):
         # Plugin management runs git, pip and plugin calls on its own queue.
         self._plugin_settings = plugin_settings or PluginSettings(parent=self)
         self._plugin_settings.changed.connect(self.pluginSettingsChanged)
+        self._tether: dict = {"available": False}
+        self._tether_pending = False
+        self._tether_timer = QTimer(self)
+        self._tether_timer.setSingleShot(True)
+        self._tether_timer.setInterval(100)
+        self._tether_timer.timeout.connect(self.refreshTether)
         self._bus = QDBusConnection.sessionBus() if subscribe else None
         # "From Plugins" and "Send to…", on their own pool.
         self._plugin_surfaces = plugin_surfaces or PluginSurfaces(
@@ -731,6 +747,10 @@ class BridgeController(QObject):
     def nowPlaying(self):
         return self._now_playing
 
+    @Property("QVariantMap", notify=tetherChanged)
+    def tether(self):
+        return self._tether
+
     @Property("QVariantList", notify=devicesChanged)
     def devices(self):
         return self._devices
@@ -943,6 +963,14 @@ class BridgeController(QObject):
             self,
             SLOT("_callsInvalidated()"),
         )
+        self._bus.connect(
+            BUS_NAME,
+            OBJECT_PATH,
+            TETHER_IFACE,
+            "TetherChanged",
+            self,
+            SLOT("_tetherInvalidated()"),
+        )
 
     @Slot()
     def _nowPlayingInvalidated(self) -> None:
@@ -1000,6 +1028,13 @@ class BridgeController(QObject):
     @Slot()
     def _statusInvalidated(self) -> None:
         self._refresh_timer.start()
+        # A replaced daemon or a changed Classic link can change what
+        # tethering reports, and older daemons never send TetherChanged.
+        self._tether_timer.start()
+
+    @Slot()
+    def _tetherInvalidated(self) -> None:
+        self._tether_timer.start()
 
     @Slot(str)
     def _openMessageRequested(self, handle: str) -> None:
@@ -1111,6 +1146,7 @@ class BridgeController(QObject):
             self._set_error("")
             if self._configuration.configured:
                 self.refresh()
+                self._tether_timer.start()
             self.loadSetupState()
             self.loadDevices(False)
             self._update_onboarding_stage()
@@ -1685,6 +1721,93 @@ class BridgeController(QObject):
                 self.statusChanged.emit()
 
         self._run(lambda: self._backend.set_mpris_player(bool(enabled)), completed)
+
+    # ---- opt-in tethering --------------------------------------------------
+
+    def _apply_tether(self, value: object) -> None:
+        if not isinstance(value, TetherStatus):
+            return
+        self._tether = {
+            "available": True,
+            "pending": self._tether_pending,
+            "state": value.state,
+            "interface": value.interface,
+            "backend": value.backend,
+            "external": value.external,
+            "error": value.error,
+            "needs_dhcp": value.needs_dhcp,
+            "enabled": value.enabled,
+            "autoconnect": value.autoconnect,
+            "active": value.active,
+            "summary": value.summary(),
+        }
+        self.tetherChanged.emit()
+
+    def _tether_result(self, value: object) -> None:
+        if value is None:
+            # The running daemon has no Tether1 (an older release): hide the
+            # control. Any other failure keeps the last known state.
+            self._tether = {"available": False}
+            self.tetherChanged.emit()
+            return
+        self._apply_tether(value)
+
+    def _tether_failed(self, message: str) -> None:
+        self._operation_failed(message)
+
+    def _tether_request(self, request: Callable[[], object]) -> Callable[[], object]:
+        def run() -> object:
+            try:
+                return request()
+            except TetherUnsupportedError:
+                return None
+        return run
+
+    @Slot()
+    def refreshTether(self) -> None:
+        self._run(
+            self._tether_request(lambda: self._backend.tether_state()),
+            self._tether_result,
+            self._tether_failed,
+            busy=False,
+        )
+
+    def _tether_command(self, request: Callable[[], object]) -> None:
+        if self._tether_pending:
+            return
+        self._tether_pending = True
+        self._tether = {**self._tether, "pending": True}
+        self.tetherChanged.emit()
+
+        def completed(value: object) -> None:
+            self._tether_pending = False
+            self._tether_result(value)
+
+        def failed(message: str) -> None:
+            self._tether_pending = False
+            self._tether = {**self._tether, "pending": False}
+            self.tetherChanged.emit()
+            self._tether_failed(message)
+            self._tether_timer.start()
+
+        self._run(self._tether_request(request), completed, failed, busy=False)
+
+    @Slot(bool)
+    def setTetherConnected(self, connected: bool) -> None:
+        """Explicit user action; the daemon never tethers without one."""
+        def request() -> object:
+            if connected:
+                return self._backend.tether_connect()
+            return self._backend.tether_disconnect()
+
+        self._tether_command(request)
+
+    @Slot(bool, bool)
+    def setTethering(self, enabled: bool, autoconnect: bool) -> None:
+        """Save the opt-in; off makes the daemon ignore PAN links entirely."""
+        self._tether_command(
+            lambda: self._backend.tether_configure(bool(enabled), bool(autoconnect))
+        )
 
     @Slot(str)
     def setStoragePolicy(self, policy: str) -> None:

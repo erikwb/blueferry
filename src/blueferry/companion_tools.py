@@ -23,6 +23,7 @@ CLI, never on a UI thread. Nothing here logs or returns device identifiers.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import signal
 import socket
@@ -38,6 +39,7 @@ from blueferry.i18n import _
 from blueferry.private_files import (
     atomic_write_private_text,
     ensure_private_directory,
+    private_file_lock,
     read_private_text,
     runtime_private_directory,
 )
@@ -232,6 +234,29 @@ def pidfd_terminate(pid: int, still_ours: Callable[[int], bool]) -> None:
     finally:
         os.close(fd)
 
+
+def is_mounted(path: Path, *, mountinfo: Path = Path("/proc/self/mountinfo")) -> bool:
+    """Read the mount table without touching a potentially broken FUSE root.
+
+    stat-based checks report a disconnected mount as absent (or hang waiting
+    for its server). Only resolve the parent: the final component is the
+    mount we need to eject even when its filesystem cannot answer.
+    Mount-table read errors must propagate, not turn into "nothing mounted".
+    """
+    target = str(path.parent.resolve() / path.name)
+    with mountinfo.open(encoding="utf-8", errors="surrogateescape") as stream:
+        for line in stream:
+            fields = line.split()
+            if len(fields) < 6:
+                continue
+            mountpoint = re.sub(
+                r"\\(040|011|012|134)", lambda match: chr(int(match[1], 8)), fields[4],
+            )
+            if mountpoint == target:
+                return True
+    return False
+
+
 @dataclass(slots=True)
 class System:
     """Everything that touches the system, replaceable in tests."""
@@ -247,7 +272,7 @@ class System:
     process_start: Callable[[int], int | None] = process_start
     # SIGTERM to a pid while it is still the process we started (pidfd).
     terminate: Callable[[int, Callable[[int], bool]], None] = pidfd_terminate
-    is_mount: Callable[[Path], bool] = os.path.ismount
+    is_mount: Callable[[Path], bool] = is_mounted
     replaced_tools: Callable[[], frozenset[str]] = replaced_by_plugins
 
 
@@ -339,6 +364,7 @@ def _runs_uxplay(system: System, pid: int, started: int | None) -> bool:
 
 
 def _mirror_record(system: System) -> tuple[int, int | None] | None:
+    """Read/clean the record while the caller holds its private_file_lock."""
     path = _pid_file(system)
     try:
         parts = read_private_text(path, maximum_bytes=64).split()
@@ -359,28 +385,38 @@ def mirroring_pid(system: System) -> int | None:
     counts while that process still runs ``uxplay`` and started when the
     record says; a stale record is removed.
     """
-    record = _mirror_record(system)
-    return record[0] if record is not None else None
+    with private_file_lock(_pid_file(system)):
+        record = _mirror_record(system)
+        return record[0] if record is not None else None
 
 
 def mirror_state(system: System) -> ToolState:
     installed = _mirror_installed(system)
-    running = installed and mirroring_pid(system) is not None
-    if not installed:
-        return ToolState(
-            MIRROR, False, False, _("Mirror iPhone screen"),
-            _("Install UxPlay to show the iPhone's screen on this computer."),
-        )
+    running = mirroring_pid(system) is not None
     if running:
         return ToolState(
             MIRROR, True, True, _("Stop mirroring"),
             _("UxPlay is waiting for the iPhone or showing its screen."), active=True,
         )
+    if not installed:
+        return ToolState(
+            MIRROR, False, False, _("Mirror iPhone screen"),
+            _("Install UxPlay to show the iPhone's screen on this computer."),
+        )
     return ToolState(MIRROR, True, True, _("Mirror iPhone screen"), MIRROR_HINT)
 
 
 def toggle_mirroring(system: System) -> ActionResult:
-    """Start UxPlay, or stop the one started earlier. Does not block."""
+    """Start/stop UxPlay, serializing the whole operation across clients.
+
+    *Blocking*: waits for the private pid-file lock. A replacement plugin
+    can prohibit new starts while still allowing cleanup of our receiver.
+    """
+    with private_file_lock(_pid_file(system)):
+        return _toggle_mirroring_locked(system)
+
+
+def _toggle_mirroring_locked(system: System) -> ActionResult:
     record = _mirror_record(system)
     if record is not None:
         pid, started = record
@@ -390,8 +426,14 @@ def toggle_mirroring(system: System) -> ActionResult:
             pass
         except OSError:
             return ActionResult(False, _("Could not stop screen mirroring."))
+        # SIGTERM can return before the receiver exits. Keep tracking it so
+        # a second client cannot start another one during shutdown.
+        if _runs_uxplay(system, pid, started):
+            return ActionResult(True, _("Screen mirroring is stopping."))
         _pid_file(system).unlink(missing_ok=True)
         return ActionResult(True, _("Screen mirroring stopped."))
+    if MIRROR in replaced(system):
+        return ActionResult(False, _("A BlueFerry plugin replaces this tool."))
     launcher = _mirror_launcher(system)
     if launcher is None:
         return ActionResult(False, _("UxPlay is not installed."))
@@ -575,12 +617,12 @@ def replaced(system: System) -> frozenset[str]:
 
 
 def snapshot(system: System, probe: PhotoProbe | None = None) -> Snapshot:
-    """*Blocking*: the state of every entry no plugin replaces."""
+    """*Blocking*: unreplaced entries plus Stop for an existing receiver."""
     photos, eject = photos_states(probe if probe is not None else probe_photos(system))
     hidden = replaced(system)
     return Snapshot(tuple(
         tool for tool in (mirror_state(system), send_state(system), photos, eject)
-        if tool.key not in hidden
+        if tool.key not in hidden or (tool.key == MIRROR and tool.active)
     ))
 
 
@@ -589,14 +631,16 @@ REPLACED_SEND_HINT = _(
     "under From Plugins, or run “blueferry send FILE”.")
 
 
-def perform(
-    system: System, action: str, *, hidden: frozenset[str] | None = None,
-) -> ActionResult:
-    """Run one action. *Blocking* for the actions in BLOCKING_ACTIONS, and
-    for mirror and send unless ``hidden`` (the keys a plugin replaces, e.g.
-    from the last snapshot) is given; otherwise the manifests are read."""
+def perform(system: System, action: str) -> ActionResult:
+    """*Blocking*: run an action, checking replacements again at execution.
+
+    A displayed Stop row can outlive the receiver, and plugin preferences
+    can change since the last snapshot. Never use cached row visibility to
+    authorize a new start.
+    """
+    if action == MIRROR:
+        return toggle_mirroring(system)
     handlers: dict[str, Callable[[System], ActionResult]] = {
-        MIRROR: toggle_mirroring,
         SEND: start_localsend,
         PHOTOS: open_photos,
         EJECT: eject_photos,
@@ -605,8 +649,6 @@ def perform(
     handler = handlers.get(action)
     if handler is None:
         return ActionResult(False, _("Unknown tool {name!r}.").format(name=action))
-    if action in _TOOL_NAMES and action in (replaced(system) if hidden is None else hidden):
-        if action == SEND:
-            return ActionResult(False, REPLACED_SEND_HINT)
-        return ActionResult(False, _("A BlueFerry plugin replaces this tool."))
+    if action == SEND and SEND in replaced(system):
+        return ActionResult(False, REPLACED_SEND_HINT)
     return handler(system)

@@ -703,6 +703,35 @@ to fetch group metadata before iOS removes the notification. The delay does not
 block the OBEX worker or require ANCS to arrive; pending acknowledgements are
 discarded if their MAP session is replaced or the daemon stops.
 
+### Adapter recovery after a rejected power change
+
+Observed on 2026-10-30 with BlueZ 5.87, Linux 7.2.11, a MediaTek controller,
+and an existing iPhone bond (phone model and iOS version were not recorded):
+a recovery power-off request failed with `Busy (0x0a)`. BlueZ subsequently
+reported `Powered=true` and `PowerState=off`; `btmgmt info` independently
+reported the controller powered on. The durable restoration journal remained
+in its `off` phase, keeping BlueFerry's profiles paused for over eight hours.
+
+The observed mismatch is consistent with BlueZ 5.87's
+[`property_set_mode_complete` error path](https://github.com/bluez/bluez/blob/5.87/src/adapter.c#L2885-L2913):
+it calls `reset_power_state_target`, which sets the terminal `PowerState` to
+the attempted target even when the controller's `Powered` setting did not
+change. Restoration therefore waits while `PowerState` is transitional or
+unknown, but uses `Powered` to decide whether a terminal state needs a
+power-on request. A failed power-on can produce the opposite mismatch and
+must retain the power-on obligation. Controller identity and rfkill guards
+still apply; no additional power-off is issued.
+
+Starting the patched backend with the original stuck journal cleared that
+journal and reopened MAP/PBAP in about two seconds. The ANCS authorization
+probe succeeded about four seconds after startup, followed by AMS
+registration. Both bearers were connected and the recovery pause was cleared,
+while BlueZ still reported the contradictory power properties. This verified
+recovery of protocol sessions without re-pairing or another radio power cycle.
+The user then confirmed sending and receiving a test message, followed by a
+second successful exchange after switching Bluetooth off and on in the
+iPhone's Settings app. BlueFerry reconnected without another backend restart.
+
 ## Apple Media Service (mostly unverified on hardware)
 
 Optional media control follows Apple's published AMS reference. One part has
@@ -802,6 +831,39 @@ without soliciting it; that current values always follow a registration
 immediately (the specification guarantees it); remote commands, truncation
 reads and reconnect behavior; and whether AMS traffic affects ANCS
 reliability on other controllers.
+
+## Bluetooth PAN tethering (not yet observed)
+
+No real-device result is recorded yet. The implementation relies on these
+expectations, which need verification with a phone, iOS version, BlueZ
+version, and controller noted as the maintenance rule below requires:
+
+- The iPhone exposes Personal Hotspot as a PAN NAP service, so BlueZ
+  publishes `org.bluez.Network1` on the bonded device and
+  `Network1.Connect("nap")` returns a `bnep` interface. Whether iOS lists the
+  NAP record while Personal Hotspot is off, and whether the A/V Hands-Free
+  Class of Device used for pairing affects that, is unknown.
+- With Personal Hotspot off, iOS is expected to refuse the BNEP connection;
+  BlueZ then reports `org.bluez.Error.Failed`, which BlueFerry maps to
+  `hotspot-refused`. A missing `Network1` interface (no NAP record, or no
+  BlueZ network plugin / `BT_BNEP`) maps to `not-supported`.
+- PAN shares the Classic ACL link with MAP and PBAP. It is not known whether
+  iOS keeps MAP/PBAP/ANCS undisturbed while BNEP is up.
+- BlueZ 5 does not tie a `Network1` connection to the D-Bus caller that
+  created it: `profiles/network/connection.c` (checked in 5.87) keeps no
+  owner watch, and only `Network1.Disconnect`, the device's ACL disconnect,
+  or removing the service ends it. So the link-only fallback, like a
+  NetworkManager-owned link, survives a daemon stop or restart; an earlier
+  note here said otherwise. Surviving links are re-adopted through the
+  `Network1` watch, but only while the user has tethering enabled; with it
+  off BlueFerry does not watch `Network1` at all. Not yet observed with a
+  real iPhone.
+- udev can rename the `bnep` interface right after BlueZ brought it up
+  (observed: `bluetooth hci0:256 enp0s20f0u14: renamed from bnep0 (while
+  UP)`), while `Network1.Interface` keeps the old name. The recovery hold
+  therefore follows the kernel ifindex, or the only interface with
+  `DEVTYPE=bluetooth`, instead of trusting the reported name.
+
 
 ## A2DP audio route
 
