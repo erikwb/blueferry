@@ -42,6 +42,8 @@ DEFAULT_INDEX_URL = (
 )
 FETCH_TIMEOUT_SEC = 10.0
 MAX_INDEX_BYTES = 256 * 1024
+# Entries need four container levels; allow room for future index metadata.
+MAX_INDEX_DEPTH = 32
 MAX_ENTRIES = 100
 MAX_INDEXES = 8
 CACHE_TTL_SEC = 6 * 3600
@@ -153,12 +155,41 @@ def parse_entry(raw: object, index: str = "") -> IndexEntry | None:
     )
 
 
+def _check_json_depth(text: str) -> None:
+    """Bound nesting before decoding, independently of Python's stack limit.
+
+    JSON syntax validation stays with the decoder. Only count containers
+    outside string literals, including correct handling of escaped quotes.
+    """
+    depth = 0
+    in_string = False
+    escaped = False
+    for char in text:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+        elif char == '"':
+            in_string = True
+        elif char in "[{":
+            depth += 1
+            if depth > MAX_INDEX_DEPTH:
+                raise IndexFetchError("the index is too deeply nested")
+        elif char in "]}":
+            depth -= 1
+
+
 def parse_index(data: bytes, index: str = "") -> list[IndexEntry]:
     if len(data) > MAX_INDEX_BYTES:
         raise IndexFetchError("the index is too large")
     try:
-        document = json.loads(data.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError):
+        text = data.decode("utf-8")
+        _check_json_depth(text)
+        document = json.loads(text)
+    except (UnicodeDecodeError, ValueError, RecursionError):
         raise IndexFetchError("the index is not valid JSON") from None
     if not isinstance(document, dict) or document.get("version") != 1:
         raise IndexFetchError("unsupported index format")

@@ -1,11 +1,103 @@
 # Changelog
 
-## Unreleased
+## [0.9.1](https://github.com/erikwb/blueferry/releases/tag/v0.9.1) - 2026-10-30
+
+### Fixed
+
+- Continue message and contact setup when BlueZ rejects the ANCS advertisement,
+  while retaining notification configuration and retries. Keep the backend
+  available for pairing when the saved phone's bond is missing at startup
+  ([#302](https://github.com/erikwb/blueferry/pull/302)).
+- Resume Bluetooth recovery when BlueZ's `Powered` and terminal `PowerState`
+  properties disagree, instead of leaving all phone services paused
+  ([#303](https://github.com/erikwb/blueferry/pull/303)).
+- Reject excessively nested plugin indexes before decoding, independently of
+  Python's stack limit. Preserve a valid cached catalogue after a bad download
+  ([#304](https://github.com/erikwb/blueferry/pull/304)).
+
+### Diagnostics
+
+- Detect missing local incoming-message service registration in `blueferry
+  doctor`, and document the BlueZ workaround and its tradeoffs
+  ([#301](https://github.com/erikwb/blueferry/pull/301)).
+
+### Known issues
+
+- Encrypted history authentication can fail after reboot on the Fedora/KDE
+  setup reported in [#298](https://github.com/erikwb/blueferry/issues/298).
+  The cause remains under investigation; this release does not change history
+  encryption or claim to resolve that report.
+- BlueZ advertisement rejection and the spontaneous bond loss reported in
+  [#300](https://github.com/erikwb/blueferry/issues/300) remain unresolved at
+  their source. This release fixes BlueFerry's handling of advertisement failure
+  and a bond already missing at startup.
+- Some explicit-pairing setups still time out after bonding
+  ([#270](https://github.com/erikwb/blueferry/issues/270)). The new MNS diagnostic
+  helps identify [#280](https://github.com/erikwb/blueferry/issues/280), but does
+  not fix the underlying BlueZ service-registration problem.
+
+## [0.9.0](https://github.com/erikwb/blueferry/releases/tag/v0.9.0) - 2026-10-27
 
 ### Added
 
+- Optional iPhone calls through oFono, phone battery and signal information,
+  recent calls, and missed-call notifications.
+- Optional iPhone media control and an MPRIS player. Explicitly route media to
+  the PC or phone, with a saved choice that is reapplied after reconnects.
+- Optional contact photos, one-time-code copying, notification action buttons,
+  notification click rules, and locking the desktop when the phone moves away.
+- Optional Bluetooth tethering through the iPhone Personal Hotspot, with
+  NetworkManager integration, separate autoconnect controls, and respect for
+  connections managed by other applications.
+- A plugin API and CLI management, with support for plugin notifications,
+  cards, file sending, and photo providers.
+- A shared desktop tray that opens the active client, confirmed dialing from
+  `tel:` links, and additional media and call-history controls across clients.
+- OpenRC support, English and German documentation, and WSL2 setup guidance.
 - Report a stable opaque phone profile ID in `GetStatus` for clients that need
   to scope local per-phone metadata.
+
+### Fixed
+
+- Restore normal desktop Bluetooth audio profiles during pairing and remove
+  the previous phone-audio policy that could prevent pairing and notification
+  authorization. Audio routing is now an explicit user choice.
+- Wait for outstanding disconnect operations before reconnecting. Improve
+  Classic and LE recovery, restore ANCS and media subscriptions after drops,
+  and detect stale LE bonds and controllers with LE disabled.
+- Offer ANCS on supported older BlueZ versions without per-bearer interfaces.
+  Recover MAP when the phone drops its incoming-message connection, and delay
+  phone read acknowledgements so notification group metadata can arrive.
+- Preserve international contact numbers and alphanumeric senders, handle
+  oversized and duplicate contact photos, and exclude the owner's PBAP card
+  from peer contact matching.
+- Load Quickshell conversations correctly on Qt 6.12, restore keyboard thread
+  navigation, and avoid empty media placeholders while the phone is idle.
+- Harden asynchronous storage, conversation, call, media, and plugin handling
+  against stale replies, shutdown, and reconnects.
+- Verify caller Unix users in plugin services, reject excessively nested
+  plugin catalogs without crashing, and explain plugin permissions before
+  installation or updates.
+- Fix package smoke tests and path-dependent plugin tests. Optional Qt avatar
+  and QML tests now skip when the separate QtTest binding is unavailable.
+  Declare Fedora's required wheel-builder and GTK introspection dependencies.
+  Include Git and Python virtual-environment support needed to install plugins.
+
+### Upgrading
+
+- Upgrade the backend and installed clients together. The new calls, photos,
+  code-copying, proximity-lock, media, tethering, and plugin features are opt-in.
+- Arch and Fedora package upgrades restart Bluetooth if it is running; active
+  Bluetooth connections will briefly disconnect. Debian packages do not change
+  or restart the system Bluetooth service.
+
+### Known issues
+
+- Some explicit-pairing setups still time out after a successful bond when the
+  phone drops its idle Classic connection ([#270](https://github.com/erikwb/blueferry/issues/270)).
+- Incoming MAP notifications remain unavailable on the setup reported in
+  [#280](https://github.com/erikwb/blueferry/issues/280). Investigation is ongoing;
+  this release does not claim to fix that report.
 
 ## [0.8.1](https://github.com/erikwb/blueferry/releases/tag/v0.8.1) - 2026-09-14
 

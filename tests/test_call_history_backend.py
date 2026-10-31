@@ -590,9 +590,11 @@ def test_removing_the_bond_rearms_silent_seeding(make_daemon, monkeypatch) -> No
     monkeypatch.setattr(daemon_mod.config, "current_target", lambda: ("02:00:00:00:00:01", "hci0"))
     monkeypatch.setattr(daemon_mod.config, "IPHONE_MAC", "02:00:00:00:00:01")
     monkeypatch.setattr(daemon_mod.config, "ADAPTER", "hci0")
-    monkeypatch.setattr(daemon_mod, "bond_status", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(daemon_mod, "bond_status", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(daemon_mod.main_loop, "quit", lambda: None)
 
+    assert instance._check_target_config() is True
+    monkeypatch.setattr(daemon_mod, "bond_status", lambda *_args, **_kwargs: False)
     assert instance._check_target_config() is False
     assert forgotten == [1]
 
