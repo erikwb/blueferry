@@ -314,7 +314,14 @@ class PluginsPane(Vertical):
     def _busy(self) -> bool:
         return self.model is None or bool(self.model.state()["busy"])
 
+    def _installed_focused(self) -> bool:
+        # Space and Delete act on the installed list only: with the focus in
+        # the store, a stray Space must not flip a plugin's kill switch.
+        return self.query_one("#plugins-installed", OptionList).has_focus
+
     def action_toggle_plugin(self) -> None:
+        if not self._installed_focused():
+            return
         plugin = self._plugin(self._highlighted("#plugins-installed", self.plugin_ids))
         if plugin is not None and self.model is not None and not self._busy():
             self.model.set_enabled(str(plugin["id"]), not plugin.get("enabled"))
@@ -329,6 +336,8 @@ class PluginsPane(Vertical):
             url = self._highlighted("#plugins-indexes", self.index_urls)
             if url and self.model is not None and not self._busy():
                 self.model.set_indexes([other for other in self.index_urls if other != url])
+            return
+        if not self._installed_focused():
             return
         plugin = self._plugin(self._highlighted("#plugins-installed", self.plugin_ids))
         if plugin is None or not plugin.get("managed") or self._busy():

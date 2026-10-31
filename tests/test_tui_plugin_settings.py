@@ -111,6 +111,14 @@ def test_store_install_is_confirmed_and_plugins_toggle_remove_and_log(tmp_path, 
             await pilot.press("escape")
             await pilot.pause()
 
+            # From the store list, Space and Delete leave the plugin alone.
+            store.focus()
+            await pilot.press("space")
+            await pilot.press("delete")
+            await _drain(pilot, work)
+            assert manager.disabled() == set()
+            assert not isinstance(app.screen, RemoveConfirmScreen)
+
             installed.focus()
             await pilot.press("space")
             await _drain(pilot, work)
