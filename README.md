@@ -879,6 +879,9 @@ links or files in its own cache.
 A plugin can replace a companion tool: while the
 LocalSend plugin is enabled, the LocalSend app disappears from **Tools**,
 because both would answer on the same port.
+If a plugin replaces UxPlay while mirroring is already running, **Stop
+mirroring** stays available until that receiver exits. BlueFerry blocks
+new starts while the replacement is enabled.
 
 ## Lock when the iPhone goes away
 

@@ -17,6 +17,10 @@ to install, until its tool is there.
 | Send a file (LocalSend) | LocalSend (Flathub or `localsend`) | Opens LocalSend. Hidden while the LocalSend plugin is enabled. |
 | iPhone photos (USB) | `ifuse`, libimobiledevice, a USB cable | Mounts the camera roll in a private folder and opens it; **Eject** unmounts it. If the iPhone asks, confirm "Trust This Computer". |
 
+If a plugin replaces UxPlay, you can still stop a receiver BlueFerry already
+started. **Stop mirroring** stays visible until it exits; new starts are
+blocked while the replacement is enabled.
+
 ```bash
 blueferry tools            # which tools are ready
 blueferry tools mirror

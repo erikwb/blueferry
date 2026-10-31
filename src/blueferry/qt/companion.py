@@ -114,20 +114,14 @@ class CompanionTools(QObject):
             return
         # Starting UxPlay or LocalSend reads and writes pid files and spawns a
         # process; the photo actions run ifuse: all of it off the UI thread.
-        # The snapshot already left out what a plugin replaces; reading the
-        # manifests again would touch the disk as well.
-        hidden = frozenset(
-            key for key in (companion_tools.MIRROR, companion_tools.SEND)
-            if self._probed and self._snapshot.get(key) is None
-        ) if action not in companion_tools.BLOCKING_ACTIONS else None
+        # Check plugin replacements on the worker at execution time as well:
+        # the snapshot can be stale, or a visible Stop row may have exited.
         self._busy = action
         self.changed.emit()
         system = self._system
 
         def work() -> ActionResult:
-            if hidden is None:
-                return companion_tools.perform(system, action)
-            return companion_tools.perform(system, action, hidden=hidden)
+            return companion_tools.perform(system, action)
 
         def done(value: object) -> None:
             self._busy = ""

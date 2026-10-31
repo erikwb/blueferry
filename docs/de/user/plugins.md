@@ -18,6 +18,10 @@ ist.
 | Send a file (LocalSend) | LocalSend (Flathub oder `localsend`) | Öffnet LocalSend. Ausgeblendet, solange das LocalSend-Plugin aktiv ist. |
 | iPhone photos (USB) | `ifuse`, libimobiledevice, ein USB-Kabel | Bindet die Aufnahmen in einem privaten Ordner ein und öffnet ihn; **Eject** hängt sie wieder aus. Fragt das iPhone, „Diesem Computer vertrauen“ bestätigen. |
 
+Ersetzt ein Plugin UxPlay, kannst du einen von BlueFerry bereits gestarteten
+Empfänger weiterhin beenden. **Stop mirroring** bleibt sichtbar, bis er
+beendet ist; solange das Plugin aktiviert ist, sind neue Starts gesperrt.
+
 ```bash
 blueferry tools            # welche Programme bereit sind
 blueferry tools mirror

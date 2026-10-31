@@ -10,6 +10,7 @@ pytest.importorskip("PySide6")
 from PySide6.QtCore import QCoreApplication
 from PySide6.QtGui import QGuiApplication
 
+from blueferry import companion_tools
 from blueferry.companion_tools import CommandResult
 from blueferry.qt.companion import CompanionTools
 from tests.qt_settle import Settler, main_thread_gc, wait
@@ -91,3 +92,45 @@ def test_mirroring_starts_on_the_worker_not_the_ui_thread(app, tmp_path, track) 
     assert threads and threading.main_thread().name not in threads
     assert tools.state()["messageOk"] is True
     _wait(tools, lambda: tools.state()["probed"])
+
+
+@pytest.mark.parametrize("exits_before_click", [False, True])
+def test_replaced_mirror_row_can_only_stop(app, tmp_path, track, exits_before_click):
+    fake = Fake(tmp_path, installed={"uxplay"})
+    system = fake.system()
+    assert companion_tools.perform(system, "mirror").ok
+    fake.processes[4242] = ["uxplay"]
+    launcher = next(iter(fake.commands.values()))
+    fake.replaced = frozenset({"uxplay"})
+    tools = track(CompanionTools(system))
+    tools.refresh()
+    _wait(tools, lambda: tools.state()["probed"])
+    mirror = tools.snapshot.get("mirror")
+    assert mirror is not None and mirror.active and mirror.title == "Stop mirroring"
+    if exits_before_click:
+        fake.processes.clear()
+    reports = []
+    tools.reported.connect(lambda *args: reports.append(args))
+    tools.run("mirror")
+    _wait(tools, lambda: reports and not tools.busy)
+    assert tools.state()["messageOk"] is not exits_before_click
+    assert bool(fake.killed) is not exits_before_click
+    assert next(iter(fake.commands.values())) is launcher  # no new launcher
+    _wait(tools, lambda: tools.snapshot.get("mirror") is None)
+
+
+@pytest.mark.parametrize("action, replacement", [("mirror", "uxplay"), ("send", "localsend")])
+def test_action_rechecks_replacements_after_snapshot(app, tmp_path, track, action, replacement):
+    fake = Fake(tmp_path, installed={"uxplay", "localsend"})
+    tools = track(CompanionTools(fake.system()))
+    tools.refresh()
+    _wait(tools, lambda: tools.state()["probed"])
+    assert tools.snapshot.get(action).enabled
+    # Another client enables a replacement after the last UI refresh.
+    fake.replaced = frozenset({replacement})
+    reports = []
+    tools.reported.connect(lambda *args: reports.append(args))
+    tools.run(action)
+    _wait(tools, lambda: reports and not tools.busy)
+    assert tools.state()["messageOk"] is False
+    assert not fake.commands
