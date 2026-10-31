@@ -1,5 +1,41 @@
 # Changelog
 
+## [0.9.1](https://github.com/erikwb/blueferry/releases/tag/v0.9.1) - 2026-10-30
+
+### Fixed
+
+- Continue message and contact setup when BlueZ rejects the ANCS advertisement,
+  while retaining notification configuration and retries. Keep the backend
+  available for pairing when the saved phone's bond is missing at startup
+  ([#302](https://github.com/erikwb/blueferry/pull/302)).
+- Resume Bluetooth recovery when BlueZ's `Powered` and terminal `PowerState`
+  properties disagree, instead of leaving all phone services paused
+  ([#303](https://github.com/erikwb/blueferry/pull/303)).
+- Reject excessively nested plugin indexes before decoding, independently of
+  Python's stack limit. Preserve a valid cached catalogue after a bad download
+  ([#304](https://github.com/erikwb/blueferry/pull/304)).
+
+### Diagnostics
+
+- Detect missing local incoming-message service registration in `blueferry
+  doctor`, and document the BlueZ workaround and its tradeoffs
+  ([#301](https://github.com/erikwb/blueferry/pull/301)).
+
+### Known issues
+
+- Encrypted history authentication can fail after reboot on the Fedora/KDE
+  setup reported in [#298](https://github.com/erikwb/blueferry/issues/298).
+  The cause remains under investigation; this release does not change history
+  encryption or claim to resolve that report.
+- BlueZ advertisement rejection and the spontaneous bond loss reported in
+  [#300](https://github.com/erikwb/blueferry/issues/300) remain unresolved at
+  their source. This release fixes BlueFerry's handling of advertisement failure
+  and a bond already missing at startup.
+- Some explicit-pairing setups still time out after bonding
+  ([#270](https://github.com/erikwb/blueferry/issues/270)). The new MNS diagnostic
+  helps identify [#280](https://github.com/erikwb/blueferry/issues/280), but does
+  not fix the underlying BlueZ service-registration problem.
+
 ## [0.9.0](https://github.com/erikwb/blueferry/releases/tag/v0.9.0) - 2026-10-27
 
 ### Added
