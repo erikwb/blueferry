@@ -250,7 +250,10 @@ def test_the_check_sees_newer_symbols(monkeypatch, tmp_path) -> None:
             <bitfield name="IconLookupFlags">
                 <member name="none" version="4.18"/>
             </bitfield>
-            <enumeration name="SelectionMode"><member name="none"/></enumeration>""",
+            <enumeration name="SelectionMode"><member name="none"/></enumeration>
+            <class name="Entry">
+                <property name="max-length"/>
+            </class>""",
     }
     for namespace, body in members.items():
         (tmp_path / f"{namespace}.gir").write_text(
