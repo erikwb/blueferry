@@ -16,7 +16,9 @@ from tests.test_tui import _Backend, _run_headless
 class _NotificationsBackend(_Backend):
     def __init__(self, **extra) -> None:
         super().__init__()
-        self.extra = {"notification_history_enabled": True, **extra}
+        self.extra = {
+            "notification_history_enabled": True, "storage_state": "ready", **extra,
+        }
         self.fetches: list[int] = []
         self.content = False
         self.records = [{
@@ -95,7 +97,8 @@ def test_lists_notifications_as_plain_text_and_forgets_them_on_close() -> None:
             await _until(pilot, lambda: "Mail" in _text(screen, "#notifications-list"))
             listing = _text(screen, "#notifications-list")
             assert "[@click=app.quit]Mail[/]" in listing
-            assert "[b]Hi[/b] · Ana" in listing and "\x1b" not in listing
+            # Content hidden: no title, subtitle or body, only app and time.
+            assert "Hi" not in listing and "Ana" not in listing and "secret" not in listing
             # Only app names and times would be kept: say where to change it.
             assert "Settings \u203a Notifications" in _text(screen, "#notifications-content-hint")
             assert screen.query_one("#notifications-settings", Button).display

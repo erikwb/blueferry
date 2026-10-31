@@ -10,6 +10,7 @@ from hypothesis import strategies as st
 from blueferry.plugin_index import (
     DEFAULT_INDEX_URL,
     MAX_INDEX_BYTES,
+    MAX_INDEX_DEPTH,
     IndexFetchError,
     PluginIndex,
     index_urls,
@@ -65,6 +66,42 @@ def test_index_documents() -> None:
                  b"x" * (MAX_INDEX_BYTES + 1)):
         with pytest.raises(IndexFetchError):
             parse_index(data)
+
+
+@pytest.mark.parametrize("container", ["array", "object", "mixed"])
+@pytest.mark.parametrize("depth", [MAX_INDEX_DEPTH, MAX_INDEX_DEPTH + 1])
+def test_index_has_an_explicit_nesting_limit(container, depth) -> None:
+    metadata = None
+    # The root object contributes one container level too.
+    for level in range(depth - 1):
+        metadata = (
+            [metadata] if container == "array" or (container == "mixed" and level % 2)
+            else {"child": metadata}
+        )
+    data = json.dumps({"version": 1, "plugins": [IMMICH], "metadata": metadata}).encode()
+    if depth > MAX_INDEX_DEPTH:
+        with pytest.raises(IndexFetchError, match="too deeply nested"):
+            parse_index(data)
+    else:
+        assert [entry.id for entry in parse_index(data)] == [IMMICH["id"]]
+
+
+@pytest.mark.parametrize("description", [
+    "[" * 100 + "}" * 100,
+    '\\"[{' * 20,
+    "brackets [{]} with a trailing backslash \\",
+    "Unicode 📷 and escaped braces \\u005b\\u007b",
+])
+def test_nesting_check_handles_strings_and_still_checks_following_fields(description) -> None:
+    entry = {**IMMICH, "description": description}
+    assert parse_index(_index(entry))[0].description == description
+
+    # A quoted bracket or escaped closing quote must not hide deep data in a
+    # later field. Ignored metadata is bounded just like the plugin entries.
+    metadata = b"[" * MAX_INDEX_DEPTH + b"null" + b"]" * MAX_INDEX_DEPTH
+    data = _index(entry)[:-1] + b',"metadata":' + metadata + b"}"
+    with pytest.raises(IndexFetchError, match="too deeply nested"):
+        parse_index(data)
 
 
 @given(st.recursive(
@@ -147,7 +184,7 @@ def test_excessively_nested_response_preserves_cached_catalog(tmp_path) -> None:
     fetch.data = DEEP_INDEX
     entries, note = index.load(DEFAULT_INDEX_URL, refresh=True)
     assert [entry.id for entry in entries] == [IMMICH["id"]]
-    assert "cached" in note and "not valid JSON" in note
+    assert "cached" in note and "too deeply nested" in note
     # A bad refresh must not overwrite the known-good cache.
     assert index.load(DEFAULT_INDEX_URL)[1] == ""
 
@@ -174,7 +211,7 @@ def test_excessively_nested_catalog_does_not_block_other_indexes(tmp_path) -> No
         blueferry_version="0.9.0", supported_api=frozenset({1}),
     )
     assert [item.entry.id for item in catalog.items] == [IMMICH["id"]]
-    assert catalog.problems == ((DEFAULT_INDEX_URL, "the index is not valid JSON"),)
+    assert catalog.problems == ((DEFAULT_INDEX_URL, "the index is too deeply nested"),)
 
 
 def test_index_urls_from_settings() -> None:
