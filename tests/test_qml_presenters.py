@@ -766,6 +766,8 @@ def settings_window(qml_engine):
             property var notifications: []
             property var notificationsInfo: ({})
             property var callHistoryRows: ({})
+            property var companionTools: ({})
+            property int companionRefreshes: 0
             property var photos: ({})
             property var pluginSettings: ({})
             property var pluginSurfaces: ({})
@@ -835,6 +837,9 @@ def settings_window(qml_engine):
             function watchPhotos(watched) { record("watchPhotos", [watched]); }
             function refreshPhotos() { record("refreshPhotos", []); }
             function openPhoto(photoId) { record("openPhoto", [photoId]); }
+            function refreshCompanionTools() { companionRefreshes += 1; }
+            function runCompanionTool(action) { record("runCompanionTool", [action]); }
+            function clearCompanionMessage() { companionTools = Object.assign({}, companionTools, {message: ""}); }
             function loadPlugins() { record("loadPlugins", []); }
             function loadPluginStore(refresh) { record("loadPluginStore", [refresh]); }
             function setPluginEnabled(id, enabled) { record("setPluginEnabled", [id, enabled]); }
@@ -3568,6 +3573,7 @@ def test_recent_calls_page_loads_once_and_filters_missed_calls(qml_engine):
     page.deleteLater()
 
 
+
 class _OpenRuleBridge(QObject):
     """Inert recorder: the editor may only request validated backend edits."""
 
@@ -5099,6 +5105,69 @@ def _delegate_value(engine, window, list_name, child, expression):
     }})()""")
 
 
+def test_phone_card_tools_grey_out_missing_tools_and_run_actions(qml_engine, settings_window):
+    window, bridge = settings_window
+    assert bridge.property("companionRefreshes") >= 1  # probed when the card appears
+    bridge.setProperty("companionTools", _COMPANION_TOOLS)
+    QGuiApplication.processEvents()
+    # Repeater rows are looked up in QML: walking them from Python wraps
+    # Kirigami's Icon items in foreign wrappers that crash at teardown.
+    qml_engine.globalObject().setProperty("toolsSection", qml_engine.newQObject(
+        _settings_object(window, "companionTools")))
+    assert _evaluate(qml_engine, "toolsSection.rowFor('mirror').enabled") is True
+    assert _evaluate(qml_engine, "toolsSection.rowFor('send').enabled") is False
+    assert _evaluate(qml_engine, "toolsSection.rowFor('eject')") is None  # folded into photos
+    assert _evaluate(qml_engine, "toolsSection.rowFor('photos').ejectButton.visible") is True
+
+    _evaluate(qml_engine, "toolsSection.rowFor('mirror').clicked()")
+    _evaluate(qml_engine, "toolsSection.rowFor('photos').ejectButton.clicked()")
+    calls = [call for call in _evaluate(qml_engine, "testBridge.calls")
+             if call["method"] == "runCompanionTool"]
+    assert [call["args"] for call in calls] == [["mirror"], ["eject"]]
+
+    message = _settings_object(window, "companionMessage")
+    assert message.property("visible") is False
+    bridge.setProperty("companionTools", dict(
+        _COMPANION_TOOLS, busy="photos", message="Confirm Trust This Computer.",
+        messageOk=False, needsPairing=True,
+    ))
+    QGuiApplication.processEvents()
+    assert message.property("visible") is True
+    assert _evaluate(qml_engine, "toolsSection.rowFor('mirror').enabled") is False  # one at a time
+    message.setProperty("visible", False)  # what the close button does
+    QGuiApplication.processEvents()
+    assert _evaluate(qml_engine, "testBridge.companionTools.message") == ""
+    bridge.setProperty("companionTools", dict(_COMPANION_TOOLS, message="Ejected."))
+    QGuiApplication.processEvents()
+    assert message.property("visible") is True
+    # Tool output (ifuse, idevicepair) is plain text, never markup.
+    bridge.setProperty("companionTools", dict(
+        _COMPANION_TOOLS, message="<a href='https://evil.example'>x</a> & <b>y</b>"))
+    QGuiApplication.processEvents()
+    assert message.property("text") == (
+        "&lt;a href='https://evil.example'&gt;x&lt;/a&gt; &amp; &lt;b&gt;y&lt;/b&gt;")
+
+
+def test_phone_card_tools_poll_only_while_the_window_is_active(qml_engine,
+                                                               settings_window):
+    window, bridge = settings_window
+    bridge.setProperty("companionTools", _COMPANION_TOOLS)
+    QGuiApplication.processEvents()
+    section = _settings_object(window, "companionTools")
+    poll = section.findChild(QObject, "companionPoll")
+    section.setProperty("windowActive", True)
+    QGuiApplication.processEvents()
+    assert poll.property("running") is True
+    section.setProperty("windowActive", False)  # minimized or in the background
+    QGuiApplication.processEvents()
+    assert poll.property("running") is False
+    before = bridge.property("companionRefreshes")
+    section.setProperty("windowActive", True)
+    QGuiApplication.processEvents()
+    assert poll.property("running") is True
+    assert bridge.property("companionRefreshes") == before + 1  # looks again at once
+
+
 def test_photos_tab_loads_while_shown_and_hints_without_a_plugin(qml_engine, settings_window):
     window, _bridge = settings_window
     _evaluate(qml_engine, "testWindow.currentTab = testWindow.photosTab")
@@ -5323,6 +5392,21 @@ def test_guided_plugin_form_groups_checks_tests_and_signs_in(qml_engine, setting
     assert _evaluate(qml_engine, "testBridge.calls")[-1]["method"] == "cancelPluginSignIn"
     assert _visual_find(form, "configField_url").property("text") == "https://cloud.example"
     _evaluate(qml_engine, "testWindow.closePhoneSettings()")
+
+
+_COMPANION_TOOLS = {
+    "probed": True, "busy": "", "message": "", "messageOk": True, "needsPairing": False,
+    "tools": [
+        {"key": "mirror", "installed": True, "enabled": True, "active": False,
+         "title": "Mirror iPhone screen", "subtitle": "Open Control Center"},
+        {"key": "send", "installed": False, "enabled": False, "active": False,
+         "title": "Send a file (LocalSend)", "subtitle": "Install LocalSend"},
+        {"key": "photos", "installed": True, "enabled": True, "active": True,
+         "title": "iPhone photos (USB)", "subtitle": "The camera roll is open."},
+        {"key": "eject", "installed": True, "enabled": True, "active": False,
+         "title": "Eject iPhone photos", "subtitle": "Unmount the camera roll."},
+    ],
+}
 
 
 def test_plugin_form_buttons_need_saved_settings_and_links_carry_names(
