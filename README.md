@@ -476,9 +476,10 @@ Restart the user service after editing `local.env` settings.
 
 Three on/off switches without a setting of their own
 (`BLUEFERRY_SHOW_NOTIFICATION_CONTENT`, `BLUEFERRY_MARK_READ_ON_DISMISS`,
-`BLUEFERRY_NOTIFICATION_HISTORY`) can also be changed in the Qt or GTK
-settings (both offer **Restart Service** while a change waits) or with
-`blueferry features` (`blueferry features on notification_history`). They are stored in
+`BLUEFERRY_NOTIFICATION_HISTORY`)
+can also be changed in the Qt or GTK settings (both offer **Restart Service**
+while a change waits) or with `blueferry features` (`blueferry features off
+mark_read_on_dismiss`). They are stored in
 `~/.config/blueferry/settings.json`, override `local.env`, and apply after
 the service restarts; a variable set in the service's own environment still
 wins.
@@ -897,6 +898,9 @@ links or files in its own cache.
 A plugin can replace a companion tool: while the
 LocalSend plugin is enabled, the LocalSend app disappears from **Tools**,
 because both would answer on the same port.
+If a plugin replaces UxPlay while mirroring is already running, **Stop
+mirroring** stays available until that receiver exits. BlueFerry blocks
+new starts while the replacement is enabled.
 
 ## Lock when the iPhone goes away
 
