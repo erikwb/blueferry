@@ -191,7 +191,11 @@ def fetch_current_original(plugin_id: str, photo_id: str) -> Path | None:
     current = find_plugin()
     if current is None or current.id != plugin_id:
         return None
-    return fetch_original(current, photo_id)
+    original = fetch_original(current, photo_id)
+    current = find_plugin()
+    if current is None or current.id != plugin_id:
+        return None
+    return original
 
 
 # The Photos tab's state map, the same for every client. ``url`` turns a

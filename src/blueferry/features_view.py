@@ -64,6 +64,17 @@ def assume(state: dict[str, Any], name: str, value: bool) -> dict[str, Any]:
     return {**state, "items": {**items, name: changed}}
 
 
+def restore(state: dict[str, Any], previous: dict[str, Any], name: str) -> dict[str, Any]:
+    """Roll back one failed save without undoing other switches or notices."""
+    items = dict(state.get("items") or {})
+    old_items = previous.get("items") or {}
+    if name in old_items:
+        items[name] = old_items[name]
+    else:
+        items.pop(name, None)
+    return {**state, "items": items}
+
+
 def restart_pending(state: dict[str, Any]) -> bool:
     """A stored switch differs from what the running service uses."""
     items = state.get("items") or {}
