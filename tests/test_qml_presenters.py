@@ -6490,3 +6490,71 @@ Item {
     log = result.stdout + result.stderr
     assert result.returncode == 0 and "BLUEFERRY_QS_SEARCH_OK" in log, log
     assert "ReferenceError" not in log and "TypeError" not in log, log
+
+
+def test_quickshell_plugin_cards_render_the_bridge_reply(qml_engine) -> None:
+    from blueferry import plugin_surfaces as surfaces
+    from blueferry.plugin_api.surfaces import Action, CardItem
+    from blueferry.quickshell_bridge import plugin_cards_reply
+
+    theme_component = _component(qml_engine, "data/quickshell/ThemePalette.qml")
+    theme = theme_component.create()
+    assert theme is not None, theme_component.errors()
+    theme.setParent(qml_engine)
+    component = _component(qml_engine, "data/quickshell/QuickshellPluginCards.qml")
+    section = component.createWithInitialProperties({"ferryTheme": theme})
+    assert section is not None, component.errors()
+    theme.setParent(section)
+    window = QQuickWindow()
+    window.resize(640, 400)
+    section.setParentItem(window.contentItem())
+    window.show()
+    QGuiApplication.processEvents()
+    cards = [
+        surfaces.PluginCard("io.example.pods", "AirPods", True, "", [
+            CardItem("pods", "<b>AirPods Pro</b>", subtitle="L 80 % · R 75 %", actions=[
+                Action("anc", "Noise control", kind="primary"),
+                Action("send", "Send files…", send_to="x")]),
+        ], can_send=True),
+        surfaces.PluginCard("io.example.cal", "Calendar", False, "Unavailable: timeout"),
+    ]
+    try:
+        assert section.property("visible") is False
+        section.setProperty("view", plugin_cards_reply(
+            {"loaded": True, "cards": surfaces.card_rows(cards), "message": ""}))
+        QGuiApplication.processEvents()
+        assert section.property("visible") is True
+        def named(name):
+            def walk(item):
+                for child in item.childItems():
+                    yield child
+                    yield from walk(child)
+            return [item for item in walk(section) if item.objectName() == name]
+
+        titles = [child.property("text") for child in named("pluginCardTitle")]
+        assert titles == ["<b>AirPods Pro</b>"]
+        buttons = named("pluginCardAction")
+        assert [button.property("text") for button in buttons] == ["Noise control"]
+        assert buttons[0].property("highlighted") is True
+        hints = [child.property("text") for child in named("pluginCardHint")
+                 if child.property("visible")]
+        assert hints == ["Unavailable: timeout"]
+        send_hint = section.findChild(QObject, "pluginCardsSendHint")
+        assert send_hint.property("visible") is True
+
+        actions = []
+        section.actionRequested.connect(lambda *args: actions.append(args))
+        assert QMetaObject.invokeMethod(buttons[0], "clicked")
+        assert actions == [("io.example.pods", "pods", "anc")]
+
+        section.setProperty("busy", True)
+        assert buttons[0].property("enabled") is False
+        section.setProperty("view", {"cards": [], "message": "Pinged", "messageOk": True})
+        QGuiApplication.processEvents()
+        message = section.findChild(QObject, "pluginCardsMessage")
+        assert section.property("visible") is True and message.property("text") == "Pinged"
+    finally:
+        window.close()
+        section.deleteLater()
+        window.deleteLater()
+        QGuiApplication.sendPostedEvents(None, QEvent.DeferredDelete)
