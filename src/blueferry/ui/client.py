@@ -11,9 +11,10 @@ import dbus
 import dbus.mainloop
 from gi.repository import GLib, GObject
 
-from blueferry.backend_lifecycle import ensure_backend_current
+from blueferry.backend_lifecycle import ensure_backend_current, restart_backend
 from blueferry.bus import get_session_bus
 from blueferry.client import BackendClient, CompatibilityCache, TetherUnsupportedError
+from blueferry.doctor_report import DoctorReport, DoctorRunner
 from blueferry.models import BackendStatus
 from blueferry.protocol import (
     BUS_NAME,
@@ -73,6 +74,13 @@ class DaemonClient(GObject.Object):
         self._mutation_executor = ThreadPoolExecutor(
             max_workers=1,
             thread_name_prefix="blueferry-gtk-mutation",
+        )
+        # Local work that does not talk to the daemon and may take long
+        # (``blueferry doctor``), so it never holds up reads or mutations.
+        self._doctor_runner = DoctorRunner()
+        self._local_executor = ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix="blueferry-gtk-local",
         )
         # Each call opens a private connection, but all share one session bus,
         # so a verified daemon owner stays verified across calls.
@@ -148,6 +156,10 @@ class DaemonClient(GObject.Object):
         self._matches = []
         self._read_executor.shutdown(wait=False, cancel_futures=True)
         self._mutation_executor.shutdown(wait=False, cancel_futures=True)
+        self._local_executor.shutdown(wait=False, cancel_futures=True)
+        # The interpreter joins the worker at exit: end a doctor run now
+        # instead of waiting for its timeout.
+        self._doctor_runner.stop()
 
     def _call_backend(self, operation: Callable[[BackendClient], T]) -> T:
         """Call the shared backend facade on a worker-owned connection."""
@@ -173,8 +185,13 @@ class DaemonClient(GObject.Object):
         on_err=None,
         *,
         mutation: bool = False,
+        local: bool = False,
     ) -> Future:
-        executor = self._mutation_executor if mutation else self._read_executor
+        executor = (
+            self._local_executor if local
+            else self._mutation_executor if mutation
+            else self._read_executor
+        )
         future = executor.submit(operation)
 
         def completed(result: Future) -> None:
@@ -430,6 +447,68 @@ class DaemonClient(GObject.Object):
             mutation=True,
         )
 
+    def set_mirror_notification_removals_async(
+        self, enabled: bool, on_ok, on_err
+    ) -> None:
+        self._submit(
+            lambda: self._call_backend(
+                lambda backend: backend.set_mirror_notification_removals(enabled)
+            ),
+            on_ok,
+            on_err,
+            mutation=True,
+        )
+
+    def set_phone_battery_warning_async(self, enabled: bool, on_ok, on_err) -> None:
+        self._submit(
+            lambda: self._call_backend(
+                lambda backend: backend.set_phone_battery_warning(enabled)
+            ),
+            on_ok,
+            on_err,
+            mutation=True,
+        )
+
+    def reconnect_phone_async(self, on_ok, on_err) -> None:
+        """Messages1.ReconnectPhone: skip the automatic backoff once."""
+        self._submit(
+            lambda: self._call_backend(lambda backend: backend.reconnect_phone()),
+            on_ok,
+            on_err,
+            mutation=True,
+        )
+
+    def notification_open_map_async(self, on_ok, on_err=None) -> None:
+        """The notification click rules (Messages1.GetNotificationOpenMap)."""
+        self._submit(
+            lambda: self._call_backend(lambda backend: backend.notification_open_map()),
+            on_ok,
+            on_err,
+        )
+
+    def set_notification_open_target_async(
+        self, bundle_id: str, target: str, on_ok, on_err
+    ) -> None:
+        """Store one click rule; answers with all rules."""
+        self._submit(
+            lambda: self._call_backend(
+                lambda backend: backend.set_notification_open_target(bundle_id, target)
+            ),
+            on_ok,
+            on_err,
+            mutation=True,
+        )
+
+    def remove_notification_open_target_async(self, bundle_id: str, on_ok, on_err) -> None:
+        self._submit(
+            lambda: self._call_backend(
+                lambda backend: backend.remove_notification_open_target(bundle_id)
+            ),
+            on_ok,
+            on_err,
+            mutation=True,
+        )
+
     def set_media_control_async(self, enabled: bool, on_ok, on_err) -> None:
         self._submit(
             lambda: self._call_backend(
@@ -621,3 +700,34 @@ class DaemonClient(GObject.Object):
             on_ok,
             on_err,
         )
+
+    # ---- settings: feature switches, service restart, doctor -------------
+
+    def features_async(self, on_ok, on_err=None) -> None:
+        """Messages1.GetFeatures; older daemons without it report an error."""
+        self._submit(
+            lambda: self._call_backend(lambda backend: backend.features()),
+            on_ok,
+            on_err,
+        )
+
+    def set_feature_async(self, name: str, enabled: bool, on_ok, on_err) -> None:
+        """Messages1.SetFeature: ``active``, ``restart-required`` or ``environment``."""
+        self._submit(
+            lambda: self._call_backend(
+                lambda backend: backend.set_feature(name, enabled)
+            ),
+            on_ok,
+            on_err,
+            mutation=True,
+        )
+
+    def restart_backend_async(self, on_ok, on_err) -> None:
+        """Restart the user's BlueFerry service, after queued mutations."""
+        self._submit(restart_backend, on_ok, on_err, mutation=True)
+
+    def run_doctor_async(
+        self, on_ok, on_err, runner: Callable[[], DoctorReport] | None = None,
+    ) -> None:
+        """Run ``blueferry doctor`` in a child process off the GTK thread."""
+        self._submit(runner or self._doctor_runner.run, on_ok, on_err, local=True)
