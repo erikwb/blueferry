@@ -293,7 +293,7 @@ class PluginSettings(QObject):
             "fields": view.form_fields(manifest, values),
             "groups": view.form_groups(manifest),
             "actions": view.form_actions(manifest),
-            "errors": {}, "status": {},
+            "errors": {}, "status": {}, "loadError": "",
         }
 
     def load_config(self, plugin_id: str, *, keep_status: bool = False) -> None:
@@ -313,10 +313,18 @@ class PluginSettings(QObject):
             self._update(config={**self._form(manifest, plugin_id, values, loaded=True),
                                  "status": status})
 
+        def failed(text: str) -> None:
+            if owns():
+                self._update(config={**self._state["config"], "loadError": text})
+
         self._stored = {}
-        if not keep_status:
+        if keep_status:
+            # An action or sign-in may have changed the saved settings.
+            # The old fields must stay unavailable until a fresh read succeeds.
+            self._update(config={**self._state["config"], "loaded": False, "loadError": ""})
+        else:
             self._update(config=self._form(manifest, plugin_id, {}, loaded=False))
-        self._work("config", lambda: self._client(manifest).get_config(), done)
+        self._work("config", lambda: self._client(manifest).get_config(), done, on_error=failed)
 
     def _current(self, plugin_id: str) -> PluginManifest | None:
         if self._state["config"].get("id") != plugin_id or plugin_id in self._disabled:
@@ -336,7 +344,7 @@ class PluginSettings(QObject):
     def check_config(self, plugin_id: str, raw: Mapping[str, object]) -> dict[str, Any]:
         """The form's pre-check on every edit; does not change the state."""
         manifest = self._current(plugin_id)
-        if manifest is None:
+        if manifest is None or not self._state["config"].get("loaded"):
             return {"errors": {}, "visible": [], "valid": False}
         return view.check_form(manifest, self._stored, raw)
 
@@ -349,7 +357,7 @@ class PluginSettings(QObject):
 
     def save_config(self, plugin_id: str, raw: Mapping[str, object]) -> None:
         manifest = self._current(plugin_id)
-        if manifest is None:
+        if manifest is None or not self._state["config"].get("loaded"):
             return
         values, errors = view.parse_form(manifest, raw)
         if errors:
@@ -372,7 +380,8 @@ class PluginSettings(QObject):
     def test_config(self, plugin_id: str, raw: Mapping[str, object]) -> None:
         """"Test connection": the plugin checks the typed values, nothing is saved."""
         manifest = self._current(plugin_id)
-        if manifest is None or not manifest.config_test:
+        if (manifest is None or not manifest.config_test
+                or not self._state["config"].get("loaded")):
             return
         values, errors = view.parse_form(manifest, raw)
         if errors:
@@ -401,7 +410,7 @@ class PluginSettings(QObject):
     def sign_in(self, plugin_id: str, raw: Mapping[str, object]) -> None:
         """"Sign in with …": start the plugin's browser flow and poll it."""
         manifest = self._current(plugin_id)
-        if manifest is None:
+        if manifest is None or not self._state["config"].get("loaded"):
             return
         self._stop_login()
         attempt = self._login_attempt = object()
@@ -505,7 +514,8 @@ class PluginSettings(QObject):
         manifest = self._current(plugin_id)
         if manifest is None or manifest.config_action(action_id) is None:
             return
-        if self._state["config"].get("status", {}).get("pending"):
+        if (not self._state["config"].get("loaded")
+                or self._state["config"].get("status", {}).get("pending")):
             return
         generation = self._form_generation
 

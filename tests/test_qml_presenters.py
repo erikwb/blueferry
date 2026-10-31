@@ -5397,6 +5397,63 @@ def test_plugin_form_buttons_need_saved_settings_and_links_carry_names(
     _evaluate(qml_engine, "testWindow.closePhoneSettings()")
 
 
+def test_failed_plugin_settings_reload_disables_controls_and_offers_read_retry(
+    qml_engine, settings_window,
+):
+    window, bridge = settings_window
+    bridge.setProperty("status", {"daemon": True})
+    plugin = {"id": "io.example.setup", "name": "Setup", "version": "1.0", "capabilities": [],
+              "source": "", "ref": "", "managed": True, "enabled": True,
+              "state": "ok", "stateText": "Ready", "detail": "", "hasConfig": True}
+    config = {
+        "id": plugin["id"], "name": "Setup", "loaded": False, "errors": {}, "status": {},
+        "loadError": "read <failed>",
+        "groups": [{"name": "", "label": "", "help": "", "collapsed": False}],
+        "actions": {"test": True, "loginLabel": "Sign in", "custom": [
+            {"id": "setup", "label": "Set up iPhone"},
+        ]},
+        "fields": [_guided_field("host", "Host", "string", value="old.example")],
+    }
+    state = {
+        "loaded": True, "busy": "", "message": "", "messageOk": True, "plugins": [plugin],
+        "ignored": [], "pending": {}, "config": config,
+        "store": {"loaded": True, "problems": [], "items": []}, "indexes": [],
+        "defaultIndex": "https://example.org/index.json",
+    }
+    bridge.setProperty("pluginSettings", state)
+    _open_category(qml_engine, window, "plugins")
+    form = _settings_object(window, "pluginConfigForm")
+    for name in ("pluginConfigSave", "pluginConfigTest", "pluginConfigSignIn",
+                 "configAction_setup", "configField_host"):
+        assert _visual_find(form, name).property("enabled") is False
+    assert _visual_find(form, "pluginConfigLoading").property("visible") is False
+    error = _visual_find(form, "pluginConfigLoadError")
+    assert error.property("visible") and "&lt;failed&gt;" in error.property("text")
+    retry = _visual_find(form, "pluginConfigRetry")
+    assert retry.property("visible") and retry.property("enabled")
+    QMetaObject.invokeMethod(retry, "clicked")
+    assert _evaluate(qml_engine, "testBridge.calls")[-1] == {
+        "method": "loadPluginConfig", "args": [plugin["id"]]}
+
+    bridge.setProperty("pluginSettings", {
+        **state, "busy": "config", "config": {**config, "loadError": ""},
+    })
+    QGuiApplication.processEvents()
+    assert _visual_find(form, "pluginConfigLoading").property("visible") is True
+    assert retry.property("visible") is False
+    assert _visual_find(form, "configAction_setup").property("enabled") is False
+
+    bridge.setProperty("pluginSettings", {**state, "config": {
+        **config, "loaded": True, "loadError": "",
+        "fields": [_guided_field("host", "Host", "string", value="new.example")],
+    }})
+    QGuiApplication.processEvents()
+    assert _visual_find(form, "configField_host").property("text") == "new.example"
+    assert _visual_find(form, "configAction_setup").property("enabled") is True
+    assert error.property("visible") is False and retry.property("visible") is False
+    _evaluate(qml_engine, "testWindow.closePhoneSettings()")
+
+
 def _guided_field(key, label, kind, **extra):
     row = {"key": key, "label": label, "type": kind, "required": False, "help": "",
            "choices": [], "minimum": 0, "maximum": 100, "value": "", "stored": False,

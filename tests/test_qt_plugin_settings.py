@@ -465,6 +465,103 @@ def test_a_second_press_is_dropped_while_one_runs(with_actions) -> None:
     assert _ActionClient.ran == []
 
 
+@pytest.mark.parametrize("action_ok", [True, False])
+def test_failed_action_refresh_requires_a_read_retry(with_actions, monkeypatch, action_ok):
+    from blueferry.plugin_api.client import PluginError
+    from blueferry.plugin_api.surfaces import ActionResult
+
+    settings, _opened = with_actions
+    settings.load_config("io.example.setup")
+    _wait(lambda: settings.state()["config"].get("loaded") and _idle(settings))
+    read_started, release = threading.Event(), threading.Event()
+    original_read = _ActionClient.get_config
+
+    def changed(_client, action_id):
+        _ActionClient.ran.append(action_id)
+        _ActionClient.port = 47802
+        return ActionResult(action_ok, "Changed the saved settings")
+
+    def failed_read(_client):
+        read_started.set()
+        assert release.wait(5)
+        raise PluginError("could not read the new settings")
+
+    monkeypatch.setattr(_ActionClient, "run_config_action", changed)
+    monkeypatch.setattr(_ActionClient, "get_config", failed_read)
+    settings.run_action("io.example.setup", "approve")
+    try:
+        _wait(read_started.is_set)
+        assert settings.state()["config"]["loaded"] is False
+        assert settings.state()["config"]["loadError"] == ""
+    finally:
+        release.set()
+    _wait(lambda: not settings._tasks and not settings._queue)
+    config = settings.state()["config"]
+    assert config["loaded"] is False
+    assert config["loadError"] == "could not read the new settings"
+    assert config["status"]["text"] == "Changed the saved settings"
+    assert settings._stored == {}
+    # Neither a second action nor another settings operation can use the old form.
+    settings.run_action("io.example.setup", "approve")
+    settings.save_config("io.example.setup", {"port": 47803})
+    settings.sign_in("io.example.setup", {})
+    assert not settings._tasks and not settings._queue
+    assert settings.check_config("io.example.setup", {})["valid"] is False
+    assert _ActionClient.ran == ["approve"]
+
+    monkeypatch.setattr(_ActionClient, "get_config", original_read)
+    settings.load_config("io.example.setup")  # the Retry button only reloads
+    _wait(lambda: not settings._tasks and not settings._queue)
+    config = settings.state()["config"]
+    assert config["loaded"] is True and config["loadError"] == ""
+    assert config["fields"][0]["value"] == 47802
+    assert settings._stored == {"port": 47802}
+    assert _ActionClient.ran == ["approve"]
+
+
+@pytest.mark.parametrize("next_form", ["closed", "same", "other"])
+def test_a_late_settings_read_failure_stays_out_of_a_replaced_form(
+    with_actions, monkeypatch, next_form,
+):
+    from blueferry.plugin_api.testing import manifest
+
+    settings, _opened = with_actions
+    started, release = threading.Event(), threading.Event()
+    first = True
+    original_read = _ActionClient.get_config
+
+    def read(client):
+        nonlocal first
+        if first:
+            first = False
+            started.set()
+            assert release.wait(5)
+            raise RuntimeError("old read failed")
+        return original_read(client)
+
+    monkeypatch.setattr(_ActionClient, "get_config", read)
+    settings.load_config("io.example.setup")
+    try:
+        _wait(started.is_set)
+        settings.close_config()
+        if next_form == "same":
+            settings.load_config("io.example.setup")
+        elif next_form == "other":
+            other = manifest("io.example.other", extra=ACTIONS)
+            settings._manifests[other.id] = other
+            settings.load_config(other.id)
+    finally:
+        release.set()
+    _wait(lambda: not settings._tasks and not settings._queue)
+    config = settings.state()["config"]
+    assert settings.state()["message"] == ""
+    if next_form == "closed":
+        assert config == {}
+    else:
+        assert config["loaded"] is True and config["loadError"] == ""
+        assert config["id"] == ("io.example.setup" if next_form == "same" else "io.example.other")
+
+
 @pytest.mark.parametrize("reply", ["success", "failure", "error"])
 def test_reopening_the_same_form_discards_old_action_results(with_actions, monkeypatch, reply):
     from blueferry.plugin_api.surfaces import ActionResult
