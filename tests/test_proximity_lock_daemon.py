@@ -139,10 +139,12 @@ def test_forgetting_the_phone_cancels_a_pending_lock(rig, monkeypatch) -> None:
     )
     monkeypatch.setattr(daemon_mod.config, "IPHONE_MAC", "02:00:00:00:00:01")
     monkeypatch.setattr(daemon_mod.config, "ADAPTER", "hci0")
-    monkeypatch.setattr(daemon_mod, "bond_status", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(daemon_mod, "bond_status", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(daemon_mod.main_loop, "quit", lambda: None)
 
     rig.link(True)
+    assert rig.daemon._check_target_config() is True
+    monkeypatch.setattr(daemon_mod, "bond_status", lambda *_args, **_kwargs: False)
     rig.link(False)
     assert rig.daemon._check_target_config() is False
     rig.timers.advance(3600)
