@@ -1556,7 +1556,10 @@ class BlueFerryApp(App[None]):
         self.push_screen(OptionsScreen(
             self.state.client, category=category, restart=self._restart,
             doctor=self._doctor, restart_state=self._restart_state,
-        ), lambda _result: self._check_photos_plugin())  # Plugins may have changed
+        ), self._options_closed)
+
+    def _options_closed(self, _result: None) -> None:
+        self._check_photos_plugin()  # Settings > Plugins may have changed it
 
     def action_diagnostics(self) -> None:
         if not isinstance(self.screen, DoctorScreen):
