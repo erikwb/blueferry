@@ -509,7 +509,7 @@ ModalScreen {
 }
 
 #help-dialog {
-    width: 46;
+    width: 72;
 }
 
 #calls-dialog {
@@ -970,5 +970,99 @@ ModalScreen {
 }
 
 #send-status {
+    height: auto;
+}
+
+#plugins-pane {
+    height: auto;
+}
+
+#plugins-message {
+    height: auto;
+    padding: 1 0 0 0;
+}
+
+#plugins-installed, #plugins-store, #plugins-indexes {
+    height: auto;
+    max-height: 14;
+    background: #0d1425;
+}
+
+#plugins-pane Input {
+    margin-top: 1;
+}
+
+#plugins-pane .options-action Button {
+    min-width: 8;
+    margin-left: 1;
+}
+
+#plugin-install-dialog, #plugin-remove-dialog {
+    width: 80;
+}
+
+#plugin-install-rows {
+    height: auto;
+    max-height: 20;
+}
+
+#plugin-log-dialog {
+    width: 110;
+    height: 90%;
+}
+
+#plugin-log-scroll {
+    height: 1fr;
+    background: #0d1425;
+}
+
+#plugin-log-path {
+    padding-left: 0;
+}
+
+#plugin-config-dialog {
+    width: 90;
+    height: 90%;
+}
+
+#plugin-config-body {
+    height: 1fr;
+}
+
+#plugin-config-dialog .dialog-actions Button {
+    min-width: 8;
+}
+
+#plugin-config-custom, #plugin-config-sections {
+    height: auto;
+}
+
+#plugin-config-custom Button {
+    margin-top: 1;
+}
+
+.plugin-config-section, .plugin-config-rows, .plugin-config-field {
+    height: auto;
+}
+
+.plugin-config-heading {
+    height: auto;
+}
+
+.plugin-config-heading .options-section {
+    width: 1fr;
+}
+
+.plugin-config-toggle, .plugin-config-help {
+    min-width: 8;
+}
+
+.plugin-config-error, #plugin-config-form-error {
+    height: auto;
+    color: #fca5a5;
+}
+
+#plugin-config-status, #plugin-config-action-status, #plugin-config-unsaved,
+#plugin-config-fill, #plugin-config-loading {
     height: auto;
 }

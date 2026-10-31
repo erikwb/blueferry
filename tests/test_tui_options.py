@@ -191,14 +191,16 @@ def _plain(screen, selector: str) -> str:
 
 def test_the_categories_follow_the_qt_and_gtk_settings() -> None:
     assert [c.key for c in categories()] == [
-        "phone", "notifications", "calls", "security", "about",
+        "phone", "notifications", "calls", "security", "plugins", "about",
     ]
     # Every row named in a group exists, and every row is placed once.
     placed = [item for group in GROUPS for item in group.items]
     assert len(placed) == len(set(placed))
     assert {f"opt:{key}" for key in SAVED_SWITCHES} <= set(placed)
     assert {f"feature:{name}" for name in FEATURE_ROWS} <= set(placed)
-    assert {group.category for group in GROUPS} == {c.key for c in categories()}
+    # The Plugins tab is PluginsPane instead of option groups.
+    assert {group.category for group in GROUPS} == {
+        c.key for c in categories()} - {"plugins"}
 
 
 def test_options_screen_saves_the_contact_photo_opt_in() -> None:

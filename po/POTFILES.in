@@ -67,6 +67,7 @@ src/blueferry/plugin_surfaces.py
 src/blueferry/photos_view.py
 src/blueferry/plugin_settings_view.py
 src/blueferry/plugin_settings_model.py
+src/blueferry/plugin_logs.py
 src/blueferry/qt/qml/PluginConfigForm.qml
 src/blueferry/qt/qml/PluginStoreCard.qml
 src/blueferry/qt/qml/SettingsPlugins.qml
@@ -88,3 +89,5 @@ src/blueferry/contacts_view.py
 src/blueferry/search_view.py
 src/blueferry/tui_contacts.py
 src/blueferry/tui_search.py
+src/blueferry/tui_plugins.py
+src/blueferry/tui_plugin_settings.py
