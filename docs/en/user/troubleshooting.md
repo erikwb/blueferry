@@ -43,6 +43,57 @@ computer paired with the same phone may hold it. Disconnect that computer, or
 turn off its Bluetooth. A stale or incomplete pairing can look similar; in
 that case [start over cleanly](pairing.md#start-over-cleanly).
 
+## Sending works, but incoming messages never arrive
+
+The iPhone needs a local **Message Notification Server (MNS)** service on the
+computer to deliver incoming MAP messages. Sending and contact sync can work
+even when that service is missing. With BlueFerry connected, run
+`blueferry doctor`: it checks for MNS UUID
+`00001133-0000-1000-8000-00805f9b34fb` on the configured adapter. A present UUID
+confirms local registration; it does not prove that the iPhone connected to it.
+
+If MNS is missing while obexd is running, inspect its logs and launch options.
+On systemd:
+
+```bash
+journalctl --user -u obex.service -b
+systemctl --user cat obex.service
+```
+
+One confirmed cause is a BlueZ initialization bug in obexd builds that use
+Evolution's address-book backend, reported on Debian 13 with BlueZ 5.82 in
+[BlueFerry #280](https://github.com/erikwb/blueferry/issues/280) and described in
+[BlueZ #2315](https://github.com/bluez/bluez/issues/2315). obexd can finish
+starting without registering any of its server profiles. The logs may include
+`Unable to acquire registry` and a missing `evolution-source-registry.service`.
+Missing MNS alone does not establish this cause; disabled plugins or a service
+still starting can also explain it.
+
+For that initialization bug, the reporter confirmed this workaround:
+
+1. Run `systemctl --user edit obex.service` and add the following override.
+   Use the obexd executable path shown by `systemctl --user cat obex.service`,
+   and preserve any existing arguments. This example uses Debian's path:
+
+   ```ini
+   [Service]
+   ExecStart=
+   ExecStart=/usr/libexec/bluetooth/obexd -P irmc,pbap
+   ```
+
+2. Run `systemctl --user daemon-reload`, then
+   `systemctl --user restart obex.service`. This interrupts current OBEX
+   transfers and message/contact sessions. Let BlueFerry reconnect and run
+   `blueferry doctor` again, then check with an incoming test message.
+
+`-P irmc,pbap` disables the computer's IrMC and phonebook **server** plugins;
+BlueFerry's phonebook **client**, which reads contacts from the iPhone, remains
+available. Other apps that serve the computer's address book over Bluetooth
+may need those server plugins. If obexd already has `-P` or `--noplugin`, add
+`irmc,pbap` to that existing list instead of adding a second option. On systems
+without systemd, apply the same option to the session's existing obexd launcher.
+To undo it, remove the override you added and reload/restart obex.service.
+
 ## Messages and contacts work, but iPhone notifications never connect
 
 This usually means the Bluetooth LE half of the pairing is stale. The pairing

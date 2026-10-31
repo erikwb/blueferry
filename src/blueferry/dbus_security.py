@@ -62,9 +62,17 @@ _RULES: dict[str, tuple[RateRule, ...]] = {
     "calls-dial": (RateRule(6, 60), RateRule(60, 3_600)),
     "calls-answer": (RateRule(10, 60), RateRule(120, 3_600)),
     "calls-control": (RateRule(60, 60), RateRule(600, 3_600)),
+    # Each tether command pages the phone and may create a NetworkManager
+    # profile; toggling is interactive, so allow bursts but not a stream.
+    "tether": (RateRule(10, 60), RateRule(60, 3_600)),
     # Moving the phone's audio pages the phone and renegotiates AVDTP;
     # users retry while bluetoothd is still busy with the last change.
     "audio-route": (RateRule(20, 60), RateRule(120, 3_600)),
+    # The in-memory notification list is cheap but carries app content.
+    "notifications-read": (RateRule(240, 60),),
+    # Feature switches are written to settings.json and need a restart;
+    # a settings page flips a few at a time, never a stream.
+    "feature": (RateRule(20, 60), RateRule(120, 3_600)),
     # A manual reconnect pages the phone; a held button must not hammer it.
     "reconnect": (RateRule(6, 60), RateRule(60, 3_600)),
 }

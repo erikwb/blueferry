@@ -6,9 +6,9 @@ and main-loop hand-offs run inline. ``ServiceTransport`` lets a
 directly, through the same validation the real D-Bus transport gets.
 ``ScriptedTransport`` replays canned replies for client-only tests.
 ``FakeHost`` plays BlueFerry's side of the ApiVersion 1.2 surfaces (card,
-share, notify; popups the 1.5 way) and the 1.3 settings helpers
-(TestConfig, ConfigLogin) against a service, with the clients' own
-validation.
+share, notify; popups the 1.5 way), the 1.3 settings helpers (TestConfig,
+ConfigLogin) and the 1.6 settings buttons (RunConfigAction) against a
+service, with the clients' own validation.
 """
 from __future__ import annotations
 
@@ -133,7 +133,9 @@ class FakeHost:
     ``host.sign_in(values)``, which runs ConfigLogin and then polls
     ConfigLoginStatus until a final state (``max_polls``, no sleeping) and
     records the opened sign-in URL in ``host.opened``. ``host.cancel_sign_in``
-    sends ConfigLoginCancel.
+    sends ConfigLoginCancel. ``host.config_action(id)`` (ApiVersion 1.6)
+    presses a ``[ConfigAction <id>]`` button; a checked ``open_uri`` lands
+    in ``host.opened`` too.
     """
 
     def __init__(
@@ -242,3 +244,12 @@ class FakeHost:
 
     def cancel_sign_in(self, login_id: str) -> None:
         self.client.config_login_cancel(login_id)
+
+    # ---- settings buttons (ApiVersion 1.6) ----------------------------------------------
+
+    def config_action(self, action_id: str) -> surfaces.ActionResult:
+        """The user pressed the settings form's button ``action_id``."""
+        result = self.client.run_config_action(action_id)
+        if result.ok and result.open_uri:
+            self.opened.append(result.open_uri)
+        return result

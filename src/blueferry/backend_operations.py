@@ -29,6 +29,7 @@ from blueferry.errors import (
     SendOutcomeUnknownError,
 )
 from blueferry.events import canonical_address
+from blueferry.features import FeatureSettings
 from blueferry.grouping import (
     CORRELATED_ANCS_ROW_IDS_FIELD,
     HISTORY_ROW_ID_FIELD,
@@ -87,6 +88,7 @@ log = logging.getLogger(__name__)
 
 _MAP_FOLDER_RE = re.compile(r"^[A-Za-z0-9_-]+(?:/[A-Za-z0-9_-]+)*$")
 _EVENT_KIND_RE = re.compile(r"^[a-z][a-z0-9_]*$")
+MAX_NOTIFICATION_QUERY_LIMIT = 200
 _PUBLIC_EVENT_KINDS = frozenset({"sms_received", "sms_sent", "sms_seen"})
 
 Success = Callable[[Any], None]
@@ -230,6 +232,14 @@ class CallControl(Protocol):
     def hold_and_answer(self, success: Success, failure: Failure) -> None: ...
 
 
+class TetherControl(Protocol):
+    def snapshot(self) -> dict[str, object]: ...
+
+    def connect(self, *, automatic: bool = False) -> dict[str, object]: ...
+
+    def disconnect(self) -> dict[str, object]: ...
+
+
 class CallAudioControl(Protocol):
     """Speaker and microphone for calls (see ``blueferry.calls.audio_devices``)."""
 
@@ -254,6 +264,12 @@ class PhoneAudioControl(Protocol):
     def set_route(
         self, route: str, success: Callable[[str], None], failure: Failure,
     ) -> None: ...
+
+
+class NotificationLog(Protocol):
+    def snapshot(self, limit: int) -> list[dict[str, object]]: ...
+
+    def clear(self) -> None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -292,7 +308,13 @@ class BackendDependencies:
     set_phone_battery_warning: Callable[[bool], dict[str, Any]] | None = None
     set_auto_profile_reset: Callable[[bool], dict[str, Any]] | None = None
     set_media_mpris: Callable[[bool], dict[str, Any]] | None = None
+    tether: TetherControl | None = None
+    set_tethering: Callable[[bool, bool], dict[str, Any]] | None = None
     phone_audio: PhoneAudioControl | None = None
+    # Present only when BLUEFERRY_NOTIFICATION_HISTORY is set.
+    notification_log: NotificationLog | None = None
+    notification_content: bool = False
+    features: FeatureSettings | None = None
     # The contact-photo opt-in: a fixed value or the daemon's live setting.
     contact_photos: bool | Callable[[], bool] = False
     set_contact_photos: Callable[[bool], dict[str, Any]] | None = None
@@ -841,6 +863,8 @@ class BackendOperations:
             )
         clear_events()
         self._clear_call_history()
+        if self.dependencies.notification_log is not None:
+            self.dependencies.notification_log.clear()
         if self.dependencies.starred_threads is not None:
             self.dependencies.starred_threads.clear()
         if self.dependencies.group_routes is not None:
@@ -1427,6 +1451,40 @@ class BackendOperations:
             )
         media.send_command(name, on_success, on_failure)
 
+    def list_notifications(self, limit: int) -> dict[str, object]:
+        """Recent iPhone app notifications, newest first; fail closed."""
+        log_ = self.dependencies.notification_log
+        if log_ is None:
+            return {"enabled": False, "content": False, "notifications": []}
+        storage = self.dependencies.storage
+        if storage is not None and not storage.status.can_read:
+            raise NotReadyError(storage.status.detail or "local history is locked")
+        bounded = max(1, min(int(limit), MAX_NOTIFICATION_QUERY_LIMIT))
+        return {
+            "enabled": True,
+            "content": self.dependencies.notification_content,
+            "notifications": log_.snapshot(bounded),
+        }
+
+    def get_features(self) -> dict[str, dict[str, Any]]:
+        """The allowlisted local.env switches and where each value comes from."""
+        features = self.dependencies.features
+        if features is None:
+            raise NotReadyError("feature settings are unavailable in this backend")
+        return features.snapshot()
+
+    def set_feature(self, name: str, enabled: bool) -> str:
+        """Store one switch in settings.json; it applies after a restart."""
+        features = self.dependencies.features
+        if features is None:
+            raise NotReadyError("feature settings are unavailable in this backend")
+        try:
+            return features.set(str(name), bool(enabled))
+        except KeyError:
+            raise InvalidArgumentsError("unknown feature") from None
+        except (OSError, ValueError) as error:
+            raise NotReadyError(f"could not store the setting: {type(error).__name__}") from None
+
     def set_phone_audio_route(
         self, route: str, success: Callable[[str], None], failure: Failure,
     ) -> None:
@@ -1464,6 +1522,33 @@ class BackendOperations:
             raise NotReadyError(
                 "could not save the media control preference"
             ) from error
+
+    def _tether(self) -> TetherControl:
+        if self.dependencies.tether is None:
+            raise NotReadyError("Bluetooth tethering is unavailable in this backend")
+        return self.dependencies.tether
+
+    def tether_state(self) -> dict[str, object]:
+        return self._tether().snapshot()
+
+    def tether_connect(self) -> dict[str, object]:
+        return self._tether().connect()
+
+    def tether_disconnect(self) -> dict[str, object]:
+        return self._tether().disconnect()
+
+    def set_tethering(self, enabled: bool, autoconnect: bool) -> dict[str, object]:
+        """Opt in or out of Bluetooth tethering and automatic tethering."""
+        configure = self.dependencies.set_tethering
+        if configure is None:
+            raise NotReadyError("Bluetooth tethering is unavailable in this backend")
+        try:
+            return dict(configure(enabled, autoconnect))
+        except ValueError as error:
+            raise InvalidArgumentsError(str(error)) from error
+        except OSError as error:
+            log.error("could not save tethering preference: %s", error)
+            raise NotReadyError("could not save the tethering preference") from error
 
     def is_healthy(self) -> bool:
         return self.sessions.map is not None

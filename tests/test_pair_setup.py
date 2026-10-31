@@ -1580,18 +1580,24 @@ def test_complete_pairing_starts_profiles_while_pairing_advert_is_active(monkeyp
     ]
 
 
-def test_compatibility_pairing_continues_when_solicitation_is_unavailable(
+@pytest.mark.parametrize(
+    "compatibility,ancs_ready",
+    [(True, False), (False, False), (False, True)],
+)
+def test_pairing_continues_when_solicitation_is_unavailable(
     monkeypatch,
     caplog,
+    compatibility,
+    ancs_ready,
 ):
     device = _device(paired=True)
     policy = pair_setup.resolve_pairing_policy(
         {
-            "notifications_supported": False,
+            "notifications_supported": True,
             "low_energy": True,
             "advertising": True,
         },
-        force_compatibility=True,
+        force_compatibility=compatibility,
         interactive=False,
     )
     attempt = pair_setup.quirks_report.start_attempt(interactive=False)
@@ -1623,37 +1629,57 @@ def test_compatibility_pairing_continues_when_solicitation_is_unavailable(
     )
     monkeypatch.setattr(bluez_setup, "register_advert", lambda *_args, **_kwargs: False)
     monkeypatch.setattr(
+        bluez_setup, "unregister_advert",
+        lambda *_args: pytest.fail("a failed advertisement must not be unregistered"),
+    )
+    monkeypatch.setattr(
         pair_setup,
-        "_handoff_to_daemon",
-        lambda selected, adapter, selected_policy, _attempt, **_kwargs: calls.append(
-            ("handoff", selected.mac, adapter, selected_policy.ancs_enabled)
-        )
-        or pair_setup.PairingTransports(map=True, pbap=True, ancs=False),
+        "write_local_env",
+        lambda mac, adapter, ancs_enabled=True: calls.append(
+            ("config", mac, adapter, ancs_enabled)
+        ),
+    )
+    monkeypatch.setattr(
+        pair_setup, "_restart_user_service", lambda: calls.append("restart"),
+    )
+    monkeypatch.setattr(
+        pair_setup, "_wait_for_daemon_transports",
+        lambda *, notifications_supported, **_kwargs: calls.append(
+            ("transports", notifications_supported)
+        ) or pair_setup.PairingTransports(map=True, pbap=True, ancs=ancs_ready),
     )
     monkeypatch.setattr(pair_setup, "_device", lambda *_args, **_kwargs: device)
 
     outcome = pair_setup._execute_pairing(
         device.mac,
-        compatibility_mode=True,
+        compatibility_mode=compatibility,
         attempt=attempt,
     )
 
     assert outcome.transports == pair_setup.PairingTransports(
         map=True,
         pbap=True,
-        ancs=False,
+        ancs=ancs_ready,
     )
-    assert outcome.ancs == "disabled"
+    assert outcome.ancs_enabled is not compatibility
+    assert outcome.ancs == (
+        "disabled" if compatibility else "connected" if ancs_ready else "daemon connecting"
+    )
     assert calls == [
         ("prepare", "hci0"),
         ("pair", device.mac),
         ("settle", device.mac),
-        ("handoff", device.mac, "hci0", False),
+        ("config", device.mac, "hci0", not compatibility),
+        "restart",
+        ("transports", not compatibility),
     ]
     assert "ANCS solicitation is unavailable; continuing with MAP/PBAP" in caplog.text
-    assert [entry["event"] for entry in attempt["timeline"]][-2:] == [
+    assert [entry["event"] for entry in attempt["timeline"]] == [
+        "start",
         "advert_register_sent",
         "advert_unavailable",
+        "daemon_restart_sent",
+        "daemon_restarted",
     ]
 
 
@@ -1821,7 +1847,7 @@ def test_audio_readiness_only_gates_new_connect_first_bonds(monkeypatch, paired,
     assert waited == (["hci0"] if not paired and not explicit else [])
 
 
-def test_full_pairing_still_requires_solicitation(monkeypatch):
+def test_failed_solicitation_is_recorded_without_claiming_an_active_advert(monkeypatch):
     device = _device(paired=True)
     policy = pair_setup.resolve_pairing_policy(
         {
@@ -1834,14 +1860,13 @@ def test_full_pairing_still_requires_solicitation(monkeypatch):
     resources = pair_setup._PairingResources()
     monkeypatch.setattr(bluez_setup, "register_advert", lambda *_args, **_kwargs: False)
 
-    with pytest.raises(pair_setup.PairingError, match="advertisement did not activate"):
-        pair_setup._register_solicitation(
-            device,
-            "hci0",
-            policy,
-            attempt,
-            resources,
-        )
+    pair_setup._register_solicitation(
+        device,
+        "hci0",
+        policy,
+        attempt,
+        resources,
+    )
 
     assert resources.advert_registered is False
     assert attempt["timeline"][-1]["event"] == "advert_unavailable"

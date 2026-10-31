@@ -274,3 +274,10 @@ class ConversationState:
             return False
         self.contact_results = list(results)
         return True
+
+    def contact_result_rows(self) -> list[dict[str, str]]:
+        """The current contact matches as plain ``name``/``address`` rows."""
+        return [
+            {"name": str(name), "address": str(address)}
+            for name, address in self.contact_results
+        ]

@@ -186,6 +186,149 @@ def test_failures_are_quiet_and_never_raise(caplog) -> None:
     assert sum("ReadValue failed" in record.message for record in caplog.records) == 1
 
 
+@pytest.mark.parametrize("initial_read_succeeded", [False, True])
+@pytest.mark.parametrize("notify_first", [False, True])
+def test_failed_gatt_refresh_does_not_mask_live_battery1(initial_read_succeeded, notify_first):
+    watcher, bus, _changes = _battery()
+    watcher.start()
+    bus.take("GetManagedObjects")[5]({
+        dbus.ObjectPath(DEVICE): {BATTERY1_IFACE: {"Percentage": dbus.Byte(89)}},
+        dbus.ObjectPath(CHAR): _char(89),
+    })
+    error = dbus.exceptions.DBusException("read failed", name="org.bluez.Error.Failed")
+    if initial_read_succeeded:
+        bus.take("ReadValue")[5]([89])
+        bus.take("StartNotify")[5]()
+        watcher.link_up()
+    methods = ["StartNotify", "ReadValue"] if notify_first else ["ReadValue", "StartNotify"]
+    for method in methods:
+        bus.take(method)[6](error)
+    bus.emit("PropertiesChanged", BATTERY1_IFACE, {"Percentage": dbus.Byte(86)}, [],
+             path=DEVICE, arg0=BATTERY1_IFACE)
+    assert (watcher.percent, watcher.source) == (86, "bluez")
+    # The failed source can recover without a process restart.
+    bus.emit("PropertiesChanged", GATT_CHAR_IFACE, {"Value": [85]}, [],
+             path=CHAR, arg0=GATT_CHAR_IFACE)
+    assert (watcher.percent, watcher.source) == (85, "gatt")
+
+
+@pytest.mark.parametrize("method", ["ReadValue", "StartNotify"])
+def test_failed_initial_battery_access_discards_an_unconfirmed_cached_value(method):
+    watcher, bus, _changes = _battery()
+    watcher.start()
+    bus.take("GetManagedObjects")[5]({dbus.ObjectPath(CHAR): _char(89)})
+    bus.take(method)[6](RuntimeError("unavailable"))
+    assert (watcher.percent, watcher.source) == (None, None)
+
+
+@pytest.mark.parametrize("level", [89, 88])
+@pytest.mark.parametrize("read_fails", [False, True])
+def test_a_fresh_notification_wins_over_late_read_replies_and_errors(level, read_fails):
+    watcher, bus, _changes = _battery()
+    watcher.start()
+    bus.take("GetManagedObjects")[5]({dbus.ObjectPath(CHAR): _char(89)})
+    read, notify = bus.take("ReadValue"), bus.take("StartNotify")
+    bus.emit("PropertiesChanged", GATT_CHAR_IFACE, {"Value": [level]}, [],
+             path=CHAR, arg0=GATT_CHAR_IFACE)
+    if read_fails:
+        read[6](RuntimeError("late failure"))
+    else:
+        read[5]([90])
+    notify[6](RuntimeError("late failure"))
+    assert (watcher.percent, watcher.source) == (level, "gatt")
+
+
+@pytest.mark.parametrize("notify_first", [False, True])
+def test_a_fresh_read_is_usable_when_notifications_are_not_supported(notify_first):
+    watcher, bus, _changes = _battery()
+    watcher.start()
+    bus.take("GetManagedObjects")[5]({dbus.ObjectPath(CHAR): _char(89)})
+    read, notify = bus.take("ReadValue"), bus.take("StartNotify")
+    error = dbus.exceptions.DBusException("read only", name="org.bluez.Error.NotSupported")
+    if notify_first:
+        notify[6](error)
+        read[5]([87])
+    else:
+        read[5]([87])
+        notify[6](error)
+    assert (watcher.percent, watcher.source) == (87, "gatt")
+
+
+def test_reconnecting_requires_a_new_read_and_discards_old_connection_replies():
+    watcher, bus, _changes = _battery()
+    watcher.start()
+    bus.take("GetManagedObjects")[5]({dbus.ObjectPath(CHAR): _char(89)})
+    old_read, old_notify = bus.take("ReadValue"), bus.take("StartNotify")
+    watcher.link_up()
+    assert watcher.percent is None
+    old_read[5]([89])
+    old_notify[5]()
+    assert watcher.percent is None and watcher._notifying is False
+    bus.take("ReadValue")[5]([86])
+    bus.take("StartNotify")[5]()
+    old_read[6](RuntimeError("old connection"))
+    old_notify[6](RuntimeError("old connection"))
+    assert (watcher.percent, watcher.source) == (86, "gatt")
+    assert watcher._notifying is True
+
+
+def test_le_disconnect_forgets_gatt_but_keeps_the_other_battery_source():
+    watcher, bus, _changes = _battery()
+    watcher.start()
+    bus.take("GetManagedObjects")[5]({
+        dbus.ObjectPath(DEVICE): {BATTERY1_IFACE: {"Percentage": dbus.Byte(86)}},
+        dbus.ObjectPath(CHAR): _char(89),
+    })
+    read, notify = bus.take("ReadValue"), bus.take("StartNotify")
+    watcher.link_down()
+    read[5]([89])
+    notify[5]()
+    bus.emit("PropertiesChanged", GATT_CHAR_IFACE, {"Value": [89]}, [],
+             path=CHAR, arg0=GATT_CHAR_IFACE)
+    assert (watcher.percent, watcher.source) == (86, "bluez")
+    bus.emit("InterfacesRemoved", dbus.ObjectPath(CHAR), [GATT_CHAR_IFACE])
+    bus.emit("InterfacesAdded", dbus.ObjectPath(CHAR), _char(89))
+    assert bus.calls == []  # do not read or subscribe while LE is down
+    assert (watcher.percent, watcher.source) == (86, "bluez")
+    watcher.link_up()
+    bus.take("ReadValue")[5]([85])
+    assert (watcher.percent, watcher.source) == (85, "gatt")
+
+
+def test_invalidated_gatt_value_cannot_be_restored_by_an_older_read():
+    watcher, bus, _changes = _battery()
+    watcher.start()
+    bus.take("GetManagedObjects")[5]({
+        dbus.ObjectPath(DEVICE): {BATTERY1_IFACE: {"Percentage": dbus.Byte(86)}},
+        dbus.ObjectPath(CHAR): _char(89),
+    })
+    read = bus.take("ReadValue")
+    bus.emit("PropertiesChanged", GATT_CHAR_IFACE, {}, ["Value"],
+             path=CHAR, arg0=GATT_CHAR_IFACE)
+    read[5]([89])
+    assert (watcher.percent, watcher.source) == (86, "bluez")
+    bus.emit("PropertiesChanged", BATTERY1_IFACE, {}, ["Percentage"],
+             path=DEVICE, arg0=BATTERY1_IFACE)
+    assert (watcher.percent, watcher.source) == (None, None)
+
+
+def test_fallback_publishes_source_changes_even_at_the_same_percentage():
+    watcher, bus, changes = _battery()
+    watcher.start()
+    bus.take("GetManagedObjects")[5]({
+        dbus.ObjectPath(DEVICE): {BATTERY1_IFACE: {"Percentage": dbus.Byte(89)}},
+        dbus.ObjectPath(CHAR): _char(89),
+    })
+    before = len(changes)
+    bus.take("ReadValue")[6](RuntimeError("failed"))
+    assert (watcher.percent, watcher.source) == (89, "bluez")
+    assert len(changes) == before + 1
+    bus.emit("PropertiesChanged", GATT_CHAR_IFACE, {"Value": [89]}, [],
+             path=CHAR, arg0=GATT_CHAR_IFACE)
+    assert (watcher.percent, watcher.source) == (89, "gatt")
+    assert len(changes) == before + 2
+
+
 def test_owner_change_drops_stale_replies_and_restarts_only_when_wanted() -> None:
     watcher, bus, _changes = _battery()
     watcher.start()
