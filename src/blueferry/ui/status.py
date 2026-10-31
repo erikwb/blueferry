@@ -1,7 +1,7 @@
 """The GTK settings dialog: one preferences page per category.
 
 The categories mirror the Qt client's settings page (Phone, Notifications,
-Calls & Audio, Security, Plugins, About); see
+Calls & Audio, Network, Security, Plugins, About); see
 :mod:`blueferry.ui.settings_presenter`. The Plugins page lives in
 :mod:`blueferry.ui.plugin_settings`.
 """
@@ -71,6 +71,8 @@ class SettingsDialog(Adw.PreferencesDialog):
         self._applying_ancs_actions = False
         self._applying_mirror_removals = False
         self._applying_battery_warning = False
+        self._mirror_removals_choice = SavedChoice()
+        self._battery_warning_choice = SavedChoice()
         self._applying_saved_switches = False
         self._media_control_choice = SavedChoice()
         self._auto_profile_reset_choice = SavedChoice()
@@ -626,7 +628,6 @@ class SettingsDialog(Adw.PreferencesDialog):
             self._tether_auto_row, self._tether_summary,
         ):
             self._tether_group.add(widget)
-        page.add(self._tether_group)
 
         # Shown only for daemons that report the contact-photo opt-in.
         self._photos_group = Adw.PreferencesGroup(
@@ -734,6 +735,7 @@ class SettingsDialog(Adw.PreferencesDialog):
                 self._calls_group, self._call_history_group, self._battery_group,
                 self._phone_audio_group, self._media_group,
             )),
+            ("network", (self._tether_group,)),
             ("security", (self._otp_group, self._proximity_lock_group, data_group)),
             ("about", (about_group, about_links)),
         ):
@@ -1666,26 +1668,34 @@ class SettingsDialog(Adw.PreferencesDialog):
         preference = status.extra.get("mirror_iphone_removals")
         self._mirror_removals_row.set_visible(isinstance(preference, bool))
         self._applying_mirror_removals = True
-        self._mirror_removals_row.set_active(preference is True)
+        self._show_saved_choice(
+            self._mirror_removals_row, self._mirror_removals_choice, preference is True,
+        )
         self._applying_mirror_removals = False
-        self._mirror_removals_row.set_sensitive(reachable)
+        self._mirror_removals_row.set_sensitive(
+            reachable and not self._mirror_removals_choice.saving
+        )
 
     def _mirror_removals_changed(self, row, _property) -> None:
         if self._applying_mirror_removals:
             return
+        enabled = row.get_active()
+        self._mirror_removals_choice.begin(enabled)
         row.set_sensitive(False)
 
         def saved(_value: bool) -> None:
+            self._mirror_removals_choice.saved(enabled)
             self._toast(_("Notification sync preference saved"))
             self._refresh()
 
         def failed(error: str) -> None:
+            self._mirror_removals_choice.failed()
             self._toast(
                 _("Could not save notification sync preference: {error}").format(error=error)
             )
             self._apply_status(self._last_status)
 
-        self._client.set_mirror_notification_removals_async(row.get_active(), saved, failed)
+        self._client.set_mirror_notification_removals_async(enabled, saved, failed)
 
     def _apply_battery_warning(self, status: BackendStatus, values: dict, reachable: bool) -> None:
         # As in the Qt client: shown only for daemons that report the setting.
@@ -1699,26 +1709,34 @@ class SettingsDialog(Adw.PreferencesDialog):
             )
         )
         self._applying_battery_warning = True
-        self._battery_warning_row.set_active(status.phone_battery_warning)
+        self._show_saved_choice(
+            self._battery_warning_row, self._battery_warning_choice, status.phone_battery_warning,
+        )
         self._applying_battery_warning = False
-        self._battery_warning_row.set_sensitive(reachable)
+        self._battery_warning_row.set_sensitive(
+            reachable and not self._battery_warning_choice.saving
+        )
 
     def _battery_warning_changed(self, row, _property) -> None:
         if self._applying_battery_warning:
             return
+        enabled = row.get_active()
+        self._battery_warning_choice.begin(enabled)
         row.set_sensitive(False)
 
         def saved(_value: bool) -> None:
+            self._battery_warning_choice.saved(enabled)
             self._toast(_("Battery warning preference saved"))
             self._refresh()
 
         def failed(error: str) -> None:
+            self._battery_warning_choice.failed()
             self._toast(
                 _("Could not save battery warning preference: {error}").format(error=error)
             )
             self._apply_status(self._last_status)
 
-        self._client.set_phone_battery_warning_async(row.get_active(), saved, failed)
+        self._client.set_phone_battery_warning_async(enabled, saved, failed)
 
     def _show_saved_choice(self, switch, choice: SavedChoice, reported: bool) -> None:
         """Set ``switch`` for a status reporting ``reported``."""
