@@ -89,3 +89,7 @@ D-Bus methods; the change signal carries no content. The clients read it only
 while their list is shown and forget it when it is hidden. Nothing about these
 notifications is stored in BlueFerry's history, which keeps only Messages;
 only pinned notifications are saved, as described above.
+The KDE client fetches the list only while its tab is visible and clears its
+copy when the tab is hidden, the service becomes unavailable, or access is
+revoked. Turning off content also clears any text already shown in the client
+when that setting takes effect after the service restarts.

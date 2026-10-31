@@ -1,6 +1,8 @@
 """Companion tools state shared by the clients: no toolkit, fake system."""
 from __future__ import annotations
 
+import pytest
+
 from blueferry.companion_model import CompanionToolsModel
 from blueferry.companion_tools import CommandResult
 from tests.client_fakes import ManualRunner
@@ -88,3 +90,16 @@ def test_mirroring_starts_on_the_runner(tmp_path) -> None:
     work.run_tasks()
     assert list(fake.commands) == [("uxplay", "-n", "desk", "-nh")]
     assert tools.state()["messageOk"] is True and tools.state()["probed"]
+
+
+@pytest.mark.parametrize("action, replacement", [("mirror", "uxplay"), ("send", "localsend")])
+def test_queued_launch_rechecks_replacement_when_worker_starts(tmp_path, action, replacement):
+    fake = Fake(tmp_path, installed={"uxplay", "localsend"})
+    work = ManualRunner()
+    tools, _changes, reports = _model(work, fake)
+    tools.refresh()
+    work.drain()
+    tools.run(action)
+    fake.replaced = frozenset({replacement})
+    work.drain()
+    assert not fake.commands and reports[-1][0] is False
