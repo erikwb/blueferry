@@ -407,6 +407,71 @@ def test_missing_bond_never_prepares_or_connects_bluetooth(make_daemon, monkeypa
     assert audio == ["remove"]
 
 
+@pytest.mark.parametrize("bonded", [False, None])
+def test_initially_missing_bond_keeps_control_service_and_retries_alive(
+    make_daemon, monkeypatch, bonded,
+):
+    instance = make_daemon()
+    instance.recovery = _idle_recovery()
+    forgotten = []
+    instance.recovery.forget_phone = lambda: forgotten.append("recovery")
+    instance.call_history = SimpleNamespace(forget_phone=lambda: forgotten.append("calls"))
+    instance.phone_audio = SimpleNamespace(remove=lambda: None)
+    instance.adapter_class = SimpleNamespace(
+        start=lambda: pytest.fail("must not start Bluetooth without a bond"),
+    )
+    stopped = []
+    scheduled = []
+    statuses = []
+    monkeypatch.setattr(daemon_mod.config, "IPHONE_MAC", "02:00:00:00:00:01")
+    monkeypatch.setattr(daemon_mod.config, "ADAPTER", "hci0")
+    monkeypatch.setattr(
+        daemon_mod.config, "current_target", lambda: ("02:00:00:00:00:01", "hci0"),
+    )
+    monkeypatch.setattr(daemon_mod, "bond_status", lambda *_args, **_kwargs: bonded)
+    monkeypatch.setattr(daemon_mod.main_loop, "quit", lambda: stopped.append(True))
+    monkeypatch.setattr(
+        daemon_mod.GLib, "timeout_add_seconds",
+        lambda delay, callback: scheduled.append((delay, callback)) or len(scheduled),
+    )
+    monkeypatch.setattr(instance, "_emit_status", lambda: statuses.append(instance._status()))
+
+    # The target check can run before initialization, then between its retries.
+    assert instance._check_target_config() is True
+    assert instance._initialize() is False
+    for index in range(2):
+        assert instance._check_target_config() is True
+        assert instance._initialization_retry_id == index + 1
+        assert scheduled[index][1]() is False
+    assert instance._check_target_config() is True
+    assert stopped == []
+    assert forgotten == (["recovery", "calls"] if bonded is False else [])
+    assert [delay for delay, _callback in scheduled] == [5, 10, 20]
+    assert len(statuses) == 3
+    assert all(status["connectivity_state"] == "degraded" for status in statuses)
+    assert all(status["initializing"] is False for status in statuses)
+
+    # Pairing later lets the pending retry advance into Bluetooth setup.
+    started = []
+    monkeypatch.setattr(daemon_mod, "bond_status", lambda *_args, **_kwargs: True)
+
+    def start_adapter():
+        started.append(True)
+        raise RuntimeError("stop before hardware I/O")
+
+    instance.adapter_class = SimpleNamespace(start=start_adapter)
+    assert scheduled[-1][1]() is False
+    assert started == [True]
+
+    # The new bond restores removal handling, including cleanup, even though
+    # the initial missing bond was already handled and startup is incomplete.
+    forgotten.clear()
+    monkeypatch.setattr(daemon_mod, "bond_status", lambda *_args, **_kwargs: False)
+    assert instance._check_target_config() is False
+    assert stopped == [True]
+    assert forgotten == ["recovery", "calls"]
+
+
 def test_bonded_start_removes_old_audio_policy_before_adapter_class(make_daemon, monkeypatch):
     instance = make_daemon()
     instance.recovery = _idle_recovery()
@@ -423,6 +488,35 @@ def test_bonded_start_removes_old_audio_policy_before_adapter_class(make_daemon,
         instance._initialize_bluetooth()
 
     assert order == ["audio-removed", "class"]
+
+
+def test_bond_removed_after_partial_initialization_still_stops_daemon(make_daemon, monkeypatch):
+    instance = make_daemon()
+    instance.recovery = _idle_recovery()
+    forgotten = []
+    instance.recovery.forget_phone = lambda: forgotten.append("recovery")
+    instance.call_history = SimpleNamespace(forget_phone=lambda: forgotten.append("calls"))
+    instance.phone_audio = SimpleNamespace(remove=lambda: None)
+    instance.adapter_class = SimpleNamespace(
+        start=lambda: (_ for _ in ()).throw(RuntimeError("partial startup")),
+    )
+    monkeypatch.setattr(daemon_mod, "bond_status", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        daemon_mod.config, "current_target",
+        lambda: (daemon_mod.config.IPHONE_MAC, daemon_mod.config.ADAPTER),
+    )
+    stopped = []
+    monkeypatch.setattr(daemon_mod.main_loop, "quit", lambda: stopped.append(True))
+
+    with pytest.raises(RuntimeError, match="partial startup"):
+        instance._initialize_bluetooth()
+    assert instance._bluetooth_initialized is False
+
+    monkeypatch.setattr(daemon_mod, "bond_status", lambda *_args, **_kwargs: False)
+    assert instance._check_target_config() is False
+    assert stopped == [True]
+    assert forgotten == ["recovery", "calls"]
+    assert instance._restart_after_upgrade is False
 
 
 def test_busy_adapter_during_root_start_leaves_repair_to_supervisor(
@@ -530,15 +624,20 @@ def test_removing_bond_stops_active_daemon_without_restart(make_daemon, monkeypa
     )
     monkeypatch.setattr(daemon_mod.config, "IPHONE_MAC", "02:00:00:00:00:01")
     monkeypatch.setattr(daemon_mod.config, "ADAPTER", "hci0")
-    monkeypatch.setattr(daemon_mod, "bond_status", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(daemon_mod, "bond_status", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(daemon_mod.main_loop, "quit", lambda: stopped.append(True))
 
+    assert instance._check_target_config() is True
+    monkeypatch.setattr(daemon_mod, "bond_status", lambda *_args, **_kwargs: False)
     assert instance._check_target_config() is False
     assert instance._restart_after_upgrade is False
     assert stopped == [True]
 
 
-def test_transient_bond_inspection_failure_keeps_daemon_running(make_daemon, monkeypatch):
+@pytest.mark.parametrize("seen_bond", [False, True])
+def test_transient_bond_inspection_failure_keeps_daemon_running(
+    make_daemon, monkeypatch, seen_bond,
+):
     instance = make_daemon()
     stopped = []
     monkeypatch.setattr(
@@ -548,6 +647,10 @@ def test_transient_bond_inspection_failure_keeps_daemon_running(make_daemon, mon
     )
     monkeypatch.setattr(daemon_mod.config, "IPHONE_MAC", "02:00:00:00:00:01")
     monkeypatch.setattr(daemon_mod.config, "ADAPTER", "hci0")
+    if seen_bond:
+        monkeypatch.setattr(daemon_mod, "bond_status", lambda *_args, **_kwargs: True)
+        assert instance._check_target_config() is True
+
     def unavailable(_mac, _adapter, *, cached):
         assert cached is True
         return None
@@ -607,6 +710,8 @@ def _stop_saved_target_by_removing_bond(instance, monkeypatch):
     monkeypatch.setattr(
         daemon_mod.config, "current_target", lambda: ("02:00:00:00:00:01", "hci0"),
     )
+    monkeypatch.setattr(daemon_mod, "bond_status", lambda *_args, **_kwargs: True)
+    assert instance._check_target_config() is True
     monkeypatch.setattr(daemon_mod, "bond_status", lambda *_args, **_kwargs: False)
 
 
