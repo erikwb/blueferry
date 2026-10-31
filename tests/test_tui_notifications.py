@@ -311,7 +311,16 @@ async def _highlight(pilot, screen, index: int) -> None:
     from textual.widgets import ListView
 
     screen.query_one("#notifications-list", ListView).index = index
-    await pilot.pause(0.05)
+    item = _items(screen)[index]
+    await _until(pilot, lambda: screen._selected() is item)
+
+
+async def _listed(pilot, screen) -> None:
+    """Wait until both rows are listed and the render worker has highlighted
+    the first one; ``extend`` returns before the index and the pin button are
+    set."""
+    await _until(pilot, lambda: len(_items(screen)) == 2)
+    await _until(pilot, lambda: screen._selected() is _items(screen)[0])
 
 
 def test_pin_marks_and_dims_rows_and_pins_the_highlighted_one() -> None:
@@ -321,7 +330,7 @@ def test_pin_marks_and_dims_rows_and_pins_the_highlighted_one() -> None:
         app = BlueFerryApp(TuiState(backend), monitor_factory=lambda: None)
         async with app.run_test(size=(120, 40)) as pilot:
             screen = await _open(app, pilot)
-            await _until(pilot, lambda: len(_items(screen)) == 2)
+            await _listed(pilot, screen)
             first, second = _items(screen)
             body = screen.body_text
             assert "Pinned  ·  Mail" in body and "Removed on iPhone" in body
@@ -330,11 +339,11 @@ def test_pin_marks_and_dims_rows_and_pins_the_highlighted_one() -> None:
             assert first.has_class("-dimmed") and not second.has_class("-dimmed")
             assert backend.app_loads == 0
             pin = screen.query_one("#notifications-pin", Button)
-            assert pin.display and str(pin.label) == "Unpin  P"
+            await _until(pilot, lambda: pin.display and str(pin.label) == "Unpin  P")
             assert isinstance(pin.tooltip, Text)
 
             await _highlight(pilot, screen, 1)
-            assert str(pin.label) == "Pin  P"
+            await _until(pilot, lambda: str(pin.label) == "Pin  P")
             screen.query_one("#notifications-list").focus()
             await pilot.press("P")
             await _until(pilot, lambda: backend.pinned == [("k2", True)])
@@ -353,12 +362,14 @@ def test_pin_limit_disables_pin_but_not_unpin() -> None:
         app = BlueFerryApp(TuiState(backend), monitor_factory=lambda: None)
         async with app.run_test(size=(120, 40)) as pilot:
             screen = await _open(app, pilot)
-            await _until(pilot, lambda: len(_items(screen)) == 2)
+            await _listed(pilot, screen)
             pin = screen.query_one("#notifications-pin", Button)
-            assert not pin.disabled  # the pinned row can unpin
+            await _until(pilot, lambda: not pin.disabled)  # the pinned row can unpin
             await _highlight(pilot, screen, 1)
-            assert pin.disabled
-            assert "At most 1 notifications" in _text(screen, "#notifications-pin-state")
+            await _until(pilot, lambda: pin.disabled)
+            await _until(
+                pilot, lambda: "At most 1 notifications" in _text(screen, "#notifications-pin-state"),
+            )
             screen.action_toggle_pin()
             await pilot.pause(0.1)
             assert backend.pinned == []
@@ -376,7 +387,7 @@ def test_a_failed_pin_explains_itself_from_the_dbus_error_name() -> None:
         app = BlueFerryApp(TuiState(backend), monitor_factory=lambda: None)
         async with app.run_test(size=(120, 40)) as pilot:
             screen = await _open(app, pilot)
-            await _until(pilot, lambda: len(_items(screen)) == 2)
+            await _listed(pilot, screen)
             await _highlight(pilot, screen, 1)
             screen.action_toggle_pin()
             await _until(
@@ -385,8 +396,11 @@ def test_a_failed_pin_explains_itself_from_the_dbus_error_name() -> None:
             # The error is about that row: moving away clears it, and it does
             # not come back.
             await _highlight(pilot, screen, 0)
-            assert screen.pin_error == ""
-            assert "pinned list is full" not in _text(screen, "#notifications-pin-state")
+            await _until(pilot, lambda: screen.pin_error == "")
+            await _until(
+                pilot,
+                lambda: "pinned list is full" not in _text(screen, "#notifications-pin-state"),
+            )
 
             # The name decides, not a word in the message: a NotReady error
             # is "locked" even without that word, and "locked" in an
@@ -466,6 +480,7 @@ def test_without_pin_keys_the_pin_button_stays_hidden() -> None:
         async with app.run_test(size=(120, 40)) as pilot:
             screen = await _open(app, pilot)
             await _until(pilot, lambda: len(_items(screen)) == 1)
+            await _until(pilot, lambda: screen._selected() is _items(screen)[0])
             assert not screen.query_one("#notifications-pin", Button).display
             screen.action_toggle_pin()  # nothing to pin, nothing happens
             await pilot.pause(0.1)
