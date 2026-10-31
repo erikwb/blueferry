@@ -527,6 +527,84 @@ def test_transient_restore_failure_is_retried_without_another_cycle(h, bluez, fa
     assert not h.worker.jobs
 
 
+@pytest.mark.parametrize("failed_value", [False, True])
+def test_rejected_power_change_with_stale_power_state_does_not_strand_profiles(
+    h, bluez, failed_value,
+):
+    adapter, fake = bluez
+    h.recovery.adapter = adapter
+    h.prepare_cycle()
+    original_set = fake.Set
+    failed = False
+
+    def reject_once(interface, name, value, **kwargs):
+        nonlocal failed
+        if bool(value) == failed_value and not failed:
+            failed = True
+            fake.writes.append(bool(value))
+            # BlueZ 5.87's error callback leaves PowerState at the attempted
+            # target, while Powered still reflects the controller setting.
+            fake.props["PowerState"] = "on" if value else "off"
+            raise mod.dbus.exceptions.DBusException("Busy", name="org.bluez.Error.Failed")
+        original_set(interface, name, value, **kwargs)
+
+    fake.Set = reject_once
+    h.worker.finish()
+    assert failed
+    if failed_value:
+        # The off request succeeded: retry only the rejected power-on.
+        assert h.recovery.active and h.worker.reserved
+        assert adapter.restore_pending
+        h.tick(10)
+        h.worker.finish()
+
+    assert fake.writes == ([False, True, True] if failed_value else [False])
+    assert fake.props["Powered"]
+    assert not adapter.restore_pending
+    assert not h.recovery.active and not h.worker.reserved
+    assert h.calls.count("pause") == h.calls.count("resume") == 1
+    assert h.settings.read()[mod.SETTINGS_KEY]["spent"] is True
+    h.tick(7200)
+    assert not h.worker.jobs
+
+
+@pytest.mark.parametrize("phase", ["off", "on"])
+@pytest.mark.parametrize("powered", [False, True])
+def test_restart_reconciles_stale_power_state_from_existing_journal(h, bluez, phase, powered):
+    adapter, fake = bluez
+    transaction = mod._PowerRestore(adapter.read(), fake.bus_id, fake.instance)
+    adapter._persist_restore(transaction, phase=phase)
+    fake.props.update(Powered=powered, PowerState="off" if powered else "on")
+
+    h.recovery.stop()
+    restarted = mod.BluezRecoveryAdapter("hci1", PHONE, settings=adapter._settings)
+    h.create(adapter=restarted)
+    assert h.recovery.active and h.worker.reserved
+    h.worker.finish()
+
+    assert fake.writes == ([] if powered else [True])
+    assert fake.props["Powered"]
+    assert not restarted.restore_pending
+    assert not h.recovery.active and not h.worker.reserved
+    assert h.calls.count("pause") == h.calls.count("resume") == 1
+    assert adapter._settings.read()[mod.BLUETOOTH_RESTORE_KEY] is None
+
+
+@pytest.mark.parametrize(
+    "powered,power_state",
+    [(True, "on-disabling"), (False, "off-enabling"), (True, ""), (False, "unknown")],
+)
+def test_restoration_still_waits_for_pending_or_unknown_power_state(bluez, powered, power_state):
+    adapter, fake = bluez
+    adapter._restore = mod._PowerRestore(adapter.read(), fake.bus_id, fake.instance)
+    fake.props.update(Powered=powered, PowerState=power_state)
+
+    adapter.restore()
+
+    assert adapter.restore_pending
+    assert not fake.writes
+
+
 def test_late_power_off_keeps_the_worker_reserved_until_restored(h, bluez):
     adapter, fake = bluez
     h.recovery.adapter = adapter
