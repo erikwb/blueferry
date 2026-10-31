@@ -40,6 +40,7 @@
   </developer>
 
   <releases>
+    <release version="0.9.1" date="2026-10-30"><description><p>Fixes pairing after notification advertisement failure, unpaired backend restart loops, and Bluetooth recovery when power properties disagree. Adds incoming-message service diagnostics and enforces a plugin catalogue nesting limit.</p></description></release>
     <release version="0.9.0" date="2026-10-27"><description><p>Improves Bluetooth pairing and reconnect recovery, fixes contact matching and Quickshell conversations, and adds optional calls, media control, contact photos, one-time codes, plugins, and Bluetooth tethering.</p></description></release>
     <release version="0.8.1" date="2026-09-14">
       <description>
