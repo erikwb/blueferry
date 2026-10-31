@@ -4,6 +4,13 @@
 
 ### Added
 
+- Quickshell panel: **From Plugins** under the now-playing strip shows the
+  enabled card plugins' items (for example AirPods or the calendar) with
+  their buttons while the conversations are shown. The bridge serves
+  `plugin_cards` and `plugin_action` on the shared `PluginSurfacesModel` and
+  forwards `CardChanged` from enabled card plugins only (new
+  `plugin_card_watch`, dbus-python) as `plugin-cards-changed`. Buttons that
+  send files are left out: the panel has no file picker.
 - `blueferry media volume up|down` sends one iPhone volume step and confirms
   it with the last reported level; `blueferry media volume` prints the level.
   A shared presenter (`media_volume_view`) prepares the volume buttons for the

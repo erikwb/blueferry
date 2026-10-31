@@ -73,6 +73,8 @@ blueferry plugins config ID --action ACTION  # press one of them
 - **Send to…** at the end of that section: hands files to a plugin target
   such as "iPhone (LocalSend)"; some card items take files directly (drop
   them on the item).
+- **In the Quickshell panel** the same **From Plugins** section sits under
+  the now-playing strip, with every button except those that send files.
 - **Card items and Send to** on the command line: `blueferry cards` and
   `blueferry send`.
 - **Popups** that follow your notification settings.
