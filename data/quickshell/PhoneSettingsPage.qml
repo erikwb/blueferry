@@ -10,6 +10,13 @@ Rectangle {
   required property var setup
   required property var status
   property var busy: ({})
+  // Tether1 state from the bridge; the section stays hidden without it.
+  property var tether: ({available: false})
+  readonly property bool tetherEnabled: root.tether.enabled === true
+  // Like Qt and GTK, tethering controls need a reachable daemon.
+  readonly property bool tetherReachable: root.setup.configured && root.status.map !== undefined
+  readonly property bool tetherTransitioning: root.busy.tether === true
+    || root.tether.state === "connecting" || root.tether.state === "disconnecting"
   // The bridge's features view, a choice being saved, the
   // diagnostics run and the recent-notification list (see shell.qml).
   property var features: ({})
@@ -405,6 +412,84 @@ Rectangle {
           enabled: root.setup.configured && !root.busy.autoProfileReset
           Accessible.description: "Briefly disconnects the iPhone when call audio stays stuck, at most every ten minutes. Reconnect still resets it on request."
           onClicked: root.operationRequested("set_auto_profile_reset", {enabled: checked})
+        }
+        // Opt-in Bluetooth tethering, matching the Qt client's section.
+        // Until "Enable Bluetooth tethering" is ticked the daemon ignores
+        // Bluetooth network links entirely, so only that box is shown.
+        ColumnLayout {
+          objectName: "tetherSection"
+          Layout.fillWidth: true
+          visible: root.tether.available === true
+          spacing: root.theme.scaled(6)
+
+          FerrySectionLabel {
+            ferryTheme: root.theme
+            text: "Internet sharing"
+          }
+          FerryCheckBox {
+            objectName: "tetherEnableCheckBox"
+            ferryTheme: root.theme
+            Layout.fillWidth: true
+            text: "Enable Bluetooth tethering"
+            checked: root.tetherEnabled
+            enabled: root.tetherReachable && root.busy.tether !== true
+            Accessible.description: "While this is off, BlueFerry ignores Bluetooth network connections, including ones started from the network applet"
+            onClicked: {
+              root.operationRequested("tether_configure", {
+                enabled: checked,
+                autoconnect: root.tether.autoconnect === true
+              });
+              checked = Qt.binding(() => root.tetherEnabled);
+            }
+          }
+          FerryLabel {
+            ferryTheme: root.theme
+            Layout.fillWidth: true
+            wrapMode: Text.Wrap
+            text: root.tetherEnabled
+              ? "Use the iPhone's Personal Hotspot over Bluetooth. Turn on Personal Hotspot on the iPhone first. BlueFerry connects only when you switch this on."
+              : "Lets BlueFerry use the iPhone's Personal Hotspot over Bluetooth. While this is off, BlueFerry leaves Bluetooth network connections alone, including ones started from the network applet."
+          }
+          FerryCheckBox {
+            objectName: "tetherSwitch"
+            ferryTheme: root.theme
+            Layout.fillWidth: true
+            visible: root.tetherEnabled
+            text: "Share iPhone Internet"
+            checked: root.tether.state === "connected" || root.tether.state === "connecting"
+            enabled: root.tetherReachable && !root.tetherTransitioning
+            onClicked: {
+              root.operationRequested(checked ? "tether_connect" : "tether_disconnect", {});
+              // Follow the daemon's state, not the click, until it reports back.
+              checked = Qt.binding(() => root.tether.state === "connected" || root.tether.state === "connecting");
+            }
+          }
+          FerryCheckBox {
+            objectName: "tetherAutoconnectCheckBox"
+            ferryTheme: root.theme
+            Layout.fillWidth: true
+            visible: root.tetherEnabled
+            text: "Connect automatically when the iPhone is connected"
+            checked: root.tether.autoconnect === true
+            enabled: root.tetherReachable && root.busy.tether !== true
+            onClicked: {
+              root.operationRequested("tether_configure", {
+                enabled: true,
+                autoconnect: checked
+              });
+              checked = Qt.binding(() => root.tether.autoconnect === true);
+            }
+          }
+          FerryLabel {
+            objectName: "tetherSummary"
+            ferryTheme: root.theme
+            Layout.fillWidth: true
+            visible: root.tetherEnabled
+            wrapMode: Text.Wrap
+            textFormat: Text.PlainText
+            text: String(root.tether.summary || "")
+            color: root.tether.state === "failed" ? root.theme.warning : root.theme.surfaceText
+          }
         }
         FerrySectionLabel {
           ferryTheme: root.theme

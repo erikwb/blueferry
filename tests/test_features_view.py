@@ -113,17 +113,18 @@ def test_quitting_stops_a_running_doctor_check() -> None:
     import time
 
     reports = []
-    worker = threading.Thread(target=lambda: reports.append(doctor_report.run_doctor(
+    runner = doctor_report.DoctorRunner()
+    worker = threading.Thread(target=lambda: reports.append(runner.run(
         timeout=30, command=[sys.executable, "-c", "import time; time.sleep(30)"])))
     started = time.monotonic()
     worker.start()
     deadline = time.monotonic() + 5
-    while not doctor_report._running and time.monotonic() < deadline:
+    while not runner._running and time.monotonic() < deadline:
         time.sleep(0.01)
-    doctor_report.terminate_running()
+    runner.stop()
     worker.join(5)
     assert not worker.is_alive() and time.monotonic() - started < 10
-    assert reports[0].ok is False and not doctor_report._running
+    assert reports[0].ok is False and not runner._running
 
 
 def test_a_doctor_check_that_runs_too_long_is_killed() -> None:

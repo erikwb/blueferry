@@ -8,7 +8,7 @@ import threading
 import pytest
 from textual.widgets import Button, Checkbox, Select, Static, TabbedContent, TextArea
 
-from blueferry import doctor_report
+from blueferry import tui_doctor
 from blueferry.client import BackendError
 from blueferry.doctor_report import DoctorReport
 from blueferry.models import BackendStatus
@@ -574,16 +574,18 @@ def test_closing_diagnostics_while_it_runs_ends_the_check(monkeypatch) -> None:
     async def scenario() -> None:
         release = threading.Event()
         terminated: list[bool] = []
-        monkeypatch.setattr(
-            doctor_report, "terminate_running",
-            lambda: (terminated.append(True), release.set()),
-        )
 
-        def slow() -> DoctorReport:
-            release.wait(5)
-            return DoctorReport(False, False, "late")
+        class _Runner:
+            def run(self) -> DoctorReport:
+                release.wait(5)
+                return DoctorReport(False, False, "late")
 
-        app = _app(_OptionsBackend(), doctor=slow)
+            def stop(self) -> None:
+                terminated.append(True)
+                release.set()
+
+        monkeypatch.setattr(tui_doctor, "DoctorRunner", _Runner)
+        app = _app(_OptionsBackend())
         async with app.run_test(size=(120, 40)) as pilot:
             app.action_diagnostics()
             doctor = await _mounted(pilot, app, DoctorScreen)
