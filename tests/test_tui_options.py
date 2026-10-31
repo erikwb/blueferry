@@ -551,6 +551,28 @@ def test_the_command_palette_opens_a_category_and_the_diagnostics() -> None:
     asyncio.run(scenario())
 
 
+def test_the_palette_offers_photos_only_while_a_photo_plugin_is_enabled() -> None:
+    async def scenario() -> None:
+        enabled = [False]
+        app = _app(_OptionsBackend(), photos_plugin=lambda: enabled[0])
+
+        def titles() -> set[str]:
+            return {command.title for command in app.get_system_commands(app.screen)}
+
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause(0.1)
+            assert "Photos" not in titles() and "Run Diagnostics" in titles()
+            # Turned on in Settings > Plugins: checked again when Options closes.
+            enabled[0] = True
+            app.action_options()
+            await _mounted(pilot, app, OptionsScreen)
+            assert "Photos" not in titles()
+            app.screen.dismiss(None)
+            await _until(pilot, lambda: "Photos" in titles())
+
+    asyncio.run(scenario())
+
+
 def test_diagnostics_show_the_report_as_plain_text_and_copy_it() -> None:
     async def scenario() -> None:
         text = "Configured iPhone: [b]Robin[/b]\nWARNING: notification link down"

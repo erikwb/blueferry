@@ -38,6 +38,7 @@ from blueferry import (
     media_volume_view,
     phone_link_view,
     phone_overview,
+    photos_view,
     search_view,
 )
 from blueferry.backend_lifecycle import BackendLifecycleError, ensure_backend_current
@@ -201,6 +202,11 @@ class _Monitor(Protocol):
     def pump(self) -> tuple[bool, str | None]: ...
 
     def close(self) -> None: ...
+
+
+def photos_plugin_enabled() -> bool:
+    """*Blocking* (reads plugin manifests): is a photo plugin enabled?"""
+    return photos_view.find_plugin() is not None
 
 
 def _one_line(value: object) -> str:
@@ -971,9 +977,14 @@ class BlueFerryApp(App[None]):
         doctor: Callable[[], DoctorReport] = run_doctor,
         phone_name: Callable[[], str] = load_phone_name,
         plugin_cards: Callable[[], Widget] | None = PluginCardsPanel,
+        photos_plugin: Callable[[], bool] = photos_plugin_enabled,
     ) -> None:
         super().__init__()
         self.state = state
+        # Blocking; checked on a worker. The palette offers Photos only
+        # while a photo plugin is enabled, as the other clients do.
+        self._photos_plugin = photos_plugin
+        self.has_photos_plugin = False
         # Builds the overview's "From Plugins" panel; None leaves it out.
         self._plugin_cards = plugin_cards
         # Blocking; read on a worker when the iPhone overview opens.
@@ -1054,6 +1065,15 @@ class BlueFerryApp(App[None]):
         self.set_interval(_REFRESH_SECONDS, self._load_data)
         self._update_responsive(self.size.width)
         self._load_data()
+        self._check_photos_plugin()
+
+    @work(thread=True, exclusive=True, group="photos-plugin", exit_on_error=False)
+    def _check_photos_plugin(self) -> None:
+        try:
+            found = bool(self._photos_plugin())
+        except Exception:  # an unreadable manifest or settings file
+            found = False
+        self.call_from_thread(setattr, self, "has_photos_plugin", found)
 
     def on_app_focus(self) -> None:
         self.call_later(self._maybe_mark_selected_read)
@@ -1536,7 +1556,7 @@ class BlueFerryApp(App[None]):
         self.push_screen(OptionsScreen(
             self.state.client, category=category, restart=self._restart,
             doctor=self._doctor, restart_state=self._restart_state,
-        ))
+        ), lambda _result: self._check_photos_plugin())  # Plugins may have changed
 
     def action_diagnostics(self) -> None:
         if not isinstance(self.screen, DoctorScreen):
@@ -1578,11 +1598,12 @@ class BlueFerryApp(App[None]):
         yield SystemCommand(
             _("Recent Calls"), _("The iPhone's recent calls (h)"), self._open_recent_calls,
         )
-        yield SystemCommand(
-            _("Photos"),
-            _("The newest photos of a photo plugin; Enter opens one in the image viewer"),
-            self._open_photos,
-        )
+        if self.has_photos_plugin:
+            yield SystemCommand(
+                _("Photos"),
+                _("The newest photos of a photo plugin; Enter opens one in the image viewer"),
+                self._open_photos,
+            )
         yield SystemCommand(
             _("Run Diagnostics"),
             _("Check Bluetooth, BlueZ OBEX, the iPhone and notifications (blueferry doctor)"),

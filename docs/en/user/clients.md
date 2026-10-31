@@ -221,8 +221,8 @@ Below, **From Plugins** lists what your [plugins](plugins.md) offer, for
 example a calendar entry, AirPods or a LocalSend device, with their buttons;
 Enter runs the highlighted one. **Send to…** asks for a target and the
 paths of the files to send (→ completes a path). It is read only while the
-overview is open. **Photos** in the palette lists the newest items of a
-photo plugin; Enter opens one in your image viewer, `c` copies its path.
+overview is open. **Photos** in the palette (there while a photo plugin is
+enabled) lists the newest items of that plugin; Enter opens one in your image viewer, `c` copies its path.
 
 | | Qt | GTK | TUI | Quickshell | CLI |
 |---|---|---|---|---|---|

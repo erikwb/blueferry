@@ -232,8 +232,9 @@ Darunter listet **From Plugins**, was deine [Plugins](plugins.md) anbieten,
 etwa einen Kalendereintrag, AirPods oder ein LocalSend-Gerät, mit ihren
 Knöpfen; Enter führt den markierten aus. **Send to…** fragt nach einem Ziel
 und den Pfaden der Dateien (→ ergänzt einen Pfad). Gelesen wird nur, solange
-die Übersicht offen ist. **Photos** in der Palette listet die neuesten
-Einträge eines Foto-Plugins; Enter öffnet einen im Bildbetrachter, `c`
+die Übersicht offen ist. **Photos** in der Palette (da, solange ein
+Foto-Plugin eingeschaltet ist) listet die neuesten Einträge dieses Plugins;
+Enter öffnet einen im Bildbetrachter, `c`
 kopiert seinen Pfad.
 
 | | Qt | GTK | TUI | Quickshell | CLI |
