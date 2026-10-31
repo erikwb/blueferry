@@ -20,7 +20,7 @@ from blueferry.client import (
     TetherUnsupportedError,
     _dbus_message,
 )
-from blueferry.doctor_report import DoctorReport, run_doctor, terminate_running
+from blueferry.doctor_report import DoctorReport, DoctorRunner
 from blueferry.models import BackendStatus
 from blueferry.notification_pin_view import GENERIC_ERROR_TEXT, pin_error_text
 from blueferry.protocol import (
@@ -110,6 +110,7 @@ class DaemonClient(GObject.Object):
         )
         # Local work that does not talk to the daemon and may take long
         # (``blueferry doctor``), so it never holds up reads or mutations.
+        self._doctor_runner = DoctorRunner()
         self._local_executor = ThreadPoolExecutor(
             max_workers=1,
             thread_name_prefix="blueferry-gtk-local",
@@ -194,7 +195,7 @@ class DaemonClient(GObject.Object):
         self._local_executor.shutdown(wait=False, cancel_futures=True)
         # The interpreter joins the worker at exit: end a doctor run now
         # instead of waiting for its timeout.
-        terminate_running()
+        self._doctor_runner.stop()
 
     def _call_backend(self, operation: Callable[[BackendClient], T]) -> T:
         """Call the shared backend facade on a worker-owned connection."""
@@ -881,7 +882,7 @@ class DaemonClient(GObject.Object):
         self._submit(restart_backend, on_ok, on_err, mutation=True)
 
     def run_doctor_async(
-        self, on_ok, on_err, runner: Callable[[], DoctorReport] = run_doctor,
+        self, on_ok, on_err, runner: Callable[[], DoctorReport] | None = None,
     ) -> None:
         """Run ``blueferry doctor`` in a child process off the GTK thread."""
-        self._submit(runner, on_ok, on_err, local=True)
+        self._submit(runner or self._doctor_runner.run, on_ok, on_err, local=True)
