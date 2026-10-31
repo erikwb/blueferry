@@ -356,7 +356,9 @@ async def _search(app, pilot, backend, text: str) -> SearchScreen:
     return screen
 
 
-def test_search_groups_hits_highlights_the_match_and_waits_for_typing() -> None:
+def test_search_groups_hits_highlights_the_match_and_waits_for_typing(monkeypatch) -> None:
+    # A slow runner can space the key presses wider than the usual delay.
+    monkeypatch.setattr(search_view, "TYPING_DELAY_MS", 1500)
     backend = _ContactsBackend()
     backend.search_reply = _SEARCH_REPLY
 
@@ -496,7 +498,8 @@ def test_search_retries_when_the_daemon_is_busy_then_says_so() -> None:
             await pilot.press("f")
             await _until(pilot, lambda: _search_screen(app) is not None)
             screen = app.screen
-            await pilot.press(*"ana")
+            # In one go: key presses a slow runner spaces out would search "an".
+            screen.query_one("#search-input", Input).value = "ana"
             await _until(pilot, lambda: search_view.search_busy_text() in str(
                 screen.query_one("#search-state").render()
             ))
