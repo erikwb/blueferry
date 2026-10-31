@@ -1066,3 +1066,17 @@ ModalScreen {
 #plugin-config-fill, #plugin-config-loading {
     height: auto;
 }
+
+#photos-dialog {
+    width: 72;
+}
+
+#photos-list {
+    height: auto;
+    max-height: 20;
+    background: #0d1425;
+}
+
+#photos-hint {
+    height: auto;
+}

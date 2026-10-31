@@ -91,3 +91,4 @@ src/blueferry/tui_contacts.py
 src/blueferry/tui_search.py
 src/blueferry/tui_plugins.py
 src/blueferry/tui_plugin_settings.py
+src/blueferry/tui_photos.py

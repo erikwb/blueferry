@@ -86,6 +86,7 @@ from blueferry.tui_phone import (
     now_playing_text,
     volume_controls,
 )
+from blueferry.tui_photos import PhotosScreen
 from blueferry.tui_plugins import PluginCardsPanel
 from blueferry.tui_search import SearchResult, SearchScreen
 
@@ -748,7 +749,8 @@ class HelpScreen(ModalScreen[None]):
             "[bold #7dd3fc]Internet sharing[/]  t\n"
             "[bold #7dd3fc]Settings · diagnostics · restart service[/]  o\n"
             "[bold #7dd3fc]Plugins: on/off · settings · update · remove · log[/]"
-            "  o › Plugins: Space Enter u Delete g\n"
+            "  o > Plugins: Space Enter u Delete g\n"
+            "[bold #7dd3fc]Photos from a photo plugin[/]  Ctrl+P > Photos\n"
             "[bold #7dd3fc]Notification click rules[/]  l\n"
             "[bold #7dd3fc]iPhone overview (From Plugins, Send to…) · iPhone notifications[/]"
             "  Ctrl+P\n"
@@ -1577,10 +1579,19 @@ class BlueFerryApp(App[None]):
             _("Recent Calls"), _("The iPhone's recent calls (h)"), self._open_recent_calls,
         )
         yield SystemCommand(
+            _("Photos"),
+            _("The newest photos of a photo plugin; Enter opens one in the image viewer"),
+            self._open_photos,
+        )
+        yield SystemCommand(
             _("Run Diagnostics"),
             _("Check Bluetooth, BlueZ OBEX, the iPhone and notifications (blueferry doctor)"),
             self.action_diagnostics,
         )
+
+    def _open_photos(self) -> None:
+        if not isinstance(self.screen, PhotosScreen):
+            self.push_screen(PhotosScreen())
 
     def _open_options_from_palette(self, category: str) -> None:
         if isinstance(self.screen, OptionsScreen):
