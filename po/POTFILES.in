@@ -35,7 +35,6 @@ src/blueferry/qt/qml/CallHistorySettings.qml
 src/blueferry/qt/qml/NowPlayingBar.qml
 src/blueferry/qt/qml/MediaControlSettings.qml
 src/blueferry/qt/qml/PhoneAudioSettings.qml
-src/blueferry/qt/qml/CallsDialog.qml
 src/blueferry/qt/qml/DialLinkDialog.qml
 src/blueferry/qt/qml/ContactPhotoSettings.qml
 src/blueferry/qt/qml/OtpAutocopySettings.qml
@@ -47,3 +46,8 @@ src/blueferry/plugin_stopper.py
 src/blueferry/plugin_surfaces.py
 src/blueferry/photos_view.py
 src/blueferry/phone_audio_view.py
+src/blueferry/qt/qml/PhoneCard.qml
+src/blueferry/qt/qml/CallsTab.qml
+src/blueferry/qt/qml/NotificationsTab.qml
+src/blueferry/qt/qml/ui/ListRow.qml
+src/blueferry/qt/phone_link.py

@@ -17,7 +17,7 @@ from PySide6.QtCore import (
 )
 from PySide6.QtDBus import QDBusConnection
 
-from blueferry import __version__, phone_audio_view
+from blueferry import __version__, phone_audio_view, phone_overview
 from blueferry.backend_lifecycle import ensure_backend_current, restart_backend
 from blueferry.bluetooth_devices import iphone_candidates
 from blueferry.client import BackendClient, TetherUnsupportedError
@@ -32,6 +32,7 @@ from blueferry.i18n import _
 from blueferry.models import BackendStatus, CallsSnapshot
 from blueferry.onboarding import OnboardingState, effective_compatibility
 from blueferry.protocol import BUS_NAME, EVENTS_IFACE, OBJECT_PATH, TETHER_IFACE
+from blueferry.qt import phone_link
 from blueferry.qt.avatars import avatar_url
 from blueferry.qt.tasks import Task
 from blueferry.quirks_report import issue_report, issue_url
@@ -79,6 +80,8 @@ class BridgeController(QObject):
     avatarsChanged = Signal()
     callHistoryChanged = Signal()
     nowPlayingChanged = Signal()
+    notificationsChanged = Signal()
+    phoneIdentityChanged = Signal()
     featuresChanged = Signal()
     doctorChanged = Signal()
     phoneCallsChanged = Signal()
@@ -169,6 +172,8 @@ class BridgeController(QObject):
         self._refresh_timer.setInterval(100)
         self._refresh_timer.timeout.connect(self.refresh)
         self._call_history: list[dict] = []
+        # Day-grouped rows for the Calls tab ("all" and "missed").
+        self._call_history_rows: dict = {}
         self._call_history_error = ""
         self._call_history_loading = False
         self._call_history_again = False
@@ -185,6 +190,21 @@ class BridgeController(QObject):
         self._now_playing_timer.setSingleShot(True)
         self._now_playing_timer.setInterval(150)
         self._now_playing_timer.timeout.connect(self.refreshNowPlaying)
+        # Opt-in app-notification list: fetched only while its tab is shown.
+        self._notifications: list[dict] = []
+        self._notifications_info: dict = {"enabled": False, "content": False, "error": ""}
+        self._notifications_watched = False
+        self._notifications_generation = 0
+        self._notifications_loading = False
+        self._notifications_again = False
+        self._notifications_status_key: tuple[object, ...] | None = None
+        self._notifications_timer = QTimer(self)
+        self._notifications_timer.setSingleShot(True)
+        self._notifications_timer.setInterval(150)
+        self._notifications_timer.timeout.connect(self.refreshNotifications)
+        self.statusChanged.connect(self._sync_notifications)
+        self.devicesChanged.connect(self.phoneIdentityChanged)
+        self.configuredChanged.connect(self.phoneIdentityChanged)
         self._tether: dict = {"available": False}
         self._tether_pending = False
         self._tether_timer = QTimer(self)
@@ -433,6 +453,137 @@ class BridgeController(QObject):
     def callHistory(self):
         return self._call_history
 
+    @Property("QVariantMap", notify=callHistoryChanged)
+    def callHistoryRows(self):
+        """Day-grouped rows for the Calls tab: ``all`` and ``missed``."""
+        return self._call_history_rows
+
+    @Property("QVariantMap", notify=statusChanged)
+    def featureHints(self):
+        return phone_link.feature_hints(self._status)
+
+    @Property(str, notify=phoneIdentityChanged)
+    def phoneName(self) -> str:
+        mac = self._configuration.mac
+        for device in self._devices:
+            if mac and device.get("mac") == mac and device.get("name"):
+                return str(device["name"])
+        return "iPhone"
+
+    @Property("QVariantList", notify=notificationsChanged)
+    def notifications(self):
+        return self._notifications
+
+    @Property("QVariantMap", notify=notificationsChanged)
+    def notificationsInfo(self):
+        return self._notifications_info
+
+    @Slot(bool)
+    def watchNotifications(self, watched: bool) -> None:
+        """The Notifications tab became visible (load) or hidden (forget)."""
+        if self._notifications_watched == bool(watched):
+            return
+        self._notifications_watched = bool(watched)
+        if self._notifications_watched:
+            self.refreshNotifications()
+            return
+        self._clear_notifications()
+
+    def _notifications_available(self) -> bool:
+        return (
+            self._status.get("daemon") is True
+            and self._status.get("notification_history_enabled") is True
+            and (
+                self._status.get("storage_policy") == "none"
+                or self._status.get("storage_state") == "ready"
+            )
+        )
+
+    def _clear_notifications(self) -> None:
+        # A late response must not repopulate private rows after the tab was
+        # hidden, storage locked, or the daemon/phone changed.
+        self._notifications_generation += 1
+        self._notifications_again = False
+        self._notifications_timer.stop()
+        self._notifications = []
+        self._notifications_info = {"enabled": False, "content": False, "error": ""}
+        self.notificationsChanged.emit()
+
+    def _sync_notifications(self) -> None:
+        current = (
+            self._notifications_available(),
+            self._status.get("notification_content_shown") is True,
+            self._status.get("phone_profile_id"),
+        )
+        if current == self._notifications_status_key:
+            return
+        self._notifications_status_key = current
+        self._clear_notifications()
+        # A tab opened before the backend was available recovers without
+        # needing another notification or a manual tab switch.
+        self.refreshNotifications()
+
+    @Slot()
+    def refreshNotifications(self) -> None:
+        if not self._notifications_watched or not self._notifications_available():
+            return
+        if self._notifications_loading:
+            self._notifications_again = True
+            return
+        self._notifications_loading = True
+        self._notifications_timer.stop()
+        generation = self._notifications_generation
+
+        def current() -> bool:
+            return (
+                generation == self._notifications_generation
+                and self._notifications_watched and self._notifications_available()
+            )
+
+        def finished() -> None:
+            self._notifications_loading = False
+            if self._notifications_again:
+                self._notifications_again = False
+                self.refreshNotifications()
+
+        def completed(value: object) -> None:
+            try:
+                if not current():
+                    return
+                snapshot = value if isinstance(value, dict) else {}
+                enabled = snapshot.get("enabled") is True
+                content = (
+                    enabled and snapshot.get("content") is True
+                    and self._status.get("notification_content_shown") is True
+                )
+                self._notifications = phone_link.notification_rows(
+                    snapshot.get("notifications") if enabled else [], content=content,
+                )
+                self._notifications_info = {"enabled": enabled, "content": content, "error": ""}
+                self.notificationsChanged.emit()
+            finally:
+                finished()
+
+        def failed(message: str) -> None:
+            try:
+                if not current():
+                    return
+                self._notifications = []
+                self._notifications_info = {
+                    **self._notifications_info,
+                    "error": message or _("Notifications are unavailable"),
+                }
+                self.notificationsChanged.emit()
+            finally:
+                finished()
+
+        self._run(lambda: self._backend.notifications(100), completed, failed, busy=False)
+
+    @Slot()
+    def _notificationsInvalidated(self) -> None:
+        if self._notifications_watched and self._notifications_available():
+            self._notifications_timer.start()
+
     @Property(str, notify=callHistoryChanged)
     def callHistoryError(self) -> str:
         return self._call_history_error
@@ -632,6 +783,14 @@ class BridgeController(QObject):
             BUS_NAME,
             OBJECT_PATH,
             EVENTS_IFACE,
+            "NotificationsChanged",
+            self,
+            SLOT("_notificationsInvalidated()"),
+        )
+        self._bus.connect(
+            BUS_NAME,
+            OBJECT_PATH,
+            EVENTS_IFACE,
             "CallHistoryChanged",
             self,
             SLOT("_callHistoryInvalidated()"),
@@ -711,6 +870,8 @@ class BridgeController(QObject):
     @Slot("QVariantMap")
     def _historyChanged(self, _revision) -> None:
         self._refresh_timer.start()
+        # ClearHistory also empties the notification list.
+        self._notificationsInvalidated()
 
     @Slot()
     def _statusInvalidated(self) -> None:
@@ -744,6 +905,7 @@ class BridgeController(QObject):
         self._call_history_again = False
         if self._call_history or self._call_history_error:
             self._call_history = []
+            self._call_history_rows = {}
             self._call_history_error = ""
             self.callHistoryChanged.emit()
 
@@ -757,13 +919,20 @@ class BridgeController(QObject):
             return
         self._call_history_loading = True
 
-        def operation() -> list[dict]:
-            return [entry.to_dict() for entry in self._backend.call_history(200)]
+        def operation() -> tuple[list[dict], dict]:
+            entries = self._backend.call_history(200)
+            rows = {
+                "all": phone_overview.call_groups(entries),
+                "missed": phone_overview.call_groups(entries, missed_only=True),
+            }
+            return [entry.to_dict() for entry in entries], rows
 
         def completed(value: object) -> None:
             # A reply that lands after the page closed is discarded.
             if self._call_history_watched:
-                self._call_history = list(value) if isinstance(value, list) else []
+                calls, rows = value if isinstance(value, tuple) else ([], {})
+                self._call_history = list(calls)
+                self._call_history_rows = dict(rows)
                 self._call_history_error = ""
                 self.callHistoryChanged.emit()
             finished()
@@ -1105,6 +1274,11 @@ class BridgeController(QObject):
     @Slot()
     def hangupAllCalls(self) -> None:
         self._call_action(self._backend.hangup_all_calls)
+
+    @Slot()
+    def swapCalls(self) -> None:
+        """Hold the active call (or resume the held one): HFP AT+CHLD=2."""
+        self._call_action(self._backend.swap_calls)
 
     @Slot()
     def syncContacts(self) -> None:

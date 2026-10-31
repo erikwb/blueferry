@@ -80,6 +80,7 @@ from blueferry.history import (
     mark_event_handles_read,
 )
 from blueferry.media import MediaController, MediaControlSettings
+from blueferry.notification_log import NotificationLog
 from blueferry.notification_policy import (
     ALL_NOTIFICATIONS,
     NotificationPolicyStore,
@@ -345,6 +346,13 @@ class Daemon:
             on_phone_status=lambda _status: self._phone_status_changed(),
             on_powered_failed=self.profile_reset.hfp_powered_failed,
             on_powered=self.profile_reset.hfp_powered,
+        )
+        # Opt-in, memory-only list of recent iPhone app notifications.
+        self.notification_log: NotificationLog | None = (
+            NotificationLog(
+                show_content=config.SHOW_NOTIFICATION_CONTENT, idle=GLib.idle_add,
+            )
+            if config.NOTIFICATION_HISTORY else None
         )
         # Where the iPhone's media playback goes, using the desktop's roles.
         self.phone_audio_route = PhoneAudioRoute(
@@ -934,12 +942,18 @@ class Daemon:
                 tether=self.tether,
                 set_tethering=self._set_tethering,
                 phone_audio=self.audio_preference,
+                notification_log=self.notification_log,
+                notification_content=config.SHOW_NOTIFICATION_CONTENT,
                 features=FeatureSettings(),
                 contact_photos=self._contact_photos_enabled,
                 set_contact_photos=self._set_contact_photos,
                 set_otp_autocopy=self._set_otp_autocopy,
             ),
         )
+        if self.notification_log is not None:
+            self.notification_log.set_listener(
+                self._dbus_service.emit_notifications_changed
+            )
         self.events.set_dbus_service(self._dbus_service)
         self.audio_preference.start()
         self._publish_media()
@@ -1390,6 +1404,8 @@ class Daemon:
         # Sinks don't need the OBEX sessions — set them up now so ANCS events
         # still reach the desktop while MAP/PBAP are degraded.
         self.events.setup()
+        if self.notification_log is not None and self.notification_log not in self.events.sinks:
+            self.events.sinks.append(self.notification_log)
         self._start_plugin_popups()
         # Optional calls only observe oFono; failures there never degrade
         # messaging, and a missing oFono is retried in the background.
@@ -1926,6 +1942,7 @@ class Daemon:
             "storage_detail": self.storage.status.detail,
             **self._media_status(),
             **self.phone_audio_route.snapshot(),
+            "notification_history_enabled": self.notification_log is not None,
             **self.audio_preference.snapshot(),
             **self._controller_identity(),
             **self.connectivity.snapshot(),

@@ -5,8 +5,8 @@ import QtQuick.Controls as Controls
 import QtQuick.Layouts
 import org.kde.kirigami as Kirigami
 
-// Settings > Notifications: popup policy, content, ANCS action buttons and
-// click rules.
+// Settings > Notifications: popup policy, content, ANCS action buttons,
+// click rules and the recent-notification list.
 ColumnLayout {
     id: section
     objectName: "settingsNotifications"
@@ -112,5 +112,15 @@ ColumnLayout {
         feature: "mark_read_on_dismiss"
         variable: "BLUEFERRY_MARK_READ_ON_DISMISS"
         text: qsTr("Mark read when a popup is dismissed")
+    }
+
+    Kirigami.Heading { text: qsTr("History"); level: 2 }
+    FeatureSwitch {
+        Layout.fillWidth: true
+        bridge: section.bridge
+        feature: "notification_history"
+        variable: "BLUEFERRY_NOTIFICATION_HISTORY"
+        text: qsTr("Keep recent iPhone notifications")
+        description: qsTr("Lists other apps' notifications in the Notifications tab (memory only).")
     }
 }

@@ -25,6 +25,7 @@ from PySide6.QtCore import (
     QIODevice,
     QMetaObject,
     QObject,
+    QPoint,
     QPointF,
     Qt,
     QUrl,
@@ -625,7 +626,8 @@ def test_qt_thread_preview_stays_inside_one_line(qml_engine, settings_window) ->
     )
     preview = _evaluate(qml_engine, """(function() {
         function find(item) {
-            if (item.objectName === "threadPreview") return item;
+            // The phone-link layout shows the preview as the ListRow subtitle.
+            if (item.objectName === "threadPreview" || item.objectName.endsWith("Subtitle")) return item;
             for (const child of item.children) {
                 const found = find(child);
                 if (found) return found;
@@ -758,7 +760,12 @@ def settings_window(qml_engine):
             property var devices: []
             property var contactResults: []
             property var nowPlaying: ({})
+            property var featureHints: ({})
             property var phoneAudio: ({})
+            property string phoneName: "Test iPhone"
+            property var notifications: []
+            property var notificationsInfo: ({})
+            property var callHistoryRows: ({})
             property var tether: ({})
             property var features: ({})
             property var doctor: ({})
@@ -786,6 +793,7 @@ def settings_window(qml_engine):
             signal threadSendSucceeded(string key, string body)
             signal groupConfirmationRequested(string key, string body, string recipients)
             signal dialLinkRequested(string number, string problem)
+            signal dialInputRequested(string text)
             property var contactNames: ({})
             function contactNameForNumber(number) { return contactNames[number] || ""; }
             function record(method, args) { calls = calls.concat([{method: method, args: args}]); }
@@ -816,6 +824,11 @@ def settings_window(qml_engine):
             function setTethering(enabled, autoConnect) { record("setTethering", [enabled, autoConnect]); }
             function setTetherConnected(connected) { record("setTetherConnected", [connected]); }
             function setPhoneAudioRoute(route) { record("setPhoneAudioRoute", [route]); }
+            function swapCalls() { record("swapCalls", []); }
+            function watchNotifications(watched) { record("watchNotifications", [watched]); }
+            function refreshNotifications() { record("refreshNotifications", []); }
+            function setThreadStarred(key, starred) { record("setThreadStarred", [key, starred]); }
+            function markThreadRead(key) { record("markThreadRead", [key]); }
             property int featureLoads: 0
             function loadFeatures() { featureLoads += 1; }
             function setFeature(name, enabled) { record("setFeature", [name, enabled]); }
@@ -833,6 +846,10 @@ def settings_window(qml_engine):
             function sendMediaCommand(command) { record("sendMediaCommand", [command]); }
             function refreshCalls() { record("refreshCalls", []); }
             function dialCall(number) { record("dialCall", [number]); }
+            function requestDialLink(text) {
+                record("requestDialLink", [text]);
+                dialInputRequested(text);
+            }
             function answerCall(callId) { record("answerCall", [callId]); }
             function hangupCall(callId) { record("hangupCall", [callId]); }
             function hangupAllCalls() { record("hangupAllCalls", []); }
@@ -842,6 +859,9 @@ def settings_window(qml_engine):
     assert not component.isError(), [error.toString() for error in component.errors()]
     bridge = component.create()
     assert bridge is not None
+    from blueferry.tel_links import dial_request
+
+    bridge.dialInputRequested.connect(lambda text: bridge.dialLinkRequested.emit(*dial_request(text)))
     warnings = []
 
     def collect_warnings(errors):
@@ -1066,46 +1086,6 @@ def test_reconnect_banner_shows_only_states_that_need_attention(
     assert _evaluate(qml_engine, "testBridge.calls.map(c => c.method)")[-1] == "reconnectPhone"
 
 
-def test_optional_calls_dialog_lists_calls_and_dials_through_the_bridge(
-    qml_engine, settings_window,
-):
-    window, bridge = settings_window
-    # Calls off (the default): the dialog is never instantiated.
-    assert window.findChild(QObject, "callsDialog") is None
-    bridge.setProperty("status", {"calls_enabled": True})
-    QGuiApplication.processEvents()
-    dialog = _settings_object(window, "callsDialog")
-    assert dialog.property("callsReady") is False
-    bridge.setProperty("callsState", "ready")
-    bridge.setProperty("phoneCalls", [
-        {"call_id": "voicecall01", "state": "incoming", "ringing": True, "display_peer": "Alice"},
-    ])
-    assert QMetaObject.invokeMethod(dialog, "open")
-    # onOpened runs after the popup's enter transition.
-    for _ in range(100):
-        if _evaluate(qml_engine, "testBridge.calls.length"):
-            break
-        QTest.qWait(20)
-
-    assert dialog.property("callsReady") is True
-    assert _evaluate(qml_engine, "testBridge.calls.map(call => call.method)") == ["refreshCalls"]
-    _settings_object(window, "callsNumberField").setProperty("text", "+41 79 123 45 67")
-    qml_engine.globalObject().setProperty("callsDialog", qml_engine.newQObject(dialog))
-    # "Hang Up All" needs more than one call; "Dial" needs a number.
-    assert _evaluate(qml_engine, "callsDialog.customFooterActions[0].enabled") is False
-    _evaluate(qml_engine, "callsDialog.customFooterActions[1].trigger()")
-    # Dial only asks; the call is placed from the confirmation.
-    assert _evaluate(qml_engine, "testBridge.calls.length") == 1
-    confirm = _settings_object(window, "callsDialConfirm")
-    assert confirm.property("number") == "+41 79 123 45 67"
-    assert "+41 79 123 45 67" in confirm.property("subtitle")
-    qml_engine.globalObject().setProperty("callsDialConfirm", qml_engine.newQObject(confirm))
-    _evaluate(qml_engine, "callsDialConfirm.customFooterActions[0].trigger()")
-    assert _evaluate(qml_engine, "testBridge.calls[1]") == {
-        "method": "dialCall", "args": ["+41 79 123 45 67"],
-    }
-    assert QMetaObject.invokeMethod(dialog, "close")
-    QGuiApplication.processEvents()
 
 
 def _dial_dialog(qml_engine, window):
@@ -1883,7 +1863,8 @@ def test_read_sync_requires_visible_active_conversation(qml_engine, relative_pat
         var window = {visible: true};
         var applicationSurface = {Window: {active: true}};
         var phoneSettingsVisible = false;
-        var root = {visible: true, active: true, iphoneSettingsPage: null};
+        var root = {visible: true, active: true, iphoneSettingsPage: null,
+            tabsVisible: true, messagesTab: 0, currentTab: 0};
     ''' + functions + '''
         window.visible = root.visible = false;
         markSelectedThreadRead();
@@ -3483,14 +3464,31 @@ class _CallsBridge(QObject):
         self.loads = 0
         self.syncs = 0
 
-    @Property("QVariantList", constant=True)
-    def callHistory(self):
-        return [
-            {"direction": "missed", "caller": "<b>Eve</b>", "name": "<b>Eve</b>",
-             "address": "+15551230002", "time": "Today", "missed": True},
-            {"direction": "outgoing", "caller": "+15551230001", "name": "",
-             "address": "+15551230001", "time": "Today", "missed": False},
-        ]
+    @Property("QVariantMap", constant=True)
+    def callHistoryRows(self):
+        missed = {"direction": "missed", "caller": "<b>Eve</b>", "known": True,
+                  "address": "+15551230002", "day": "Today", "clock": "2:36 PM",
+                  "missed": True, "count": 3}
+        outgoing = {"direction": "outgoing", "caller": "+15551230001", "known": False,
+                    "address": "+15551230001", "day": "Today", "clock": "1:02 PM",
+                    "missed": False, "count": 1}
+        return {"all": [missed, outgoing], "missed": [missed]}
+
+    @Property("QVariantMap", constant=True)
+    def status(self):
+        return {}
+
+    @Property(int, constant=True)
+    def avatarRevision(self) -> int:
+        return 0
+
+    @Property(str, constant=True)
+    def callsState(self) -> str:
+        return "disabled"
+
+    @Slot(str, result=str)
+    def avatarSource(self, _address: str) -> str:
+        return ""
 
     @Property(str, constant=True)
     def callHistoryError(self) -> str:
@@ -3534,25 +3532,6 @@ def test_recent_calls_page_loads_once_and_filters_missed_calls(qml_engine):
     page.deleteLater()
 
 
-def test_recent_calls_load_on_open_and_are_forgotten_on_close(qml_engine, settings_window):
-    _window, bridge = settings_window
-    _evaluate(qml_engine, "testWindow.openRecentCalls()")
-    assert _evaluate(qml_engine, "testWindow.recentCallsPage === null") is True
-    assert _evaluate(qml_engine, "testBridge.calls") == [], "disabled feature: nothing opens"
-
-    bridge.setProperty("callHistoryEnabled", True)
-    QGuiApplication.processEvents()
-    _evaluate(qml_engine, "testWindow.openRecentCalls()")
-    QGuiApplication.processEvents()
-    assert _evaluate(qml_engine, "testWindow.recentCallsPage !== null") is True
-    assert [call["method"] for call in _evaluate(qml_engine, "testBridge.calls")] == ["watchCallHistory"]
-    assert _evaluate(qml_engine, "testBridge.calls")[0]["args"] == [True]
-
-    _evaluate(qml_engine, "testWindow.closeRecentCalls()")
-    QGuiApplication.processEvents()
-    assert _evaluate(qml_engine, "testWindow.recentCallsPage === null") is True
-    assert _evaluate(qml_engine, "testBridge.calls")[-1] == {"method": "watchCallHistory", "args": [False]}
-    assert _evaluate(qml_engine, "testWindow.pageStack.depth") == 1
 
 class _OpenRuleBridge(QObject):
     """Inert recorder: the editor may only request validated backend edits."""
@@ -4603,6 +4582,486 @@ def test_settings_run_the_doctor_and_show_its_report_as_plain_text(qml_engine, s
     assert _evaluate(qml_engine, "Number(doctorReport.textFormat)") == 0  # PlainText
     assert report.property("text") == "WARNING doctor: <b>Adapter</b> CoD"
     _evaluate(qml_engine, "testWindow.closePhoneSettings()")
+
+
+def test_active_calls_do_not_offer_media_routing_as_call_audio(qml_engine, settings_window):
+    window, bridge = settings_window
+    _evaluate(qml_engine, "testWindow.currentTab = testWindow.callsTab")
+    bridge.setProperty("status", {"calls_enabled": True})
+    bridge.setProperty("callsState", "ready")
+    bridge.setProperty("phoneCalls", [
+        {"call_id": "voicecall01", "state": "active", "ringing": False,
+         "display_peer": "Alice", "number": "+41790000001", "first_seen": ""},
+    ])
+    _evaluate(qml_engine, """testBridge.phoneAudio = {
+        supported: true, available: true, onPc: true, pending: false,
+        playing: "phone", mismatch: true,
+        hint: "The iPhone is playing on its own speaker (chosen on the iPhone)."
+    }""")
+    QGuiApplication.processEvents()
+    assert _visual_find(window.contentItem(), "activeCallCard", qml_engine) is not None
+    assert _visual_find(window.contentItem(), "callsAudioSwitch", qml_engine) is None
+    switch = _visual_find(window.contentItem(), "phoneCardAudioSwitch", qml_engine)
+    assert switch.property("text") == "Media sound on this computer"
+    bridge.setProperty("phoneCalls", [])
+    QGuiApplication.processEvents()
+
+
+def test_calls_tab_watches_call_history_only_while_shown(qml_engine, settings_window):
+    window, bridge = settings_window
+    _evaluate(qml_engine, "testWindow.openRecentCalls()")
+    QGuiApplication.processEvents()
+    assert _evaluate(qml_engine, "testWindow.currentTab === testWindow.callsTab") is True
+    assert _evaluate(qml_engine, "testBridge.calls") == [], "disabled feature: nothing loads"
+    assert _settings_object(window, "callHistoryHint").property("visible") is True
+
+    bridge.setProperty("callHistoryEnabled", True)
+    bridge.setProperty("status", {"call_history_enabled": True})
+    QGuiApplication.processEvents()
+    assert _evaluate(qml_engine, "testBridge.calls") == [
+        {"method": "watchCallHistory", "args": [True]},
+    ]
+    assert window.findChild(QObject, "recentCallsPage") is not None
+
+    _evaluate(qml_engine, "testWindow.currentTab = testWindow.messagesTab")
+    QGuiApplication.processEvents()
+    assert _evaluate(qml_engine, "testBridge.calls")[-1] == {
+        "method": "watchCallHistory", "args": [False],
+    }
+    assert _evaluate(qml_engine, "testWindow.pageStack.depth") == 1
+
+
+def test_conversation_list_shows_one_preview_line_and_chat_fills_its_pane(
+    qml_engine, settings_window
+):
+    window, bridge = settings_window
+    window.resize(1500, 700)
+    body = "DPD  Paketbestätigung\n\nGegen 9.33 Uhr\n\nbin ich angekommen."
+    bridge.setProperty("threads", [{
+        "key": "dpd", "name": "+212786524411", "recipients": ["+212786524411"],
+        "is_group": False, "unread": False, "starred": False, "reply_ready": True,
+        "messages": [{"handle": "1", "body": body, "outgoing": False,
+                      "display_timestamp": "Today 09:41"}],
+    }])
+    window.setProperty("selectedThreadKey", "dpd")
+    QTest.qWait(50)
+
+    def value(child, expression):
+        return _delegate_value(qml_engine, window, "threadList", child, expression)
+
+    assert value("threadSubtitle", "item.text") == (
+        "DPD Paketbestätigung Gegen 9.33 Uhr bin ich angekommen."
+    )
+    assert value("threadSubtitle", "item.lineCount") == 1
+    assert value("threadMeta", "item.text") == "Today 09:41"
+    # Two text lines plus padding, never the whole message.
+    lines = value("threadTitle", "item.height") + value("threadSubtitle", "item.height")
+    assert value("threadDelegate", "delegate.height") < lines * 2
+
+    pane = _settings_object(window, "chatPane")
+    for name in ("chatHeader", "messageList", "messageComposer", "sendButton"):
+        assert pane.isAncestorOf(_settings_object(window, name)), name
+    header = _settings_object(window, "chatHeader")
+    assert header.mapToItem(pane, QPointF(0, 0)).y() == 0
+    assert _settings_object(window, "messageComposer").width() > pane.width() * 0.7
+    assert _settings_object(window, "messageList").height() > pane.height() * 0.5
+
+
+def test_dial_pad_requires_confirmation_and_preserves_keypad_input(qml_engine, settings_window):
+    window, bridge = settings_window
+    _evaluate(qml_engine, "testBridge.featureHints = {calls: 'Set BLUEFERRY_CALLS_ENABLED=true'}")
+    _evaluate(qml_engine, "testWindow.currentTab = testWindow.callsTab")
+    QGuiApplication.processEvents()
+    call_button = _settings_object(window, "dialPadCallButton")
+    assert call_button.property("enabled") is False
+    assert "BLUEFERRY_CALLS_ENABLED=true" in _settings_object(window, "callsHint").property("text")
+
+    bridge.setProperty("status", {"daemon": True, "calls_enabled": True, "calls_state": "ready"})
+    bridge.setProperty("callsState", "ready")
+    QGuiApplication.processEvents()
+    field = _settings_object(window, "dialPadField")
+    zero = _visual_find(window.contentItem(), "dialKey0", qml_engine)
+    position = zero.mapToScene(QPointF(zero.width() / 2, zero.height() / 2)).toPoint()
+    QTest.mousePress(window, Qt.LeftButton, Qt.NoModifier, position)
+    QTest.qWait(QGuiApplication.styleHints().mousePressAndHoldInterval() + 100)
+    QTest.mouseRelease(window, Qt.LeftButton, Qt.NoModifier, position)
+    assert field.property("text") == "+"
+    # Use real clicks: Qt does not emit clicked when a long press finishes,
+    # and the first later zero must not be swallowed by a leftover flag.
+    for digit in "41790000001":
+        _click_control(window, _visual_find(window.contentItem(), "dialKey" + digit, qml_engine))
+    assert field.property("text") == "+41790000001"
+    _click_control(window, call_button)
+    dialog = _settings_object(window, "dialLinkDialog")
+    QGuiApplication.processEvents()
+    assert dialog.property("canCall") is True
+    assert dialog.property("number") == "+41790000001"
+    assert "dialCall" not in _bridge_methods(qml_engine)
+    qml_engine.globalObject().setProperty("dialLinkDialog", qml_engine.newQObject(dialog))
+    _evaluate(qml_engine, "dialLinkDialog.customFooterActions[1].trigger()")
+    assert _evaluate(qml_engine, "testBridge.calls")[-1] == {
+        "method": "dialCall", "args": ["+41790000001"],
+    }
+    _wait_closed(dialog)
+
+
+
+@pytest.mark.parametrize("size", [(420, 480), (600, 700), (900, 480), (900, 700)])
+@pytest.mark.parametrize("active_calls", [0, 1, 2])
+def test_short_calls_windows_scroll_the_dialer_and_keep_history_visible(
+    qml_engine, settings_window, size, active_calls,
+):
+    window, bridge = settings_window
+    window.resize(*size)
+    bridge.setProperty("status", {"daemon": True, "calls_enabled": True,
+                                 "calls_state": "ready", "call_history_enabled": True})
+    bridge.setProperty("callsState", "ready")
+    bridge.setProperty("callHistoryEnabled", True)
+    bridge.setProperty("phoneCalls", [
+        {"call_id": str(index), "state": "active", "ringing": False,
+         "display_peer": "Test", "number": "+15551234567", "first_seen": ""}
+        for index in range(active_calls)
+    ])
+    bridge.setProperty("callHistoryRows", {"all": [
+        {"key": "one", "day": "Today", "clock": "10:00", "caller": "Test",
+         "address": "+15551234567", "known": True, "direction": "incoming",
+         "missed": False, "count": 1},
+    ]})
+    _evaluate(qml_engine, "testWindow.currentTab = testWindow.callsTab")
+    QTest.qWait(100)
+    _settings_object(window, "dialPadField").setProperty("text", "+15550100123")
+    QGuiApplication.processEvents()
+    scroll = _settings_object(window, "dialerScroll")
+    call = _settings_object(window, "dialPadCallButton")
+    history = _settings_object(window, "recentCallsPage")
+    assert scroll.mapToScene(QPointF(0, scroll.height())).y() <= window.height()
+    assert history.height() >= 100
+    history_title = _visual_find(window.contentItem(), "callTitle", qml_engine)
+    assert history_title is not None
+    assert history.mapToScene(QPointF(0, 0)).y() <= history_title.mapToScene(QPointF(0, 0)).y()
+    assert history_title.mapToScene(QPointF(0, history_title.height())).y() <= window.height()
+
+    # Wheel over the dialer's margin so the gesture goes to its viewport,
+    # then verify the button can actually be clicked at its new position.
+    for _ in range(20):
+        top = call.mapToItem(scroll, QPointF(0, 0)).y()
+        bottom = top + call.height()
+        if top >= 0 and bottom <= scroll.height():
+            break
+        QTest.wheelEvent(
+            window, scroll.mapToScene(QPointF(2, scroll.height() / 2)),
+            QPoint(0, -120 if bottom > scroll.height() else 120),
+        )
+        QTest.qWait(100)
+    viewport = scroll.property("contentItem")
+    for _ in range(50):
+        if not viewport.property("moving"):
+            break
+        QTest.qWait(20)
+    assert 0 <= call.mapToItem(scroll, QPointF(0, 0)).y()
+    assert call.mapToItem(scroll, QPointF(0, call.height())).y() <= scroll.height()
+    _click_control(window, call)
+    dialog = _settings_object(window, "dialLinkDialog")
+    assert dialog.property("canCall") is True
+    assert dialog.property("number") == "+15550100123"
+    assert "dialCall" not in _bridge_methods(qml_engine)
+    _close_dial_dialog(dialog)
+
+
+@pytest.mark.parametrize("target", ["body", "star"])
+def test_thread_context_menu_handles_the_whole_row(qml_engine, settings_window, target):
+    window, bridge = settings_window
+    bridge.setProperty("threads", [{"key": "one", "name": "Alice", "unread": False,
+                                    "messages": [], "recipients": [], "is_group": False,
+                                    "reply_ready": True, "starred": False}])
+    QTest.qWait(50)
+    row = _visual_find(window.contentItem(), "threadDelegate", qml_engine)
+    menus = [item for item in window.findChildren(QObject)
+             if "Menu" in item.metaObject().className()
+             and item.metaObject().indexOfProperty("threadKey") >= 0]
+    assert len(menus) == 1
+    menu = menus[0]
+    QMetaObject.invokeMethod(row, "forceActiveFocus")
+    QTest.qWait(30)
+    if target == "star":
+        qml_engine.globalObject().setProperty("testThreadRow", qml_engine.newQObject(row))
+        star = _evaluate(qml_engine, "testThreadRow.actions[0]")
+        position = star.mapToScene(QPointF(star.width() / 2, star.height() / 2)).toPoint()
+    else:
+        position = row.mapToScene(QPointF(row.width() / 2, row.height() / 2)).toPoint()
+    QTest.mouseClick(window, Qt.RightButton, Qt.NoModifier, position)
+    QTest.qWait(50)
+    assert menu.property("visible") is True
+    assert menu.property("threadKey") == "one"
+    assert "setThreadStarred" not in _bridge_methods(qml_engine)
+    QMetaObject.invokeMethod(menu, "close")
+    _wait_closed(menu)
+
+
+def test_dial_suggestions_show_and_dial_contact_numbers_unchanged(qml_engine, settings_window):
+    window, bridge = settings_window
+    _evaluate(qml_engine, "testWindow.currentTab = testWindow.callsTab")
+    bridge.setProperty("status", {"calls_enabled": True})
+    bridge.setProperty("callsState", "ready")
+    QGuiApplication.processEvents()
+    _settings_object(window, "dialPadField").setProperty("text", "Kim")
+    bridge.setProperty("contactResults", [
+        {"name": "Pat US", "address": "+15550100123"},
+        {"name": "Kim AU", "address": "0491570156"},
+        {"name": "Mail", "address": "kim@example.org"},
+    ])
+    QGuiApplication.processEvents()
+    suggestions = _settings_object(window, "dialSuggestions")
+    suggestions.setProperty("width", 300)
+    QMetaObject.invokeMethod(suggestions, "forceLayout")
+    QGuiApplication.processEvents()
+    rows = {
+        str(item.property("subtitle")): item
+        for item in suggestions.property("contentItem").childItems()
+        if item.metaObject().indexOfSignal("clicked()") >= 0
+    }
+    # Shown exactly as stored: "+" only where the iPhone has one.
+    assert set(rows) == {"+15550100123", "0491570156"}
+    QMetaObject.invokeMethod(rows["0491570156"], "clicked")
+    assert _settings_object(window, "dialPadField").property("text") == "0491570156"
+
+def test_notifications_tab_loads_while_shown_and_renders_plain_text(qml_engine, settings_window):
+    window, _bridge = settings_window
+    _evaluate(qml_engine, "testWindow.currentTab = testWindow.notificationsTab")
+    QGuiApplication.processEvents()
+    assert _evaluate(qml_engine, "testBridge.calls") == [
+        {"method": "watchNotifications", "args": [True]},
+    ]
+    _evaluate(qml_engine, """testBridge.featureHints = {
+        notifications: "Set BLUEFERRY_NOTIFICATION_HISTORY=true"
+    }""")
+    QGuiApplication.processEvents()
+    placeholder = _settings_object(window, "notificationsPlaceholder")
+    assert "NOTIFICATION_HISTORY" in placeholder.property("explanation")
+
+    _evaluate(qml_engine, """testBridge.featureHints = {}""")
+    _evaluate(qml_engine, "testBridge.notificationsInfo = {enabled: true, content: false}")
+    _evaluate(qml_engine, """testBridge.notifications = [
+        {app: "<b>Chat</b>", time: "10:00 AM", title: "", subtitle: "", body: ""}
+    ]""")
+    QGuiApplication.processEvents()
+    assert _settings_object(window, "notificationContentHint").property("visible") is True
+    source = (ROOT / "src/blueferry/qt/qml/NotificationsTab.qml").read_text()
+    assert source.count("Controls.Label {") == source.count("textFormat: Text.PlainText")
+
+    _evaluate(qml_engine, "testWindow.currentTab = testWindow.messagesTab")
+    QGuiApplication.processEvents()
+    assert _evaluate(qml_engine, "testBridge.calls")[-1] == {
+        "method": "watchNotifications", "args": [False],
+    }
+
+
+@pytest.mark.parametrize("text,problem", [
+    ("Alice 2026", "invalid"), ("+1 555 123 4567 ext 89", "invalid"),
+    ("+41 (79) 1-2<b>", "invalid"), ("**21*15551234567#", "invalid"),
+    ("1" * 33, "invalid"), ("112", "emergency"),
+    ("+15551234567" + " " * 60 + "ext 89", "invalid"),
+])
+def test_dial_field_preserves_invalid_input_and_never_offers_a_call(
+    qml_engine, settings_window, text, problem,
+):
+    window, bridge = settings_window
+    bridge.setProperty("status", {"daemon": True, "calls_enabled": True, "calls_state": "ready"})
+    bridge.setProperty("callsState", "ready")
+    _evaluate(qml_engine, "testWindow.currentTab = testWindow.callsTab")
+    QGuiApplication.processEvents()
+    field = _settings_object(window, "dialPadField")
+    field.setProperty("text", text)
+    QMetaObject.invokeMethod(field, "accepted")
+    QGuiApplication.processEvents()
+    dialog = _settings_object(window, "dialLinkDialog")
+    assert dialog.property("problem") == problem
+    assert dialog.property("canCall") is False
+    calls = _evaluate(qml_engine, "testBridge.calls")
+    assert {"method": "requestDialLink", "args": [text]} in calls
+    assert not [call for call in calls if call["method"] == "dialCall"]
+    QMetaObject.invokeMethod(dialog, "close")
+    _wait_closed(dialog)
+
+
+@pytest.mark.parametrize("tab", [1, 2])
+def test_messages_are_marked_read_only_after_returning_to_the_messages_tab(
+    qml_engine, settings_window, tab,
+):
+    window, bridge = settings_window
+    window.requestActivate()
+    QTest.qWait(20)
+    assert window.isActive()
+    window.setProperty("currentTab", tab)
+    bridge.setProperty("threads", [{"key": "one", "name": "Alice", "unread": True,
+                                    "messages": [], "recipients": [], "is_group": False,
+                                    "reply_ready": True, "starred": False}])
+    window.setProperty("selectedThreadKey", "one")
+    QGuiApplication.processEvents()
+    assert "markThreadRead" not in _bridge_methods(qml_engine)
+    window.setProperty("currentTab", 0)
+    QGuiApplication.processEvents()
+    assert {"method": "markThreadRead", "args": ["one"]} in _evaluate(qml_engine, "testBridge.calls")
+
+
+@pytest.mark.parametrize("kind", ["calls", "notifications"])
+@pytest.mark.parametrize("cover", ["settings", "phone", "window"])
+def test_hidden_tabs_stop_watching_and_resume_when_visible(qml_engine, settings_window, kind, cover):
+    window, bridge = settings_window
+    bridge.setProperty("callHistoryEnabled", True)
+    window.resize(600, 700)
+    _evaluate(qml_engine, f"testWindow.currentTab = testWindow.{kind}Tab")
+    QGuiApplication.processEvents()
+    expected = "watchCallHistory" if kind == "calls" else "watchNotifications"
+    assert {"method": expected, "args": [True]} in _evaluate(qml_engine, "testBridge.calls")
+    bridge.setProperty("calls", [])
+    if cover == "settings":
+        _evaluate(qml_engine, "testWindow.openPhoneSettings()")
+    elif cover == "phone":
+        _settings_object(window, "messagesPage").setProperty("cardOpen", True)
+    else:
+        window.hide()
+    QGuiApplication.processEvents()
+    assert {"method": expected, "args": [False]} in _evaluate(qml_engine, "testBridge.calls")
+    bridge.setProperty("calls", [])
+    if cover == "settings":
+        _evaluate(qml_engine, "testWindow.closePhoneSettings()")
+    elif cover == "phone":
+        _settings_object(window, "messagesPage").setProperty("cardOpen", False)
+    else:
+        window.show()
+    QTest.qWait(50)
+    assert {"method": expected, "args": [True]} in _evaluate(qml_engine, "testBridge.calls")
+
+
+@pytest.mark.parametrize("cover", ["settings", "phone", "window"])
+def test_covered_conversation_waits_to_mark_new_messages_read(qml_engine, settings_window, cover):
+    window, bridge = settings_window
+    window.resize(600, 700)
+    window.requestActivate()
+    QTest.qWait(20)
+    assert window.isActive()
+    if cover == "settings":
+        _evaluate(qml_engine, "testWindow.openPhoneSettings()")
+    elif cover == "phone":
+        _settings_object(window, "messagesPage").setProperty("cardOpen", True)
+    else:
+        window.hide()
+    bridge.setProperty("threads", [{"key": "one", "name": "Alice", "unread": True,
+                                    "messages": [], "recipients": [], "is_group": False,
+                                    "reply_ready": True, "starred": False}])
+    window.setProperty("selectedThreadKey", "one")
+    QGuiApplication.processEvents()
+    assert "markThreadRead" not in _bridge_methods(qml_engine)
+    if cover == "settings":
+        _evaluate(qml_engine, "testWindow.closePhoneSettings()")
+    elif cover == "phone":
+        _settings_object(window, "messagesPage").setProperty("cardOpen", False)
+    else:
+        window.show()
+        window.requestActivate()
+    QTest.qWait(50)
+    assert {"method": "markThreadRead", "args": ["one"]} in _evaluate(qml_engine, "testBridge.calls")
+
+
+def test_phone_card_greys_out_opt_ins_and_switches_audio_explicitly(qml_engine, settings_window):
+    window, bridge = settings_window
+    card = _settings_object(window, "phoneCard")
+    assert card.property("visible") is True
+    assert _settings_object(window, "phoneCardName").property("text") == "Test iPhone"
+    _evaluate(qml_engine, """testBridge.featureHints = {
+        media: "Set BLUEFERRY_MEDIA_CONTROL_ENABLED=true", phoneStatus: "Battery <b>needs</b> calls"
+    }""")
+    _evaluate(qml_engine, """testBridge.phoneAudio = {
+        supported: true, available: false, onPc: false, pending: false,
+        hint: "Set BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE=false"
+    }""")
+    QGuiApplication.processEvents()
+    audio = _settings_object(window, "phoneCardAudioSwitch")
+    assert audio.property("enabled") is False
+    assert "KEEP_PHONE_AUDIO" in audio.property("subtitle")
+    assert "MEDIA_CONTROL" in _settings_object(window, "nowPlayingHint").property("text")
+    hint = _settings_object(window, "phoneStatusHint")
+    qml_engine.globalObject().setProperty("phoneStatusHint", qml_engine.newQObject(hint))
+    assert _evaluate(qml_engine, "phoneStatusHint.textFormat") == 0  # Text.PlainText
+    assert _settings_object(window, "proximitySwitch").property("enabled") is False
+
+    bridge.setProperty("status", {"daemon": True, "proximity_lock": "idle"})
+    _evaluate(qml_engine, """testBridge.phoneAudio = {
+        supported: true, available: true, onPc: false, pending: false, hint: "On the iPhone"
+    }""")
+    QGuiApplication.processEvents()
+    _click_control(window, audio)
+    assert _evaluate(qml_engine, "testBridge.calls")[-1] == {
+        "method": "setPhoneAudioRoute", "args": ["pc"],
+    }
+    assert audio.property("checked") is False  # until the daemon reports "pc"
+    _evaluate(qml_engine, """testBridge.phoneAudio = {
+        supported: true, available: true, onPc: true, pending: false,
+        playing: "phone", mismatch: true,
+        hint: "The iPhone is playing on its own speaker (chosen on the iPhone)."
+    }""")
+    QGuiApplication.processEvents()
+    assert audio.property("checked") is True
+    assert "its own speaker" in audio.property("subtitle")
+    _click_control(window, _settings_object(window, "proximitySwitch"))
+    assert _evaluate(qml_engine, "testBridge.calls")[-1] == {
+        "method": "setProximityLock", "args": [True, 60],
+    }
+
+
+def test_running_calls_show_as_cards_with_answer_hold_and_hang_up(qml_engine, settings_window):
+    window, bridge = settings_window
+    _evaluate(qml_engine, "testWindow.currentTab = testWindow.callsTab")
+    QGuiApplication.processEvents()
+    assert _visual_find(window.contentItem(), "activeCallCard", qml_engine) is None
+    bridge.setProperty("status", {"calls_enabled": True})
+    bridge.setProperty("callsState", "ready")
+    bridge.setProperty("phoneCalls", [
+        {"call_id": "voicecall01", "state": "incoming", "ringing": True,
+         "display_peer": "<b>Alice</b>", "number": "+41790000001", "first_seen": ""},
+    ])
+    QGuiApplication.processEvents()
+    card = _visual_find(window.contentItem(), "activeCallCard", qml_engine)
+    assert card is not None
+    assert _visual_find(card, "activeCallState").property("text") == "Incoming call…"
+    hangup = _visual_find(card, "activeCallHangup")
+    assert hangup.property("text") == "Decline"
+    QMetaObject.invokeMethod(hangup, "clicked")
+    assert _evaluate(qml_engine, "testBridge.calls")[-1] == {
+        "method": "hangupCall", "args": ["voicecall01"],
+    }
+    bridge.setProperty("phoneCalls", [])
+    QGuiApplication.processEvents()
+    assert _visual_find(window.contentItem(), "activeCallCard", qml_engine) is None
+
+
+def test_settings_page_keeps_the_former_menu_entries(qml_engine, settings_window):
+    window, _bridge = settings_window
+    _evaluate(qml_engine, "testWindow.openPhoneSettings()")
+    QGuiApplication.processEvents()
+    assert _settings_object(window, "aboutButton") is not None
+    assert _settings_object(window, "shortcutsButton") is not None
+    _evaluate(qml_engine, "testWindow.closePhoneSettings()")
+
+
+def _delegate_value(engine, window, list_name, child, expression):
+    # Delegates are visual children only; findChild cannot see them.
+    engine.globalObject().setProperty("delegateList", engine.newQObject(
+        _settings_object(window, list_name)))
+    return _evaluate(engine, f"""(function () {{
+        const delegate = delegateList.itemAtIndex(0)
+        function find(item) {{
+            if (item.objectName === "{child}") return item
+            for (const next of item.children) {{
+                const found = find(next)
+                if (found) return found
+            }}
+            return null
+        }}
+        const item = find(delegate)
+        return {expression}
+    }})()""")
 
 
 def test_quickshell_now_playing_renders_the_bridge_view(qml_engine) -> None:

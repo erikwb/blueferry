@@ -17,8 +17,29 @@ Ubuntu 24.04, Linux Mint 22.3, or Pop!_OS 24.04.
 
 ![KDE client](../../images/qt.png)
 
-**Settings** (in the menu) has categories on the left, like KDE's System
-Settings:
+The window is a phone overview. On the left, a card shows the iPhone's name,
+connection, battery and signal, what is playing (with previous, play/pause
+and next), and quick switches for [the sound](phone-audio.md) and the
+[away lock](proximity-lock.md). Features that are off stay visible but
+greyed out, with the setting that turns them on. On the right are three
+tabs:
+
+- **Messages**: conversations with All, Unread and Starred filters, and the
+  chat.
+- **Calls**: [phone calls](calls.md) with a dial pad and running calls as
+  cards (answer, hold, hang up), and the [call history](call-history.md)
+  grouped by day, with All and Missed. Dialing asks you to confirm the number;
+  names and numbers with extensions are never converted into another number.
+- **Notifications**: the [recent iPhone notifications](notification-history.md)
+  of other apps.
+
+In a narrow window the card folds behind the phone button in the header.
+Messages are marked read only while their conversation is visible and the
+window has focus. The phone card's sound switch controls media playback;
+it does not switch the audio of a phone call.
+
+**Settings** (the gear in the header) has categories on the left, like KDE's
+System Settings:
 
 | Category | What's there |
 | --- | --- |

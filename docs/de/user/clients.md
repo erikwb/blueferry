@@ -20,7 +20,26 @@ Linux Mint 22.3 und Pop!_OS 24.04 gibt es sie nicht.
 
 ![KDE-Client](../../images/qt.png)
 
-**Settings** (im Menü) hat links Kategorien, wie KDEs Systemeinstellungen:
+Das Fenster ist eine Telefon-Übersicht. Links zeigt eine Karte Name,
+Verbindung, Akku und Empfang des iPhones, was gerade läuft (mit zurück,
+Wiedergabe/Pause und weiter) und Schnellschalter für [den
+Ton](phone-audio.md) und die [Abwesenheitssperre](proximity-lock.md).
+Ausgeschaltete Funktionen bleiben sichtbar, aber ausgegraut, mit der
+Einstellung, die sie einschaltet. Rechts gibt es drei Reiter:
+
+- **Messages**: Unterhaltungen mit den Filtern All, Unread und Starred und
+  der Chat.
+- **Calls**: [Anrufe](calls.md) mit Wählfeld und laufenden Anrufen als
+  Karten (annehmen, halten, auflegen) und die [Anrufliste](call-history.md)
+  nach Tagen gruppiert, mit All und Missed.
+- **Notifications**: die [letzten iPhone-Mitteilungen](notification-history.md)
+  anderer Apps.
+
+In einem schmalen Fenster klappt die Karte hinter den Telefon-Knopf in der
+Kopfzeile.
+
+**Settings** (das Zahnrad in der Kopfzeile) hat links Kategorien, wie KDEs
+Systemeinstellungen:
 
 | Kategorie | Inhalt |
 | --- | --- |

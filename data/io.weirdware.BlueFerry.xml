@@ -134,9 +134,16 @@
       <annotation name="io.weirdware.BlueFerry.Errors"
                   value="InvalidArgs,NotReady"/>
     </method>
+    <method name="ListNotifications">
+      <annotation name="org.freedesktop.DBus.Description"
+                  value="Recent iPhone app notifications, newest first, as JSON {enabled, content, notifications}; memory only and empty unless BLUEFERRY_NOTIFICATION_HISTORY is set; title/subtitle/body only with BLUEFERRY_SHOW_NOTIFICATION_CONTENT"/>
+      <arg name="limit" type="u" direction="in"/>
+      <arg name="json" type="s" direction="out"/>
+      <annotation name="io.weirdware.BlueFerry.Errors" value="NotReady,ResponseTooLarge"/>
+    </method>
     <method name="GetFeatures">
       <annotation name="org.freedesktop.DBus.Description"
-                  value="JSON object keyed by feature name (show_notification_content, mark_read_on_dismiss): {value, running, source (environment, settings, local.env or default), variable, restart_required}"/>
+                  value="JSON object keyed by feature name (show_notification_content, mark_read_on_dismiss, notification_history): {value, running, source (environment, settings, local.env or default), variable, restart_required}"/>
       <arg name="features" type="s" direction="out"/>
       <annotation name="io.weirdware.BlueFerry.Errors"
                   value="NotReady"/>
@@ -398,6 +405,10 @@
       <arg name="handle" type="s"/>
     </signal>
     <signal name="CallHistoryChanged"/>
+    <signal name="NotificationsChanged">
+      <annotation name="org.freedesktop.DBus.Description"
+                  value="Content-free; fetch details with Messages1.ListNotifications"/>
+    </signal>
     <signal name="NowPlayingChanged">
       <annotation name="org.freedesktop.DBus.Description"
                   value="Content-free; fetch details with Media1.GetNowPlaying"/>

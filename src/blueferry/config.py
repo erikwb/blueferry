@@ -42,6 +42,7 @@ LOCAL_ENV_KEYS = frozenset({
     "BLUEFERRY_MISSED_CALL_NOTIFICATIONS",
     "BLUEFERRY_MEDIA_CONTROL_ENABLED",
     "BLUEFERRY_MEDIA_MPRIS_ENABLED",
+    "BLUEFERRY_NOTIFICATION_HISTORY",
     "BLUEFERRY_TETHER_AUTOCONNECT",
     "BLUEFERRY_TETHER_BACKEND",
     "BLUEFERRY_TETHER_ENABLED",
@@ -62,6 +63,7 @@ LOCAL_ENV_PATH: Path = CONFIG_DIR / "local.env"
 FEATURE_SWITCHES: tuple[tuple[str, str, bool], ...] = (
     ("show_notification_content", "BLUEFERRY_SHOW_NOTIFICATION_CONTENT", True),
     ("mark_read_on_dismiss", "BLUEFERRY_MARK_READ_ON_DISMISS", True),
+    ("notification_history", "BLUEFERRY_NOTIFICATION_HISTORY", False),
 )
 FEATURE_ENV_KEYS = frozenset(variable for _, variable, _ in FEATURE_SWITCHES)
 FEATURES_SETTINGS_KEY = "features"
@@ -427,6 +429,14 @@ HISTORY_MAX_PAYLOAD_BYTES: int = _env_int(
     16 * 1024 * 1024,
     2 * 1024 * 1024 * 1024,
 )
+NOTIFICATION_HISTORY: bool = _env_bool("BLUEFERRY_NOTIFICATION_HISTORY", False)
+"""Keep recent iPhone app notifications in memory for the clients' list.
+
+Off by default. Records live only in the running daemon (never on disk);
+titles and bodies are kept only while BLUEFERRY_SHOW_NOTIFICATION_CONTENT is
+true. Non-Messages notifications reach the daemon only with the "All iPhone
+Notifications" policy.
+"""
 PROXIMITY_LOCK: bool = _env_bool("BLUEFERRY_PROXIMITY_LOCK", False)
 """Initial opt-in for locking the desktop when the iPhone goes away.
 

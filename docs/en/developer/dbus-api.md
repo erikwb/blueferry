@@ -103,7 +103,8 @@ and retries on a later status read.
 | `GetAncsNotificationActions` / `SetAncsNotificationActions` | `b enabled` (saved opt-in for iPhone action buttons) |
 | `SetAutoProfileReset` | `b enabled` → `b selected`; saved as `auto_profile_reset` in settings.json (wins over `BLUEFERRY_AUTO_PROFILE_RESET`), effective at once; state is `profile_reset_auto` in `GetStatus`. Does not affect the manual reset through `ReconnectPhone` |
 | `SetPhoneBatteryWarning` | `b enabled` → `b selected`; state is `phone_battery_warning` in `GetStatus` |
-| `GetFeatures` | → `s json`: per switch (`show_notification_content`, `mark_read_on_dismiss`) `value`, `running`, `source` (`environment`, `settings`, `local.env`, `default`), `variable`, `restart_required` |
+| `ListNotifications` | `u limit` → `s json`: `enabled`, `content`, `notifications` (newest first: `id`, `app_id`, `app_name`, `time`; `title`, `subtitle`, `body` only with notification content shown); empty unless `BLUEFERRY_NOTIFICATION_HISTORY` is on; `NotReady` while storage is locked; own rate bucket |
+| `GetFeatures` | → `s json`: per switch (`show_notification_content`, `mark_read_on_dismiss`, `notification_history`) `value`, `running`, `source` (`environment`, `settings`, `local.env`, `default`), `variable`, `restart_required` |
 | `SetFeature` | `s name, b enabled` → `s result`: `active`, `restart-required` or `environment`; stored in settings.json, applied at the next daemon start; own rate bucket |
 | `SetMirrorNotificationRemovals` | `b enabled` → `b selected` (saved opt-in: a removal on the iPhone closes the popup); state is `mirror_iphone_removals` in `GetStatus` |
 | `SetContactPhotos` | `b enabled` → `s status_json`: saves the contact-photo opt-in in `settings.json` and applies it at once (off stops serving photos and queues erasure after any active contact sync; failed file and database deletions are retried); returns the `contact_photo*` status keys, including `contact_photo_cleanup_pending` (true until both file and database cleanup finish). `GetStatus` reports the current value as `contact_photos`; `saved_opt_ins: true` advertises the runtime setter |
@@ -202,6 +203,7 @@ adds `calls_state` (`unavailable`, `searching`, `connecting`, `ready`,
 | `OpenMessageRequested` | `s handle` | A notification was clicked; the handle is a bounded, opaque MAP handle |
 | `CallHistoryChanged` | none | Retained call history changed; call `ListCallHistory` again |
 | `NowPlayingChanged` | none | Fetch `Media1.GetNowPlaying` again |
+| `NotificationsChanged` | none | Fetch `Messages1.ListNotifications` again (opt-in list) |
 | `CallsChanged` | none | Optional calls changed; fetch `Calls1.ListCalls`. Never emitted while calls are off |
 
 ## Errors

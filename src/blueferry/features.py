@@ -40,6 +40,7 @@ def running_values() -> dict[str, bool]:
     return {
         "show_notification_content": config.SHOW_NOTIFICATION_CONTENT,
         "mark_read_on_dismiss": config.MARK_READ_ON_DISMISS,
+        "notification_history": config.NOTIFICATION_HISTORY,
     }
 
 

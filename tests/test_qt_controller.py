@@ -11,6 +11,7 @@ pytest.importorskip("PySide6")
 from blueferry.client import BackendError, TetherUnsupportedError
 from blueferry.conversation_state import ConversationSnapshot
 from blueferry.models import BackendStatus, Thread
+from blueferry.qt import phone_link
 from blueferry.qt.controller import BridgeController
 from blueferry.setup_client import ConfigurationState
 from blueferry.tether_status import TetherStatus
@@ -1796,6 +1797,256 @@ def test_phone_audio_hint_follows_the_typed_playing_field_from_a_refresh():
     assert audio["hint"] == "The iPhone is playing on its own speaker (chosen on the iPhone)."
 
 
+def test_feature_hints_point_to_the_setting_for_each_opt_in():
+    controller = BridgeController(backend=object(), setup=object(), subscribe=False, autostart=False)
+    controller._status = {"proximity_lock": "idle"}
+    hints = controller.featureHints
+    assert "Show and control what the iPhone is playing" in hints["media"]
+    assert "Settings \u203a Calls & Audio" in hints["calls"]
+    assert "Keep the iPhone's recent calls" in hints["callHistory"]
+    assert "Keep recent iPhone notifications" in hints["notifications"]
+    assert "proximity" not in hints
+    controller._status = {}
+    assert "Update the BlueFerry backend" in controller.featureHints["proximity"]
+
+    controller._status = {
+        "media_control_enabled": True, "calls_enabled": True, "phone_battery_level": 50,
+        "call_history_enabled": True, "notification_history_enabled": True,
+        "proximity_lock": "idle",
+    }
+    assert controller.featureHints == {}
+
+
+def test_notification_failure_stays_in_the_tab(monkeypatch):
+    controller = _inline_controller(monkeypatch, _PhoneLinkBackend(fail_notifications=True))
+    controller._status = _notification_status()
+    controller.watchNotifications(True)
+    assert controller.notifications == []
+    assert "locked" in controller.notificationsInfo["error"]
+    assert controller.errorText == ""
+
+
+def test_notifications_are_fetched_only_while_watched_and_forgotten_after(monkeypatch):
+    backend = _PhoneLinkBackend()
+    controller = _inline_controller(monkeypatch, backend)
+    controller._status = _notification_status()
+    controller.refreshNotifications()
+    controller._notificationsInvalidated()
+    assert backend.notification_calls == 0
+
+    controller.watchNotifications(True)
+    assert backend.notification_calls == 1
+    assert controller.notifications[0]["app"] == "com.example.chat"
+    assert controller.notifications[0]["body"] == ""
+    assert controller.notificationsInfo == {"enabled": True, "content": False, "error": ""}
+
+    controller.watchNotifications(False)
+    assert controller.notifications == []
+
+
+def _notification_status(**changes):
+    return {
+        "daemon": True, "notification_history_enabled": True,
+        "notification_content_shown": True, "storage_state": "ready",
+        "phone_profile_id": "11111111-1111-4111-8111-111111111111", **changes,
+    }
+
+
+def _notification_snapshot(body="private notification", **changes):
+    return {
+        "enabled": True, "content": True, "notifications": [
+            {"app_id": "com.example.chat", "title": "Private title",
+             "subtitle": "Private subtitle", "body": body},
+        ], **changes,
+    }
+
+
+@pytest.fixture
+def notification_controller(monkeypatch):
+    controller = BridgeController(backend=object(), setup=object(), subscribe=False, autostart=False)
+    controller._storage_unlock_attempted = True
+    pending = []
+
+    def run_deferred(operation, on_done=None, on_failed=None, *, busy=True):
+        assert busy is False
+        pending.append((on_done, on_failed))
+
+    monkeypatch.setattr(controller, "_run", run_deferred)
+
+    def status(**changes):
+        controller._apply_snapshot((ConversationSnapshot(
+            status=BackendStatus.from_dict(_notification_status(**changes)),
+        ), None))
+        controller._now_playing_timer.stop()
+
+    status()
+    yield controller, pending, status
+    controller._notifications_timer.stop()
+    controller._now_playing_timer.stop()
+    controller.deleteLater()
+
+
+@pytest.mark.parametrize("change", [
+    {"daemon": False}, {"notification_history_enabled": False}, {"storage_state": "locked"},
+    {"notification_content_shown": False},
+    {"phone_profile_id": "22222222-2222-4222-8222-222222222222"},
+])
+@pytest.mark.parametrize("outcome", ["success", "error"])
+def test_notification_access_change_clears_rows_and_rejects_old_responses(
+    notification_controller, change, outcome,
+):
+    controller, pending, status = notification_controller
+    controller.watchNotifications(True)
+    pending.pop()[0](_notification_snapshot())
+    assert controller.notifications[0]["body"] == "private notification"
+    controller.refreshNotifications()
+    old_done, old_failed = pending.pop()
+
+    status(**change)
+    assert controller.notifications == []
+    assert controller.notificationsInfo["content"] is False
+    if outcome == "success":
+        old_done(_notification_snapshot("stale private text"))
+    else:
+        old_failed("stale error")
+    assert controller.notifications == []
+    assert controller.notificationsInfo["error"] == ""
+
+    if change.get("notification_content_shown") is False:
+        pending.pop()[0](_notification_snapshot())
+        assert controller.notifications[0]["app"] == "com.example.chat"
+        assert all(controller.notifications[0][field] == "" for field in ("title", "subtitle", "body"))
+    elif "phone_profile_id" in change:
+        pending.pop()[0](_notification_snapshot("new phone"))
+        assert controller.notifications[0]["body"] == "new phone"
+    else:
+        assert pending == []
+        status()
+        assert len(pending) == 1
+        pending.pop()[0](_notification_snapshot("recovered"))
+        assert controller.notifications[0]["body"] == "recovered"
+
+
+@pytest.mark.parametrize("outcome", ["success", "error"])
+def test_notification_response_cannot_cross_tab_visits(notification_controller, outcome):
+    controller, pending, _status = notification_controller
+    controller.watchNotifications(True)
+    done, failed = pending.pop()
+    controller.watchNotifications(False)
+    controller.watchNotifications(True)
+    assert pending == []  # Wait for the old operation before starting another.
+    if outcome == "success":
+        done(_notification_snapshot())
+    else:
+        failed("old visit failed")
+    assert controller.notifications == []
+    assert controller.notificationsInfo["error"] == ""
+    assert len(pending) == 1
+    pending.pop()[0](_notification_snapshot("current visit"))
+    assert controller.notifications[0]["body"] == "current visit"
+
+
+def test_notification_refreshes_coalesce_and_keep_recent_rows_on_bluetooth_loss(notification_controller):
+    controller, pending, status = notification_controller
+    controller.watchNotifications(True)
+    for _ in range(10):
+        controller.refreshNotifications()
+    assert len(pending) == 1
+    pending.pop()[0](_notification_snapshot())
+    assert len(pending) == 1
+    pending.pop()[0](_notification_snapshot("latest"))
+    assert pending == []
+    status(ancs=False, map=False, pbap=False)
+    assert controller.notifications[0]["body"] == "latest"
+    assert pending == []
+
+
+@pytest.mark.parametrize("change", [{"enabled": False}, {"content": False}])
+def test_notification_snapshot_respects_its_privacy_flags(notification_controller, change):
+    controller, pending, _status = notification_controller
+    controller.watchNotifications(True)
+    pending.pop()[0](_notification_snapshot(**change))
+    if change.get("enabled") is False:
+        assert controller.notifications == []
+    else:
+        assert controller.notifications[0]["body"] == ""
+        assert controller.notifications[0]["title"] == ""
+        assert controller.notifications[0]["subtitle"] == ""
+    assert controller.notificationsInfo["content"] is False
+
+
+def test_notifications_opened_before_backend_ready_load_when_it_returns(notification_controller):
+    controller, pending, status = notification_controller
+    status(daemon=False)
+    controller.watchNotifications(True)
+    controller.refreshNotifications()
+    assert pending == []
+    status()
+    pending.pop()[1]("backend restarting")
+    assert controller.notificationsInfo["error"] == "backend restarting"
+    status(daemon=False)
+    assert controller.notificationsInfo["error"] == ""
+    status()
+    pending.pop()[0](_notification_snapshot())
+    assert controller.notifications[0]["body"] == "private notification"
+
+
+def test_phone_name_comes_from_the_configured_device():
+    controller = BridgeController(backend=object(), setup=object(), subscribe=False, autostart=False)
+    assert controller.phoneName == "iPhone"
+    controller._configuration = ConfigurationState.from_dict({"configured": True, "mac": "AA"})
+    controller._devices = [{"mac": "BB", "name": "Other"}, {"mac": "AA", "name": "Josh's iPhone"}]
+    assert controller.phoneName == "Josh's iPhone"
+
+
+@pytest.mark.parametrize(("calls_state", "expected"), [
+    ("connecting", "connecting to the iPhone"),
+    ("searching", "connecting to the iPhone"),
+    ("unavailable", "oFono is not running"),
+    ("ready", "Waiting for battery and signal"),
+])
+def test_phone_status_hint_names_the_hands_free_state(calls_state, expected):
+    hints = phone_link.feature_hints({"calls_enabled": True, "calls_state": calls_state})
+    assert expected in hints["phoneStatus"]
+
+
+def _inline_controller(monkeypatch, backend):
+    controller = BridgeController(backend=backend, setup=object(), subscribe=False, autostart=False)
+
+    def run_inline(operation, on_done=None, on_failed=None, *, busy=True):
+        assert busy is False
+        try:
+            value = operation()
+        except Exception as error:
+            on_failed(str(error))
+        else:
+            if on_done is not None:
+                on_done(value)
+
+    monkeypatch.setattr(controller, "_run", run_inline)
+    return controller
+
+
+class _PhoneLinkBackend:
+    def __init__(self, *, fail_notifications=False):
+        self.routes = []
+        self.notification_calls = 0
+        self.fail_notifications = fail_notifications
+
+    def set_phone_audio_route(self, route):
+        self.routes.append(route)
+        return route
+
+    def notifications(self, limit=50):
+        self.notification_calls += 1
+        if self.fail_notifications:
+            raise BackendError("local history is locked")
+        return {"enabled": True, "content": False, "notifications": [
+            {"id": 1, "app_id": "com.example.chat", "app_name": "",
+             "time": "2026-10-06T10:00:00+00:00"},
+        ]}
+
+
 def test_manual_reconnect_reports_an_unreachable_phone(monkeypatch):
     from blueferry.reconnect_view import UNREACHABLE_TEXT
 
@@ -1870,10 +2121,14 @@ def test_phone_links_only_ask_for_confirmation():
     controller.requestDialLink("tel:7042;phone-context=example.com")
     controller.requestDialLink("tel:+15550100000;ext=7")
     controller.requestDialLink("tel:+15550100000;m-routing=private")
+    controller.requestDialLink("Alice 2026")
+    controller.requestDialLink("+1 555 123 4567 ext 89")
+    controller.requestDialLink("0491570156")
     controller._pool.waitForDone(1000)
     assert requested == [
         ("+15550100000", ""), ("", "invalid"), ("112", "emergency"),
         ("", "invalid"), ("", "invalid"), ("", "invalid"),
+        ("", "invalid"), ("", "invalid"), ("0491570156", ""),
     ]
     assert backend.dialed == []
     assert controller.contactNameForNumber("+15550100000") == "Test Contact"
