@@ -193,6 +193,42 @@ def test_send_to_picks_a_target_and_closes_after_sending(tmp_path) -> None:
     _run_headless(scenario())
 
 
+def test_send_to_catches_up_on_a_send_that_finished_under_another_screen(tmp_path) -> None:
+    from textual.screen import ModalScreen
+
+    payload = tmp_path / "b.jpg"
+    payload.write_bytes(b"x")
+
+    async def scenario() -> None:
+        fakes, bus = _Fakes(), _Bus()
+        app = _PanelApp(fakes, bus)
+        async with app.run_test(size=(100, 40)) as pilot:
+            panel = app.query_one(PluginCardsPanel)
+            await _until(pilot, lambda: panel.display)
+            await pilot.click("#plugin-cards-send")
+            await _until(pilot, lambda: isinstance(app.screen, SendToScreen))
+            screen = app.screen
+            targets = screen.query_one("#send-targets", OptionList)
+            await _until(pilot, lambda: targets.option_count == 2)
+            screen.query_one("#send-paths", Input).value = str(payload)
+            screen.send()
+            # Like the command palette: the send finishes while covered.
+            cover: ModalScreen[None] = ModalScreen()
+            app.push_screen(cover)
+            loads = fakes.loads
+            await _until(pilot, lambda: fakes.sent and not panel.model.state()["busy"])
+            # ... and so does the card reload after it: no change is left to
+            # forward once the cover goes.
+            await _until(pilot, lambda: fakes.loads > loads
+                         and not panel.model.state()["busy"])
+            await pilot.pause(0.1)
+            assert app.screen is cover
+            app.pop_screen()
+            await _until(pilot, lambda: not isinstance(app.screen, SendToScreen))
+
+    _run_headless(scenario())
+
+
 def test_overview_shows_the_plugin_panel_only_when_asked() -> None:
     async def scenario() -> None:
         fakes, bus = _Fakes(), _Bus()

@@ -397,6 +397,11 @@ class SendToScreen(ModalScreen[None]):
         self.model_changed()
         self.query_one("#send-paths", Input).focus()
 
+    def on_screen_resume(self) -> None:
+        # The panel forwards changes only while this screen is on top; one
+        # that came in under the command palette is picked up here.
+        self.model_changed()
+
     def model_changed(self) -> None:
         """The panel forwards every change of the shared model."""
         if not self.is_attached:
