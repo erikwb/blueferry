@@ -23,6 +23,7 @@ def test_gtk_phone_card(tmp_path, scenario):
 
 CALLS_READY = {
     "daemon": True, "map": True, "calls_enabled": True, "calls_state": "ready",
+    "storage_state": "ready",
 }
 
 
@@ -98,8 +99,8 @@ class FakeClient:
     def list_threads_async(self, *_args, **_kwargs):
         pass
 
-    def contact_photo_async(self, *_args, **_kwargs):
-        pass
+    def contact_photo_async(self, address, on_ok, on_err=None):
+        self.calls.append((("photo", address), on_ok, on_err))
 
     def names(self):
         return [call[0] for call in self.calls]
