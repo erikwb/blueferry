@@ -49,6 +49,7 @@ observational; a missing interface only leaves those values unknown.
 from __future__ import annotations
 
 import logging
+from collections import deque
 from collections.abc import Callable, Mapping
 from dataclasses import replace
 from typing import Any
@@ -129,6 +130,9 @@ CONFLICT_RETRY_SEC = 300
 # oFono's CallVolume is a percentage; iPhone call audio is inaudibly faint at
 # oFono's 50 % default.
 CALL_VOLUME_MAX = 100
+# SendTones requests waiting behind the one oFono is playing. Keypad clicks
+# arrive faster than tones play; beyond this a client is misbehaving.
+MAX_QUEUED_TONE_REQUESTS = 32
 
 Schedule = Callable[[int, Callable[[], bool]], int]
 Cancel = Callable[[int], object]
@@ -228,6 +232,9 @@ class CallController:
         # Log-once keys, reset whenever the phone status is dropped.
         self._phone_errors: set[str] = set()
         self._phone_announced = False
+        # Keypad tones go to oFono one request at a time, in arrival order.
+        self._tone_queue: deque[tuple[str, str, Success, Failure]] = deque()
+        self._tone_busy = False
 
     # ---- public state -------------------------------------------------
 
@@ -1267,9 +1274,44 @@ class CallController:
         record = self._find(call_id)
         if record.state != "active":
             raise InvalidArgumentsError("DTMF tones need an active call")
-        self._control(
-            modem, VOICE_CALL_MANAGER_IFACE, "SendTones", "s", (selected,), success, failure,
-        )
+        if len(self._tone_queue) >= MAX_QUEUED_TONE_REQUESTS:
+            raise InvalidArgumentsError("too many keypad tones are waiting; try again")
+        self._tone_queue.append((modem, selected, success, failure))
+        self._next_tones()
+
+    def _next_tones(self) -> None:
+        """Hand oFono the oldest waiting tones once the previous ones played.
+
+        Fast keypad clicks become several requests; serializing them keeps
+        their order on the line. The tones themselves are never logged (they
+        can be a PIN), only how many.
+        """
+        if self._tone_busy or not self._tone_queue:
+            return
+        modem, tones, success, failure = self._tone_queue.popleft()
+        self._tone_busy = True
+
+        def sent(value: Any) -> None:
+            self._tone_busy = False
+            log.info("sent %d keypad tone(s) to the active call", len(tones))
+            try:
+                success(value)
+            except Exception:
+                # Never let the caller's reply reach _control's failure path:
+                # that would start a second request in parallel.
+                log.exception("keypad tones reply failed")
+            finally:
+                self._next_tones()
+
+        def failed(error: Exception) -> None:
+            # _control already logged oFono's error at WARNING.
+            self._tone_busy = False
+            try:
+                failure(error)
+            finally:
+                self._next_tones()
+
+        self._control(modem, VOICE_CALL_MANAGER_IFACE, "SendTones", "s", (tones,), sent, failed)
 
     def swap(self, success: Success, failure: Failure) -> None:
         modem = self._require_ready()
