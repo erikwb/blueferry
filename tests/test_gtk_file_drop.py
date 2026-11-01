@@ -16,12 +16,13 @@ import pytest
 from tests.gtk_broadway import run_scenario
 
 
-@pytest.mark.parametrize("scenario", ["one", "several", "folder", "none", "pick", "remote"])
+@pytest.mark.parametrize("scenario", ["one", "several", "folder", "none", "pick", "remote",
+                                      "long", "sending"])
 def test_gtk_file_drop(tmp_path, scenario):
     run_scenario(tmp_path, str(Path(__file__).resolve()), scenario)
 
 
-def _setup(choices):
+def _setup(choices, sending=None):
     from types import SimpleNamespace
 
     from blueferry import plugin_surfaces as surfaces
@@ -43,14 +44,24 @@ def _setup(choices):
                         send=send, **callbacks)
 
     t = _window(file_drop=factory)
+    if sending is not None:
+        t.window.file_drop.model._is_sending = lambda: sending[0]
     toasts: list[str] = []
-    t.window.file_drop._toast = toasts.append
+    longs: list[str] = []
+
+    def toast(text: str, long: bool = False) -> None:
+        toasts.append(text)
+        if long:
+            longs.append(text)
+
+    t.window.file_drop._toast = toast
     tmp = Path(tempfile.mkdtemp())
     for name in ("a.txt", "b.txt"):
         (tmp / name).write_text(name)
     (tmp / "Pictures").mkdir()
     return SimpleNamespace(window=t.window, zone=t.window.file_drop, work=work, sent=sent,
-                           toasts=toasts, tmp=tmp, settle=_settle, settings=FakeSettings)
+                           toasts=toasts, longs=longs, tmp=tmp, settle=_settle,
+                           settings=FakeSettings)
 
 
 def _files(*paths):
@@ -159,6 +170,55 @@ def _exercise_remote():
     t.window.destroy()
 
 
+def _exercise_long():
+    # A failure stays longer than a progress notice, as in Qt.
+    t = _setup(_choices(PHONE))
+    t.zone._drop(t.zone.target, _files(t.tmp / "Pictures"), 0, 0)
+    t.work.run_tasks()
+    t.settle()
+    assert t.longs == ["Folders cannot be sent; skipped Pictures."]
+    t.zone._drop(t.zone.target, _files(t.tmp / "a.txt"), 0, 0)
+    t.work.run_tasks()
+    t.settle()
+    assert t.toasts[-2:] == ["Sending a file to iPhone…", "Sent."]
+    assert len(t.longs) == 1
+    # The window's toast: longer and first in line for a failure.
+    from blueferry.ui.window import Adw
+
+    shown = []
+    t.window._toasts.add_toast = shown.append
+    t.window.toast("ok")
+    t.window.toast("failed", True)
+    assert shown[1].get_timeout() == 2 * shown[0].get_timeout()
+    assert shown[1].get_priority() == Adw.ToastPriority.HIGH
+
+
+def _exercise_sending():
+    # A drop and a pick wait while the card's "Send to…" is sending.
+    sending = [True]
+    t = _setup(_choices(PHONE, ABLAGE), sending)
+    t.zone._drop(t.zone.target, _files(t.tmp / "a.txt"), 0, 0)
+    assert t.work.pending == []
+    assert t.longs == ["Still busy with the last drop; try again in a moment."]
+    sending[0] = False
+    t.zone._drop(t.zone.target, _files(t.tmp / "a.txt"), 0, 0)
+    t.work.run_tasks()
+    t.settle()
+    sending[0] = True
+    t.zone.choice_buttons["io.example.ablage:drop"].set_active(True)
+    t.zone.dialog.emit("response", "send")
+    t.settle()
+    assert t.sent == []
+    # The picker comes back with the same choice.
+    assert t.zone.dialog is not None
+    assert t.zone.choice_buttons["io.example.ablage:drop"].get_active()
+    sending[0] = False
+    t.zone.dialog.emit("response", "send")
+    t.work.run_tasks()
+    t.settle()
+    assert t.sent == [("io.example.ablage:drop", ["a.txt"])]
+
+
 if __name__ == "__main__":
     {
         "one": _exercise_one,
@@ -167,4 +227,6 @@ if __name__ == "__main__":
         "none": _exercise_none,
         "pick": _exercise_pick,
         "remote": _exercise_remote,
+        "long": _exercise_long,
+        "sending": _exercise_sending,
     }[sys.argv[1]]()

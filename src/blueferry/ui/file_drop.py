@@ -7,7 +7,9 @@ the shared :class:`~blueferry.file_drop_view.FileDrop`, which picks the
 ``Gtk.DropTarget`` deeper in the widget tree, so GTK hands drops on it to
 that item. Several targets open an ``AdwAlertDialog`` with one radio button
 each; none opens an explanation with a way to Settings > Plugins. Notices
-are toasts. Every text comes from the presenter as plain text.
+are toasts; a failure stays longer, like the Qt client's "long" notice.
+A drop waits while the plugin card's "Send to…" is sending
+(``is_sending``). Every text comes from the presenter as plain text.
 """
 
 from __future__ import annotations
@@ -21,7 +23,7 @@ from blueferry import file_drop_view as view
 from blueferry.file_drop_view import FileDrop
 from blueferry.i18n import _
 
-# ``factory(notify=..., on_change=..., on_sent=...)`` -> FileDrop
+# ``factory(notify=..., on_change=..., on_sent=..., is_sending=...)`` -> FileDrop
 FileDropFactory = Callable[..., FileDrop]
 
 
@@ -45,9 +47,10 @@ class FileDropZone:
         window: Gtk.Widget,
         factory: FileDropFactory,
         *,
-        toast: Callable[[str], None],
+        toast: Callable[[str, bool], None],
         open_plugin_settings: Callable[[], None],
         on_sent: Callable[[], None] = lambda: None,
+        is_sending: Callable[[], bool] = lambda: False,
     ) -> None:
         self._window = window
         self._toast = toast
@@ -56,7 +59,8 @@ class FileDropZone:
         self._dialog_phase = ""
         self._selected = ""
         self.choice_buttons: dict[str, Gtk.CheckButton] = {}
-        self.model = factory(notify=self._notify, on_change=self._render, on_sent=on_sent)
+        self.model = factory(notify=self._notify, on_change=self._render, on_sent=on_sent,
+                             is_sending=is_sending)
 
         status = Adw.StatusPage(
             icon_name="document-send-symbolic", title=view.overlay_title(),
@@ -101,9 +105,9 @@ class FileDropZone:
 
     # ---- feedback -----------------------------------------------------------------
 
-    def _notify(self, text: str, _ok: bool) -> None:
+    def _notify(self, text: str, ok: bool) -> None:
         if text:
-            self._toast(text)
+            self._toast(text, not ok)  # a failure stays longer
 
     def _render(self) -> None:
         state = self.model.state()
@@ -160,6 +164,9 @@ class FileDropZone:
         def responded(response: str) -> None:
             if response == "send" and self._selected:
                 self.model.pick(self._selected)
+                if self.model.state()["phase"] == view.PICKING:
+                    # Refused while "Send to…" is sending: ask again.
+                    self._show_picker({**self.model.state(), "selected": self._selected})
             else:
                 self.model.cancel()
 

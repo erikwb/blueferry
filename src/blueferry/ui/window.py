@@ -188,6 +188,7 @@ class MainWindow(Adw.ApplicationWindow):
             self, file_drop or default_file_drop(client), toast=self.toast,
             open_plugin_settings=lambda: self.present_phone_settings("plugins"),
             on_sent=self.plugin_cards.schedule_reload,
+            is_sending=lambda: self.plugin_cards.model.sending,
         )
         drop_overlay = Gtk.Overlay(child=content)
         self.file_drop.attach(drop_overlay)
@@ -307,8 +308,13 @@ class MainWindow(Adw.ApplicationWindow):
 
     # ---- feedback -------------------------------------------------------
 
-    def toast(self, text: str) -> None:
-        self._toasts.add_toast(Adw.Toast(title=text, use_markup=False))
+    def toast(self, text: str, long: bool = False) -> None:
+        """A short notice; ``long`` (a failure) stays twice as long."""
+        toast = Adw.Toast(title=text, use_markup=False)
+        if long:
+            toast.set_timeout(toast.get_timeout() * 2)
+            toast.set_priority(Adw.ToastPriority.HIGH)
+        self._toasts.add_toast(toast)
 
     def compose_message(self, address: str) -> None:
         self.show_tab("messages")
