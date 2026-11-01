@@ -58,7 +58,7 @@ from blueferry.models import (
     phone_status_fields,
 )
 from blueferry.onboarding import ancs_unavailable_detail
-from blueferry.phone_audio_view import phone_audio
+from blueferry.phone_audio_view import av_sync, phone_audio
 from blueferry.protocol import BUS_NAME, EVENTS_IFACE, OBJECT_PATH, TETHER_IFACE
 from blueferry.recipients import participant_lines
 from blueferry.reconnect_view import (
@@ -1325,11 +1325,13 @@ class BlueFerryApp(App[None]):
             f"{label} {value}"
             for label, value in phone_status_fields(status, include_network=False)
         ]
-        audio = phone_audio(status.to_dict())
+        values = status.to_dict()
+        audio = phone_audio(values)
         if audio["available"]:
             extras.append("sound here" if audio["on_pc"] else "sound on iPhone")
-        if audio["sync"]:
-            extras.append(audio["sync"].rstrip("."))
+        sync = av_sync(values, terse=True)
+        if sync:
+            extras.append(sync)
         if extras:
             summary = "  ·  ".join([summary, *extras])
         connection = self.query_one("#connection-summary", Static)

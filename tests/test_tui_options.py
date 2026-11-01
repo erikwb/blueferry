@@ -355,6 +355,29 @@ def test_sound_route_and_automatic_reset_are_options_too() -> None:
     asyncio.run(scenario())
 
 
+def test_sound_route_caption_shows_the_av_sync_line_under_the_hint() -> None:
+    async def scenario() -> None:
+        backend = _OptionsBackend(extra={
+            **_FULL_EXTRA, "phone_audio_route": "pc", "phone_audio_playing": "pc",
+            "phone_audio_delay_reporting": True, "phone_audio_delay_ms": 110,
+        })
+        app = _app(backend)
+        async with app.run_test(size=(120, 40)) as pilot:
+            screen = await _open(app, pilot, "calls")
+            caption = screen.query_one("#opt-phone_audio-caption", Static)
+            assert str(caption.render()).split("\n") == [
+                "Playing on this computer.",
+                "A/V sync: 110 ms delay reported to the iPhone.",
+            ]
+            # Without an open stream only the hint is left.
+            backend.extra.pop("phone_audio_delay_reporting")
+            screen.load_status()
+            await _until(pilot, lambda: "A/V sync" not in str(caption.render()))
+            assert str(caption.render()) == "Playing on this computer."
+
+    asyncio.run(scenario())
+
+
 def test_popup_policy_saves_through_the_select() -> None:
     async def scenario() -> None:
         backend = _OptionsBackend(policy="all")
