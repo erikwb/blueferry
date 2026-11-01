@@ -1060,9 +1060,26 @@ def test_delay_follows_properties_changed_and_announces_it():
     bus.receivers["TransportPropertiesChanged"](
         FD, "org.bluez.MediaTransport1", {"Delay": 10984}, [])
     assert len(changes) == before + 1
+    # Invalidated without a value: still reporting, the last value stays.
     bus.receivers["TransportPropertiesChanged"](
         FD, "org.bluez.MediaTransport1", {}, ["Delay"])
+    assert _delay(subject) == (1098, True)
+    assert len(changes) == before + 1
+
+
+def test_an_invalidated_delay_without_a_value_still_reports():
+    bus = Bus(tree(transport=True, state="active"))
+    subject, _timers, changes = route(bus)
+    subject.start()
     assert _delay(subject) == (None, False)
+    before = len(changes)
+    bus.receivers["TransportPropertiesChanged"](
+        FD, "org.bluez.MediaTransport1", {}, ["Delay"])
+    assert _delay(subject) == (None, True)
+    assert len(changes) == before + 1
+    bus.receivers["TransportPropertiesChanged"](
+        FD, "org.bluez.MediaTransport1", {"Delay": 500}, [])
+    assert _delay(subject) == (50, True)
 
 
 def test_delay_ignores_other_transports_and_bad_values():
