@@ -162,6 +162,16 @@ def _missed_calls(values: Values) -> bool:
     return values.get("missed_call_notifications") is not False
 
 
+# One setter writes both, so a save of either holds the other.
+_CALL_HISTORY_KEYS = frozenset({"call_history_enabled", "missed_call_notifications"})
+
+
+def _held(key: str, pending: dict[str, Any]) -> bool:
+    if key in pending:
+        return True
+    return key in _CALL_HISTORY_KEYS and not _CALL_HISTORY_KEYS.isdisjoint(pending)
+
+
 SAVED_SWITCHES: dict[str, SavedSwitch] = {
     switch.key: switch for switch in (
         SavedSwitch(
@@ -639,7 +649,9 @@ class OptionsScreen(ModalScreen[None]):
         # keypress; programmatic updates must not look like a user toggle.
         with self.prevent(Checkbox.Changed):
             checkbox.value = active
-        checkbox.disabled = saving or not daemon or not switch.editable(values)
+        checkbox.disabled = (
+            _held(switch.key, self.pending) or not daemon or not switch.editable(values)
+        )
         text = switch.caption(values)
         caption.update(Text(_one_line(text)))
         caption.display = visible and bool(text)
@@ -701,7 +713,7 @@ class OptionsScreen(ModalScreen[None]):
 
     def _save_switch(self, key: str, enabled: bool) -> None:
         switch = SAVED_SWITCHES.get(key)
-        if switch is None or self.values is None or key in self.pending:
+        if switch is None or self.values is None or _held(key, self.pending):
             return
         if enabled == switch.active(self.values):
             return

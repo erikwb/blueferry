@@ -64,15 +64,17 @@ class CallsPage(Gtk.Box):
         self._calls_error = ""
         self._calls_received = False
         self._syncing = False
+        self._history_generation = 0
         self._contacts = ConversationState(select_first=False)
         self._typed = True  # entry changes come from the keyboard
+        self._search_draft = False
         # The readiness hint the recent-call rows were built with.
         self._rows_hint: str | None = None
         self._search_timer = (timer or glib_timer)(self._search_contacts)
         self._calls_read = CoalescedRead(
             lambda ok, err: client.call_history_async(MAX_CALLS, ok, err),
             self._calls_loaded, self._calls_failed,
-            active=lambda: self._watched and overview.call_history_enabled(self._status),
+            active=lambda: self._watched and self._history_available(),
         )
 
         # Running calls first, as in Qt; they also report the Calls1 state.
@@ -225,17 +227,24 @@ class CallsPage(Gtk.Box):
     def apply_status(self, status: dict) -> None:
         """A status read by the phone card.
 
-        Only a change of the call-history opt-in reads or rebuilds the list:
-        every StatusChanged would otherwise cost a ListCallHistory and reset
-        its scroll position.
+        Ordinary status changes preserve the list and its scroll position.
+        Access and phone changes discard private data and outstanding replies.
         """
+        old_access = self._access_key()
         was_enabled = overview.call_history_enabled(self._status)
+        calls_were_enabled = self._status.get("calls_enabled") is True
         self._status = status
-        self.running.apply_status(status)
         enabled = overview.call_history_enabled(status)
-        self._render_dial_state()
-        if enabled != was_enabled:
+        access_changed = old_access != self._access_key()
+        history_changed = access_changed or enabled != was_enabled
+        if history_changed:
             self._forget_calls()
+        if access_changed or calls_were_enabled != (status.get("calls_enabled") is True):
+            self._forget_contacts()
+            self._schedule_search()
+        self.running.apply_status(status)
+        self._render_dial_state()
+        if history_changed:
             self._calls_read.refresh()
             self._render_calls()
         elif self.calls_hint != self._rows_hint:
@@ -259,10 +268,39 @@ class CallsPage(Gtk.Box):
         self._watched = watched
         if watched:
             self._calls_read.refresh()
+            self._schedule_search()
+            self._render_calls()
             return
-        self._search_timer.stop()
+        self._forget_contacts()
         self._forget_calls()
         self._render_calls()
+
+    def _access_key(self) -> tuple:
+        return tuple(self._status.get(key) for key in (
+            "daemon", "storage_policy", "storage_state", "phone_profile_id",
+        ))
+
+    def _private_data_available(self) -> bool:
+        return self._status.get("daemon") is True and (
+            self._status.get("storage_policy") == "none"
+            or self._status.get("storage_state") == "ready"
+        )
+
+    def _history_available(self) -> bool:
+        return self._private_data_available() and overview.call_history_enabled(self._status)
+
+    def _can_search(self) -> bool:
+        return (self._watched and self._private_data_available()
+                and self._status.get("calls_enabled") is True)
+
+    def _forget_contacts(self) -> None:
+        self._search_timer.stop()
+        self._contacts.begin_contact_search("")
+        self._render_suggestions()
+
+    def _schedule_search(self) -> None:
+        if self._search_draft and self._can_search() and len(self.entry.get_text().strip()) >= 2:
+            self._search_timer.start(SEARCH_DELAY_MS)
 
     # ---- dialing --------------------------------------------------------
 
@@ -271,12 +309,15 @@ class CallsPage(Gtk.Box):
         return phone_link_view.calls_hint(self._status, self.running.state)
 
     def dial(self) -> None:
-        number = phone_link_view.dialable(self.entry.get_text())
-        if number and not self.calls_hint:
-            self._dial(number)
+        # The text as typed: the confirmation dialog validates it and says
+        # why it cannot be called, instead of the pad dialing a shortened
+        # number (as in Qt).
+        text = phone_link_view.dial_input(self.entry.get_text())
+        if text and not self.calls_hint:
+            self._dial(text)
 
     def append_key(self, key: str) -> None:
-        self._set_text(phone_link_view.dialable(self.entry.get_text() + key))
+        self._set_text(self.entry.get_text() + key)
 
     def _set_text(self, text: str) -> None:
         """Change the field from the pad: no contact search, as in Qt."""
@@ -302,13 +343,13 @@ class CallsPage(Gtk.Box):
     def _entry_changed(self, _entry) -> None:
         self.delete_button.set_visible(bool(self.entry.get_text()))
         self._render_dial()
-        self._search_timer.stop()
-        self._contacts.begin_contact_search("")
-        self._render_suggestions()
-        if self._typed:
-            self._search_timer.start(SEARCH_DELAY_MS)
+        self._search_draft = self._typed
+        self._forget_contacts()
+        self._schedule_search()
 
     def _search_contacts(self) -> None:
+        if not self._can_search():
+            return
         text = self.entry.get_text().strip()
         request = self._contacts.begin_contact_search(text if len(text) >= 2 else "")
         if request is None:
@@ -316,29 +357,35 @@ class CallsPage(Gtk.Box):
             return
 
         def found(matches) -> None:
-            if self._contacts.apply_contact_results(request, list(matches)):
+            if self._can_search() and self._contacts.apply_contact_results(request, list(matches)):
                 self._render_suggestions()
 
         self._client.find_contacts_async(request.query, found, lambda _message: None)
 
     def _suggestion_activated(self, _list, row) -> None:
-        self._set_text(phone_link_view.dialable(row.address))
+        if self._can_search() and row.get_parent() is self.suggestions:
+            self._set_text(row.address)
 
     # ---- recent calls ---------------------------------------------------
 
     def sync(self) -> None:
         """Have the daemon read the iPhone's call history again."""
-        if self._syncing or not overview.call_history_enabled(self._status):
+        if self._syncing or not self._watched or not self._history_available():
             return
+        generation = self._history_generation
         self._syncing = True
         self._render_calls()
 
         def done(_value) -> None:
+            if generation != self._history_generation:
+                return
             self._syncing = False
             self._calls_read.refresh()
             self._render_calls()
 
         def failed(message: str) -> None:
+            if generation != self._history_generation:
+                return
             self._syncing = False
             if self._watched:
                 self._calls_error = message or _("Call history sync failed")
@@ -348,6 +395,8 @@ class CallsPage(Gtk.Box):
         self._client.sync_call_history_async(done, failed)
 
     def _forget_calls(self) -> None:
+        self._history_generation += 1
+        self._syncing = False
         self._calls_read.reset()
         self._calls, self._calls_error, self._calls_received = [], "", False
 
@@ -380,8 +429,8 @@ class CallsPage(Gtk.Box):
 
     def _render_dial(self) -> None:
         hint = self.calls_hint
-        number = phone_link_view.dialable(self.entry.get_text())
-        self.call_button.set_sensitive(not hint and bool(number))
+        text = phone_link_view.dial_input(self.entry.get_text())
+        self.call_button.set_sensitive(not hint and bool(text))
         self.call_button.set_tooltip_text(hint or _("Call"))
 
     def _render_suggestions(self) -> None:
@@ -401,17 +450,27 @@ class CallsPage(Gtk.Box):
         self._rows_hint = self.calls_hint
         enabled = overview.call_history_enabled(self._status)
         self.recent_header.set_visible(enabled)
-        self.sync_button.set_sensitive(enabled and not self._syncing)
+        self.sync_button.set_sensitive(
+            self._watched and self._history_available() and not self._syncing,
+        )
+        child = self.recent_list.get_first_child()
+        while child is not None:
+            self.recent_list.remove(child)
+            child = self.recent_list.get_first_child()
         if not enabled:
             self.recent_off.set_description(
                 GLib.markup_escape_text(overview.call_history_hint(self._status))
             )
             self.recent_stack.set_visible_child_name("off")
             return
-        child = self.recent_list.get_first_child()
-        while child is not None:
-            self.recent_list.remove(child)
-            child = self.recent_list.get_first_child()
+        if not self._history_available():
+            self.recent_placeholder.set_title(_("Call history is unavailable"))
+            detail = (self._status.get("storage_detail") or _("Local storage is unavailable."))
+            if self._status.get("daemon") is not True:
+                detail = _("BlueFerry service is not running")
+            self.recent_placeholder.set_description(GLib.markup_escape_text(detail))
+            self.recent_stack.set_visible_child_name("placeholder")
+            return
         missed_only = self.missed_filter.get_active()
         groups = overview.call_groups(self._calls[:MAX_CALLS], missed_only=missed_only)
         if self._calls_error or not self._calls_received or not groups:
@@ -452,15 +511,23 @@ class CallsPage(Gtk.Box):
         ))
         address = item["address"]
         if address:
+            generation = self._history_generation
+
+            def activate(action, *, calling: bool = False) -> None:
+                if (generation == self._history_generation and self._watched
+                        and self._history_available() and row.is_ancestor(self.recent_list)
+                        and (not calling or not self.calls_hint)):
+                    action(address)
+
             call = _icon_button("call-start-symbolic", _("Call back"), "flat", "circular")
             call.set_sensitive(ready)
             if not ready:
                 call.set_tooltip_text(_("Calls are not ready."))
-            call.connect("clicked", lambda _b: self._dial(phone_link_view.dialable(address)))
+            call.connect("clicked", lambda _b: activate(self._dial, calling=True))
             row.add_suffix(call)
             message = _icon_button(
                 "chat-message-new-symbolic", _("Send a message"), "flat", "circular",
             )
-            message.connect("clicked", lambda _b: self._compose(address))
+            message.connect("clicked", lambda _b: activate(self._compose))
             row.add_suffix(message)
         return row

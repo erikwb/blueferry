@@ -23,6 +23,7 @@ def test_gtk_phone_card(tmp_path, scenario):
 
 CALLS_READY = {
     "daemon": True, "map": True, "calls_enabled": True, "calls_state": "ready",
+    "storage_state": "ready",
 }
 
 
@@ -107,8 +108,8 @@ class FakeClient:
     def list_threads_async(self, *_args, **_kwargs):
         pass
 
-    def contact_photo_async(self, *_args, **_kwargs):
-        pass
+    def contact_photo_async(self, address, on_ok, on_err=None):
+        self.calls.append((("photo", address), on_ok, on_err))
 
     def names(self):
         return [call[0] for call in self.calls]
@@ -318,7 +319,6 @@ def _exercise_dial_pad():
     assert not calls.hint_banner.get_revealed()
     for key in ("0", "7", "9", "#"):
         calls.keys[key].emit("clicked")
-    calls.append_key("x")
     assert calls.entry.get_text() == "079#"
     assert runner.timers[0].delay is None, "the pad does not search contacts"
     calls.delete_button.emit("clicked")
@@ -362,6 +362,27 @@ def _exercise_dial_pad():
     _settle()
     assert window._dial_dialog is not None
     window._dial_dialog.force_close()
+
+    # Typed text is kept as it is, like in Qt: spacing is fine, but an
+    # extension or a service code is refused by the dialog, never shortened
+    # into another number.
+    calls.entry.set_text("+41 79 000 00 01")
+    assert calls.entry.get_text() == "+41 79 000 00 01"
+    calls.call_button.emit("clicked")
+    client.answer_status(CALLS_READY)
+    _settle()
+    assert "+41790000001" in window._dial_dialog.get_body()
+    window._dial_dialog.force_close()
+    for text in ("+1 555 123 4567 ext 89", "**21*15551234567#"):
+        calls.entry.set_text(text)
+        assert calls.call_button.get_sensitive()
+        calls.call_button.emit("clicked")
+        _settle()
+        dialog = window._dial_dialog
+        assert dialog is not None and dialog.get_heading() == "Can't Call This Number"
+        assert calls.entry.get_text() == text
+        dialog.force_close()
+    assert not [name for name in client.names() if name[0] == "dial" and name[1] != "0491570156"]
     window.destroy()
 
 
