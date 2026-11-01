@@ -90,6 +90,22 @@ def test_several_targets_wait_for_the_pick_and_a_folder_is_skipped(app, tmp_path
     assert sent == [(ABLAGE.key, [str(path.resolve()) for path in files])]
 
 
+def test_a_drop_waits_while_send_to_is_sending(app, tmp_path, track):
+    payload = tmp_path / "a.txt"
+    payload.write_text("x")
+    sent: list[tuple] = []
+    notices: list[tuple] = []
+    adapter = _adapter(track, [PHONE], sent, notices)
+    adapter.model._update(busy="send:" + PHONE.key)  # "Send to…" is running
+    adapter.drop([QUrl.fromLocalFile(str(payload))])
+    assert notices == [("Still busy with the last drop; try again in a moment.", False)]
+    assert adapter.file_drop.state()["phase"] == "idle"
+    adapter.model._update(busy="")
+    adapter.drop([QUrl.fromLocalFile(str(payload))])
+    wait(lambda: ("Sent.", True) in notices)
+    assert sent == [(PHONE.key, [str(payload.resolve())])]
+
+
 def test_no_target_leaves_the_explanation_for_the_window(app, tmp_path, track):
     payload = tmp_path / "a.txt"
     payload.write_text("x")
@@ -214,6 +230,13 @@ def test_the_picker_preselects_and_a_dismissal_cancels(app):
     picker = _picker(engine, layer, "fileDropPicker")
     assert picker.property("opened") or picker.property("visible")
     assert picker.property("selectedKey") == ABLAGE.key
+    # Send keeps the selection: a pick refused while "Send to…" is busy
+    # leaves the picker open with the same target.
+    engine.evaluate("(function (d) { d.customFooterActions[0].trigger() })").call(
+        [engine.newQObject(picker)])
+    assert _variant(bridge.property("calls")) == ["pick " + ABLAGE.key]
+    assert picker.property("selectedKey") == ABLAGE.key
+    bridge.setProperty("calls", [])
     picker.close()
     wait(lambda: "cancel" in json.dumps(_variant(bridge.property("calls"))))
     assert _variant(bridge.property("calls")) == ["cancel"]

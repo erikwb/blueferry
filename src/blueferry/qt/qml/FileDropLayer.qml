@@ -89,11 +89,9 @@ Item {
                 text: layer.dropState.sendLabel || ""
                 icon.name: "document-send"
                 enabled: pickerDialog.selectedKey !== ""
-                onTriggered: {
-                    const key = pickerDialog.selectedKey
-                    pickerDialog.selectedKey = ""
-                    layer.bridge.pickDropTarget(key)
-                }
+                // The selection stays: a pick refused while "Send to…" is
+                // busy keeps the picker open with the same target.
+                onTriggered: layer.bridge.pickDropTarget(pickerDialog.selectedKey)
             }
         ]
 

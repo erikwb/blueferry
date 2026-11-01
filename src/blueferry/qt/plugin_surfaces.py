@@ -73,6 +73,8 @@ class PluginSurfaces(QObject):
             runner=QtTaskRunner(pool), notify=self.dropNotice.emit,
             on_change=self.dropChanged.emit, on_sent=self.model.schedule_reload,
             load_targets=load_targets, send=send,
+            # One SendFiles per plugin at a time: a drop waits for "Send to…".
+            is_sending=lambda: self.model.sending,
         )
 
     def state(self) -> dict:
