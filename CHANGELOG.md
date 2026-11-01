@@ -35,16 +35,6 @@
   holds in memory; there is no search index on disk. `ListCallHistory`
   entries gain an opaque `id`, and `GetStatus` reports `search_result_limit`.
   CLI: `blueferry search`.
-- GTK client: a **Contacts** tab lists the contact cards with a search
-  field (searching after a short pause while typing) and loads more cards
-  at the end of the list; a card shows every labelled number, email and
-  postal address, company, job title and photo, with **Call** (asks first)
-  and **Message**, and the list reloads when `contact_card_epoch` changes.
-  A global search (header button, `Ctrl+K` or `Ctrl+F`) shows the grouped
-  hits and opens the conversation at the message, the contact card or the
-  call. The shared models `contacts_model` and `search_model` hold the
-  paging, debouncing and stale-id handling for every client; recent-call
-  rows carry the call `ids`.
 - Shared presenter `file_drop_view` for files dropped on the KDE and GTK
   main windows: it holds the decisions and texts, so both clients send the
   files to a **Send to…** target the same way (the only target at once, a
@@ -57,8 +47,7 @@
   once with a toast, a picker for several (the session's last pick
   preselected), or an explanation with a button to Settings › Plugins when
   no `share` plugin is there. Only local `file://` URIs, 1 to 64 files;
-  folders and remote URIs are skipped. The decisions and texts live in the
-  shared presenter `file_drop_view` for the GTK and KDE clients.
+  folders and remote URIs are skipped.
 - Client models: `contacts_model` and `search_model` hold the paging,
   typing delay, stale-id and busy handling of the contact list and the
   global search for the KDE, GTK and terminal clients; recent-call rows
