@@ -214,6 +214,24 @@ def test_recent_calls_screen_lists_calls_as_plain_text() -> None:
     _run_headless(scenario())
 
 
+def test_recent_calls_buttons_fit_an_80_column_terminal() -> None:
+    backend = _PhoneBackend(call_history_enabled=True)
+
+    async def scenario() -> None:
+        app = BlueFerryApp(TuiState(backend), monitor_factory=lambda: None)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await _until(pilot, lambda: app.state.status.extra.get("call_history_enabled"))
+            await pilot.press("h")
+            screen = app.screen
+            await _until(pilot, lambda: "Ana" in screen.body_text)
+            await pilot.pause(0.05)
+            dialog = screen.query_one("#recent-calls-dialog").region
+            for button in screen.query(Button):
+                assert dialog.contains_region(button.region), button.id
+
+    _run_headless(scenario())
+
+
 def test_recent_calls_need_the_opt_in() -> None:
     backend = _PhoneBackend()
 
