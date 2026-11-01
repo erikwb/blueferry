@@ -184,6 +184,10 @@ class CallsScreen(ModalScreen[None]):
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "close", "Close", show=False),
     ]
+    # on_mount focuses the number field itself. Automatic focus would run
+    # again on screen resume and could put the focus back into the empty
+    # field after a connected call took it away.
+    AUTO_FOCUS = ""
 
     def __init__(
         self,

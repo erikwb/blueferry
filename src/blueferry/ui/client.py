@@ -635,6 +635,15 @@ class DaemonClient(GObject.Object):
             mutation=True,
         )
 
+    def send_call_tones_async(self, call_id: str, tones: str, on_ok, on_err) -> None:
+        """Keypad tones (DTMF) on the active call (Calls1.SendTones)."""
+        self._submit(
+            lambda: self._call_backend(lambda backend: backend.send_call_tones(call_id, tones)),
+            on_ok,
+            on_err,
+            mutation=True,
+        )
+
     def set_contact_photos_async(self, enabled: bool, on_ok, on_err) -> None:
         self._submit(
             lambda: self._call_backend(lambda backend: backend.set_contact_photos(enabled)),

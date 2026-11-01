@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from gi.repository import Adw, GLib, Gtk, Pango
+from gi.repository import Adw, Gdk, GLib, Gtk, Pango
 
 from blueferry import phone_link_view
 from blueferry import phone_overview as overview
@@ -67,6 +67,7 @@ class CallsPage(Gtk.Box):
         self._history_generation = 0
         self._contacts = ConversationState(select_first=False)
         self._typed = True  # entry changes come from the keyboard
+        self._active_call = ""
         self._search_draft = False
         # The readiness hint the recent-call rows were built with.
         self._rows_hint: str | None = None
@@ -252,9 +253,40 @@ class CallsPage(Gtk.Box):
 
     def _running_state_changed(self) -> None:
         """A ListCalls answer may change readiness without a status read."""
+        active = self.running.active_call_id
+        if active and active != self._active_call:
+            # A call just connected: an empty number field must not swallow
+            # the keyboard's keypad keys meant for the call's menu.
+            root = self.get_root()
+            if root is not None and root.get_focus() is not None and not self.entry.get_text() \
+                    and root.get_focus().is_ancestor(self.entry):
+                root.set_focus(None)
+        self._active_call = active
         self._render_dial_state()
         if self.calls_hint != self._rows_hint:
             self._render_calls()
+
+    def tone_key(self, keyval: int, state: int = 0) -> bool:
+        """A key press in the window: 0-9, * and # (also from the number pad)
+        are keypad tones while a call is active and no text field has the
+        focus. Returns True when the key was used."""
+        shortcut = (
+            Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.ALT_MASK
+            | Gdk.ModifierType.SUPER_MASK
+        )
+        if int(state) & int(shortcut):
+            return False  # Ctrl+1 and friends stay shortcuts
+        key = Gdk.keyval_to_unicode(keyval)
+        char = chr(key) if key else ""
+        if char not in phone_link_view.TONE_KEYS or not self.running.active_call_id:
+            return False
+        root = self.get_root()
+        focus = root.get_focus() if root is not None else None
+        if isinstance(focus, Gtk.Editable | Gtk.Text | Gtk.TextView) or (
+            focus is not None and isinstance(focus.get_parent(), Gtk.Editable)
+        ):
+            return False
+        return self.running.press_tone(char)
 
     def set_shown(self, shown: bool) -> None:
         """The window became visible or hidden: running calls follow it."""
@@ -317,6 +349,9 @@ class CallsPage(Gtk.Box):
             self._dial(text)
 
     def append_key(self, key: str) -> None:
+        """A dial pad key: a tone while a call is active, else part of the number."""
+        if key in phone_link_view.TONE_KEYS and self.running.press_tone(key):
+            return
         self._set_text(self.entry.get_text() + key)
 
     def _set_text(self, text: str) -> None:
@@ -332,6 +367,8 @@ class CallsPage(Gtk.Box):
         """Long press: 0 enters "+", Delete clears the field."""
         # Claimed, the button does not also report a click on release.
         gesture.set_state(Gtk.EventSequenceState.CLAIMED)
+        if key == "+" and self.running.press_tone("0"):
+            return  # "+" is for dialing; during a call the key is just 0
         if key:
             self.append_key(key)
         else:

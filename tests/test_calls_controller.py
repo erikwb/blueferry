@@ -1642,3 +1642,51 @@ def test_powered_timeouts_and_power_up_are_reported_for_profile_healing() -> Non
     transport.emit(MODEM_IFACE, "PropertyChanged", MODEM, "Powered", dbus.Boolean(True))
     assert powered == [True]
     assert controller.in_call is False
+
+
+def test_keypad_tones_go_to_ofono_one_request_at_a_time_in_order(caplog) -> None:
+    import logging
+
+    controller, transport, _timers, _changes, _events = _ready()
+    _ring(transport, state="active")
+    replies, errors = [], []
+
+    with caplog.at_level(logging.INFO, logger="blueferry.calls.controller"):
+        controller.send_tones("voicecall01", "1", replies.append, errors.append)
+        controller.send_tones("voicecall01", "2", replies.append, errors.append)
+        controller.send_tones("voicecall01", "3#", replies.append, errors.append)
+        assert [p.args for p in transport.pending if p.method == "SendTones"] == [("1",)]
+        transport.take("SendTones").on_reply()
+        assert [p.args for p in transport.pending if p.method == "SendTones"] == [("2",)]
+        transport.take("SendTones").on_error(_missing("org.ofono.Error.Failed"))
+        assert transport.take("SendTones").args == ("3#",)
+
+    assert len(replies) == 1 and len(errors) == 1
+    logged = " ".join(record.getMessage() for record in caplog.records)
+    assert "sent 1 keypad tone(s) to the active call" in logged
+    assert "3#" not in logged  # never the tones themselves
+
+
+def test_waiting_tones_are_dropped_once_their_call_is_no_longer_active() -> None:
+    controller, transport, _timers, _changes, _events = _ready()
+    _ring(transport, state="active")
+    errors: list[Exception] = []
+    controller.send_tones("voicecall01", "1", _noop, errors.append)
+    controller.send_tones("voicecall01", "2", _noop, errors.append)
+    # A swap or hold while "2" waits: oFono would play it into whichever
+    # call is active then.
+    transport.emit(VOICE_CALL_IFACE, "PropertyChanged", CALL, "State", "held")
+    transport.take("SendTones").on_reply()
+    assert not [p for p in transport.pending if p.method == "SendTones"]
+    assert len(errors) == 1 and "no longer active" in str(errors[0])
+
+
+def test_a_flood_of_keypad_tones_is_bounded() -> None:
+    from blueferry.calls.controller import MAX_QUEUED_TONE_REQUESTS
+
+    controller, transport, _timers, _changes, _events = _ready()
+    _ring(transport, state="active")
+    for _index in range(MAX_QUEUED_TONE_REQUESTS + 1):  # one in flight, the rest waiting
+        controller.send_tones("voicecall01", "1", _noop, _noop)
+    with pytest.raises(InvalidArgumentsError, match="too many"):
+        controller.send_tones("voicecall01", "1", _noop, _noop)
