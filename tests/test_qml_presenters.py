@@ -5061,6 +5061,7 @@ def test_phone_card_greys_out_opt_ins_and_switches_audio_explicitly(qml_engine, 
         hint: "Set BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE=false"
     }""")
     QGuiApplication.processEvents()
+    assert "A/V sync" not in audio.property("subtitle")  # no stream, no line
     assert "MEDIA_CONTROL" in _settings_object(window, "nowPlayingHint").property("text")
     hint = _settings_object(window, "phoneStatusHint")
     qml_engine.globalObject().setProperty("phoneStatusHint", qml_engine.newQObject(hint))
