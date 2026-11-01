@@ -517,15 +517,108 @@ ModalScreen {
 }
 
 #options-dialog {
-    width: 72;
+    width: 96;
+    height: 90%;
+}
+
+#options-tabs {
+    height: 1fr;
+}
+
+#options-tabs TabPane {
+    padding: 0;
+}
+
+.options-page {
+    height: 1fr;
+    padding: 0 1;
+}
+
+.options-group {
+    height: auto;
+    margin-bottom: 1;
+}
+
+.options-section {
+    height: auto;
+    padding-top: 1;
+    color: #7dd3fc;
+    text-style: bold;
+}
+
+.options-label {
+    height: auto;
+    padding-top: 1;
+    color: #cbd5e1;
 }
 
 #options-dialog Checkbox {
     margin-top: 1;
 }
 
+.options-caption {
+    height: auto;
+    padding-left: 4;
+    color: #94a3b8;
+}
+
+.options-action {
+    height: auto;
+    margin-top: 1;
+}
+
+.options-action-text {
+    width: 1fr;
+    height: auto;
+    padding: 0 1;
+    color: #cbd5e1;
+}
+
+#options-restart {
+    height: auto;
+    padding: 0 1;
+    margin-bottom: 1;
+    background: #3b2f0b;
+}
+
+#options-restart-notice {
+    width: 1fr;
+    height: auto;
+    padding: 1 0;
+    color: #fde68a;
+}
+
 #options-error {
+    height: auto;
     color: #fca5a5;
+}
+
+#doctor-dialog {
+    width: 100;
+    height: 90%;
+}
+
+#doctor-summary {
+    height: auto;
+    padding-bottom: 1;
+    text-style: bold;
+}
+
+#doctor-summary.ok {
+    color: #86efac;
+}
+
+#doctor-summary.warn {
+    color: #fde68a;
+}
+
+#doctor-summary.bad {
+    color: #fca5a5;
+}
+
+#doctor-report {
+    height: 1fr;
+    background: #0d1425;
 }
 
 #calls-confirm-dialog {

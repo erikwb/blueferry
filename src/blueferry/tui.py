@@ -3,19 +3,20 @@ from __future__ import annotations
 
 import sys
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
+from functools import partial
 from pathlib import Path
 from typing import ClassVar, Protocol
 
 from gi.repository import GLib
 from rich.text import Text
 from textual import events, on, work
-from textual.app import App, ComposeResult
+from textual.app import App, ComposeResult, SystemCommand
 from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.css.query import NoMatches
 from textual.message import Message
-from textual.screen import ModalScreen
+from textual.screen import ModalScreen, Screen
 from textual.widgets import (
     Button,
     Checkbox,
@@ -25,6 +26,7 @@ from textual.widgets import (
     ListView,
     Static,
     Switch,
+    TabbedContent,
     TextArea,
 )
 
@@ -38,6 +40,8 @@ from blueferry.conversation_state import (
     ReplyDisposition,
     fetch_conversation_snapshot,
 )
+from blueferry.doctor_report import DoctorReport
+from blueferry.i18n import _
 from blueferry.models import (
     BackendStatus,
     CallHistoryEntry,
@@ -60,8 +64,9 @@ from blueferry.tether_status import TetherStatus
 from blueferry.text_safety import terminal_text
 from blueferry.time_display import format_message_timestamp
 from blueferry.tui_calls import CallsScreen
+from blueferry.tui_doctor import DoctorScreen
 from blueferry.tui_notification_rules import REVISION_KEY, NotificationRulesScreen
-from blueferry.tui_options import OptionsScreen
+from blueferry.tui_options import OptionsScreen, RestartState, categories
 from blueferry.tui_phone import RecentCallsScreen, now_playing_text
 
 _REFRESH_SECONDS = 15.0
@@ -123,6 +128,15 @@ class _Client(_TetherClient, Protocol):
     def set_phone_audio_route(self, route: str) -> str: ...
     # Manual Classic reconnect (Messages1.ReconnectPhone).
     def reconnect_phone(self) -> str: ...
+
+    # Options screen: local.env switches, the popup policy, contact sync.
+    def features(self) -> dict: ...
+
+    def set_feature(self, name: str, enabled: bool) -> str: ...
+
+    def set_notification_policy(self, policy: str) -> str: ...
+
+    def sync_contacts(self) -> int: ...
 
     # Messages1.SetAutoProfileReset; returns the saved value.
     def set_auto_profile_reset(self, enabled: bool) -> bool: ...
@@ -651,7 +665,7 @@ class HelpScreen(ModalScreen[None]):
             "[bold #7dd3fc]Delete conversation[/]  Delete\n"
             f"{calls_line}"
             "[bold #7dd3fc]Internet sharing[/]  t\n"
-            "[bold #7dd3fc]Options[/]  o\n"
+            "[bold #7dd3fc]Settings · diagnostics · restart service[/]  o\n"
             "[bold #7dd3fc]Notification click rules[/]  l\n"
             f"{audio_line}"
             "[bold #7dd3fc]Reconnect iPhone[/]  b\n"
@@ -844,7 +858,7 @@ class BlueFerryApp(App[None]):
         Binding("delete", "delete_thread", "Delete"),
         Binding("c", "calls", "Calls", show=False),
         Binding("t", "tethering", "Tethering"),
-        Binding("o", "options", "Options"),
+        Binding("o", "options", "Settings"),
         Binding("l", "click_rules", "Click rules", show=False),
         Binding("a", "phone_audio", "Sound", show=False),
         Binding("b", "reconnect", "Reconnect iPhone", show=False),
@@ -861,9 +875,15 @@ class BlueFerryApp(App[None]):
         state: TuiState,
         *,
         monitor_factory: Callable[[], _Monitor | None] = _EventMonitor,
+        restart: Callable[[], None] | None = None,
+        doctor: Callable[[], DoctorReport] | None = None,
     ) -> None:
         super().__init__()
         self.state = state
+        # Seams for tests; None keeps OptionsScreen's restart_backend.
+        self._restart = restart
+        self._doctor = doctor
+        self._restart_state = RestartState()
         self._monitor_factory = monitor_factory
         self._monitor: _Monitor | None = None
         self._pending_open_handle: str | None = None
@@ -944,6 +964,11 @@ class BlueFerryApp(App[None]):
     def on_unmount(self) -> None:
         if self._monitor is not None:
             self._monitor.close()
+        # A diagnostics run still going would hold up interpreter exit
+        # until its timeout.
+        for screen in self.screen_stack:
+            if isinstance(screen, DoctorScreen):
+                screen.cancel()
 
     def on_resize(self, event: events.Resize) -> None:
         self._update_responsive(event.size.width)
@@ -1042,6 +1067,10 @@ class BlueFerryApp(App[None]):
         if self.state.status != previous_status:
             self._update_status()
             self._update_notice()
+            for screen in self.screen_stack:
+                # An Options screen not mounted yet loads the status itself.
+                if isinstance(screen, OptionsScreen) and screen.is_mounted:
+                    screen.status_changed(self.state.status)
         elif self.state.error != previous_error:
             self._update_notice()
         if threads_changed:
@@ -1374,11 +1403,46 @@ class BlueFerryApp(App[None]):
             phone_audio="phone_audio_route" in status.extra,
         ))
 
-    def action_options(self) -> None:
-        focused = self.focused
-        if isinstance(focused, Input | TextArea) or isinstance(self.screen, OptionsScreen):
+    def action_options(self, category: str = "phone") -> None:
+        # The guard keeps typing "o" in search or the composer from opening
+        # Options; the command palette opens it whatever has the focus.
+        if isinstance(self.focused, Input | TextArea):
             return
-        self.push_screen(OptionsScreen(self.state.client))
+        self._push_options(category)
+
+    def _push_options(self, category: str) -> None:
+        if isinstance(self.screen, OptionsScreen):
+            return
+        self.push_screen(OptionsScreen(
+            self.state.client, category=category, restart=self._restart,
+            doctor=self._doctor, restart_state=self._restart_state,
+        ))
+
+    def action_diagnostics(self) -> None:
+        if not isinstance(self.screen, DoctorScreen):
+            self.push_screen(DoctorScreen(self._doctor))
+
+    def get_system_commands(self, screen: Screen) -> Iterable[SystemCommand]:
+        yield from super().get_system_commands(screen)
+        # The settings live in the Settings screen (o); the palette (Ctrl+P) jumps
+        # straight to a category, so no new single-letter keys are needed.
+        for category in categories():
+            yield SystemCommand(
+                _("Settings: {category}").format(category=category.title),
+                _("Open the {category} settings").format(category=category.title),
+                partial(self._open_options_from_palette, category.key),
+            )
+        yield SystemCommand(
+            _("Run Diagnostics"),
+            _("Check Bluetooth, BlueZ OBEX, the iPhone and notifications (blueferry doctor)"),
+            self.action_diagnostics,
+        )
+
+    def _open_options_from_palette(self, category: str) -> None:
+        if isinstance(self.screen, OptionsScreen):
+            self.screen.query_one("#options-tabs", TabbedContent).active = f"options-{category}"
+            return
+        self._push_options(category)
 
     def action_tethering(self) -> None:
         focused = self.focused

@@ -66,7 +66,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `gio_dbus.py` | `GioBus`: a two-method seam (typed asynchronous `call`, `subscribe`) over a `Gio.DBusConnection`, with dbus-python-compatible error names; used by `phone_audio_route.py`. |
 | `phone_audio_view.py` | Toolkit-free wording of the PC/iPhone sound switch for every client. |
 | `features.py` | The `local.env` switches without a runtime setter of their own that clients may store in settings.json (`Messages1.GetFeatures/SetFeature`): notification content, mark read on dismiss, and notification history. |
-| `doctor_report.py` | Runs `blueferry doctor` in an owned, cancellable child process for the settings UIs and returns a plain-text report; its state map and summary (`view()`) are shared by the Qt and GTK settings. |
+| `doctor_report.py` | Runs `blueferry doctor` in an owned, cancellable child process for the settings UIs and returns a plain-text report; its state map and summary (`view()`) are shared by the Qt, GTK and terminal settings. |
 | `mpris.py` | Optional MPRIS2 player (`org.mpris.MediaPlayer2.blueferry_iphone`) over `media.py`, exported on its own private session-bus connection so the MPRIS name never addresses the BlueFerry object. |
 
 ### Bluetooth transports and supervision
@@ -165,7 +165,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `client_wire.py` | Validates and decodes `Messages1` JSON into models for every Python client. |
 | `models.py` | Typed client-side models (`BackendStatus`, `Thread`, …); `Thread` derives unread counts, approval tokens, and roster-warning keys. |
 | `conversation_state.py` | Toolkit-neutral conversation snapshot, contact search (with the plain rows of the dial and new-message suggestions), and reply planning. |
-| `client_tasks.py` | Seams for the shared client models below: a `TaskRunner` (work on a worker thread, results on the UI thread) and a restartable single-shot `Timer` (`ScheduledTimer` builds one from `GLib.timeout_add`/`source_remove`). Qt adapts them in `qt/tasks.py`; the GTK client adapts them with its worker pool and `GLib.idle_add`. |
+| `client_tasks.py` | Seams for the shared client models below: a `TaskRunner` (work on a worker thread, results on the UI thread) and a restartable single-shot `Timer` (`ScheduledTimer` builds one from `GLib.timeout_add`/`source_remove`). Qt adapts them in `qt/tasks.py`; the GTK client adapts them with its worker pool and `GLib.idle_add`; the terminal client in `tui_tasks.py`. |
 | `backend_lifecycle.py` | Starts the daemon and restarts one that predates installed files. |
 | `client_activation.py` | Picks and activates one desktop client (recency files, notification-open forwarding). |
 | `glib_client_activation.py` | GLib adapter for client activation (GTK and the Quickshell bridge). |
@@ -190,7 +190,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `cli_media.py` | `blueferry media` now-playing status, commands, and `enable`/`disable`. |
 | `cli_audio.py` | `blueferry audio [status\|pc\|phone]`. |
 | `cli_features.py` | `blueferry features [on\|off NAME]`. |
-| `features_view.py` | Toolkit-neutral state of the `GetFeatures`/`SetFeature` switches in Settings, shared by Qt and GTK: loaded or fallback for older daemons, the restart/environment notice after a change, and (`view()`) each switch row's state and note and whether a restart is pending. |
+| `features_view.py` | Toolkit-neutral state of the `GetFeatures`/`SetFeature` switches in Settings, shared by Qt, GTK and the terminal Settings screen: loaded or fallback for older daemons, the restart/environment notice after a change, and (`view()`) each switch row's state and note and whether a restart is pending. |
 | `plugin_api/` | Plugin contract: manifest parser and discovery, settings schema (`config.py`, with groups, a pre-check, `ShowIf` and the form's `[ConfigAction]` buttons), `TestConfig`/`ConfigLogin` replies (`config_flow.py`), surfaces (`card`, `share`, content-free `notify`) with checked `open_uri`, the standard log file, a validating `PluginClient`, `PluginService`/`PhotosService` bases (bounded worker pool, per-caller budget) and a test harness (`FakeHost`). Imports nothing else from `blueferry`. A symlink to `plugin-api/src/blueferry/plugin_api`, which `plugin-api/pyproject.toml` also builds as the distribution `blueferry-plugin-api` for plugins in their own repositories. |
 | `plugin_manager.py` | Installs plugins from https Git URLs: pinned ref, clone, confirmation, own venv, manifest and D-Bus service file; update, remove, enable/disable under a `flock`; validates `installs.json` on every read. |
 | `plugin_stopper.py` | After an update, removal or disabling, SIGTERMs the owner of the plugin's bus name if it runs as the user from the plugin's old venv (pidfd, never SIGKILL, never BlueFerry itself); blocking, worker thread or CLI only. |
@@ -214,7 +214,9 @@ All paths are relative to `src/blueferry/` unless noted.
 | `tui.py` | Textual terminal client. |
 | `tui_launcher.py` | Launches the TUI with the package-private Textual bundle when present. |
 | `tui_calls.py` | Optional Textual calls panel. |
-| `tui_options.py` | Textual "Options" screen (`o`): one checkbox per opt-in the daemon reports. |
+| `tui_options.py` | Textual "Settings" screen (`o`, `OptionsScreen`): the Qt/GTK settings categories as tabs, saved preferences from `GetStatus`, `local.env` feature switches via `features_view` with "Restart Service", buttons for the per-key actions. |
+| `tui_doctor.py` | Textual diagnostics report: `blueferry doctor` on a worker, plain-text report with Copy. |
+| `tui_tasks.py` | Textual `TaskRunner`/`Timer` adapters for `client_tasks` (thread workers, results via `call_from_thread`, `set_timer`). |
 | `tui_notification_rules.py` | Textual editor for notification click rules. |
 | `tui_phone.py` | Opt-in Textual now-playing line and read-only recent-calls screen. |
 | `phone_overview.py` | Toolkit-free now-playing and recent-call rules shared by the GTK, TUI and Quickshell clients (mirrors the Qt QML rules). |

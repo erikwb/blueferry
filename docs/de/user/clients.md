@@ -172,6 +172,34 @@ Themes und ein Layout, das sich schmalen Terminals anpasst.
 
 ![Terminal-Client](../../images/terminal.png)
 
+### Einstellungen
+
+`o` öffnet **Settings** mit denselben Kategorien wie die Einstellungen von Qt
+und GTK, als Reiter. Eine Einstellung erscheint nur, wenn der laufende
+Hintergrunddienst sie anbietet.
+
+| Kategorie | Inhalt |
+|---|---|
+| Phone | Zustand des Hintergrunddienstes, **Reconnect** (auch `b`), automatisches Zurücksetzen einer hängenden Verbindung (auch `B`), **Run Diagnostics**, Kontaktabgleich, Kontaktfotos |
+| Notifications | Welche Ereignisse Popups erzeugen, nur Kontakte, **Click Rules** (auch `l`), Mitteilungsinhalt, Aktionsknöpfe, Mitteilungen mit dem iPhone abgleichen, beim Wegklicken als gelesen markieren, letzte iPhone-Mitteilungen behalten |
+| Calls & Audio | Telefonate, Anrufliste und Popups für verpasste Anrufe, Akkuwarnung, iPhone-Ton auf diesem Computer (auch `a`), Mediensteuerung und MPRIS |
+| Security | Einmalcodes, Sperre bei Abwesenheit, die Speichereinstellung (nur angezeigt; ändern mit `blueferry storage-policy-set`) |
+| About | Version, der Hintergrunddienst mit **Restart Service**, die Tastenbelegung |
+
+Die Schalter, die einen Neustart brauchen (siehe oben), zeigen den Hinweis
+oben in Settings mit **Restart Service**. Ein Dienst, der sie noch nicht kennt,
+zeigt jeden Schalter ausgegraut mit der `local.env`-Variable, die stattdessen
+zu setzen ist.
+
+**Run Diagnostics** führt `blueferry doctor` aus und zeigt den Bericht.
+**Copy Report** legt ihn über das Terminal (OSC 52) in die Zwischenablage;
+reicht das Terminal das nicht weiter, markiere den Text mit der Maus.
+
+Die Befehlspalette (`Strg+P`) kennt außerdem **Settings: Phone** … **Settings:
+About** und **Run Diagnostics**. Die Kopplung bleibt bei `blueferry
+pair-setup` oder einem grafischen Client; Plugin-Einstellungen hat der
+Terminal-Client noch nicht.
+
 ## Kommandozeile
 
 Der Befehl `blueferry` hilft bei der Diagnose und in Skripten:

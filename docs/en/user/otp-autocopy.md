@@ -67,7 +67,7 @@ flowchart LR
 ## Turn it on
 
 Tick **Copy one-time codes to the clipboard** in the iPhone settings of the
-Qt, GTK or Quickshell client, or in the terminal client's Options (`o`), or
+Qt, GTK or Quickshell client, or in the terminal client's Settings (`o`), or
 run:
 
 ```bash

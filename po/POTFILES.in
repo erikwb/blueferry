@@ -71,3 +71,6 @@ src/blueferry/qt/qml/PluginCardSection.qml
 src/blueferry/companion_tools.py
 src/blueferry/companion_model.py
 src/blueferry/qt/qml/CompanionToolsSection.qml
+src/blueferry/tui.py
+src/blueferry/tui_options.py
+src/blueferry/tui_doctor.py
