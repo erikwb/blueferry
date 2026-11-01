@@ -90,6 +90,11 @@ def _contacts_screen(app) -> ContactsScreen | None:
     return screen if isinstance(screen, ContactsScreen) and screen.is_mounted else None
 
 
+def _card_rendered(screen: ContactsScreen) -> bool:
+    """The open card is loaded and on screen, with no render pending."""
+    return screen.card is not None and screen.rendered and bool(list(screen.query(DetailItem)))
+
+
 async def _open_contacts(app, pilot) -> ContactsScreen:
     await _until(pilot, lambda: "contact_card_count" in app.state.status.extra)
     app.set_focus(None)
@@ -119,8 +124,7 @@ def test_contacts_list_search_and_detail_render_iphone_text_as_plain_text() -> N
             listing.focus()
             listing.index = 0
             await pilot.press("enter")
-            await _until(pilot, lambda: screen.card is not None)
-            await _until(pilot, lambda: bool(list(screen.query(DetailItem))))
+            await _until(pilot, lambda: _card_rendered(screen))
             detail = screen.detail_text
             assert "[@click=app.quit]Ana[/]�[31m" in detail
             assert "Boss · ACME" in detail
@@ -159,7 +163,7 @@ def test_contact_actions_call_message_and_copy_the_selected_row() -> None:
         async with app.run_test(size=(130, 44)) as pilot:
             screen = await _open_contacts(app, pilot)
             screen.open_card("c0")
-            await _until(pilot, lambda: bool(list(screen.query(DetailItem))))
+            await _until(pilot, lambda: _card_rendered(screen))
             details = screen.query_one("#contacts-detail")
             details.focus()
             await _until(pilot, lambda: details.index == 1)
@@ -189,10 +193,13 @@ def test_contact_actions_call_message_and_copy_the_selected_row() -> None:
             app.action_contacts()
             screen = await _open_contacts(app, pilot)
             screen.open_card("c0")
-            await _until(pilot, lambda: bool(list(screen.query(DetailItem))))
+            # Reopening rereads the card; its render would reset the row
+            # picked before it finished, so wait for the card on screen.
+            await _until(pilot, lambda: _card_rendered(screen))
             details = screen.query_one("#contacts-detail")
             details.focus()
             details.index = 4  # the email row: message, copy
+            await _until(pilot, lambda: details.index == 4 and _card_rendered(screen))
             await pilot.press("m")
             await _until(pilot, lambda: isinstance(app.screen, NewMessageScreen))
             await pilot.pause(0.1)
@@ -209,7 +216,7 @@ def test_call_is_disabled_with_the_calls_hint_until_calls_are_ready() -> None:
         async with app.run_test(size=(130, 44)) as pilot:
             screen = await _open_contacts(app, pilot)
             screen.open_card("c0")
-            await _until(pilot, lambda: bool(list(screen.query(DetailItem))))
+            await _until(pilot, lambda: _card_rendered(screen))
             screen.query_one("#contacts-detail").focus()
             await pilot.pause(0.1)
             call = screen.query_one("#contacts-call", Button)
