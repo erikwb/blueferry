@@ -949,7 +949,9 @@ bluetoothd exports `MediaTransport1.Delay` (unit 1/10 ms) and sends the
 audio server's latency to the phone, which shifts video by it. GetStatus
 reports it as `phone_audio_delay_ms` with `phone_audio_delay_reporting`
 `true`; a transport without `Delay` reports `false`, no transport `null`.
-Updates follow `PropertiesChanged`. Observed 2026-10-30 (iPhone, AAC, Intel
+Updates follow `PropertiesChanged`. The keys are reported while the
+transport exists, also when it is idle; the value is the last report (an
+invalidated `Delay` keeps it). Observed 2026-10-30 (iPhone, AAC, Intel
 AX200, BlueZ 5.87, PipeWire 1.6.9): `Delay` went 0 → 316 → 1098 (later up to
 1298) as PipeWire reported latency.
 
