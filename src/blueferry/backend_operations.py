@@ -387,7 +387,8 @@ class BackendOperations:
     def _require_map(self) -> None:
         if self.sessions.map is None:
             raise NotReadyError(
-                "MAP session not open — check Show Message Notifications on the iPhone"
+                "Bluetooth message connection is unavailable. "
+                "Check BlueFerry's connection status."
             )
 
     @staticmethod
