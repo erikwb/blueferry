@@ -60,8 +60,8 @@ Messages are marked read only while their conversation is visible and the
 window has focus. The phone card's sound switch controls media playback;
 it does not switch the audio of a phone call.
 
-Drag files from the file manager onto the window to send them to the
-iPhone through a **Send to…** plugin such as LocalSend; see
+Drag files from the file manager anywhere onto the window to send them to
+the iPhone through a **Send to…** plugin such as LocalSend; see
 [dropping files on the window](plugins.md#dropping-files-on-the-window).
 
 The magnifier in the header, `Ctrl+K` or `Ctrl+F` opens the
