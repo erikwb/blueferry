@@ -233,7 +233,7 @@ class CallController:
         self._phone_errors: set[str] = set()
         self._phone_announced = False
         # Keypad tones go to oFono one request at a time, in arrival order.
-        self._tone_queue: deque[tuple[str, str, Success, Failure]] = deque()
+        self._tone_queue: deque[tuple[str, str, str, Success, Failure]] = deque()
         self._tone_busy = False
 
     # ---- public state -------------------------------------------------
@@ -1276,7 +1276,7 @@ class CallController:
             raise InvalidArgumentsError("DTMF tones need an active call")
         if len(self._tone_queue) >= MAX_QUEUED_TONE_REQUESTS:
             raise InvalidArgumentsError("too many keypad tones are waiting; try again")
-        self._tone_queue.append((modem, selected, success, failure))
+        self._tone_queue.append((modem, record.call_id, selected, success, failure))
         self._next_tones()
 
     def _next_tones(self) -> None:
@@ -1288,7 +1288,16 @@ class CallController:
         """
         if self._tone_busy or not self._tone_queue:
             return
-        modem, tones, success, failure = self._tone_queue.popleft()
+        modem, call_id, tones, success, failure = self._tone_queue.popleft()
+        record = self._calls.get(call_id)
+        if record is None or record.state != "active":
+            # oFono plays tones into whichever call is active now: after a
+            # swap or hold, that is no longer the call they were typed for.
+            try:
+                failure(InvalidArgumentsError("the call is no longer active"))
+            finally:
+                self._next_tones()
+            return
         self._tone_busy = True
 
         def sent(value: Any) -> None:
