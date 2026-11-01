@@ -18,7 +18,7 @@ jobs:
           appstream bandit dbus desktop-file-utils gettext git gtk4 kirigami
           libadwaita libsecret mypy python-build python-coverage
           python-cryptography python-dbus python-gobject python-hypothesis python-phonenumbers
-          python-installer python-pytest python-regex python-setuptools python-textual
+          python-installer python-pytest python-pytest-cov python-pytest-xdist python-regex python-setuptools python-textual
           python-typer python-wheel pyside6 qt6-declarative qt6-tools quickshell ruff
       - uses: actions/checkout@v6
       - name: Static analysis
@@ -35,7 +35,10 @@ jobs:
             export PYTHONPATH="$PWD/src"
             export BLUEFERRY_REQUIRE_TRANSLATION_TOOLS=1
             export BLUEFERRY_REQUIRE_LOCALE_TEST=1
-            python -m coverage run -m pytest -q
+            # private_dbus tests share one dbus-daemon and claim fixed names,
+            # so they run serially after the rest.
+            python -m pytest -q -n auto --cov --cov-report= -m "not private_dbus"
+            python -m pytest -q --cov --cov-append --cov-report= -m private_dbus
             python -m coverage report
           '
       - name: QML syntax
