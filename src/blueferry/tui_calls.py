@@ -262,9 +262,8 @@ class CallsScreen(ModalScreen[None]):
             self._filled = self._initial_number
             self.call_after_refresh(self.dial)
         self.query_one("#calls-suggestions", OptionList).display = False
-        # Focus now rather than via Widget.focus(), which defers it: a
-        # ListCalls answer that arrives first must see the field focused to
-        # free the keypad for a connected call.
+        # Now, not deferred like Input.focus(): an active call read back
+        # first must find the field focused to take the focus off it.
         self.set_focus(self.query_one("#calls-number", Input))
         self._update_view()
         self.refresh_calls()

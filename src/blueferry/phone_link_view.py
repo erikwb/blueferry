@@ -71,6 +71,18 @@ def connection_text(status: Mapping[str, Any]) -> str:
     return _("Connected") if status.get("map") is True else _("Not connected")
 
 
+def dial_input(value: object) -> str:
+    """What the dial pad hands to the confirmation dialog: the text as typed,
+    pasted or picked, without the spaces around it.
+
+    Nothing is filtered out. Dropping letters, an extension or ``*``/``#``
+    could turn the input into a different number, so the pad keeps the text
+    and ``tel_links.dial_request`` decides; the dialog explains a refusal
+    (the same rule in the Qt and GTK clients).
+    """
+    return str(value or "").strip()
+
+
 def dialable(value: object) -> str:
     """What the dial field keeps of typed or pasted text.
 

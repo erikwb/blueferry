@@ -322,9 +322,11 @@ class RecentCallsScreen(ModalScreen[RecentCallsResult]):
             yield Static("", id="recent-calls-sync-state", classes="dialog-copy")
             yield Static(_("Loading…"), id="recent-calls-state", classes="dialog-copy")
             yield ListView(id="recent-calls-list")
+            # Two rows: five buttons in one would push Close off an 80-column terminal.
             with Horizontal(classes="dialog-actions"):
                 yield Button(_("Missed only  m"), id="recent-calls-missed")
                 yield Button(_("Refresh from iPhone  s"), id="recent-calls-sync")
+            with Horizontal(classes="dialog-actions"):
                 yield Button(_("Send a Message"), id="recent-calls-message")
                 yield Button(_("Call Back"), id="recent-calls-call")
                 yield Button(_("Close"), variant="primary", id="recent-calls-close")
