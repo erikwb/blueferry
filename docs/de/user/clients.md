@@ -200,6 +200,39 @@ About** und **Run Diagnostics**. Die Kopplung bleibt bei `blueferry
 pair-setup` oder einem grafischen Client; Plugin-Einstellungen hat der
 Terminal-Client noch nicht.
 
+### iPhone, Anrufe und Mitteilungen
+
+**iPhone Overview** in der Befehlspalette ist die Telefon-Karte des
+Terminals: der Name des iPhones, die Verbindung, Akku, Empfang und Netz, was
+gerade läuft, und für jede ausgeschaltete optionale Funktion der Schalter,
+der sie einschaltet, samt seiner Kategorie in Settings. Die Knöpfe öffnen die
+Mitteilungsliste, die letzten Anrufe, das Anruf-Panel und Settings.
+
+**iPhone Notifications** (in der Palette und in der Übersicht) listet die
+letzten Mitteilungen von iPhone-Apps, die **Keep recent iPhone
+notifications** behält: App, Zeit und, wenn erlaubt, Titel und Text. Die
+Liste wird nur gelesen, solange sie offen ist, folgt neuen Mitteilungen und
+wird beim Schließen vergessen. Ist sie ausgeschaltet, leer oder nicht
+verfügbar, sagt sie warum; **Open Notification Settings** führt zu
+Settings › Notifications.
+
+Das Anruf-Panel (`c` oder **Phone Calls** in der Palette) beschreibt jeden
+Anruf wie Qt und GTK (eingehend, gehalten, die Dauer). Seine eine Knopfreihe
+wirkt auf den naheliegenden Anruf: **Answer** nimmt den klingelnden an,
+**Hold** bzw. **Resume** hält den verbundenen oder holt ihn zurück, **Hang
+Up** (oder **Decline**) beendet zuerst den aktiven; ein Anruf, der wartet,
+während ein anderer verbunden ist, bekommt ein eigenes **Decline**. Während eines aktiven
+Anrufs gehen die Tasten 0–9, `*` und `#` sofort als Tastentöne hinaus, etwa
+an ein Telefonmenü, ausser ein Textfeld hat den Fokus; das Panel zeigt sie
+als „Sent: …“. Das Tastentonfeld sendet eine ganze Folge wie eine PIN. Wer im Nummernfeld einen Namen tippt, bekommt die
+Telefonnummern passender Kontakte vorgeschlagen. Jeder Anruf wird zuerst
+bestätigt.
+
+**Recent calls** (`h`) sind nach Tagen gruppiert; `m` zeigt nur verpasste
+Anrufe, `s` (oder **Refresh from iPhone**) liest die Liste des iPhones neu
+ein. Enter oder **Call Back** ruft die gewählte Nummer nach der
+Bestätigung an, **Send a Message** beginnt eine neue Nachricht an sie.
+
 ## Kommandozeile
 
 Der Befehl `blueferry` hilft bei der Diagnose und in Skripten:

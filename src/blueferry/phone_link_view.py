@@ -3,18 +3,20 @@
 The rules live in :mod:`blueferry.phone_overview`; this module adapts them
 to what the clients show: the Qt client binds the dictionaries in QML, the
 GTK client reads them in ``ui/phone_card.py``, ``ui/calls.py`` and
-``ui/notifications.py``. Every string returned here is plain text; QML
-renders it with Text.PlainText and GTK sets it without markup.
+``ui/notifications.py``, the terminal client in ``tui_phone.py``,
+``tui_calls.py`` and ``tui_notifications.py``. Every string returned here is
+plain text; QML renders it with Text.PlainText, GTK sets it without markup
+and the terminal client renders it as Rich ``Text``.
 """
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from datetime import datetime
 from typing import Any
 
 from blueferry import phone_overview
-from blueferry.calls.model import MAX_DIAL_DIGITS
+from blueferry.calls.model import MAX_DIAL_DIGITS, MAX_DTMF_TONES
 from blueferry.i18n import _
 from blueferry.time_display import format_message_timestamp
 
@@ -49,6 +51,7 @@ DIAL_KEYS: tuple[tuple[str, str], ...] = (
     ("*", ""), ("0", "+"), ("#", ""),
 )
 _NOT_DIALABLE = re.compile(r"[^0-9+*#]")
+_NOT_TONE = re.compile(r"[^0-9*#]")
 
 
 def phone_name(devices: Iterable[Mapping[str, Any]], mac: str) -> str:
@@ -87,6 +90,103 @@ def dialable(value: object) -> str:
     daemon refuses ``*`` and ``#`` codes and emergency numbers itself.
     """
     return _NOT_DIALABLE.sub("", str(value or ""))[:MAX_DIAL_DIGITS]
+
+
+def dial_tones(value: object) -> str:
+    """What a keypad-tone field keeps: 0-9, ``*`` and ``#``, as many as the
+    daemon takes (``Calls1.SendTones``, see ``calls.model.validate_dtmf``)."""
+    return _NOT_TONE.sub("", str(value or ""))[:MAX_DTMF_TONES]
+
+
+# Keys the keypad and the keyboard send as tones during an active call.
+TONE_KEYS = frozenset("0123456789*#")
+# The "Sent: …" line shows at most this many of the last tones.
+MAX_SHOWN_TONES = 16
+
+
+def active_call_id(calls: Iterable[Mapping[str, Any]]) -> str:
+    """The call keypad tones go to: the connected one, never a ringing or
+    held call (with one held and one active, the active one)."""
+    for call in calls:
+        if call.get("state") == "active" and call.get("ringing") is not True:
+            return str(call.get("call_id") or "")
+    return ""
+
+
+def tones_feedback(sent: str) -> str:
+    """The line under the active call after keypad tones went out."""
+    return _("Sent: {tones}").format(tones=" ".join(sent)) if sent else ""
+
+
+ToneSend = Callable[[str, str, Callable[[object], None], Callable[[str], None]], None]
+
+
+class KeypadTones:
+    """Send keypad presses to the active call, in order, one request at a time.
+
+    ``send(call_id, tones, done, failed)`` is the client's asynchronous
+    ``SendTones``; its callbacks arrive on the client's main loop. Keys
+    pressed while a request runs wait and go out together with the next one,
+    so fast clicks are neither lost nor reordered. ``sent`` holds the tones
+    this call has sent (for :func:`tones_feedback`); a new call starts empty.
+    """
+
+    def __init__(
+        self,
+        send: ToneSend,
+        *,
+        on_changed: Callable[[], None] = lambda: None,
+        on_error: Callable[[str], None] = lambda _message: None,
+    ) -> None:
+        self._send = send
+        self._on_changed = on_changed
+        self._on_error = on_error
+        self._call = ""
+        self._pending = ""
+        self._busy = False
+        self.sent = ""
+
+    @property
+    def busy(self) -> bool:
+        return self._busy
+
+    def follow(self, call_id: str) -> None:
+        """The active call is now ``call_id`` ("" for none)."""
+        if call_id != self._call:
+            self._call, self._pending, self.sent = call_id, "", ""
+            self._on_changed()
+
+    def press(self, call_id: str, keys: str) -> bool:
+        """Send ``keys`` (cleaned like :func:`dial_tones`) to ``call_id``."""
+        tones = dial_tones(keys)
+        if not tones or not call_id:
+            return False
+        self.follow(call_id)
+        self._pending = (self._pending + tones)[:MAX_DTMF_TONES]
+        self._flush()
+        return True
+
+    def _flush(self) -> None:
+        if self._busy or not self._pending:
+            return
+        call, tones, self._pending = self._call, self._pending, ""
+        self._busy = True
+
+        def done(_value: object = None) -> None:
+            self._busy = False
+            if call == self._call:
+                self.sent = (self.sent + tones)[-MAX_SHOWN_TONES:]
+                self._on_changed()
+            self._flush()
+
+        def failed(message: str) -> None:
+            self._busy = False
+            if call == self._call:
+                self._pending = ""  # the call is likely gone; do not retry blindly
+            self._on_error(message)
+            self._flush()
+
+        self._send(call, tones, done, failed)
 
 
 def dial_suggestions(rows: Iterable[Mapping[str, Any]]) -> list[dict[str, str]]:

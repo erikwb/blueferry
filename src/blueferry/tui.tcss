@@ -513,7 +513,11 @@ ModalScreen {
 }
 
 #calls-dialog {
-    width: 76;
+    width: 90;
+}
+
+#calls-dialog .dialog-actions Button {
+    min-width: 10;
 }
 
 #options-dialog {
@@ -724,10 +728,100 @@ ModalScreen {
 }
 
 #recent-calls-dialog {
-    width: 84;
+    width: 100;
+}
+
+#recent-calls-dialog .dialog-actions Button {
+    min-width: 8;
 }
 
 #recent-calls-body {
     height: auto;
     max-height: 24;
+}
+
+#calls-state {
+    height: auto;
+    color: #fde68a;
+}
+
+#calls-tones-row {
+    height: auto;
+    margin-top: 1;
+}
+
+#calls-tones {
+    width: 1fr;
+    height: 3;
+}
+
+#calls-suggestions {
+    height: auto;
+    max-height: 6;
+    background: #151f35;
+}
+
+#recent-calls-list {
+    height: auto;
+    max-height: 24;
+    background: #151f35;
+}
+
+.recent-calls-day {
+    color: #7dd3fc;
+    text-style: bold;
+}
+
+#phone-overview-dialog {
+    width: 90;
+}
+
+#phone-overview-dialog .dialog-actions Button {
+    min-width: 10;
+}
+
+#phone-overview-name {
+    height: auto;
+    text-style: bold;
+}
+
+.phone-overview-line {
+    height: auto;
+    color: #cbd5e1;
+}
+
+.phone-overview-hint {
+    height: auto;
+    color: #94a3b8;
+}
+
+#phone-overview-hints {
+    height: auto;
+    padding-top: 1;
+}
+
+#notifications-dialog {
+    width: 90;
+    height: 90%;
+}
+
+#notifications-content-hint {
+    height: auto;
+    padding-bottom: 1;
+    color: #fde68a;
+}
+
+#notifications-body {
+    height: 1fr;
+    background: #0d1425;
+}
+
+#notifications-placeholder-title {
+    height: auto;
+    text-style: bold;
+}
+
+#notifications-explanation {
+    height: auto;
+    color: #cbd5e1;
 }
