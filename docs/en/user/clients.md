@@ -19,8 +19,9 @@ setting turns it on. The tabs are switched in the header bar, or at the
 bottom in a narrow window:
 
 - **Messages**: conversations and the chat.
-- **Calls**: running [phone calls](calls.md) with answer, hold/resume and
-  hang up and the sound switch, a dial pad that also searches your
+- **Calls**: running [phone calls](calls.md) with answer, hold/resume,
+  hang up, keypad tones (0-9, `*`, `#`) for the active call and the sound
+  switch, a dial pad that also searches your
   contacts by name, and the [call history](call-history.md) grouped by day,
   with All and Missed, call back and message buttons, and **Refresh from
   iPhone**. Every call asks for confirmation first.
@@ -64,7 +65,7 @@ tabs:
 - **Messages**: conversations with All, Unread and Starred filters, and the
   chat.
 - **Calls**: [phone calls](calls.md) with a dial pad and running calls as
-  cards (answer, hold, hang up), and the [call history](call-history.md)
+  cards (answer, hold, hang up, keypad tones for the active call), and the [call history](call-history.md)
   grouped by day, with All and Missed. Dialing asks you to confirm the number;
   names and numbers with extensions are never converted into another number.
 - **Notifications**: the [recent iPhone notifications](notification-history.md)

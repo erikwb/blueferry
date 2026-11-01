@@ -705,6 +705,9 @@ A change to these rules has to be made in both places.
 - `Dial` accepts plain numbers only (`+` and digits); `*`/`#` service codes
   are rejected so a caller cannot reconfigure the phone (for example call
   forwarding). Keypad symbols remain available as DTMF on an active call.
+  `SendTones` requests go to oFono one at a time in arrival order (at most
+  32 waiting), so fast keypad clicks keep their order; the log names only
+  the number of tones, never the tones (they can be a PIN).
   Well-known emergency numbers are refused (they belong on the phone), and
   every client confirms a number before dialing. `Answer`/`HoldAndAnswer`
   have their own quota; hanging up is never blocked by it.
