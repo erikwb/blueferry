@@ -271,12 +271,15 @@ class CallsPage(Gtk.Box):
         return phone_link_view.calls_hint(self._status, self.running.state)
 
     def dial(self) -> None:
-        number = phone_link_view.dialable(self.entry.get_text())
-        if number and not self.calls_hint:
-            self._dial(number)
+        # The text as typed: the confirmation dialog validates it and says
+        # why it cannot be called, instead of the pad dialing a shortened
+        # number (as in Qt).
+        text = phone_link_view.dial_input(self.entry.get_text())
+        if text and not self.calls_hint:
+            self._dial(text)
 
     def append_key(self, key: str) -> None:
-        self._set_text(phone_link_view.dialable(self.entry.get_text() + key))
+        self._set_text(self.entry.get_text() + key)
 
     def _set_text(self, text: str) -> None:
         """Change the field from the pad: no contact search, as in Qt."""
@@ -322,7 +325,7 @@ class CallsPage(Gtk.Box):
         self._client.find_contacts_async(request.query, found, lambda _message: None)
 
     def _suggestion_activated(self, _list, row) -> None:
-        self._set_text(phone_link_view.dialable(row.address))
+        self._set_text(row.address)
 
     # ---- recent calls ---------------------------------------------------
 
@@ -380,8 +383,8 @@ class CallsPage(Gtk.Box):
 
     def _render_dial(self) -> None:
         hint = self.calls_hint
-        number = phone_link_view.dialable(self.entry.get_text())
-        self.call_button.set_sensitive(not hint and bool(number))
+        text = phone_link_view.dial_input(self.entry.get_text())
+        self.call_button.set_sensitive(not hint and bool(text))
         self.call_button.set_tooltip_text(hint or _("Call"))
 
     def _render_suggestions(self) -> None:
@@ -456,7 +459,7 @@ class CallsPage(Gtk.Box):
             call.set_sensitive(ready)
             if not ready:
                 call.set_tooltip_text(_("Calls are not ready."))
-            call.connect("clicked", lambda _b: self._dial(phone_link_view.dialable(address)))
+            call.connect("clicked", lambda _b: self._dial(address))
             row.add_suffix(call)
             message = _icon_button(
                 "chat-message-new-symbolic", _("Send a message"), "flat", "circular",
