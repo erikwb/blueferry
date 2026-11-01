@@ -27,6 +27,7 @@ def _files(tmp_path: Path, *names: str) -> list[Path]:
 class Harness:
     def __init__(self, choices=(), problems=()) -> None:
         self.work = ManualRunner()
+        self.sending = False
         self.notices: list[tuple[str, bool]] = []
         self.sent: list[tuple[str, list[str]]] = []
         self.loads = 0
@@ -45,6 +46,7 @@ class Harness:
         self.model = drop.FileDrop(
             runner=self.work, notify=lambda text, ok: self.notices.append((text, ok)),
             on_sent=self._sent, load_targets=load, send=send,
+            is_sending=lambda: self.sending,
         )
 
     def _sent(self) -> None:
@@ -182,6 +184,18 @@ def test_more_files_than_the_api_allows_are_refused(tmp_path) -> None:
     assert str(MAX_SHARE_FILES) in harness.notices[-1][0]
 
 
+def test_the_file_limit_keeps_the_skipped_note(tmp_path) -> None:
+    files = _files(tmp_path, *(f"f{index}.txt" for index in range(MAX_SHARE_FILES + 1)))
+    folder = tmp_path / "Album"
+    folder.mkdir()
+    harness = Harness([PHONE])
+    harness.model.drop([path.as_uri() for path in files] + [folder.as_uri()])
+    harness.run_all()
+    text, ok = harness.notices[-1]
+    assert not ok and str(MAX_SHARE_FILES) in text
+    assert "Folders cannot be sent; skipped Album." in text
+
+
 def test_a_file_deleted_before_sending_is_reported(tmp_path) -> None:
     (one,) = _files(tmp_path, "a.txt")
     harness = Harness([PHONE, ABLAGE])
@@ -191,8 +205,47 @@ def test_a_file_deleted_before_sending_is_reported(tmp_path) -> None:
     harness.model.pick(PHONE.key)
     harness.run_all()
     assert harness.sent == []
-    assert harness.notices[-1][1] is False
+    # Said in this module's (translatable) words, not the plugin API's.
+    assert harness.notices[-1] == (
+        "Nothing was sent: the dropped files changed in the meantime. "
+        "Skipped an item that is not a regular file.", False)
     assert harness.after_send == 0
+
+
+def test_a_file_turned_into_a_folder_is_named(tmp_path) -> None:
+    (one, two) = _files(tmp_path, "a.txt", "Album")
+    harness = Harness([PHONE, ABLAGE])
+    harness.model.drop([one.as_uri(), two.as_uri()])
+    harness.run_all()
+    two.unlink()
+    two.mkdir()
+    harness.model.pick(PHONE.key)
+    harness.run_all()
+    assert harness.sent == []
+    assert harness.notices[-1] == (
+        "Nothing was sent: the dropped files changed in the meantime. "
+        "Folders cannot be sent; skipped Album.", False)
+
+
+def test_a_drop_waits_while_send_to_is_sending(tmp_path) -> None:
+    (one,) = _files(tmp_path, "a.txt")
+    harness = Harness([PHONE, ABLAGE])
+    harness.sending = True
+    harness.model.drop([one.as_uri()])
+    assert harness.work.submitted == 0
+    assert harness.notices == [("Still busy with the last drop; try again in a moment.", False)]
+    # Started meanwhile: the picker waits instead of sending alongside.
+    harness.sending = False
+    harness.model.drop([one.as_uri()])
+    harness.run_all()
+    harness.sending = True
+    harness.model.pick(PHONE.key)
+    assert harness.work.pending == [] and harness.sent == []
+    assert harness.model.state()["phase"] == drop.PICKING
+    harness.sending = False
+    harness.model.pick(PHONE.key)
+    harness.run_all()
+    assert harness.sent == [(PHONE.key, [str(one.resolve())])]
 
 
 def test_a_refused_send_does_not_reload_the_card(tmp_path) -> None:
@@ -216,7 +269,8 @@ def test_a_crashing_target_loader_ends_the_drop(tmp_path) -> None:
     harness.model.drop([one.as_uri()])
     harness.run_all()
     assert harness.model.state()["phase"] == drop.IDLE
-    assert harness.notices == [("bus gone", False)]
+    # The raw (English) error goes to the log only.
+    assert harness.notices == [("The plugins did not answer.", False)]
 
 
 def test_several_folders_are_named_briefly(tmp_path) -> None:

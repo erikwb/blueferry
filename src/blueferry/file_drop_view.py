@@ -23,6 +23,7 @@ UI thread. Everything returned is plain text.
 """
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -32,6 +33,8 @@ from urllib.parse import unquote, urlsplit
 from blueferry import plugin_surfaces as surfaces
 from blueferry.i18n import _, ngettext
 from blueferry.plugin_api.surfaces import MAX_SHARE_FILES, checked_share_paths, plain
+
+log = logging.getLogger(__name__)
 
 # Phases of :class:`FileDrop`.
 IDLE = "idle"
@@ -79,6 +82,20 @@ def picker_body(count: int) -> str:
 
 def send_label() -> str:
     return _("Send")
+
+
+def busy_notice() -> str:
+    return _("Still busy with the last drop; try again in a moment.")
+
+
+def not_answered_notice() -> str:
+    return _("The plugins did not answer.")
+
+
+def changed_notice(note: str) -> str:
+    """The dropped files changed before sending; ``note`` says how."""
+    text = _("Nothing was sent: the dropped files changed in the meantime.")
+    return f"{text} {note}" if note else text
 
 
 def sending_notice(count: int, target: str) -> str:
@@ -201,9 +218,9 @@ def plan(
     if not files:
         return DropPlan("nothing", message=note or _("There is nothing to send."))
     if len(files) > MAX_SHARE_FILES:
-        return DropPlan("nothing", message=_(
-            "At most {limit} files can be sent at once; {count} were dropped.").format(
-                limit=MAX_SHARE_FILES, count=len(files)))
+        limit = _("At most {limit} files can be sent at once; {count} were dropped.").format(
+            limit=MAX_SHARE_FILES, count=len(files))
+        return DropPlan("nothing", message=f"{limit} {note}" if note else limit)
     choices = tuple(targets.choices)
     if not choices:
         return DropPlan("none", files, note=note, problems=tuple(targets.problems))
@@ -231,8 +248,11 @@ class FileDrop:
 
     ``notify(text, ok)`` shows a short notice (a toast or passive message).
     ``on_sent`` runs after a send the plugin accepted, e.g. to reload the
-    phone card that shows the transfer. The last picked target is
-    remembered for this object's lifetime, i.e. the client session.
+    phone card that shows the transfer. ``is_sending`` says whether the
+    client's "Send to…" (``PluginSurfacesModel.sending``) is sending right
+    now; a drop waits for it, so one plugin never gets two ``SendFiles`` at
+    once. The last picked target is remembered for this object's lifetime,
+    i.e. the client session.
     """
 
     def __init__(
@@ -245,6 +265,7 @@ class FileDrop:
         load_targets: Callable[[], surfaces.ShareTargets] = surfaces.load_targets,
         send: Callable[..., surfaces.Outcome] = surfaces.send,
         sort: Callable[[Iterable[str]], DroppedFiles] = sort_paths,
+        is_sending: Callable[[], bool] = lambda: False,
     ) -> None:
         self._runner = runner
         self._notify = notify
@@ -253,6 +274,7 @@ class FileDrop:
         self._load_targets = load_targets
         self._send = send
         self._sort = sort
+        self._is_sending = is_sending
         self._last_key = ""
         self._plan: DropPlan | None = None
         self._state: dict[str, Any] = self._idle_state()
@@ -284,8 +306,8 @@ class FileDrop:
 
     def drop(self, uris: Iterable[object]) -> None:
         """Files dropped on the window (``file://`` URIs as text)."""
-        if self.busy:
-            self._notify(_("Still busy with the last drop; try again in a moment."), False)
+        if self.busy or self._is_sending():
+            self._notify(busy_notice(), False)
             return
         dropped = local_paths(uris)
         if not dropped.paths:
@@ -305,8 +327,10 @@ class FileDrop:
         self._runner.submit(work, self._planned, self._failed)
 
     def _failed(self, message: str) -> None:
+        # The raw error is English and may come from anywhere; say it plainly.
+        log.warning("file drop failed: %s", plain(message, 200))
         self._reset()
-        self._notify(message or _("The plugins did not answer."), False)
+        self._notify(not_answered_notice(), False)
 
     def _planned(self, result: DropPlan) -> None:
         if result.kind == "nothing":
@@ -334,6 +358,9 @@ class FileDrop:
         choice = next((item for item in current.choices if item.key == key), None)
         if choice is None:
             return
+        if self._is_sending():
+            self._notify(busy_notice(), False)  # the picker stays open
+            return
         self._last_key = choice.key
         self._dispatch(choice, current.files)
 
@@ -348,10 +375,18 @@ class FileDrop:
         self._notify(sending_notice(len(files), label), True)
 
         def work() -> surfaces.Outcome:
+            # Moved, deleted or replaced since the drop: say which, in words
+            # of this module, and send nothing.
+            now = self._sort(files)
+            if now.folders or now.other or len(now.files) != len(files):
+                return surfaces.Outcome(False, changed_notice(
+                    skipped_note(DroppedUris(), now)))
             try:
-                paths = checked_share_paths(files)  # moved or deleted since the drop
-            except ValueError as error:
-                return surfaces.Outcome(False, str(error))
+                paths = checked_share_paths(now.files)
+            except ValueError:
+                # The message names a file: not for the log.
+                log.warning("dropped files no longer pass the share checks")
+                return surfaces.Outcome(False, changed_notice(""))
             return self._send(choice, paths)
 
         def done(outcome: surfaces.Outcome) -> None:
