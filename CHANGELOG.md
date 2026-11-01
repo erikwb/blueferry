@@ -47,6 +47,13 @@
   the conversation at the message, the contact card or the call. The shared
   models `contacts_model` and `search_model` hold the paging, debouncing and
   stale-id handling for every client; recent-call rows carry the call `ids`.
+- Shared presenter `file_drop_view` for files dropped on the KDE and GTK
+  main windows: it holds the decisions and texts, so both clients send the
+  files to a **Send to…** target the same way (the only target at once, a
+  picker for several with the session's last pick preselected, or an
+  explanation when no `share` plugin is there). Only local files, 1 to 64;
+  folders and remote URIs are skipped with a note, and a drop waits while
+  "Send to…" is sending.
 - KDE client: files dragged anywhere onto the main window go to a
   **Send to…** target (overlay "Drop to send to iPhone"): the only target
   at once with a notice, a picker for several (the session's last pick
