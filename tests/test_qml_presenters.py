@@ -3962,12 +3962,20 @@ def test_quickshell_sound_switch_follows_the_route_and_sends_it(qml_engine, quic
     QGuiApplication.processEvents()
     assert sync.property("visible") is True
     assert sync.property("text") == "A/V sync: 110 ms delay reported to the iPhone."
+    # Screen readers hear the hint and the sync line with the switch.
+    from PySide6.QtQml import QQmlEngine, QQmlProperty
+
+    description = QQmlProperty(switch, "Accessible.description",
+                               QQmlEngine.contextForObject(switch))
+    assert description.read() == (
+        "Playing on this computer. A/V sync: 110 ms delay reported to the iPhone.")
     page.setProperty("status", {
         **base, "phone_audio_route": "phone",
         "phone_audio_view": {"available": True, "hint": "Playing on the iPhone."},
     })
     QGuiApplication.processEvents()
     assert sync.property("visible") is False
+    assert description.read() == "Playing on the iPhone."
     page.setProperty("busy", {"phoneAudio": True})
     QGuiApplication.processEvents()
     assert switch.property("enabled") is False

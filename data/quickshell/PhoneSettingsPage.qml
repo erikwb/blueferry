@@ -953,7 +953,9 @@ Rectangle {
           text: "Play the iPhone's sound on this computer"
           checked: root.status.phone_audio_route === "pc"
           enabled: root.setup.configured && !root.busy.phoneAudio && view.available === true
-          Accessible.description: phoneAudioHint.text
+          // The hint and, while a stream is open, the A/V sync line.
+          Accessible.description: [phoneAudioHint.text, phoneAudioSync.text]
+              .filter(line => line !== "").join(" ")
           onClicked: root.operationRequested("set_phone_audio_route", {route: checked ? "pc" : "phone"})
         }
         FerryLabel {
@@ -967,6 +969,7 @@ Rectangle {
         }
         // A/V sync of the open stream; empty while none is open.
         FerryLabel {
+          id: phoneAudioSync
           objectName: "phoneAudioSync"
           ferryTheme: root.theme
           visible: root.status.phone_audio_route !== undefined && text !== ""
