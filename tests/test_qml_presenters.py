@@ -761,10 +761,38 @@ def settings_window(qml_engine):
             property var threads: []
             property var devices: []
             property var contactResults: []
+            property var dialSuggestions: []
             property var nowPlaying: ({})
             property var featureHints: ({})
             property var phoneAudio: ({})
             property string phoneName: "Test iPhone"
+            property string phoneConnection: "Not connected"
+            // phone_link_view.DIAL_KEYS and simplified stand-ins for the
+            // controller's phone_link_view slots (tested in test_phone_overview).
+            property var dialKeys: [["1", ""], ["2", "ABC"], ["3", "DEF"], ["4", "GHI"],
+                ["5", "JKL"], ["6", "MNO"], ["7", "PQRS"], ["8", "TUV"], ["9", "WXYZ"],
+                ["*", ""], ["0", "+"], ["#", ""]]
+            function dialable(value) { return String(value || "").replace(/[^0-9+*#]/g, "").slice(0, 32); }
+            function callsHint(status, state) {
+                if (status.calls_enabled !== true) return featureHints.calls || "Phone calls are off.";
+                return state === "ready" ? "" : "Waiting for the iPhone's hands-free connection.";
+            }
+            function callCard(call, now) {
+                const held = call.state === "held";
+                return {
+                    title: call.display_peer || "", ringing: call.ringing === true, held: held,
+                    subtitle: call.ringing === true ? "Incoming call\\u2026" : held ? "On hold" : "",
+                    answer: "Answer", hold: held ? "Resume" : "Hold",
+                    hangup: call.ringing === true ? "Decline" : "Hang Up",
+                };
+            }
+            function notificationsView(info, hint) {
+                return {
+                    title: hint !== "" ? "Notification List Is Off" : "No Notifications Yet",
+                    explanation: hint !== "" ? hint : (info.error || ""),
+                    contentHint: info.enabled === true && info.content !== true ? "Only app names" : "",
+                };
+            }
             property var notifications: []
             property var notificationsInfo: ({})
             property var callHistoryRows: ({})
@@ -3511,10 +3539,12 @@ class _CallsBridge(QObject):
     def callHistoryRows(self):
         missed = {"direction": "missed", "caller": "<b>Eve</b>", "known": True,
                   "address": "+15551230002", "day": "Today", "clock": "2:36 PM",
-                  "missed": True, "count": 3}
+                  "missed": True, "count": 3, "title": "<b>Eve</b> (3)",
+                  "detail": "Missed · +15551230002", "direction_label": "Missed"}
         outgoing = {"direction": "outgoing", "caller": "+15551230001", "known": False,
                     "address": "+15551230001", "day": "Today", "clock": "1:02 PM",
-                    "missed": False, "count": 1}
+                    "missed": False, "count": 1, "title": "+15551230001",
+                    "detail": "Outgoing", "direction_label": "Outgoing"}
         return {"all": [missed, outgoing], "missed": [missed]}
 
     @Property("QVariantMap", constant=True)
@@ -3550,6 +3580,44 @@ class _CallsBridge(QObject):
         self.syncs += 1
 
 
+def test_tab_wording_slots_of_the_real_controller_follow_the_status(qml_engine):
+    """The tabs pass the status into callsHint()/notificationsView()/callCard()
+    so the bindings re-evaluate; the QML stand-ins elsewhere cannot show it."""
+    from blueferry.qt.controller import BridgeController
+
+    controller = BridgeController(
+        backend=object(), setup=object(), subscribe=False, autostart=False,
+    )
+    component = QQmlComponent(qml_engine)
+    component.setData(b'''
+        import QtQuick
+        QtObject {
+            required property var bridge
+            property real now: 0
+            readonly property string callsHint: bridge.callsHint(
+                bridge.status || ({}), bridge.callsState || "")
+            readonly property var view: bridge.notificationsView(
+                bridge.notificationsInfo || ({}), (bridge.featureHints || {}).notifications || "")
+            readonly property var card: bridge.callCard({
+                "state": "active", "display_peer": "Kim",
+                "first_seen": "2026-10-26T10:00:00+00:00"}, now)
+        }
+    ''', QUrl())
+    item = component.createWithInitialProperties({"bridge": controller})
+    assert item is not None, [error.toString() for error in component.errors()]
+    assert "Enable phone calls" in item.property("callsHint")
+    assert item.property("view")["title"] == "Notification List Is Off"
+    controller._status = {"calls_enabled": True, "notification_history_enabled": True}
+    controller.statusChanged.emit()
+    assert item.property("callsHint") == "Waiting for the iPhone's hands-free connection."
+    assert item.property("view")["title"] == "No Notifications Yet"
+    from datetime import datetime
+    started = datetime.fromisoformat("2026-10-26T10:00:00+00:00").timestamp()
+    item.setProperty("now", (started + 75) * 1000)
+    assert item.property("card")["subtitle"] == "1:15"
+    item.deleteLater()
+
+
 def test_recent_calls_page_loads_once_and_filters_missed_calls(qml_engine):
     from PySide6.QtQml import QQmlExpression
 
@@ -3569,6 +3637,7 @@ def test_recent_calls_page_loads_once_and_filters_missed_calls(qml_engine):
     page.setProperty("missedOnly", True)
     assert evaluate("visibleCalls().map(call => call.direction).join()") == "missed"
     assert bridge.syncs == 0
+    assert evaluate("visibleCalls()[0].direction_label") == "Missed"
     # Remote names and numbers are rendered as plain text, never as markup.
     source = (ROOT / "src/blueferry/qt/qml/RecentCallsPage.qml").read_text()
     assert source.count("Controls.Label {") == source.count("textFormat: Text.PlainText")
@@ -4769,7 +4838,8 @@ def test_short_calls_windows_scroll_the_dialer_and_keep_history_visible(
     bridge.setProperty("callHistoryRows", {"all": [
         {"key": "one", "day": "Today", "clock": "10:00", "caller": "Test",
          "address": "+15551234567", "known": True, "direction": "incoming",
-         "missed": False, "count": 1},
+         "missed": False, "count": 1, "title": "Test",
+         "detail": "Incoming · +15551234567", "direction_label": "Incoming"},
     ]})
     _evaluate(qml_engine, "testWindow.currentTab = testWindow.callsTab")
     QTest.qWait(100)
@@ -4849,10 +4919,10 @@ def test_dial_suggestions_show_and_dial_contact_numbers_unchanged(qml_engine, se
     bridge.setProperty("callsState", "ready")
     QGuiApplication.processEvents()
     _settings_object(window, "dialPadField").setProperty("text", "Kim")
-    bridge.setProperty("contactResults", [
+    # phone_link_view.dial_suggestions has already left out email addresses.
+    bridge.setProperty("dialSuggestions", [
         {"name": "Pat US", "address": "+15550100123"},
         {"name": "Kim AU", "address": "0491570156"},
-        {"name": "Mail", "address": "kim@example.org"},
     ])
     QGuiApplication.processEvents()
     suggestions = _settings_object(window, "dialSuggestions")
@@ -5013,6 +5083,7 @@ def test_phone_card_greys_out_opt_ins_and_switches_audio_explicitly(qml_engine, 
     card = _settings_object(window, "phoneCard")
     assert card.property("visible") is True
     assert _settings_object(window, "phoneCardName").property("text") == "Test iPhone"
+    assert _settings_object(window, "phoneCardConnection").property("text") == "Not connected"
     _evaluate(qml_engine, """testBridge.featureHints = {
         media: "Set BLUEFERRY_MEDIA_CONTROL_ENABLED=true", phoneStatus: "Battery <b>needs</b> calls"
     }""")

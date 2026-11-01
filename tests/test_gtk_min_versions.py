@@ -58,14 +58,8 @@ def _newer_symbols() -> tuple[dict[str, set[str]], set[tuple[str, str, str]]]:
     for members added after the minimum to a type that is old enough."""
     newer_top: dict[str, set[str]] = {}
     newer_members: set[tuple[str, str, str]] = set()
-    for namespace, version in (("Adw", "1"), ("Gtk", "4.0")):
-        path = _gir(namespace, version)
-        if path is None:
-            pytest.skip(f"{namespace}-{version}.gir is not installed")
+    for namespace, tree in _trees():
         minimum = MINIMUM[namespace]
-        root = ET.parse(path).getroot()  # nosec B314 - local, trusted GIR file
-        tree = root.find(f"{_CORE}namespace")
-        assert tree is not None
         newer_top[namespace] = set()
         for kind in _TOP_LEVEL:
             for element in tree.findall(f"{_CORE}{kind}"):
@@ -82,6 +76,52 @@ def _newer_symbols() -> tuple[dict[str, set[str]], set[tuple[str, str, str]]]:
                     if _version(member) > minimum:
                         newer_members.add((namespace, name, member_name))
     return newer_top, newer_members
+
+
+def _trees():
+    for namespace, version in (("Adw", "1"), ("Gtk", "4.0")):
+        path = _gir(namespace, version)
+        if path is None:
+            pytest.skip(f"{namespace}-{version}.gir is not installed")
+        root = ET.parse(path).getroot()  # nosec B314 - local, trusted GIR file
+        tree = root.find(f"{_CORE}namespace")
+        assert tree is not None
+        yield namespace, tree
+
+
+def _class_properties() -> dict[tuple[str, str], dict[str, bool]]:
+    """``{(namespace, class): {property: new enough?}}`` including the
+    properties of its ancestors and interfaces within Adw and GTK."""
+    own: dict[tuple[str, str], dict[str, bool]] = {}
+    bases: dict[tuple[str, str], list[tuple[str, str]]] = {}
+    for namespace, tree in _trees():
+        minimum = MINIMUM[namespace]
+        for kind in ("class", "interface"):
+            for element in tree.findall(f"{_CORE}{kind}"):
+                key = (namespace, element.get("name", ""))
+                own[key] = {
+                    prop.get("name", "").replace("-", "_"): _version(prop) <= minimum
+                    for prop in element.findall(f"{_CORE}property")
+                }
+                names = [element.get("parent", "")] + [
+                    item.get("name", "") for item in element.findall(f"{_CORE}implements")
+                ] + [item.get("name", "") for item in element.findall(f"{_CORE}prerequisite")]
+                bases[key] = [
+                    tuple(name.split(".", 1)) if "." in name else (namespace, name)  # type: ignore[misc]
+                    for name in names if name
+                ]
+
+    def collect(key, seen) -> dict[str, bool]:
+        if key in seen or key not in own:
+            return {}
+        seen.add(key)
+        merged: dict[str, bool] = {}
+        for base in bases[key]:
+            merged.update(collect(base, seen))
+        merged.update(own[key])
+        return merged
+
+    return {key: collect(key, set()) for key in own}
 
 
 # Method names of Python's own containers (``text.find``, ``rows.insert``)
@@ -126,12 +166,16 @@ def _constructor_calls(source: str) -> list[tuple[str, str, str]]:
     return calls
 
 
-def _uses(source: str) -> tuple[set[tuple[str, str]], set[tuple[str, str, str]], set[str]]:
-    """``(Adw/Gtk top-level names, qualified Type.MEMBER uses, other member names)``.
+def _uses(source: str) -> tuple[
+    set[tuple[str, str]], set[tuple[str, str, str]], set[str], set[tuple[str, str, str]],
+]:
+    """``(Adw/Gtk top-level names, qualified Type.MEMBER uses, other member
+    names, (namespace, class, keyword) of Adw/Gtk constructor calls)``.
 
-    A qualified ``Gtk.Type.MEMBER`` is checked against that type only. For a
-    method call, keyword argument, property or signal name the scan cannot
-    tell the class, so the name counts as newer if any type gained it later.
+    A qualified ``Gtk.Type.MEMBER`` is checked against that type only, and a
+    constructor keyword against the properties of that class. For a method
+    call, property or signal name the scan cannot tell the class, so the
+    name counts as newer if any type gained it later.
     """
     top = set(re.findall(r"\b(Adw|Gtk)\.([A-Za-z_]\w*)", source))
     qualified = set(re.findall(r"\b(Adw|Gtk)\.(\w+)\.([A-Z][A-Z0-9_]*)\b", source))
@@ -139,26 +183,36 @@ def _uses(source: str) -> tuple[set[tuple[str, str]], set[tuple[str, str, str]],
     members |= {name.replace("-", "_") for name in re.findall(
         r"""["'](?:notify::)?([a-z][a-z0-9-]*)["']""", source)}  # properties, signals
     # Keyword arguments only inside Adw/Gtk constructor calls, not every assignment.
-    for _namespace, _name, arguments in _constructor_calls(source):
-        members |= set(re.findall(r"\b([a-z][a-z0-9_]*)\s*=(?!=)", arguments))
-    return top, qualified, members
+    keywords = set()
+    for namespace, name, arguments in _constructor_calls(source):
+        keywords |= {
+            (namespace, name, keyword)
+            for keyword in re.findall(r"\b([a-z][a-z0-9_]*)\s*=(?!=)", arguments)
+        }
+    return top, qualified, members, keywords
 
 
-def _found(newer_top, newer_members) -> list[str]:
+def _found(newer_top, newer_members, properties) -> list[str]:
     newer_names = {name for _ns, kind, name in newer_members if not name.isupper()}
     found = []
     for path in SOURCES:
-        top, qualified, members = _uses(path.read_text())
+        top, qualified, members, keywords = _uses(path.read_text())
         found += [f"{path.name}: {ns}.{name}" for ns, name in sorted(top)
                   if name in newer_top[ns]]
         found += [f"{path.name}: {ns}.{kind}.{name}" for ns, kind, name in sorted(qualified)
                   if (ns, kind, name) in newer_members]
         found += [f"{path.name}: {name}" for name in sorted(members & newer_names)]
+        for namespace, kind, name in sorted(keywords):
+            known = properties.get((namespace, kind), {})
+            # A property of the class (or its ancestors) decides; otherwise
+            # fall back to the name, as for calls.
+            if (known[name] is False) if name in known else name in newer_names:
+                found.append(f"{path.name}: {namespace}.{kind}({name}=)")
     return found
 
 
 def test_gtk_sources_use_no_symbols_newer_than_the_minimum() -> None:
-    found = _found(*_newer_symbols())
+    found = _found(*_newer_symbols(), _class_properties())
     assert found == [], "libadwaita > 1.5 / GTK > 4.14 symbols: " + ", ".join(found)
 
 
@@ -166,7 +220,8 @@ def test_gtk_sources_avoid_the_known_newer_libadwaita_symbols() -> None:
     # Also holds where the GIR files are not installed.
     found = []
     for path in SOURCES:
-        top, _qualified, members = _uses(path.read_text())
+        top, _qualified, members, keywords = _uses(path.read_text())
+        members |= {name for _ns, _kind, name in keywords}
         found += [f"{path.name}: Adw.{name}" for ns, name in sorted(top)
                   if ns == "Adw" and name in FALLBACK_ADW]
         found += [f"{path.name}: {name}" for name in sorted(members & FALLBACK_MEMBERS)]
@@ -195,7 +250,10 @@ def test_the_check_sees_newer_symbols(monkeypatch, tmp_path) -> None:
             <bitfield name="IconLookupFlags">
                 <member name="none" version="4.18"/>
             </bitfield>
-            <enumeration name="SelectionMode"><member name="none"/></enumeration>""",
+            <enumeration name="SelectionMode"><member name="none"/></enumeration>
+            <class name="Entry">
+                <property name="max-length"/>
+            </class>""",
     }
     for namespace, body in members.items():
         (tmp_path / f"{namespace}.gir").write_text(
@@ -214,15 +272,25 @@ def test_the_check_sees_newer_symbols(monkeypatch, tmp_path) -> None:
         "Adw.PreferencesPage(description_centered=True)\n"
         "icon = theme.lookup_icon('x', None, 16, 1, 0, Gtk.IconLookupFlags.NONE)\n"
         "box = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)\n"
+        "entry = Gtk.Entry(max_length=64)\n"
+        "row = Adw.EntryRow(max_length=64)\n"
         "row = Adw.EntryRow(title=_('Number (mobile)'), max_length=64)\n"
+        "nested = Adw.ActionRow(title=_('x'), child=Adw.EntryRow(text=_('y'), max_length=8))\n"
         "page = Adw.PreferencesPage(\n    title=_('x'), banner_text='a=b',\n    description_centered=True,\n)\n"
     )
     monkeypatch.setattr(sys.modules[__name__], "SOURCES", [sample])
-    found = _found(newer_top, newer_members)
+    found = _found(newer_top, newer_members, _class_properties())
     assert "sample.py: Adw.ButtonRow" in found
-    assert {"sample.py: set_banner", "sample.py: description_centered"} <= set(found)
-    # Keywords after a nested call such as _("…") count too.
-    assert "sample.py: max_length" in found
+    assert "sample.py: set_banner" in found
+    assert "sample.py: Adw.PreferencesPage(description_centered=)" in found
+    # Constructor keywords count per class and its ancestors: GtkEntry has
+    # had max-length since 4.0, AdwEntryRow only since libadwaita 1.6.
+    assert "sample.py: Adw.EntryRow(max_length=)" in found
+    assert not any("Gtk.Entry(" in entry for entry in found)
+    # Keywords after a nested call such as _("…") count too, each against
+    # its own constructor.
+    assert found.count("sample.py: Adw.EntryRow(max_length=)") == 1  # a set per file
+    assert not any("ActionRow(max_length" in entry for entry in found)
     [(_ns, _name, arguments)] = [
         call for call in _constructor_calls("Adw.PreferencesPage(title=_('x'), text='a=b')")
         if call[1] == "PreferencesPage"]

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import pytest
 
+from blueferry import phone_link_view
 from blueferry import phone_overview as overview
 from blueferry.models import CallHistoryEntry
 from blueferry.phone_link_view import feature_hints, notification_rows
@@ -48,8 +49,90 @@ def test_notification_rows_keep_remote_text_verbatim() -> None:
     ])
     assert [r["app"] for r in rows] == ["Mail", "com.example"]
     assert rows[0]["title"] == "[b]Hi" and rows[0]["subtitle"] == "<i>sub</i>"
+    assert rows[0]["summary"] == "[b]Hi · <i>sub</i>" and rows[1]["summary"] == ""
     assert rows[1]["app"] == "com.example" and rows[1]["body"] == ""
     assert notification_rows(None) == []
+
+
+def test_phone_name_and_connection_line() -> None:
+    devices = [{"mac": "BB", "name": "Other"}, {"mac": "AA", "name": "<b>Josh</b>"}]
+    assert phone_link_view.phone_name(devices, "AA") == "<b>Josh</b>"
+    assert phone_link_view.phone_name(devices, "") == "iPhone"
+    assert phone_link_view.phone_name([{"mac": "AA", "name": ""}], "AA") == "iPhone"
+    text = phone_link_view.connection_text
+    assert text({}) == "BlueFerry service is not running"
+    assert text({"daemon": True, "initializing": True, "map": True}) == "Connecting…"
+    assert text({"daemon": True, "map": True}) == "Connected"
+    assert text({"daemon": True}) == "Not connected"
+
+
+def test_dial_pad_hands_the_typed_text_to_the_confirmation_unfiltered() -> None:
+    # Letters, an extension or service codes stay, so the dialog refuses them
+    # instead of the pad calling a shortened number.
+    assert phone_link_view.dial_input("  +1 555 123 4567 ext 89 ") == "+1 555 123 4567 ext 89"
+    assert phone_link_view.dial_input("**21*15551234567#") == "**21*15551234567#"
+    assert phone_link_view.dial_input(None) == ""
+    assert phone_link_view.dial_input("   ") == ""
+
+
+def test_dial_field_keeps_only_dialable_characters() -> None:
+    assert phone_link_view.dialable("+41 (79) 1-2<b>*#") == "+417912*#"
+    assert phone_link_view.dialable(None) == ""
+    assert len(phone_link_view.dialable("1" * 40)) == 32
+    assert [key for key, _letters in phone_link_view.DIAL_KEYS] == list("123456789*0#")
+
+
+def test_dial_suggestions_keep_phone_numbers_as_stored() -> None:
+    assert phone_link_view.dial_suggestions([
+        {"name": "Pat US", "address": "+15550100123"},
+        {"name": "Kim AU", "address": "0491570156"},
+        {"name": "Mail", "address": "kim@example.org"},
+        {"name": "Nothing", "address": ""},
+    ]) == [
+        {"name": "Pat US", "address": "+15550100123"},
+        {"name": "Kim AU", "address": "0491570156"},
+    ]
+
+
+def test_calls_hint_explains_why_the_dial_pad_cannot_call() -> None:
+    hint = phone_link_view.calls_hint
+    assert "Enable phone calls through this computer" in hint({}, "ready")
+    assert hint({"calls_enabled": True}, "ready") == ""
+    assert "online" in hint({"calls_enabled": True}, "connecting")
+    assert "oFono" in hint({"calls_enabled": True}, "unavailable")
+    assert "Waiting" in hint({"calls_enabled": True}, "searching")
+    assert "Waiting" in hint({"calls_enabled": True}, "disabled")
+
+
+def test_call_card_words_each_state_and_ticks_the_duration() -> None:
+    from datetime import datetime
+
+    start = "2026-10-26T10:00:00+00:00"
+    now = datetime.fromisoformat(start).timestamp() + 125
+    card = phone_link_view.call_card
+    ringing = card({"ringing": True, "state": "incoming", "display_peer": "<b>Kim</b>"}, now)
+    assert ringing["title"] == "<b>Kim</b>" and ringing["subtitle"] == "Incoming call…"
+    assert ringing["ringing"] and ringing["hangup"] == "Decline"
+    held = card({"state": "held", "first_seen": start}, now)
+    assert held["subtitle"] == "On hold" and held["hold"] == "Resume" and held["held"]
+    assert card({"state": "alerting"}, now)["subtitle"] == "Calling…"
+    active = card({"state": "active", "first_seen": start}, now)
+    assert active["subtitle"] == "2:05" and active["hold"] == "Hold"
+    assert active["hangup"] == "Hang Up" and active["answer"] == "Answer"
+    assert card({"state": "active", "first_seen": "garbage"}, now)["subtitle"] == ""
+    assert phone_link_view.call_duration(start, now - 300) == "0:00"
+
+
+def test_notifications_view_names_the_opt_in_the_error_or_the_empty_list() -> None:
+    view = phone_link_view.notifications_view
+    off = view({}, "Turn it on")
+    assert off == {"title": "Notification List Is Off", "explanation": "Turn it on",
+                   "contentHint": ""}
+    failed = view({"enabled": True, "content": True, "error": "busy"}, "")
+    assert failed["title"] == "Notifications Are Unavailable" and failed["explanation"] == "busy"
+    empty = view({"enabled": True, "content": False, "error": ""}, "")
+    assert empty["title"] == "No Notifications Yet" and "not saved" in empty["explanation"]
+    assert "Show message content in popups" in empty["contentHint"]
 
 
 def test_call_groups_fold_repeats_and_label_days() -> None:
@@ -79,6 +162,9 @@ def test_call_groups_fold_repeats_and_label_days() -> None:
     ]
     assert rows[0]["missed"] and rows[0]["known"] and rows[0]["caller"] == "Anna"
     assert not rows[2]["known"] and rows[2]["caller"] == "+41790000002"
+    assert (rows[0]["title"], rows[0]["detail"]) == ("Anna (3)", "Missed · +41790000001")
+    assert rows[0]["direction_label"] == "Missed"
+    assert (rows[2]["title"], rows[2]["detail"]) == ("+41790000002", "Incoming")
     missed = overview.call_groups(entries, missed_only=True, now=now)
     assert [row["count"] for row in missed] == [3]
     assert day_and_clock("garbage") == ("", "")

@@ -58,9 +58,13 @@ class DaemonClient(GObject.Object):
         "availability-changed": (GObject.SignalFlags.RUN_FIRST, None, (bool,)),
         "open-message-requested": (GObject.SignalFlags.RUN_FIRST, None, (str,)),
         "tether-invalidated": (GObject.SignalFlags.RUN_FIRST, None, ()),
-        # Content-free invalidations of the opt-in media and call history.
+        # Content-free invalidations of the opt-in media, call history and
+        # notification list.
         "now-playing-changed": (GObject.SignalFlags.RUN_FIRST, None, ()),
         "call-history-changed": (GObject.SignalFlags.RUN_FIRST, None, ()),
+        "notifications-changed": (GObject.SignalFlags.RUN_FIRST, None, ()),
+        # Running phone calls changed (Calls1); clients call ListCalls.
+        "calls-changed": (GObject.SignalFlags.RUN_FIRST, None, ()),
     }
 
     def __init__(self) -> None:
@@ -135,6 +139,8 @@ class DaemonClient(GObject.Object):
         for signal_name, gobject_signal in (
             ("NowPlayingChanged", "now-playing-changed"),
             ("CallHistoryChanged", "call-history-changed"),
+            ("NotificationsChanged", "notifications-changed"),
+            ("CallsChanged", "calls-changed"),
         ):
             self._matches.append(
                 self._bus.add_signal_receiver(
@@ -596,6 +602,39 @@ class DaemonClient(GObject.Object):
             mutation=True,
         )
 
+    def calls_async(self, on_ok, on_err=None) -> None:
+        """Calls1.ListCalls: the running calls as a ``CallsSnapshot``."""
+        self._submit(
+            lambda: self._call_backend(lambda backend: backend.calls()),
+            on_ok,
+            on_err,
+        )
+
+    def answer_call_async(self, call_id: str, on_ok, on_err) -> None:
+        self._submit(
+            lambda: self._call_backend(lambda backend: backend.answer_call(call_id)),
+            on_ok,
+            on_err,
+            mutation=True,
+        )
+
+    def hangup_call_async(self, call_id: str, on_ok, on_err) -> None:
+        self._submit(
+            lambda: self._call_backend(lambda backend: backend.hangup_call(call_id)),
+            on_ok,
+            on_err,
+            mutation=True,
+        )
+
+    def swap_calls_async(self, on_ok, on_err) -> None:
+        """Hold the active call or resume the held one (AT+CHLD=2)."""
+        self._submit(
+            lambda: self._call_backend(lambda backend: backend.swap_calls()),
+            on_ok,
+            on_err,
+            mutation=True,
+        )
+
     def set_contact_photos_async(self, enabled: bool, on_ok, on_err) -> None:
         self._submit(
             lambda: self._call_backend(lambda backend: backend.set_contact_photos(enabled)),
@@ -700,6 +739,41 @@ class DaemonClient(GObject.Object):
             on_ok,
             on_err,
         )
+
+    def sync_call_history_async(self, on_ok, on_err) -> None:
+        """Ask the daemon to read the iPhone's call history again now."""
+        self._submit(
+            lambda: self._call_backend(lambda backend: backend.sync_call_history()),
+            on_ok,
+            on_err,
+            mutation=True,
+        )
+
+    # ---- shared client models (blueferry.client_tasks) -------------------
+
+    def submit(self, operation, on_done=None, on_error=None, on_finished=None) -> None:
+        """:class:`blueferry.client_tasks.TaskRunner` on the read worker.
+
+        The shared models (``notification_history``) hand in blocking work
+        such as :meth:`notifications`; the callbacks run on the GTK thread.
+        """
+        def done(value) -> None:
+            if on_done is not None:
+                on_done(value)
+            if on_finished is not None:
+                on_finished()
+
+        def failed(message: str) -> None:
+            if on_error is not None:
+                on_error(message)
+            if on_finished is not None:
+                on_finished()
+
+        self._submit(operation, done, failed)
+
+    def notifications(self, limit: int) -> dict:
+        """ListNotifications; blocking, so only for work passed to :meth:`submit`."""
+        return self._call_backend(lambda backend: backend.notifications(limit))
 
     # ---- settings: feature switches, service restart, doctor -------------
 

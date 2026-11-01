@@ -10,7 +10,8 @@ import "ui"
 // only instantiates it through a Loader when the backend reports
 // call_history_enabled, and records are fetched only while the tab is shown.
 // Rows come pre-grouped from the controller (phone_overview.call_groups):
-// one section per day, repeated calls from one number folded with a count.
+// one section per day, repeated calls from one number folded with a count,
+// each with its title and detail line.
 ColumnLayout {
     id: callsPage
     objectName: "recentCallsPage"
@@ -25,14 +26,6 @@ ColumnLayout {
     function visibleCalls() {
         const rows = callsPage.bridge.callHistoryRows || ({})
         return (callsPage.missedOnly ? rows.missed : rows.all) || []
-    }
-
-    function directionText(direction) {
-        if (direction === "missed")
-            return qsTr("Missed")
-        if (direction === "outgoing")
-            return qsTr("Outgoing")
-        return qsTr("Incoming")
     }
 
     function directionIcon(direction) {
@@ -98,17 +91,12 @@ ColumnLayout {
                 required property var modelData
                 partPrefix: "call"
                 density: "compact"
-                Accessible.name: callsPage.directionText(callRow.modelData.direction)
+                Accessible.name: callRow.modelData.direction_label
                     + ", " + callRow.modelData.caller + ", " + callRow.modelData.clock
-                title: callRow.modelData.count > 1
-                    ? callRow.modelData.caller + " (" + callRow.modelData.count + ")"
-                    : callRow.modelData.caller
+                title: callRow.modelData.title
                 titleColor: callRow.modelData.missed ? Kirigami.Theme.negativeTextColor
                                                      : Kirigami.Theme.textColor
-                subtitle: callRow.modelData.known && callRow.modelData.address !== ""
-                    ? callsPage.directionText(callRow.modelData.direction) + " · "
-                        + callRow.modelData.address
-                    : callsPage.directionText(callRow.modelData.direction)
+                subtitle: callRow.modelData.detail
                 meta: callRow.modelData.clock
                 leading: Component {
                     ContactAvatar {

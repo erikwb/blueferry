@@ -2006,6 +2006,21 @@ def test_phone_name_comes_from_the_configured_device():
     assert controller.phoneName == "Josh's iPhone"
 
 
+def test_phone_card_and_tab_wording_come_from_phone_link_view():
+    controller = BridgeController(backend=object(), setup=object(), subscribe=False, autostart=False)
+    assert controller.phoneConnection == "BlueFerry service is not running"
+    assert controller.dialKeys[10] == ["0", "+"]
+    assert controller.dialable("+41 (79) 1-2") == "+417912"
+    assert controller.callsHint({"calls_enabled": True}, "ready") == ""
+    assert "oFono" in controller.callsHint({"calls_enabled": True}, "unavailable")
+    view = controller.notificationsView({"enabled": True, "content": False}, "")
+    assert view["title"] == "No Notifications Yet" and view["contentHint"]
+    controller._contact_results = [
+        {"name": "Kim", "address": "0491570156"}, {"name": "Kim", "address": "kim@example.org"},
+    ]
+    assert controller.dialSuggestions == [{"name": "Kim", "address": "0491570156"}]
+
+
 def _inline_controller(monkeypatch, backend):
     controller = BridgeController(backend=backend, setup=object(), subscribe=False, autostart=False)
 

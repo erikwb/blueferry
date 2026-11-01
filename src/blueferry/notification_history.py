@@ -1,6 +1,7 @@
 """Toolkit-neutral state of the opt-in Notifications tab (``ListNotifications``).
 
-Shared by the Qt client (``qt/controller.py``) and, soon, the GTK client.
+Shared by the Qt client (``qt/controller.py``) and the GTK client
+(``ui/notifications.py``).
 The recent-notification list is private, so it is fetched only while the
 tab is shown and forgotten when it is hidden. A content-free
 ``NotificationsChanged`` (:meth:`NotificationHistory.invalidated`) coalesces

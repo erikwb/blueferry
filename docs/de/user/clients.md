@@ -13,6 +13,24 @@ Desktops.
 
 ![GTK-Client](../../images/gtk.png)
 
+Das Fenster ist eine Telefon-Übersicht. Eine Karte über den Reitern zeigt
+Name und Verbindung des iPhones, Akku, Empfang und Netz sowie, was gerade
+läuft (mit zurück, Wiedergabe/Pause und weiter). Ihr Knopf **Quick
+Settings** enthält die Schalter für [den Ton](phone-audio.md) und die
+[Abwesenheitssperre](proximity-lock.md). Ist etwas ausgeschaltet, nennt die
+Karte die Einstellung, die es einschaltet. Die Reiter wechselt man
+in der Kopfzeile, in einem schmalen Fenster unten:
+
+- **Messages**: Unterhaltungen und der Chat.
+- **Calls**: laufende [Anrufe](calls.md) mit annehmen, halten/fortsetzen
+  und auflegen sowie dem Ton-Schalter, ein Wählfeld, das auch deine
+  Kontakte nach Namen durchsucht, und die [Anrufliste](call-history.md) nach Tagen
+  gruppiert, mit All und Missed, Rückruf- und Nachrichtenknöpfen und
+  **Refresh from iPhone**. Jeder Anruf fragt vorher nach.
+- **Notifications**: die [letzten iPhone-Mitteilungen](notification-history.md)
+  anderer Apps. Ist die Liste aus, sagt der Reiter warum und öffnet die
+  Einstellung.
+
 **Settings** (Hauptmenü, `Strg+,`) hat dieselben Kategorien wie der
 KDE-Client, je eine Seite; die Umschaltleiste sitzt in der Kopfzeile, in
 einem schmalen Fenster unten, und der Suchknopf findet jede Einstellung:
@@ -29,8 +47,9 @@ einem schmalen Fenster unten, und der Suchknopf findet jede Einstellung:
 Die Schalter, die einen Neustart brauchen (unten), funktionieren wie im
 KDE-Client: Solange eine Änderung auf den Neustart wartet, beginnt jede
 Seite mit einem Hinweis und **Restart Service**. Die Plugin-Einstellungen
-hat der GTK-Client noch nicht; dafür gibt es den KDE-Client oder
-`blueferry plugins`.
+und den Reiter Photos hat der GTK-Client noch nicht; dafür gibt es den
+KDE-Client oder auf der Kommandozeile `blueferry plugins` und
+`blueferry photos`.
 
 ## KDE Plasma (Kirigami)
 

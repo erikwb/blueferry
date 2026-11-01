@@ -301,6 +301,11 @@ class BridgeController(QObject):
     def contactResults(self):
         return self._contact_results
 
+    @Property("QVariantList", notify=contactResultsChanged)
+    def dialSuggestions(self):
+        """The contact matches the Calls tab offers (phone numbers only)."""
+        return phone_link_view.dial_suggestions(self._contact_results)
+
     @Property("QVariantList", notify=phoneCallsChanged)
     def phoneCalls(self):
         return self._phone_calls
@@ -529,11 +534,34 @@ class BridgeController(QObject):
 
     @Property(str, notify=phoneIdentityChanged)
     def phoneName(self) -> str:
-        mac = self._configuration.mac
-        for device in self._devices:
-            if mac and device.get("mac") == mac and device.get("name"):
-                return str(device["name"])
-        return "iPhone"
+        return phone_link_view.phone_name(self._devices, self._configuration.mac)
+
+    @Property(str, notify=statusChanged)
+    def phoneConnection(self) -> str:
+        return phone_link_view.connection_text(self._status)
+
+    @Property("QVariantList", constant=True)
+    def dialKeys(self):
+        """The dial pad's keys as ``[key, letters]`` pairs."""
+        return [list(key) for key in phone_link_view.DIAL_KEYS]
+
+    @Slot(str, result=str)
+    def dialable(self, value: str) -> str:
+        return phone_link_view.dialable(value)
+
+    @Slot("QVariantMap", str, result=str)
+    def callsHint(self, status: dict, calls_state: str) -> str:
+        """Why the dial pad cannot call; QML passes the properties it binds."""
+        return phone_link_view.calls_hint(dict(status or {}), str(calls_state or ""))
+
+    @Slot("QVariantMap", float, result="QVariantMap")
+    def callCard(self, call: dict, now_ms: float) -> dict:
+        """A running call's card; QML passes its 1 s ticker in milliseconds."""
+        return phone_link_view.call_card(dict(call or {}), float(now_ms) / 1000)
+
+    @Slot("QVariantMap", str, result="QVariantMap")
+    def notificationsView(self, info: dict, opt_in_hint: str) -> dict:
+        return phone_link_view.notifications_view(dict(info or {}), str(opt_in_hint or ""))
 
     @Property("QVariantMap", notify=pluginSettingsChanged)
     def pluginSettings(self):

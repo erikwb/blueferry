@@ -219,7 +219,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `tui_phone.py` | Opt-in Textual now-playing line and read-only recent-calls screen. |
 | `phone_overview.py` | Toolkit-free now-playing and recent-call rules shared by the GTK, TUI and Quickshell clients (mirrors the Qt QML rules). |
 | `ui/app.py` | GTK4/libadwaita application entry point. |
-| `ui/window.py` | Main GTK window; opens the settings dialog on a category. |
+| `ui/window.py` | Main GTK window: the phone card above an `AdwViewStack` with the Messages, Calls and Notifications tabs (switcher in the header, a bottom bar below 650 px); only the visible tab of a shown window reads (`set_watched`), closing stops every read; `add_tab` is where further tabs (Photos) go. Opens the settings dialog on a category and confirms every call (`dial_presenter.py`). |
 | `ui/conversations.py` | GTK conversations page: history, group confirmation, replies. |
 | `ui/status.py` | GTK settings (`SettingsDialog`, an `AdwPreferencesDialog`): one page per category of the Qt settings (Phone, Notifications, Calls & Audio, Network, Security, About) with setup, health, preferences and maintenance. |
 | `ui/settings_presenter.py` | Pure rules of the settings dialog: categories, Diagnostics rows, switch subtitles. |
@@ -227,17 +227,22 @@ All paths are relative to `src/blueferry/` unless noted.
 | `ui/notification_rules.py` | Settings > Notifications: the notification click rules editor (`GetNotificationOpenMap`/`SetNotificationOpenTarget`), reread only when the status revision changes. |
 | `ui/doctor.py` | Settings > Phone > Diagnostics: runs `blueferry doctor` (`doctor_report.py`) on the client's local worker and shows the report as plain text with Copy. |
 | `ui/status_presenter.py` | Pure presentation rules for the status page (including the optional phone battery/signal suffix). |
-| `ui/phone.py` | GTK iPhone dialog: battery/signal/network, opt-in now playing and recent calls; fetches only while open. |
-| `ui/phone_presenter.py` | Pure presentation rules for the iPhone dialog. |
+| `ui/phone_card.py` | GTK phone card: name, connection, battery/signal/network or the hint naming the setting, opt-in now playing with its buttons, the Quick Settings popover; reads the status once for all tabs and nothing while the window is hidden. |
+| `ui/calls.py` | GTK Calls tab: running calls (`running_calls.py`), dial pad with contact suggestions and the opt-in recent calls (`phone_overview.call_groups`), read only while the tab is shown; a StatusChanged re-reads them only when the opt-in changes (CallHistoryChanged and Refresh from iPhone always do). |
+| `ui/running_calls.py` | GTK running calls on the Calls tab (`phone_link_view.call_card`): answer, hold/resume, hang up and the sound switch; `ListCalls` on `CallsChanged`, on a calls status change and after each action, while the window is shown; the duration ticks only on the visible tab. |
+| `ui/quick_switches.py` | The phone card's Quick Settings (sound on this computer, lock when I walk away) as `Adw.SwitchRow` controllers that follow the daemon status. |
+| `ui/notifications.py` | GTK Notifications tab on `notification_history.py`, with the empty/off page that opens the setting. |
+| `ui/phone_presenter.py` | Pure presentation rules for the phone card and the Calls tab (status chips, icons, now playing). |
+| `ui/reads.py` | `CoalescedRead`: one outstanding daemon read per kind, bursts collapse into one more, replies after a reset are dropped. |
 | `ui/saved_choice.py` | Keeps a settings switch on the user's choice while its save and the next status settle. |
-| `ui/client.py` | Asynchronous GTK backend calls and D-Bus invalidations; reads, mutations (including the service restart) and local work (`blueferry doctor`) each have their own worker. |
+| `ui/client.py` | Asynchronous GTK backend calls and D-Bus invalidations; reads, mutations (including the service restart) and local work (`blueferry doctor`) each have their own worker. Also the `client_tasks.TaskRunner` of the shared models, on the read worker. |
 | `ui/avatars.py` | Bounded GTK photo cache and worker-side thumbnail decoding; late results from earlier contact generations are discarded. |
 | `ui/setup_runner.py` | GTK-independent worker for blocking setup operations. |
-| `ui/util.py` | Small UI helpers. |
+| `ui/util.py` | Small UI helpers, including `glib_timer` (the GTK `client_tasks.TimerFactory`). |
 | `qt/app.py` | PySide6/Kirigami entry point. |
 | `qt/controller.py` | Asynchronous `BridgeController` exposed to QML. |
-| `phone_overview.py`, `phone_link_view.py` | Toolkit-free rules behind the phone card and the Calls and Notifications tabs: opt-in hints that name the setting, day-grouped recent calls, notification rows; shared by Qt and (soon) GTK. |
-| `notification_history.py` | Toolkit-neutral state of the opt-in Notifications tab, shared by Qt and (soon) GTK: `sync_status` supplies backend/privacy/storage/profile state; `ListNotifications` runs only while access is allowed and the tab is shown, with coalesced reloads and late replies fenced off after access or tab changes. |
+| `phone_overview.py`, `phone_link_view.py` | Toolkit-free rules behind the phone card and the Calls and Notifications tabs: opt-in hints that name the setting, day-grouped recent calls, notification rows, the dial field and pad, the connection line; shared by Qt and GTK. |
+| `notification_history.py` | Toolkit-neutral state of the opt-in Notifications tab, shared by Qt and GTK: `sync_status` supplies backend/privacy/storage/profile state; `ListNotifications` runs only while access is allowed and the tab is shown, with coalesced reloads and late replies fenced off after access or tab changes. |
 | `qt/tray.py`, `qt/tray_presenter.py` | `blueferry-tray`: standalone StatusNotifierItem (unread badge, battery/signal tooltip); asynchronous QtDBus calls with auto-start disabled, so it never starts the daemon; owns `io.weirdware.BlueFerry.Client.Tray`, which `qt/app.py` watches to hide its own icon; pure presenters. |
 | `tray_autostart.py` | The tray's opt-in per-user XDG autostart entry. |
 | `qt/tasks.py` | Qt worker primitive, and `QtTaskRunner`/`QtTimer`, the Qt side of `client_tasks.py`. |

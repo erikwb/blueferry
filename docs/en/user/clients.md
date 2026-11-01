@@ -10,6 +10,24 @@ desktops.
 
 ![GTK client](../../images/gtk.png)
 
+The window is a phone overview. A card above the tabs shows the iPhone's
+name and connection, battery, signal and network, and what is playing (with
+previous, play/pause and next). Its **Quick Settings** button holds the
+switches for [the sound](phone-audio.md) and the
+[away lock](proximity-lock.md). When something is off, the card says which
+setting turns it on. The tabs are switched in the header bar, or at the
+bottom in a narrow window:
+
+- **Messages**: conversations and the chat.
+- **Calls**: running [phone calls](calls.md) with answer, hold/resume and
+  hang up and the sound switch, a dial pad that also searches your
+  contacts by name, and the [call history](call-history.md) grouped by day,
+  with All and Missed, call back and message buttons, and **Refresh from
+  iPhone**. Every call asks for confirmation first.
+- **Notifications**: the [recent iPhone notifications](notification-history.md)
+  of other apps. When the list is off, the tab says why and opens the
+  setting.
+
 **Settings** (main menu, `Ctrl+,`) has the same categories as the KDE
 client, one page each; the switcher sits in the header bar, or at the
 bottom in a narrow window, and the search button finds any setting:
@@ -25,8 +43,9 @@ bottom in a narrow window, and the search button finds any setting:
 
 The switches that need a restart (below) work as in the KDE client: while a
 change waits for the restart, every page starts with a notice and
-**Restart Service**. The GTK client doesn't have the plugin settings yet;
-use the KDE client or `blueferry plugins` for those.
+**Restart Service**. The GTK client doesn't have the plugin settings and
+the Photos tab yet; use the KDE client, or `blueferry plugins` and
+`blueferry photos` on the command line, for those.
 
 ## KDE Plasma (Kirigami)
 
