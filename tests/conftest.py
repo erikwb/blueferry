@@ -566,3 +566,15 @@ def make_daemon(isolated_state, monkeypatch):
     for worker, storage in built:
         worker.shutdown()
         storage.close()
+
+
+# First, so xdist's own hook sees the group when it reads them.
+@pytest.hookimpl(tryfirst=True)
+def pytest_collection_modifyitems(config, items):
+    """Keep private bus tests on one xdist worker: they share one dbus-daemon
+    and claim fixed names such as org.bluez. Needs ``--dist loadgroup``."""
+    if not config.pluginmanager.hasplugin("xdist"):
+        return
+    for item in items:
+        if item.get_closest_marker("private_dbus") is not None:
+            item.add_marker(pytest.mark.xdist_group("private_dbus"))

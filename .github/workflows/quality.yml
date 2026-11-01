@@ -35,7 +35,7 @@ jobs:
             export PYTHONPATH="$PWD/src"
             export BLUEFERRY_REQUIRE_TRANSLATION_TOOLS=1
             export BLUEFERRY_REQUIRE_LOCALE_TEST=1
-            python -m pytest -q -n auto --cov --cov-report=
+            python -m pytest -q -n auto --dist loadgroup --cov --cov-report=
             python -m coverage report
           '
       - name: QML syntax
