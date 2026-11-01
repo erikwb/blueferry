@@ -16,7 +16,8 @@ override_dh_auto_test:
 		export DBUS_SYSTEM_BUS_ADDRESS="$$DBUS_SESSION_BUS_ADDRESS"; \
 		export BLUEFERRY_TEST_DBUS_ADDRESS="$$DBUS_SESSION_BUS_ADDRESS"; \
 		export PYTHONPATH="$$PWD/debian/vendor:$$PWD/src"; \
-		python3 -m pytest -q -n auto --dist loadgroup --ignore=tests/test_qml_presenters.py'
+		python3 -m pytest -q -n auto --ignore=tests/test_qml_presenters.py -m "not private_dbus"; \
+		python3 -m pytest -q --ignore=tests/test_qml_presenters.py -m private_dbus'
 
 override_dh_auto_install:
 	dh_auto_install --destdir=debian/tmp
