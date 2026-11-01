@@ -66,6 +66,15 @@ def test_phone_name_and_connection_line() -> None:
     assert text({"daemon": True}) == "Not connected"
 
 
+def test_dial_pad_hands_the_typed_text_to_the_confirmation_unfiltered() -> None:
+    # Letters, an extension or service codes stay, so the dialog refuses them
+    # instead of the pad calling a shortened number.
+    assert phone_link_view.dial_input("  +1 555 123 4567 ext 89 ") == "+1 555 123 4567 ext 89"
+    assert phone_link_view.dial_input("**21*15551234567#") == "**21*15551234567#"
+    assert phone_link_view.dial_input(None) == ""
+    assert phone_link_view.dial_input("   ") == ""
+
+
 def test_dial_field_keeps_only_dialable_characters() -> None:
     assert phone_link_view.dialable("+41 (79) 1-2<b>*#") == "+417912*#"
     assert phone_link_view.dialable(None) == ""
