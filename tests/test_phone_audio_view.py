@@ -84,5 +84,17 @@ def test_av_sync_line(status, expected) -> None:
     assert phone_audio({"phone_audio_route": "pc", **status})["sync"] == expected
 
 
+@pytest.mark.parametrize(("status", "expected"), [
+    ({}, ""),
+    ({"phone_audio_delay_reporting": True, "phone_audio_delay_ms": 110}, "A/V sync: 110 ms"),
+    ({"phone_audio_delay_reporting": True, "phone_audio_delay_ms": None}, "A/V sync: reporting"),
+    ({"phone_audio_delay_reporting": False}, "A/V sync: not negotiated"),
+])
+def test_av_sync_terse_fragment(status, expected) -> None:
+    from blueferry.phone_audio_view import av_sync
+
+    assert av_sync(status, terse=True) == expected
+
+
 def test_av_sync_is_empty_for_backends_without_the_switch() -> None:
     assert phone_audio({})["sync"] == ""
