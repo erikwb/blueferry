@@ -944,6 +944,17 @@ moves its `State` from `active` to `idle` while AMS still reports playback;
 GetStatus then reports route `pc` with `phone_audio_playing` `phone`, and
 picking this computer again returns to `pc`.
 
+A/V sync: when the phone and BlueZ negotiate AVDTP Delay Reporting,
+bluetoothd exports `MediaTransport1.Delay` (unit 1/10 ms) and sends the
+audio server's latency to the phone, which shifts video by it. GetStatus
+reports it as `phone_audio_delay_ms` with `phone_audio_delay_reporting`
+`true`; a transport without `Delay` reports `false`, no transport `null`.
+Updates follow `PropertiesChanged`. The keys are reported while the
+transport exists, also when it is idle; the value is the last report (an
+invalidated `Delay` keeps it). Observed 2026-10-30 (iPhone, AAC, Intel
+AX200, BlueZ 5.87, PipeWire 1.6.9): `Delay` went 0 → 316 → 1098 (later up to
+1298) as PipeWire reported latency.
+
 Hardware validation on 2026-10-25 UTC (MediaTek, BlueZ 5.87, PipeWire 1.6.9,
 WirePlumber 0.5.18): with normal adapter roles and a rule matching only the
 selected phone's `api.bluez5.address` with `bluez5.auto-connect = [ ]`, an

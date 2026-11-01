@@ -1002,6 +1002,17 @@ def test_textual_sound_switch_moves_the_iphone_audio_and_explains_refusals() -> 
             await _wait_for_static_text_containing(
                 app, pilot, "#connection-summary", "sound here",
             )
+            backend.reported = {
+                "phone_audio_route": "pc", "phone_audio_playing": "pc",
+                "phone_audio_delay_ms": 110, "phone_audio_delay_reporting": True,
+            }
+            await app._apply_snapshot(app.state.fetch_snapshot())
+            await _wait_for_static_text_containing(
+                app, pilot, "#connection-summary", "A/V sync: 110 ms",
+            )
+            # The terse fragment, not the sentence from the settings.
+            summary = str(app.query_one("#connection-summary").render())
+            assert summary.endswith("A/V sync: 110 ms"), summary
 
     _run_headless(scenario())
 

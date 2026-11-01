@@ -152,6 +152,13 @@ def _ancs_actions_editable(values: Values) -> bool:
     )
 
 
+def _phone_audio_caption(values: Values) -> str:
+    """Where the sound plays, and the A/V sync line under it while a stream
+    is open (as under the Qt and GTK switches)."""
+    audio = phone_audio(values)
+    return "\n".join(line for line in (str(audio["hint"]), str(audio["sync"])) if line)
+
+
 def _battery_caption(values: Values) -> str:
     percent = values.get("phone_battery_warning_percent", 20)
     return _("One desktop notification per discharge, at {percent} % or less.").format(
@@ -276,7 +283,7 @@ SAVED_SWITCHES: dict[str, SavedSwitch] = {
             # Not a saved preference: the checkbox follows bluetoothd's route.
             key="phone_audio",
             label=_("Play the iPhone's Sound on This Computer"),
-            caption=lambda values: str(phone_audio(values)["hint"]),
+            caption=_phone_audio_caption,
             shown=lambda values: phone_audio(values)["supported"] is True,
             value=lambda values: phone_audio(values)["on_pc"] is True,
             editable=lambda values: phone_audio(values)["available"] is True,
@@ -688,7 +695,8 @@ class OptionsScreen(ModalScreen[None]):
             checkbox.value = active
         checkbox.disabled = saving or not daemon or not switch.editable(values)
         text = switch.caption(values)
-        caption.update(Text(_one_line(text)))
+        # A caption may have a few lines of its own; each stays one line.
+        caption.update(Text("\n".join(_one_line(line) for line in text.split("\n"))))
         caption.display = visible and bool(text)
         return visible
 

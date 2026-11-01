@@ -66,11 +66,22 @@ Andere Audioregeln und die angebotenen Audiorollen bleiben erhalten.
 - **Anrufe:** Diese Einstellung betrifft Medien (A2DP). Die getrennte
   Anrufoption und die HFP-Rollen des Desktops bleiben unverändert.
 
+## Bild und Ton synchron
+
+Spielt das iPhone ein Video mit dem Ton auf diesem Computer, verzögert es das
+Bild um die Latenz, die dieser Computer über Bluetooth meldet
+(AVDTP-Delay-Reporting). Die Clients zeigen die gemeldete Verzögerung neben dem
+iPhone-Ton-Status an, zum Beispiel *A/V sync: 110 ms delay reported to the
+iPhone.*, und `blueferry doctor` prüft sie, während der Ton hier spielt.
+Meldet er, dass Delay-Reporting nicht ausgehandelt ist, sind Adapter oder BlueZ
+dafür zu alt und das Video kann dem Ton vorauslaufen.
+
 ## Datenschutz
 
 Schalter und Status enthalten keine Titel- oder App-Daten: nur die Route
 (`pc`, `phone`, `unavailable`), einen Grund-Code und wo der Ton spielt
-(`pc`, `phone`, `none`, `unknown`).
+(`pc`, `phone`, `none`, `unknown`) und die A/V-Sync-Verzögerung in
+Millisekunden.
 Auswahl und Telefonadresse werden lokal in `settings.json` gespeichert.
 `audio auto` entfernt die WirePlumber-Regel `zz-blueferry-phone-audio.conf`.
 

@@ -205,6 +205,11 @@ class ContactsScreen(ModalScreen[ContactsResult]):
         card = self.book.card
         return card if card["open"] and card["title"] and not card["stale"] else None
 
+    @property
+    def rendered(self) -> bool:
+        """The list and the card on screen show the book's current state."""
+        return not (self._rendering or self._dirty) and self._shown_card is self.book.card
+
     def reload(self) -> None:
         """Read the first page for the current query again."""
         self.book.reload()
