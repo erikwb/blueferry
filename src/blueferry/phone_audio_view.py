@@ -69,21 +69,27 @@ def phone_audio(status: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def av_sync(status: Mapping[str, Any]) -> str:
+def av_sync(status: Mapping[str, Any], *, terse: bool = False) -> str:
     """The A/V sync delay of the iPhone's audio stream, as one plain line.
 
     Empty while no stream is open (``phone_audio_delay_reporting`` is null or
     missing). With delay reporting the line names the delay the phone shifts
     its video by; without it, it warns that video may run ahead of the sound.
+    ``terse`` gives a short fragment without a full stop for one-line
+    summaries such as the terminal client's status line.
     """
     reporting = status.get("phone_audio_delay_reporting")
     if reporting is False:
+        if terse:
+            return _("A/V sync: not negotiated")
         return _("A/V sync: delay reporting not negotiated; video may be out of sync.")
     if reporting is not True:
         return ""
     delay = status.get("phone_audio_delay_ms")
     if isinstance(delay, bool) or not isinstance(delay, int) or delay < 0:
-        return _("A/V sync: delay reporting active.")
+        return _("A/V sync: reporting") if terse else _("A/V sync: delay reporting active.")
+    if terse:
+        return _("A/V sync: {delay} ms").format(delay=delay)
     return _("A/V sync: {delay} ms delay reported to the iPhone.").format(delay=delay)
 
 

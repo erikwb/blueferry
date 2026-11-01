@@ -27,7 +27,9 @@ bluetoothd exports the transport's ``Delay`` property (1/10 ms) and forwards
 what the audio server reports to the phone, which shifts video by it. A
 transport without ``Delay`` never negotiated delay reporting (older adapter or
 BlueZ); video can then run ahead of the sound. Both keys are ``None`` while no
-stream is open. They follow ``PropertiesChanged``; nothing polls.
+stream is open; an idle transport keeps its last value, and so does a
+``Delay`` that is only invalidated. They follow ``PropertiesChanged``;
+nothing polls.
 
 Requires the desktop audio server to offer the A2DP sink role. BlueFerry no
 longer overrides the desktop's Bluetooth audio roles.
@@ -109,6 +111,9 @@ Cancel = Callable[[int], object]
 ResumePlayback = Callable[[Callable[[], bool]], None]
 
 
+# A transport exports Delay, but no value has been seen (only invalidated).
+DELAY_UNKNOWN = -1
+
 class PhoneAudioRoute:
     """Content-free view of, and control over, the phone's A2DP stream."""
 
@@ -140,6 +145,8 @@ class PhoneAudioRoute:
         self._transports: dict[str, str] = {}
         # Transport object path -> MediaTransport1.Delay (1/10 ms), or None
         # when the transport has no Delay (delay reporting not negotiated).
+        # Per transport: the Delay in 1/10 ms, None without the property (no
+        # delay reporting), DELAY_UNKNOWN while it exists with no value seen.
         self._delays: dict[str, int | None] = {}
         self._known = False
         self._pending: str | None = None
@@ -196,6 +203,8 @@ class PhoneAudioRoute:
         delay = self._delays.get(path)
         if delay is None:
             return {"phone_audio_delay_ms": None, "phone_audio_delay_reporting": False}
+        if delay == DELAY_UNKNOWN:
+            return {"phone_audio_delay_ms": None, "phone_audio_delay_reporting": True}
         return {
             "phone_audio_delay_ms": (delay + 5) // 10,
             "phone_audio_delay_reporting": True,
@@ -490,8 +499,12 @@ class PhoneAudioRoute:
         before = self.snapshot()
         if "State" in changed:
             self._transports[key] = str(changed["State"])
-        if delay_changed:
+        if "Delay" in changed:
             self._delays[key] = self._read_delay(changed)
+        elif delay_changed and self._delays.get(key) is None:
+            # Invalidated without a value: the property (and so delay
+            # reporting) is there; keep the last value, if any was seen.
+            self._delays[key] = DELAY_UNKNOWN
         self._changed(before)
 
     def _properties_changed(self, interface, changed, _invalidated) -> None:
