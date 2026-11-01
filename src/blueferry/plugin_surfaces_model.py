@@ -69,6 +69,11 @@ class PluginSurfacesModel:
     def state(self) -> dict:
         return dict(self._state)
 
+    @property
+    def sending(self) -> bool:
+        """A ``SendFiles`` ("Send to…" or a card's ``send_to``) is running."""
+        return str(self._state["busy"]).startswith("send:")
+
     def _update(self, **values: Any) -> None:
         self._state = {**self._state, **values}
         self._on_change()
