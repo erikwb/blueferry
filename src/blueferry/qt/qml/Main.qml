@@ -290,87 +290,9 @@ Kirigami.ApplicationWindow {
             onTriggered: {
                 const selected = rosterChangedDialog.thread
                 rosterChangedDialog.close()
-                groupParticipantsDialog.thread = selected
-                groupParticipantsDialog.open()
+                groupParticipantsDialog.request(selected, "")
             }
         }]
-    }
-
-    Kirigami.Dialog {
-        id: groupParticipantsDialog
-        property var thread: null
-        title: thread ? qsTr("Who is in %1?").arg(thread.name) : ""
-        preferredWidth: Kirigami.Units.gridUnit * 28
-        standardButtons: Kirigami.Dialog.Cancel
-
-        function recipients() {
-            return conversationLogic.participantLines(groupParticipantEditor.text)
-        }
-
-        customFooterActions: [Kirigami.Action {
-            text: qsTr("Save Participants")
-            icon.name: "document-save"
-            enabled: groupParticipantsDialog.recipients().length >= 2
-                && !root.bridge.busy
-            onTriggered: {
-                root.bridge.setGroupParticipants(
-                    groupParticipantsDialog.thread.key,
-                    groupParticipantsDialog.recipients()
-                )
-                groupParticipantsDialog.close()
-            }
-        }]
-
-        onOpened: {
-            groupParticipantEditor.text = thread
-                ? (thread.recipients || []).join("\n") : ""
-            groupParticipantEditor.forceActiveFocus()
-        }
-
-        ColumnLayout {
-            spacing: Kirigami.Units.smallSpacing
-
-            Controls.Label {
-                Layout.fillWidth: true
-                text: groupParticipantsDialog.thread
-                    ? qsTr("%1 has sent a message to a group named %2, which you're a member of. BlueFerry can't determine the participants of this group chat, but if you fill in the members, it can work.")
-                        .arg(groupParticipantsDialog.thread.prompt_sender || qsTr("Someone"))
-                        .arg(groupParticipantsDialog.thread.name)
-                    : ""
-                textFormat: Text.PlainText
-                wrapMode: Text.Wrap
-            }
-            Controls.Label {
-                Layout.fillWidth: true
-                text: qsTr("Enter every other participant's phone number or Apple ID email, one per line.")
-                wrapMode: Text.Wrap
-            }
-            Kirigami.InlineMessage {
-                Layout.fillWidth: true
-                visible: true
-                type: Kirigami.MessageType.Information
-                text: qsTr("Changing this list only updates BlueFerry's local understanding of the group. It does not add or remove anyone in Messages on your iPhone.")
-            }
-            Controls.TextArea {
-                id: groupParticipantEditor
-                Layout.fillWidth: true
-                Layout.preferredHeight: Kirigami.Units.gridUnit * 7
-                placeholderText: qsTr("One participant per line")
-                wrapMode: TextEdit.NoWrap
-                Accessible.name: qsTr("Group Participants")
-            }
-            Kirigami.InlineMessage {
-                Layout.fillWidth: true
-                visible: true
-                type: Kirigami.MessageType.Warning
-                text: groupParticipantsDialog.thread
-                    ? root.escapedRichText(
-                        qsTr("BlueFerry identifies named groups by name. If you have multiple groups named %1, BlueFerry may combine them and use the wrong participant list. This list can also become outdated if the group is renamed or its membership changes.")
-                            .arg(root.htmlEscape(groupParticipantsDialog.thread.name))
-                      )
-                    : ""
-            }
-        }
     }
 
     Kirigami.PromptDialog {
@@ -473,6 +395,12 @@ Kirigami.ApplicationWindow {
     GroupConfirmationDialog {
         id: confirmGroupDialog
         objectName: "confirmGroupDialog"
+        bridge: root.bridge
+    }
+
+    GroupParticipantsDialog {
+        id: groupParticipantsDialog
+        objectName: "groupParticipantsDialog"
         bridge: root.bridge
     }
 
@@ -893,7 +821,8 @@ Kirigami.ApplicationWindow {
                                         }
                                         Controls.ToolButton {
                                             visible: messagesPage.thread !== null
-                                                && messagesPage.thread.group_origin === "named"
+                                                && (messagesPage.thread.group_origin === "named"
+                                                    || messagesPage.thread.group_origin === "unnamed")
                                             icon.name: "system-users"
                                             text: qsTr("Edit Group Participants")
                                             display: Controls.AbstractButton.IconOnly
@@ -901,8 +830,7 @@ Kirigami.ApplicationWindow {
                                             Controls.ToolTip.text: text
                                             Controls.ToolTip.visible: hovered
                                             onClicked: {
-                                                groupParticipantsDialog.thread = messagesPage.thread
-                                                groupParticipantsDialog.open()
+                                                groupParticipantsDialog.request(messagesPage.thread, "")
                                             }
                                         }
                                     }
@@ -993,8 +921,7 @@ Kirigami.ApplicationWindow {
                                             text: qsTr("Add Participants")
                                             icon.name: "list-add-user"
                                             onTriggered: {
-                                                groupParticipantsDialog.thread = messagesPage.thread
-                                                groupParticipantsDialog.open()
+                                                groupParticipantsDialog.request(messagesPage.thread, "")
                                             }
                                         }]
                                     }
@@ -1019,8 +946,9 @@ Kirigami.ApplicationWindow {
                                                 }
                                             }
                                             placeholderText: qsTr("Write a Message")
-                                            enabled: messagesPage.thread !== null
-                                                && messagesPage.thread.reply_ready && !root.bridge.busy
+                                            // Send asks for unconfirmed group members first.
+                                            enabled: conversationLogic.canCompose(messagesPage.thread)
+                                                && !root.bridge.busy
                                             Accessible.name: qsTr("Message Text")
                                             onAccepted: sendButton.clicked()
                                         }

@@ -79,6 +79,8 @@
                   value="InvalidArgs,NotReady"/>
     </method>
     <method name="SetGroupParticipants">
+      <annotation name="org.freedesktop.DBus.Description"
+                  value="Save the reply addresses of a named group, or of an unnamed group whose members do not each resolve to one address. The list must include every observed sender; other threads are refused."/>
       <arg name="thread_key" type="s" direction="in"/>
       <arg name="recipients" type="as" direction="in"/>
       <arg name="thread_json" type="s" direction="out"/>

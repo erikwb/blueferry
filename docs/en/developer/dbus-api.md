@@ -79,7 +79,7 @@ and retries on a later status read.
 | `ListRecent` | `s folder, u limit` → `s json` (reads directly from the iPhone over MAP) |
 | `MarkThreadRead` | `s thread_key` → `u updated` |
 | `SetThreadStarred` | `s thread_key, b starred` → `b starred_state` |
-| `SetGroupParticipants` | `s thread_key, as recipients` → `s thread_json` |
+| `SetGroupParticipants` | `s thread_key, as recipients` → `s thread_json`: saves 2 to 20 reply addresses for a named group or an unnamed group BlueFerry cannot route (`group_origin` `named` or `unnamed`); the list must include every observed sender. An unnamed group's list is kept under its member-name key. Other threads get `InvalidArgs` |
 | `DeleteThreads` | `as thread_keys, b confirmed` → `u deleted_conversations` |
 | `ClearHistory` | `b confirmed` |
 
