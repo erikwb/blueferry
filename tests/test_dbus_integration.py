@@ -636,6 +636,10 @@ def test_checked_group_send_rejects_a_stale_snapshot_over_the_public_api(
         name, "SendToThreadChecked", key, "private draft", True, group_confirmation_token(updated),
     )
     _dispatch_until(lambda: not pending.empty())
+    # The reply's turn in the queue; it re-resolves the group, then sends.
+    _turn, turn_reached, _turn_failed = pending.get_nowait()
+    turn_reached(None)
+    _dispatch_until(lambda: not pending.empty())
     # Never execute the Bluetooth operation; supply the fake worker result.
     _operation, success, _failure = pending.get_nowait()
     success("/transfer/test")

@@ -118,6 +118,11 @@ class MessagesService(dbus.service.Object):
             error_handler,
         )
 
+    def _refresh_conversations(self, ready, failure) -> None:
+        self.operations.prepare_conversations(
+            self._projection_worker.submit, ready, failure,
+        )
+
     @dbus.service.method(
         IFACE, in_signature="ss", out_signature="s",
         async_callbacks=("reply_handler", "error_handler"),
@@ -153,6 +158,7 @@ class MessagesService(dbus.service.Object):
             lambda: self.operations.send_to_thread(
                 thread_key, body, bool(confirm_group), reply_handler,
                 lambda error: error_handler(self._dbus_error(error)),
+                refresh=self._refresh_conversations,
             ),
             error_handler,
         )
@@ -172,6 +178,7 @@ class MessagesService(dbus.service.Object):
                 thread_key, body, bool(confirm_group), reply_handler,
                 lambda error: error_handler(self._dbus_error(error)),
                 expected_group_token=expected_group_token,
+                refresh=self._refresh_conversations,
             ),
             error_handler,
         )

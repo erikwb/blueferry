@@ -319,6 +319,49 @@ def test_confirmed_group_roster_survives_a_new_operations_instance(
     assert second.list_threads(10)[0]["group_confirmed"] is True
 
 
+def test_queued_reply_is_refused_when_its_thread_becomes_read_only(monkeypatch):
+    queued = []
+    operations = _operations(
+        submit_obex=lambda operation, **callbacks: queued.append((operation, callbacks)),
+    )
+    events = [
+        {"kind": "group_route", "group_key": named_group_key("Crew"),
+         "group_name": "Crew", "group_members": ["Alice", "Bob"],
+         "group_recipients": ["+15551111111", "+15552222222"],
+         "seen_at": "2026-08-12T09:00:00+00:00"},
+        {"kind": "sms_received", "handle": "first", "sender_address": "+15551111111",
+         "contact_name": "Alice", "body": "ok", "seen_at": "2026-08-12T10:00:00+00:00"},
+    ]
+    operations._conversations.threads = lambda: build_threads(events)
+    sent = []
+    monkeypatch.setattr(
+        backend_operations, "send_message",
+        lambda _path, recipient, _body: sent.append(recipient) or "/transfer/1",
+    )
+    errors = []
+
+    operations.send_to_thread(
+        "address:phone:15551111111", "on my way", False,
+        lambda _result: pytest.fail("unexpected successful reply"), errors.append,
+    )
+    # While the reply waits its turn, a second "ok" arrives that either it or
+    # the first may be the one sent to Crew.
+    events += [
+        {"kind": "ancs_notification", "notification_id": 42,
+         "app_id": "com.apple.MobileSMS", "title": "Alice", "subtitle": "Crew",
+         "body": "ok", "seen_at": "2026-08-12T10:00:02+00:00"},
+        {"kind": "sms_received", "handle": "second", "sender_address": "+15551111111",
+         "contact_name": "Alice", "body": "ok", "seen_at": "2026-08-12T10:00:30+00:00"},
+    ]
+    while queued:
+        operation, callbacks = queued.pop(0)
+        callbacks["on_success"](operation())
+
+    assert sent == []
+    assert len(errors) == 1
+    assert isinstance(errors[0], NotReadyError)
+
+
 def test_group_reply_records_the_projected_member_roster(monkeypatch):
     recorded = []
     operations = _operations(
@@ -1272,9 +1315,12 @@ def test_successful_group_send_is_acknowledged_when_preferences_fail(monkeypatch
             thread["recipients"], thread.get("roster_warning_id"),
         ),
     )
+    turn = Future()
+    turn.set_result(None)
+    ObexWorker._deliver(turn, *pending.pop(0))
     result = Future()
     result.set_result("/transfer/sent")
-    ObexWorker._deliver(result, *pending[0])
+    ObexWorker._deliver(result, *pending.pop(0))
     assert replies == ["/transfer/sent"]
     assert len(recorded) == 1
 

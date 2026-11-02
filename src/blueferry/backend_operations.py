@@ -462,7 +462,13 @@ class BackendOperations:
         failure: Failure,
         *,
         expected_group_token: str = "",
+        refresh: Callable[[Callable[[], None], Failure], None] | None = None,
     ) -> None:
+        """Queue a reply, then re-resolve its route when its turn comes.
+
+        ``refresh`` brings the conversation projection up to date off the
+        main loop before that check; without it the check rebuilds inline.
+        """
         if len(expected_group_token) > MAX_GROUP_CONFIRMATION_TOKEN_CHARS:
             raise InvalidArgumentsError("group confirmation token is too long")
         if not thread_key.strip():
@@ -470,6 +476,64 @@ class BackendOperations:
         if len(thread_key) > 1024:
             raise InvalidArgumentsError("thread key is too long")
         self._validate_body(body)
+        accepted = self._thread_route(
+            thread_key, confirm_group, expected_group_token,
+        )[1]
+        map_path = self.sessions.map_path
+
+        def send() -> None:
+            try:
+                thread, recipients, token = self._thread_route(
+                    thread_key, confirm_group, expected_group_token,
+                )
+            except Exception as error:
+                failure(error)
+                return
+            if recipients != accepted:
+                failure(NotReadyError(
+                    "the conversation changed; review it before sending"
+                ))
+                return
+            if token is None:
+                self._queue_send(recipients[0], body, success, failure)
+                return
+
+            def succeeded(transfer: str) -> None:
+                self._remember_confirmed_group(str(thread["key"]), token)
+                if self.dependencies.on_group_sent is not None:
+                    try:
+                        self.dependencies.on_group_sent(
+                            recipients, thread["key"],
+                            thread["name"], body, transfer,
+                            thread["members"],
+                        )
+                    except Exception:
+                        log.exception("on_group_sent hook failed (message was still sent)")
+                success(transfer)
+
+            self._queue(
+                lambda: send_group_message(map_path, recipients, body),
+                succeeded,
+                lambda error: self._operation_failed("Send", error, failure),
+            )
+
+        def dequeued(_result: object) -> None:
+            # Messages fetched by work queued ahead of this reply are in
+            # history now, and may have made the thread read-only or moved
+            # its destination.
+            if refresh is None:
+                send()
+            else:
+                refresh(send, failure)
+
+        # A no-op holds the reply's place in the Bluetooth queue and returns
+        # it to the main loop when its turn comes.
+        self._queue(lambda: None, dequeued, failure)
+
+    def _thread_route(
+        self, thread_key: str, confirm_group: bool, expected_group_token: str,
+    ) -> tuple[dict, list[str], str | None]:
+        """Return a thread, its destinations and, for a group, its roster token."""
         thread = self._conversations.find(thread_key)
         if thread is None:
             raise NotFoundError("thread no longer exists in local history")
@@ -513,31 +577,11 @@ class BackendOperations:
                     "confirm the displayed participant list before replying "
                     "to this group"
                 )
-
-            def succeeded(transfer: str) -> None:
-                self._remember_confirmed_group(thread_key, token)
-                if self.dependencies.on_group_sent is not None:
-                    try:
-                        self.dependencies.on_group_sent(
-                            group_recipients, thread["key"],
-                            thread["name"], body, transfer,
-                            thread["members"],
-                        )
-                    except Exception:
-                        log.exception("on_group_sent hook failed (message was still sent)")
-                success(transfer)
-
-            map_path = self.sessions.map_path
-            self._queue(
-                lambda: send_group_message(map_path, group_recipients, body),
-                succeeded,
-                lambda error: self._operation_failed("Send", error, failure),
-            )
-            return
+            return thread, group_recipients, token
 
         if len(thread["recipients"]) != 1:
             raise NotReadyError("one-to-one thread has an invalid recipient set")
-        self._queue_send(thread["recipients"][0], body, success, failure)
+        return thread, [thread["recipients"][0]], None
 
     def list_events(self, kinds: Iterable[object], limit: int) -> list[dict]:
         raw_kinds = list(kinds)
