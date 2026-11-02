@@ -759,6 +759,9 @@ class BearerSupervisor:
     def _profile_reset_disconnected(self, generation: int) -> None:
         if generation != self._generation or self._profile_reset_phase != "disconnecting":
             return
+        # The device disconnect also replaced the LE link a postponed reset
+        # was meant for, even if no poll saw it go down.
+        self._le_reset_wanted = None
         self._profile_reset_phase = "settling"
         self._profile_reset_id = self._schedule(
             PROFILE_RESET_SETTLE_SECONDS, self._profile_reset_reconnect,

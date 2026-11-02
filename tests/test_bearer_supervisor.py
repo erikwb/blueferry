@@ -2252,6 +2252,30 @@ def test_a_reset_refused_by_the_budget_runs_once_it_allows():
     assert disconnects == ["le", "le"]
 
 
+def test_a_profile_reset_retires_a_postponed_le_reset():
+    state = {"bredr": True, "le": True}
+    now = 0.0
+    disconnects, scheduled = [], []
+    supervisor = BearerSupervisor(
+        "/device", read_connected=state.get, clock=lambda: now,
+        connect=lambda _kind, success, _error: success(),
+        disconnect=lambda kind, success, _error: (disconnects.append(kind), success()),
+        schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+        cancel=lambda _timer: None,
+    )
+    supervisor.start()
+    supervisor.recover_le_transport()
+    now = 10.0
+    supervisor.poke()
+    supervisor.recover_le_transport()
+    assert supervisor.reset_profiles() == "started"
+    # The phone is back on both bearers before any poll saw LE go down.
+    scheduled[-1][1]()
+    now = 1000.0
+    supervisor.poke()
+    assert disconnects == ["le", "device"]
+
+
 def test_transport_reset_waits_for_pending_connect_to_finish():
     state = {"bredr": True, "le": False}
     now = 0.0
