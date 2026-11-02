@@ -108,6 +108,66 @@ def test_explicit_permission_failure_blocks_power_recovery_until_authorized():
     assert not client.permission_denied
 
 
+def test_revoked_permission_on_health_probe_clears_access_and_retries(
+    monkeypatch,
+) -> None:
+    statuses = []
+    scheduled = []
+    resets = []
+    replies = []
+
+    class _ControlPoint:
+        @staticmethod
+        def WriteValue(_value, _options, **kwargs) -> None:
+            if replies.pop(0):
+                kwargs["reply_handler"]()
+            else:
+                kwargs["error_handler"](client_module.dbus.exceptions.DBusException(
+                    "Not authorized", name="org.bluez.Error.NotAuthorized",
+                ))
+
+    bus = _CharacteristicBus({"/device/cp": _ControlPoint()})
+    monkeypatch.setattr(client_module, "get_system_bus", lambda: bus)
+    monkeypatch.setattr(client_module.dbus, "Interface", lambda value, _iface: value)
+    client = AncsClient(
+        "/device",
+        lambda _event: None,
+        on_status=lambda: statuses.append(client.connected),
+        on_transport_failure=lambda: resets.append(True),
+        schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+        cancel=lambda _timer: None,
+    )
+    client._started = True
+    client._bearer_connected = True
+    client._bearer_ready = True
+    client._cp_path = "/device/cp"
+    client._notify_started = True
+    client._authorized = True
+    client._was_authorized = True
+
+    replies.append(False)
+    client.probe_health()
+
+    assert client.permission_denied is True
+    assert client.authorized is False
+    assert client.connected is False
+    assert client.subscribed is True
+    assert statuses == [False]
+    assert scheduled[-1] == (
+        client_module.AUTHORIZATION_RETRY_SECONDS, client._retry_authorization,
+    )
+    assert resets == []
+
+    replies.append(True)
+    scheduled[-1][1]()
+    _complete_authorization_probe(client)
+
+    assert client.permission_denied is False
+    assert client.connected is True
+    assert statuses == [False, True]
+    assert resets == []
+
+
 def test_duplicate_notification_uid_is_coalesced_before_control_point_exists() -> None:
     client = AncsClient("/device", lambda _event: None)
     changed = {"Value": _notification(42)}
@@ -2373,6 +2433,28 @@ def test_action_write_errors_map_to_results(monkeypatch, error, result) -> None:
         assert entry is None
     else:
         assert entry is not None and entry.in_flight is False
+
+
+@pytest.mark.parametrize("name", ["NotAuthorized", "NotPermitted"])
+def test_action_rejected_for_revoked_access_clears_access_and_retries(
+    monkeypatch, name,
+) -> None:
+    status = []
+    client, cp, emitted = _action_client(monkeypatch)
+    client.on_status = lambda: status.append(client.connected)
+    _deliver_call(client)
+    results = []
+    client.perform_notification_action(42, True, _token(emitted), results.append)
+
+    cp.fail(_dbus_error("Not authorized", f"org.bluez.Error.{name}"))
+
+    assert results == [client_module.ACTION_FAILED]
+    assert client.permission_denied is True
+    assert client.connected is False
+    assert status == [False]
+    assert client._test_timers[-1] == (
+        client_module.AUTHORIZATION_RETRY_SECONDS, client._retry_authorization,
+    )
 
 
 def test_lost_connection_during_action_invalidates_transport(monkeypatch) -> None:
