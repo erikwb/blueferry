@@ -1039,6 +1039,59 @@ leave out only that phone's nodes; other Bluetooth headsets can be chosen. The d
 used is the stream's link peer in `pw-dump`. Moving the streams with
 BlueFerry's router has not been tested on hardware yet.
 
+## Answering on the computer
+
+Issue #230 asks that a call answered in BlueFerry plays on the computer,
+while a call answered on the iPhone stays on the iPhone, as with any
+Bluetooth headset. What is known, from sources and from the code path, and
+what is not:
+
+Established from the sources (oFono 2.18, PipeWire 1.6.9):
+
+- BlueFerry's **Answer** (desktop popup, any client, `blueferry calls
+  answer`) calls oFono's `VoiceCall.Answer`; oFono's HFP modem driver sends
+  `ATA` (`drivers/hfpmodem/voicecall.c`, `hfp_answer`). Answering a waiting
+  call uses `VoiceCallManager.HoldAndAnswer`, i.e. `AT+CHLD=2`. Both are the
+  hands-free side accepting the call, the same as a headset button.
+- BlueFerry cannot open the call audio link itself.
+  `HandsfreeAudioCard.Connect` and `Acquire` answer
+  `org.ofono.Error.NotAllowed` to every caller except the registered
+  `HandsfreeAudioAgent` (`src/handsfree-audio.c`, `card_connect`). With
+  `bluez5.hfphsp-backend = "ofono"` that agent is PipeWire. The codec
+  connection request `AT+BCC` is only sent from that path
+  (`plugins/hfp_hf_bluez5.c`, `hfp16_card_connect`), and oFono owns the
+  RFCOMM channel, so no other AT command can be sent either.
+- For the phone, PipeWire's oFono backend takes the SCO socket in
+  `NewConnection`, i.e. after the phone opened the link
+  (`spa/plugins/bluez5/backend-ofono.c`, `ofono_new_audio_connection`); the
+  call streams then appear (see "Call audio devices"). Whether PipeWire
+  would ever call `Acquire` on its own for this profile was not traced
+  further; the streams were only observed while the SCO link was up.
+
+From the specification, not verified with an iPhone: after the hands-free
+side accepts an incoming call with `ATA`, HFP has the audio gateway set up
+the audio connection if it is not already up (HFP 1.8, section 4.13,
+"Answer an Incoming Call from the HF"). The report in #230 describes the
+iOS side the same way: a call answered from the accessory plays there, one
+answered on the iPhone stays on the iPhone. If iOS uses in-band ringing,
+the SCO link already exists while the call rings, and answering on the
+iPhone closes it.
+
+What BlueFerry therefore does (needs a hardware check):
+
+- Answering here keeps using `ATA`/`AT+CHLD=2`; nothing else is sent.
+- The call controller remembers which calls were answered through
+  BlueFerry; the call-audio router gets "a call is active" and "answered
+  here" with each call change.
+- If an active call (not ringing, dialing or held) has no call streams
+  after 8 s, ListCalls reports `audio.state` `"phone"`: the sound is on the
+  iPhone. The clients then say so and point to the iPhone's **Audio**
+  button on the call screen, where this computer can be chosen. The router
+  keeps looking every 5 s, so the state turns `ready` once the sound moves
+  here. The log has one line per call: a warning if the call was answered
+  here (that contradicts the expectation above and is what a hardware test
+  should look for), otherwise an info line.
+
 ## Pairing diagnostics
 
 Each pairing attempt records the resolved delivery mode, authentication

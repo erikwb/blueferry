@@ -757,6 +757,12 @@ A change to these rules has to be made in both places.
   `settings.json`; a per-call choice is kept in memory and dropped when no
   call is left. Results carry a generation, so a finished call's check is
   ignored. Clients share `call_audio_view.py` for the wording.
+  The controller also passes whether a call is active and whether it was
+  answered through BlueFerry; an active call without streams for 8 s is
+  reported as `phone` (the sound is on the iPhone; one log line per call,
+  a warning when it was answered here). BlueFerry cannot open the SCO link
+  itself: oFono allows `HandsfreeAudioCard.Connect` only for its audio
+  agent, PipeWire (PROTOCOL.md "Answering on the computer").
 - `stop()` (daemon exit or switching calls off) sends `Powered=false`,
   flushed and without awaiting a reply, for the modem BlueFerry powered
   itself; a modem another oFono client powered is left alone.

@@ -109,6 +109,19 @@ laufen, wenn du sie hier annimmst, auch hier über Lautsprecher und Mikrofon.
 Schaltest du Anrufe aus (oder beendest das Backend), gibt BlueFerry diese
 Verbindung wieder frei, und das Gesprächsaudio geht zurück aufs Telefon.
 
+Wo der Ton eines Anrufs läuft, hängt davon ab, wo du ihn annimmst, wie bei
+einem Bluetooth-Headset: Nimmst du ihn hier an (Mitteilung, Client oder
+`blueferry calls answer`), soll das iPhone den Ton hierher schicken; nimmst
+du ihn am iPhone an, bleibt er am iPhone. BlueFerry kann den Ton nicht
+selbst herüberholen (nur PipeWire darf die Audioverbindung über oFono
+öffnen). Hat ein angenommener Anruf nach etwa 8 Sekunden hier keinen Ton,
+sagt die Anrufansicht „The sound of this call is on the iPhone“, und die
+Zeilen für Lautsprecher und Mikrofon zeigen **On the iPhone**: Wähle dann im
+Anrufbildschirm des iPhones unter **Audio** diesen Computer, und der Anruf
+wechselt nach wenigen Sekunden hierher. Ob das iPhone den Ton nach dem
+Annehmen am Computer wirklich hierher schickt, ist auf echter Hardware noch
+nicht geprüft; tut es das nicht, steht es im Log des Backends.
+
 `blueferry calls` sollte dann `ready` zeigen, solange das iPhone verbunden
 ist.
 

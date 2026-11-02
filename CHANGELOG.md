@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- When an answered iPhone call has no sound on this computer after about
+  8 seconds, the call view says the sound is on the iPhone and how to move it
+  here (`audio.state` `phone` in `Calls1.ListCalls`); the log tells a call
+  answered here from one answered on the iPhone
+  ([#230](https://github.com/erikwb/blueferry/issues/230)).
+
 ## [0.9.1](https://github.com/erikwb/blueferry/releases/tag/v0.9.1) - 2026-10-30
 
 ### Fixed

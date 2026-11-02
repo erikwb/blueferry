@@ -100,6 +100,18 @@ up with this computer: calls ring here and, once answered here, their audio
 plays here. Turning calls off (or quitting the backend) releases that link
 again, so call audio goes back to the phone.
 
+Where the sound of a call plays depends on where you answer it, as with a
+Bluetooth headset: answer it here (popup, client or `blueferry calls
+answer`) and the iPhone is expected to send the sound here; answer it on
+the iPhone and it stays on the iPhone. BlueFerry cannot pull the sound over
+by itself (only PipeWire may open the audio link through oFono). If an
+answered call has no sound here after about 8 seconds, the call view says
+"The sound of this call is on the iPhone" and the speaker and microphone
+rows show **On the iPhone**: choose this computer under **Audio** on the
+iPhone's call screen, and the call moves here within a few seconds. Whether
+the iPhone really sends the sound here after answering on the computer has
+not been checked on hardware yet; if it does not, the backend log says so.
+
 `blueferry calls` should then show `ready` while the iPhone is connected.
 
 ## Call speaker and microphone
