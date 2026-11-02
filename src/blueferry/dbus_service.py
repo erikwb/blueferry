@@ -854,7 +854,7 @@ class MessagesService(dbus.service.Object):
     )
     def Hangup(self, call_id: str, reply_handler, error_handler, sender=None) -> None:
         self._call_control(
-            sender, "calls-control",
+            sender, "calls-hangup",
             lambda success, failure: self.operations.hangup_call(
                 str(call_id), lambda _result: success(), failure,
             ),
@@ -867,7 +867,7 @@ class MessagesService(dbus.service.Object):
     )
     def HangupAll(self, reply_handler, error_handler, sender=None) -> None:
         self._call_control(
-            sender, "calls-control",
+            sender, "calls-hangup",
             lambda success, failure: self.operations.hangup_all_calls(
                 lambda _result: success(), failure,
             ),

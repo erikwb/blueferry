@@ -189,7 +189,7 @@ adds `calls_state` (`unavailable`, `searching`, `connecting`, `ready`,
 | `ListCalls` | → `s json` | Current calls with caller number and contact name; treat as private |
 | `Dial` | `s number` → `s call_id` | Plain numbers only; `*`/`#` and emergency numbers are refused. 6 per minute, 60 per hour |
 | `Answer` | `s call_id` | A waiting call holds the active one. 10 per minute |
-| `Hangup` | `s call_id` | Hangs up, or declines a ringing call |
+| `Hangup` | `s call_id` | Hangs up, or declines a ringing call. Own rate bucket, shared only with `HangupAll`, so tones and swaps never block it |
 | `HangupAll` | | |
 | `SendTones` | `s call_id, s tones` | DTMF on the active call: `0-9`, `*`, `#`. Requests are played one after another in arrival order (at most 32 waiting); the log records only how many tones went out |
 | `SwapCalls` | | Swap active and held |
