@@ -1272,7 +1272,6 @@ class Daemon:
         self._clear_photo_files()
         self.contacts.adopt_cache(prepared.contacts)
         self.contact_sync.storage_prepared()
-        self.events.seed_historical_ancs(prepared.historical_ancs)
         if self.call_history is not None:
             self.call_history.adopt(prepared.call_history)
         if prepared.has_messages:

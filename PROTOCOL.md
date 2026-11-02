@@ -659,8 +659,11 @@ timed out *and* BlueZ answered the previous write, so a slow ATT write never
 stalls the daemon's main loop and two writes never overlap (BlueZ rejects an
 overlapping write with `org.bluez.Error.InProgress`; a rejection caused by
 another D-Bus client is retried a few times). The iPhone
-can replay existing notifications after a reconnect, so startup/reconnect
-delivery needs deduplication without suppressing genuine modifications.
+replays existing notifications after a reconnect, flagged PreExisting;
+BlueFerry skips those. Within a session, an event whose UID, app, and text
+were already delivered is dropped, while a genuine modification still goes
+through. That record is cleared when the UID session ends, because a reused
+UID with the same text is then a new notification.
 
 Apple Messages also appears through ANCS. BlueFerry retains that copy for group
 correlation but suppresses its desktop popup because MAP already provides the
