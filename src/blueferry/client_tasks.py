@@ -27,8 +27,10 @@ class TaskRunner(Protocol):
         on_done: Callable[[Any], None] | None = None,
         on_error: Callable[[str], None] | None = None,
         on_finished: Callable[[], None] | None = None,
-    ) -> None:
-        """Run ``operation`` off the UI thread; report back on the UI thread."""
+    ) -> object:
+        """Run ``operation`` off the UI thread; report back on the UI thread.
+
+        The return value (a runner's own handle, if any) is not used."""
 
 
 class Timer(Protocol):

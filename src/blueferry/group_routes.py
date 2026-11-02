@@ -1,4 +1,4 @@
-"""Saved named-group reply rosters in the owner-only settings document.
+"""Saved group reply rosters in the owner-only settings document.
 
 A roster is user configuration, not message history. Keeping it out of the
 history archive means retention pruning and the bounded conversation window
@@ -66,7 +66,7 @@ def _belongs(route: dict, thread_keys: set[str]) -> bool:
 
 
 class GroupRoutesStore:
-    """Keep one saved reply roster per named-group key."""
+    """Keep one saved reply roster per group key."""
 
     def __init__(
         self, path: Path | None = None, *, storage: StorageSecurity | None = None,

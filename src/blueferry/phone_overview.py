@@ -96,7 +96,9 @@ def call_groups(
 
     Consecutive calls from the same number in the same direction on the same
     day fold into one row with ``count``; ``day`` is the section label and
-    ``clock`` the time of the newest call in the row.
+    ``clock`` the time of the newest call in the row. ``title`` is the
+    caller with the count and ``detail`` the direction, with the number
+    when the caller is a contact.
     """
     rows: list[dict[str, Any]] = []
     for entry in entries:
@@ -122,6 +124,17 @@ def call_groups(
             "missed": entry.missed,
             "count": 1,
         })
+    for row in rows:
+        row["title"] = (
+            _("{caller} ({count})").format(caller=row["caller"], count=row["count"])
+            if row["count"] > 1 else row["caller"]
+        )
+        detail = direction_text(row["direction"])
+        # For screen readers: direction, caller and time (see the clients).
+        row["direction_label"] = detail
+        if row["known"] and row["address"]:
+            detail = _("{direction} · {number}").format(direction=detail, number=row["address"])
+        row["detail"] = detail
     return rows
 
 

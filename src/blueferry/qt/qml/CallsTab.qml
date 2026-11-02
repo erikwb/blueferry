@@ -19,8 +19,23 @@ GridLayout {
     readonly property bool callsEnabled: (callsTab.bridge.status || {}).calls_enabled === true
     readonly property bool callsReady: callsTab.bridge.callsState === "ready"
     readonly property var phoneCalls: callsTab.bridge.phoneCalls || []
+    // The call keypad tones go to (phone_link_view.active_call_id).
+    readonly property string activeCall: callsTab.bridge.activeCallId || ""
+    // A call just connected: an empty number field must not swallow the
+    // keyboard's keypad keys meant for the call's menu.
+    onActiveCallChanged: {
+        if (callsTab.activeCall !== "" && dialField.activeFocus && dialField.text === "")
+            dialField.focus = false
+    }
+
     function append(key: string): void {
         dialField.text += key
+    }
+
+    // A pad key: a tone for the active call, else part of the number.
+    function padKey(key: string): void {
+        if (callsTab.activeCall === "" || !callsTab.bridge.pressCallTone(key))
+            callsTab.append(key)
     }
 
     function dial(): void {
@@ -30,16 +45,10 @@ GridLayout {
             callsTab.bridge.requestDialLink(dialField.text)
     }
 
-    function notReadyText(): string {
-        if (!callsTab.callsEnabled)
-            return callsTab.hints.calls || qsTr("Phone calls are off.")
-        switch (callsTab.bridge.callsState) {
-        case "connecting": return qsTr("Bringing the iPhone's hands-free connection online…")
-        case "searching": return qsTr("Waiting for the iPhone's hands-free connection.")
-        case "unavailable": return qsTr("oFono is not running, so calls are unavailable.")
-        default: return qsTr("Waiting for the iPhone's hands-free connection.")
-        }
-    }
+    // Why the pad cannot call (phone_link_view.calls_hint); both arguments
+    // are bound so the text follows the status and the Calls1 state.
+    readonly property string notReadyText: callsTab.bridge.callsHint(
+        callsTab.bridge.status || ({}), callsTab.bridge.callsState || "")
 
     // Seconds since a call was first seen, for the running-call cards.
     property double now: Date.now()
@@ -48,15 +57,6 @@ GridLayout {
         repeat: true
         running: callsTab.phoneCalls.length > 0 && callsTab.visible
         onTriggered: callsTab.now = Date.now()
-    }
-    function duration(firstSeen: string): string {
-        const started = Date.parse(firstSeen || "")
-        if (isNaN(started))
-            return ""
-        const total = Math.max(0, Math.floor((callsTab.now - started) / 1000))
-        const minutes = Math.floor(total / 60)
-        const seconds = total % 60
-        return minutes + ":" + (seconds < 10 ? "0" : "") + seconds
     }
 
     columns: width > Kirigami.Units.gridUnit * 36 ? 2 : 1
@@ -93,16 +93,14 @@ GridLayout {
                 delegate: CardFrame {
                     id: activeCall
                     required property var modelData
+                    // Wording from phone_link_view.call_card; "now" ticks the duration.
+                    readonly property var card: callsTab.bridge.callCard(
+                        activeCall.modelData, callsTab.now) || ({})
                     objectName: "activeCallCard"
                     Layout.fillWidth: true
-                    title: activeCall.modelData.display_peer
+                    title: activeCall.card.title || ""
                     subtitleItem.objectName: "activeCallState"
-                    subtitle: activeCall.modelData.ringing === true ? qsTr("Incoming call…")
-                        : activeCall.modelData.state === "held" ? qsTr("On hold")
-                        : activeCall.modelData.state === "dialing"
-                            || activeCall.modelData.state === "alerting"
-                            ? qsTr("Calling…")
-                            : callsTab.duration(activeCall.modelData.first_seen)
+                    subtitle: activeCall.card.subtitle || ""
                     leading: Component {
                         ContactAvatar {
                             bridge: callsTab.bridge
@@ -111,29 +109,72 @@ GridLayout {
                     }
                     actions: [
                         Controls.Button {
-                            visible: activeCall.modelData.ringing === true
-                            text: qsTr("Answer")
+                            visible: activeCall.card.ringing === true
+                            text: activeCall.card.answer || ""
                             icon.name: "call-start"
                             enabled: !callsTab.bridge.busy
                             onClicked: callsTab.bridge.answerCall(activeCall.modelData.call_id)
                         },
                         Controls.Button {
-                            visible: activeCall.modelData.ringing !== true
-                            text: activeCall.modelData.state === "held" ? qsTr("Resume") : qsTr("Hold")
-                            icon.name: activeCall.modelData.state === "held"
+                            visible: activeCall.card.ringing !== true
+                            text: activeCall.card.hold || ""
+                            icon.name: activeCall.card.held === true
                                 ? "media-playback-start" : "media-playback-pause"
                             enabled: !callsTab.bridge.busy
                             onClicked: callsTab.bridge.swapCalls()
                         },
                         Controls.Button {
                             objectName: "activeCallHangup"
-                            text: activeCall.modelData.ringing === true ? qsTr("Decline") : qsTr("Hang Up")
+                            text: activeCall.card.hangup || ""
                             icon.name: "call-stop"
                             enabled: !callsTab.bridge.busy
                             palette.button: Kirigami.Theme.negativeBackgroundColor
                             onClicked: callsTab.bridge.hangupCall(activeCall.modelData.call_id)
                         }
                     ]
+                    // Keypad tones (DTMF) go to the active call only. The text
+                    // is kept by the bridge: the cards are rebuilt on each
+                    // phoneCalls change.
+                    RowLayout {
+                        objectName: "callTonesRow"
+                        Layout.fillWidth: true
+                        visible: activeCall.card.active === true
+                        Controls.TextField {
+                            id: tonesField
+                            objectName: "callTonesField"
+                            Layout.fillWidth: true
+                            placeholderText: activeCall.card.tones || ""
+                            Accessible.name: placeholderText
+                            maximumLength: 32
+                            inputMethodHints: Qt.ImhDialableCharactersOnly
+                            validator: RegularExpressionValidator { regularExpression: /[0-9*#]*/ }
+                            text: callsTab.bridge.callTonesDraft || ""
+                            onTextEdited: callsTab.bridge.setCallTonesDraft(text)
+                            onAccepted: activeCall.sendTones()
+                        }
+                        Controls.Button {
+                            objectName: "callTonesSend"
+                            text: activeCall.card.send_tones || ""
+                            icon.name: "input-dialpad"
+                            // Tones queue up on their own; other actions do not block them.
+                            enabled: tonesField.text !== ""
+                            onClicked: activeCall.sendTones()
+                        }
+                    }
+                    function sendTones(): void {
+                        if (tonesField.text !== "")
+                            callsTab.bridge.sendCallTones(activeCall.modelData.call_id, tonesField.text)
+                    }
+                    // The tones sent so far ("Sent: 1 2"), from the pad, the
+                    // keyboard or the field above.
+                    Controls.Label {
+                        objectName: "callTonesSent"
+                        Layout.fillWidth: true
+                        visible: activeCall.card.active === true && text !== ""
+                        text: callsTab.bridge.callTonesSent || ""
+                        textFormat: Text.PlainText
+                        opacity: 0.7
+                    }
                 }
             }
 
@@ -142,7 +183,7 @@ GridLayout {
                 Layout.fillWidth: true
                 visible: !callsTab.callsEnabled || !callsTab.callsReady
                 type: Kirigami.MessageType.Information
-                text: callsTab.notReadyText()
+                text: callsTab.notReadyText
             }
 
             ColumnLayout {
@@ -191,8 +232,7 @@ GridLayout {
                     Layout.preferredHeight: count > 0 ? Math.min(contentHeight, Kirigami.Units.gridUnit * 8) : 0
                     visible: count > 0 && dialField.text.trim().length >= 2
                     clip: true
-                    model: (callsTab.bridge.contactResults || [])
-                        .filter(result => String(result.address).indexOf("@") < 0)
+                    model: callsTab.bridge.dialSuggestions || []
                     delegate: ListRow {
                         id: suggestion
                         required property var modelData
@@ -220,11 +260,7 @@ GridLayout {
                     rowSpacing: Kirigami.Units.largeSpacing
 
                     Repeater {
-                        model: [
-                            ["1", ""], ["2", "ABC"], ["3", "DEF"], ["4", "GHI"], ["5", "JKL"],
-                            ["6", "MNO"], ["7", "PQRS"], ["8", "TUV"], ["9", "WXYZ"],
-                            ["*", ""], ["0", "+"], ["#", ""]
-                        ]
+                        model: callsTab.bridge.dialKeys || []
                         delegate: Controls.AbstractButton {
                             id: key
                             required property var modelData
@@ -260,11 +296,16 @@ GridLayout {
                                 Item { Layout.fillHeight: true }
                             }
                             // Qt suppresses clicked after a handled long press.
+                            // A long press on 0 dials "+"; during a call it is just 0.
                             onPressAndHold: {
-                                if (key.modelData[0] === "0")
-                                    callsTab.append("+")
+                                if (key.modelData[0] === "0") {
+                                    if (callsTab.activeCall !== "")
+                                        callsTab.padKey("0")
+                                    else
+                                        callsTab.append("+")
+                                }
                             }
-                            onClicked: callsTab.append(key.modelData[0])
+                            onClicked: callsTab.padKey(key.modelData[0])
                         }
                     }
                 }
@@ -290,7 +331,7 @@ GridLayout {
                     }
                     Accessible.name: text
                     // Disabled buttons get no hover; the hint above explains why.
-                    Controls.ToolTip.text: callsTab.callsReady ? text : callsTab.notReadyText()
+                    Controls.ToolTip.text: callsTab.callsReady ? text : callsTab.notReadyText
                     Controls.ToolTip.visible: hovered
                     onClicked: callsTab.dial()
                 }

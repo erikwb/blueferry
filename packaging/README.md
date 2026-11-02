@@ -39,6 +39,16 @@ though they are CPU-independent `noarch` packages. CI therefore builds an
 matching Fedora RPM, but they are not claimed as tested until they are present
 in the matrix.
 
+The Photos tab shows WebP thumbnails (Immich's default). The GTK packages
+therefore depend on the GdkPixbuf WebP loader (`webp-pixbuf-loader` on Arch,
+Debian, and Ubuntu); Fedora's `gdk-pixbuf2` decodes WebP through glycin and
+obsoletes that package, so the RPM adds nothing. The Qt packages depend on
+Qt's image format plugins (`qt6-imageformats`, `qt6-image-formats-plugins`,
+`qt6-qtimageformats`). Without a recipe, Gentoo users install
+`gui-libs/gdk-pixbuf-loader-webp` for the GTK client and
+`dev-qt/qtimageformats:6` for the Qt client. Without the loader the GTK Photos
+tab shows a banner naming it instead of thumbnails.
+
 Arch uses its native `python-textual` package. DEB and RPM repositories do not
 provide a sufficiently recent Textual, so those backend packages contain a
 pinned private copy of Textual 8 and its pure-Python dependency closure. The

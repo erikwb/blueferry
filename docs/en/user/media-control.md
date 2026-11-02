@@ -66,7 +66,7 @@ refuses one the app lacks.
 In the Kirigami client a small bar with title, artist and
 previous/play-pause/next buttons appears above the conversations while
 something is playing. The Quickshell client shows the same strip under its
-header, the GTK client in the **iPhone** dialog (main menu, `Ctrl+I`), and
+header, the GTK client on the phone card above its tabs, and
 the terminal client in a line under the status pills, where `p`, `[` and `]`
 play/pause, go back and skip. None of them is shown, and no client asks the
 backend, while the option is off.
