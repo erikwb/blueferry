@@ -78,7 +78,7 @@ def _card_details(card: str = CARD) -> ContactDetails:
 
 
 class _Wallet:
-    def get_or_create(self, *, allow_prompt: bool, cancellable=None) -> bytes:
+    def get_or_create(self, *, allow_prompt: bool, cancellable=None, create=True) -> bytes:
         return b"K" * 32
 
     def delete(self, *, allow_prompt: bool, cancellable=None) -> bool:
