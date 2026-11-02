@@ -30,6 +30,7 @@ from blueferry.settings_store import SettingsStore
 from blueferry.sinks.sqlite import SqliteSink
 from blueferry.starred_threads import StarredThreadsStore
 from blueferry.storage_security import (
+    DAMAGED_DATABASE_DETAIL,
     KEY_CHECK_SETTING,
     KEY_MISMATCH_DETAIL,
     KEY_MISSING_DETAIL,
@@ -727,6 +728,33 @@ def test_reset_waits_for_a_contact_sync_that_has_the_cache_open(monkeypatch):
     assert ContactRepository().load(strict=True) == []
     path = config.CONTACTS_DB
     assert not path.with_name(path.name + "-journal").exists()
+
+
+def test_damaged_history_offers_the_reset_that_clears_it(recovery):
+    r = recovery
+    _seal_history(r)
+    damaged = b"not a database" * 512
+    config.EVENTS_DB.write_bytes(damaged)
+    r.storage.require_preparation()  # A restart.
+
+    r.unlock()
+
+    assert r.storage.status == StorageStatus("encrypted", "error", DAMAGED_DATABASE_DETAIL)
+    status = r.daemon._status()
+    assert status["storage_reset"] is True
+    assert status["storage_detail"] == DAMAGED_DATABASE_DETAIL
+    assert config.EVENTS_DB.read_bytes() == damaged
+
+    r.operations.reset_storage_async(
+        r.queue.submit, r.outcomes.append, lambda error: pytest.fail(str(error)),
+        confirmed=True,
+    )
+    r.queue.finish()
+
+    assert r.outcomes[-1]["storage_state"] == "ready"
+    assert r.daemon._status()["storage_reset"] is False
+    append_event({"kind": "sms_received", "handle": "new", "body": "kept"}, storage=r.storage)
+    assert [event["handle"] for event in read_events(storage=r.storage)] == ["new"]
 
 
 def test_replacement_key_is_not_trusted_over_encrypted_preferences(recovery):
