@@ -166,6 +166,23 @@ def test_modified_notification_with_same_id_is_delivered_once():
     assert service.events == ["changed"]
 
 
+def test_reused_uid_after_session_reset_is_delivered_again():
+    # iOS reuses UIDs across ANCS sessions; an identical new notification
+    # must still reach history so its group correlation is not lost.
+    first = _event("ok")
+    second = _event("ok")
+    dispatcher = EventDispatcher(object(), defer_mark_read=lambda _path: None)
+    sink = _Sink()
+    dispatcher.sinks = [sink]
+
+    dispatcher.ancs(first)
+    dispatcher.ancs(first)
+    dispatcher.ancs_session_reset()
+    dispatcher.ancs(second)
+
+    assert sink.events == [first, second]
+
+
 def test_system_notification_only_reaches_explicit_ephemeral_sink():
     event = _event()
     event.app_id = "com.example.App"

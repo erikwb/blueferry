@@ -346,7 +346,9 @@ class EventDispatcher:
         self._fan_out("close_removed_ancs_popup", notification_id)
 
     def ancs_session_reset(self) -> None:
-        """Forget popup UIDs of an ended ANCS session (they may be reused)."""
+        """Forget UIDs of an ended ANCS session (they may be reused)."""
+        # A reused UID with the same text is a new notification, not a replay.
+        self._seen_ancs.clear()
         self._fan_out("forget_ancs_popups")
 
     def _fan_out(self, method: str, *args: int) -> None:
