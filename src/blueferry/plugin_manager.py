@@ -608,6 +608,10 @@ class PluginManager:
         if commit == record.commit:
             return None
         prepared = self.prepare(record.url, ref)
+        if prepared.manifest.id != plugin_id:
+            self.discard(prepared)
+            raise InstallError(f"the new release of {plugin_id} declares the plugin ID "
+                               f"{prepared.manifest.id}; an update cannot rename a plugin")
         try:
             log = self.runner.run(
                 ["git", "-C", str(prepared.staging), "log", "--oneline", "--no-decorate",

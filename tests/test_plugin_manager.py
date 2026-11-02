@@ -374,6 +374,25 @@ def test_update_shows_the_change_and_replaces_the_venv(setup) -> None:
         manager.check_update("io.example.other")
 
 
+@pytest.mark.parametrize("other_installed", [False, True])
+def test_an_update_cannot_change_the_plugin_id(setup, other_installed) -> None:
+    manager, runner = setup
+    renamed = MANIFEST.format(version="0.2.0").replace(
+        "Id=io.example.demo", "Id=io.example.demo-extra")
+    if other_installed:
+        runner.files[OLD] = {"data/extra.plugin": renamed.replace("0.2.0", "0.1.0")}
+        manager.commit(manager.prepare(URL))
+        runner.files[OLD] = {"data/io.example.demo.plugin": MANIFEST.format(version="0.1.0")}
+    manager.commit(manager.prepare(URL))
+    records = manager.records()
+    runner.tags["v0.2.0"] = NEW
+    runner.files[NEW] = {"data/extra.plugin": renamed}
+    with pytest.raises(InstallError, match="cannot rename"):
+        manager.prepare_update("io.example.demo")
+    assert manager.records() == records
+    assert sorted(path.name for path in (manager.root / "src").iterdir()) == sorted(records)
+
+
 def test_remove_deletes_only_what_install_wrote(setup, tmp_path) -> None:
     manager, _runner = setup
     manager.commit(manager.prepare(URL))
