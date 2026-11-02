@@ -80,13 +80,19 @@ from blueferry.history import (
     mark_event_handles_read,
 )
 from blueferry.media import MediaController, MediaControlSettings
+from blueferry.message_backfill import (
+    MessageBackfill,
+    collect_history,
+    history_enabled,
+    store_backfill,
+)
 from blueferry.notification_log import NotificationLog
 from blueferry.notification_policy import (
     ALL_NOTIFICATIONS,
     NotificationPolicyStore,
 )
 from blueferry.obex.map_events import MapEventListener
-from blueferry.obex.map_query import lookup_otp_metadata
+from blueferry.obex.map_query import list_inbox_since, lookup_otp_metadata
 from blueferry.obex.mns_watch import MnsWatch
 from blueferry.obex.sessions import SessionManager
 from blueferry.obex.worker import ObexWorker
@@ -241,6 +247,22 @@ class Daemon:
         self.plugin_popups: PluginPopups | None = None
         self.listener: MapEventListener | None = None
         self.mns_watch: MnsWatch | None = None
+        # Missed incoming messages, listed once per MAP/MNS connection while
+        # message history is on. Late-bound timers so test patches apply.
+        self.backfill = MessageBackfill(
+            enabled=lambda: history_enabled(self.storage),
+            session_path=lambda: getattr(self.sessions.map, "path", None),
+            submit=lambda *args, **kwargs: self.obex_worker.submit(*args, **kwargs),
+            list_inbox=list_inbox_since,
+            collect=lambda: collect_history(self.storage),
+            store=lambda payloads, handles: store_backfill(
+                self.storage, payloads, handles,
+            ),
+            resolve_contact=lambda raw: self.contacts.resolve(raw),
+            on_changed=self._backfill_changed,
+            schedule=lambda delay, callback: GLib.timeout_add_seconds(delay, callback),
+            cancel=lambda source: GLib.source_remove(source),
+        )
         # One MAP reconnect per MNS outage; seeing MNS again rearms it.
         self._mns_reconnect_spent = False
         self.ancs: AncsClient | None = None
@@ -1286,6 +1308,8 @@ class Daemon:
         self.contact_sync.storage_changed()
         if self.call_history is not None:
             self.call_history.storage_changed()
+        # Unlocking (or enabling) history catches up on what MAP missed.
+        self.backfill.request("storage changed")
         self._emit_status()
 
     def _initialize(self) -> bool:
@@ -1606,6 +1630,7 @@ class Daemon:
     def _profiles_lost(self, _reason: str) -> None:
         """Stop consumers that hold objects belonging to old sessions."""
         self.solicitation.set_needed(True)
+        self.backfill.stop()
         if self.mns_watch is not None:
             self.mns_watch.stop()
             self.mns_watch = None
@@ -1692,7 +1717,7 @@ class Daemon:
         if self.sessions.map is not None and self.listener is None:
             self.listener = MapEventListener(
                 sessions=self.sessions,
-                on_sms=self.events.message,
+                on_sms=self._map_message,
                 on_read=self._message_read,
                 resolve_contact=lambda raw: self.contacts.resolve(raw),
                 submit_obex=self.obex_worker.submit,
@@ -1704,9 +1729,19 @@ class Daemon:
                 on_present=self._mns_present,
             )
             self.mns_watch.start()
+            self.backfill.request("MAP connected")
+
+    def _map_message(self, event) -> None:
+        """A live MNS message; a copy the backfill already stored only notifies."""
+        self.events.message(event, persist=self.backfill.live_message(event))
+
+    def _backfill_changed(self) -> None:
+        if self._dbus_service is not None:
+            self._dbus_service.emit_history_changed()
 
     def _mns_present(self) -> None:
         self._mns_reconnect_spent = False
+        self.backfill.request("MAP notifications connected")
 
     def _mns_missing(self, reason: str) -> None:
         """Recreate MAP, whose registration is what makes the iPhone open MNS."""
@@ -2138,6 +2173,7 @@ class Daemon:
         self.bluez_health.stop()
         self.profiles.stop()
         self.contact_sync.stop()
+        self.backfill.stop()
         if self.call_history is not None:
             self.call_history.stop()
         for tid_attr in (
