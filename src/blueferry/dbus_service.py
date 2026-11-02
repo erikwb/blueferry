@@ -295,6 +295,21 @@ class MessagesService(dbus.service.Object):
         return self._sync(lambda: self._authorized(sender, "contact-photo", card))
 
     @dbus.service.method(
+        IFACE, in_signature="as", out_signature="a{say}", sender_keyword="sender"
+    )
+    def GetContactCardPhotos(self, contact_ids, sender=None) -> dbus.Dictionary:
+        """Photos of up to MAX_CONTACT_PHOTO_BATCH cards by id, for list avatars."""
+        def photos() -> dbus.Dictionary:
+            found = self.operations.contact_card_photos(list(contact_ids))
+            return dbus.Dictionary(
+                {key: dbus.ByteArray(value) for key, value in found.items()},
+                signature="say",
+            )
+
+        # One call is one charge: the batch is bounded like a page of rows.
+        return self._sync(lambda: self._authorized(sender, "contact-photo", photos))
+
+    @dbus.service.method(
         IFACE, in_signature="s", out_signature="ay", sender_keyword="sender"
     )
     def GetContactPhoto(self, address: str, sender=None) -> dbus.ByteArray:

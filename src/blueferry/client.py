@@ -1,7 +1,7 @@
 """Toolkit-neutral synchronous client for the BlueFerry daemon."""
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 
 import dbus
 import dbus.exceptions
@@ -375,6 +375,30 @@ class BackendClient:
             return decode_mapping(document), valid_photo(bytes(photo)) or b""
         except (dbus.exceptions.DBusException, ValueError) as error:
             raise _contact_cards_error(error) from error
+
+    def contact_card_photos(self, contact_ids: Sequence[str]) -> dict[str, bytes]:
+        """``GetContactCardPhotos``: photos of up to 50 cards by id.
+
+        Absent ids have no photo to show right now (none, unknown or stale id,
+        or past the reply's byte budget). Each photo is checked like
+        :meth:`contact_photo`; decode it only with a hardened image loader
+        and keep it in memory only.
+        """
+        try:
+            value = self._iface(MESSAGES_IFACE).GetContactCardPhotos(
+                dbus.Array([str(item) for item in contact_ids], signature="s"),
+                timeout=CONTACT_CALL_TIMEOUT_SEC, byte_arrays=True,
+            )
+        except dbus.exceptions.DBusException as error:
+            raise _contact_cards_error(error) from error
+        photos: dict[str, bytes] = {}
+        if not isinstance(value, Mapping):
+            return photos
+        for key, data in value.items():
+            photo = valid_photo(bytes(data)) if isinstance(data, (bytes, bytearray)) else None
+            if isinstance(key, str) and photo:
+                photos[str(key)] = photo
+        return photos
 
     def contact_photo(self, address: str) -> bytes:
         """Raw avatar bytes for one address, or ``b""`` when none is available.

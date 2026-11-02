@@ -98,6 +98,14 @@
       <annotation name="io.weirdware.BlueFerry.Errors"
                   value="InvalidArgs,NotFound,NotReady,ResponseTooLarge"/>
     </method>
+    <method name="GetContactCardPhotos">
+      <annotation name="org.freedesktop.DBus.Description"
+                  value="Bounded JPEG/PNG photos of up to 50 contact cards by the ids ListContactCards reported, for list avatars; ids that are unknown or stale, cards without a photo and photos past the 4 MiB reply budget are left out; empty while BLUEFERRY_CONTACT_PHOTOS is off. Clients decode the bytes; the daemon does not."/>
+      <arg name="contact_ids" type="as" direction="in"/>
+      <arg name="photos" type="a{say}" direction="out"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="InvalidArgs,NotReady"/>
+    </method>
     <method name="GetContactPhoto">
       <annotation name="org.freedesktop.DBus.Description"
                   value="Bounded JPEG/PNG avatar of the one cached contact owning an address; empty when absent, ambiguous, or BLUEFERRY_CONTACT_PHOTOS is off. Clients decode it; the daemon does not."/>

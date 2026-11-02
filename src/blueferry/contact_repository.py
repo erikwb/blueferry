@@ -10,6 +10,7 @@ import json
 import logging
 import sqlite3
 import time
+from collections.abc import Sequence
 from contextlib import closing
 
 from blueferry import config
@@ -415,33 +416,49 @@ class ContactRepository:
         dimensions) so a row written by another version can never widen what
         reaches clients.
         """
+        if type(ref) is not int or ref <= 0:
+            return None
+        return self.load_photos([ref]).get(ref)
+
+    def load_photos(self, refs: Sequence[PhotoRef]) -> dict[int, bytes]:
+        """Like :meth:`load_photo` for several refs over one connection.
+
+        Only refs with a usable photo appear in the result.
+        """
+        selected = sorted({ref for ref in refs if type(ref) is int and ref > 0})
         if (
-            self.storage is None
+            not selected
+            or self.storage is None
             or not self.storage.status.can_read
-            or type(ref) is not int
-            or ref <= 0
             or not config.CONTACTS_DB.exists()
         ):
-            return None
+            return {}
         try:
             with closing(_open_read_only(timeout=_PHOTO_READ_TIMEOUT_SECONDS)) as connection:
                 if not _has_photo_table(connection):
-                    return None
-                row = connection.execute(
-                    "SELECT payload FROM contact_photos WHERE id = ?", (ref,)
-                ).fetchone()
+                    return {}
+                marks = ",".join("?" * len(selected))
+                rows = connection.execute(
+                    f"SELECT id, payload FROM contact_photos WHERE id IN ({marks})",  # nosec B608
+                    selected,
+                ).fetchall()
         except sqlite3.Error as error:
             if _is_busy_error(error):
                 raise PhotoStoreBusy("contact photos are being updated") from error
             log.warning("contact photo read failed: %s", error)
-            return None
-        if row is None or not isinstance(row[0], bytes):
-            return None
-        try:
-            data = self.storage.decrypt_bytes(row[0], purpose=_PHOTO_PURPOSE)
-        except CorruptStorageError:
-            self.storage.fail_closed("Encrypted contacts could not be authenticated")
-            return None
-        except (ValueError, RuntimeError, TypeError):
-            return None
-        return valid_photo(data)
+            return {}
+        photos: dict[int, bytes] = {}
+        for ref, payload in rows:
+            if type(ref) is not int or not isinstance(payload, bytes):
+                continue
+            try:
+                data = self.storage.decrypt_bytes(payload, purpose=_PHOTO_PURPOSE)
+            except CorruptStorageError:
+                self.storage.fail_closed("Encrypted contacts could not be authenticated")
+                return {}
+            except (ValueError, RuntimeError, TypeError):
+                continue
+            photo = valid_photo(data)
+            if photo is not None:
+                photos[ref] = photo
+        return photos

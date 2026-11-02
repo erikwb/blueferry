@@ -351,6 +351,66 @@ def test_get_contact_reports_a_busy_photo_store_as_retry(storage, monkeypatch) -
     assert photo == b"" and document["photo_retry"] is True and document["has_photo"] is True
 
 
+def test_card_photos_batch_returns_only_cards_with_a_photo(storage) -> None:
+    _store(storage, photos=[JPEG, None])
+    operations = _operations(storage, photos=True)
+    alice, bob = (row["id"] for row in operations.list_contact_cards(0, 5, "")["contacts"])
+    # Bob has no photo and an unknown id is simply left out; repeats count once.
+    assert operations.contact_card_photos([alice, bob, "0" * 18, alice]) == {alice: JPEG}
+    assert operations.contact_card_photos([]) == {}
+    # Photos off: nothing, even for a card that has one.
+    assert _operations(storage).contact_card_photos([alice]) == {}
+
+
+def test_card_photos_batch_is_bounded(storage, monkeypatch) -> None:
+    from blueferry import backend_operations
+    from blueferry.limits import MAX_CONTACT_PHOTO_BATCH
+
+    _store(storage, photos=[JPEG, None])
+    operations = _operations(storage, photos=True)
+    alice = operations.list_contact_cards(0, 1, "")["contacts"][0]["id"]
+    with pytest.raises(InvalidArgumentsError):
+        operations.contact_card_photos(["0" * 18] * (MAX_CONTACT_PHOTO_BATCH + 1))
+    with pytest.raises(InvalidArgumentsError):
+        operations.contact_card_photos([" "])
+    with pytest.raises(InvalidArgumentsError):
+        operations.contact_card_photos(["x" * 65])
+    with pytest.raises(InvalidArgumentsError):
+        operations.contact_card_photos(alice)  # type: ignore[arg-type]
+    # A photo past the reply budget is left out rather than failing the call.
+    monkeypatch.setattr(backend_operations, "MAX_CONTACT_PHOTO_BATCH_BYTES", len(JPEG) - 1)
+    assert operations.contact_card_photos([alice]) == {}
+
+
+def test_card_photos_batch_reports_a_busy_photo_store(storage, monkeypatch) -> None:
+    _store(storage, photos=[JPEG, None])
+    operations = _operations(storage, photos=True)
+    alice = operations.list_contact_cards(0, 1, "")["contacts"][0]["id"]
+
+    def busy(_self, _refs):
+        raise PhotoStoreBusy("locked")
+
+    monkeypatch.setattr(ContactsResolver, "load_photos", busy)
+    with pytest.raises(NotReadyError):
+        operations.contact_card_photos([alice])
+
+
+def test_card_photos_batch_needs_a_contact_cache() -> None:
+    with pytest.raises(NotReadyError):
+        BackendOperations(_Sessions()).contact_card_photos(["0" * 18])
+
+
+def test_repository_loads_several_photos_over_one_connection(storage) -> None:
+    _store(storage, photos=[JPEG, None])
+    resolver = ContactsResolver(storage=storage, photos=lambda: True)
+    _total, page = resolver.cards(0, 5)
+    refs = [ref for *_rest, ref in page if ref is not None]
+    assert len(refs) == 1
+    assert resolver.load_photos(refs + [0, -1, 999_999]) == {refs[0]: JPEG}
+    assert resolver.load_photo(refs[0]) == JPEG
+    assert resolver.load_photos([]) == {}
+
+
 def test_legacy_cards_fall_back_to_the_messaging_addresses(storage) -> None:
     ContactRepository(storage).replace([("Old", ["15551112222"], ["old@example.com"])])
     operations = _operations(storage)
