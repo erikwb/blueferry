@@ -21,7 +21,7 @@ from blueferry.client import BackendClient
 from blueferry.contacts import ContactsResolver
 from blueferry.dbus_service import MessagesService
 from blueferry.grouping import named_group_key
-from blueferry.history import append_event
+from blueferry.history import append_event, read_events
 from blueferry.protocol import (
     BUS_NAME,
     CALL_HISTORY_IFACE,
@@ -193,7 +193,7 @@ def test_fresh_profile_unlock_and_snapshots_use_the_compatible_public_client(
     monkeypatch.setattr(config, "EVENTS_DB", tmp_path / "events.sqlite")
 
     class Wallet:
-        def get_or_create(self, *, allow_prompt, cancellable=None):
+        def get_or_create(self, *, allow_prompt, cancellable=None, create=True):
             return b"K" * 32
 
     storage = StorageSecurity(
@@ -232,12 +232,67 @@ def test_fresh_profile_unlock_and_snapshots_use_the_compatible_public_client(
         storage.close()
 
 
+def test_public_client_resets_storage_whose_key_was_lost(public_service, tmp_path, monkeypatch):
+    name, _pending, _policy, _changes, service = public_service
+    monkeypatch.setattr(config, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(config, "CONTACTS_DB", tmp_path / "contacts.sqlite")
+    monkeypatch.setattr(config, "EVENTS_DB", tmp_path / "events.sqlite")
+
+    class Wallet:
+        key = b"K" * 32
+        deleted = 0
+
+        def get_or_create(self, *, allow_prompt, cancellable=None, create=True):
+            return self.key
+
+        def delete(self, *, allow_prompt, cancellable=None):
+            self.deleted += 1
+            self.key = b"N" * 32  # The next lookup creates a fresh key.
+            return True
+
+    wallet = Wallet()
+    storage = StorageSecurity(
+        settings=SettingsStore(tmp_path / "settings.json"), key_provider=wallet,
+    )
+    append_event({"kind": "sms_received", "handle": "lost", "body": "sealed"}, storage=storage)
+    storage.fail_closed("Encrypted local history could not be authenticated")
+    service.operations.dependencies = replace(
+        service.operations.dependencies, storage=storage,
+        contacts=ContactsResolver(storage=storage),
+    )
+    outcomes = []
+
+    def reset():
+        connection, interface = _client(name)
+        try:
+            try:
+                interface.ResetStorage(dbus.Boolean(False), timeout=5)
+            except dbus.exceptions.DBusException as error:
+                outcomes.append(error.get_dbus_name().rsplit(".", 1)[-1])
+            client = BackendClient(interface_factory=lambda _: interface)
+            outcomes.append(client.reset_storage()["storage_state"])
+        except Exception as error:
+            outcomes.append(error)
+        finally:
+            connection.close()
+
+    thread = threading.Thread(target=reset)
+    thread.start()
+    try:
+        _dispatch_until(lambda: not thread.is_alive())
+        assert outcomes == ["ConfirmationRequired", "ready"]
+        assert wallet.deleted == 1
+        assert read_events(storage=storage) == []
+    finally:
+        storage.close()
+
+
 def test_wallet_wait_keeps_status_available(public_service, tmp_path):
     name, _pending, _policy, _changes, service = public_service
     entered = threading.Event()
     release = threading.Event()
     class Wallet:
-        def get_or_create(self, *, allow_prompt, cancellable=None):
+        def get_or_create(self, *, allow_prompt, cancellable=None, create=True):
             entered.set()
             assert release.wait(4), "wallet fixture was not released"
             return b"K" * 32
@@ -270,7 +325,7 @@ def test_passive_wallet_retry_keeps_status_available_and_announces_history(
     calls = []
 
     class Wallet:
-        def get_or_create(self, *, allow_prompt, cancellable=None):
+        def get_or_create(self, *, allow_prompt, cancellable=None, create=True):
             calls.append(allow_prompt)
             entered.set()
             assert release.wait(4), "wallet fixture was not released"
@@ -332,7 +387,7 @@ def test_interactive_unlock_supersedes_passive_lookup(
     monkeypatch.setattr(GLib, "source_remove", lambda _source: True)
 
     class Wallet:
-        def get_or_create(self, *, allow_prompt, cancellable=None):
+        def get_or_create(self, *, allow_prompt, cancellable=None, create=True):
             calls.append(allow_prompt)
             if not allow_prompt:
                 passive_cancellables.append(cancellable)

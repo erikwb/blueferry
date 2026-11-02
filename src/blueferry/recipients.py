@@ -62,11 +62,6 @@ def validate_recipient(recipient: str) -> str:
     )
 
 
-def participant_lines(value: str) -> list[str]:
-    """Parse the roster editor without changing address spelling or order."""
-    return list(dict.fromkeys(line.strip() for line in value.splitlines() if line.strip()))
-
-
 def group_confirmation_token(
     recipients: Iterable[object],
     roster_warning_id: object = "",

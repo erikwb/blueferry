@@ -70,7 +70,7 @@ flowchart LR
 ## Einschalten
 
 **Einmalcodes in die Zwischenablage kopieren** in den iPhone-Einstellungen
-des Qt-, GTK- oder Quickshell-Clients ankreuzen, oder in den Optionen des
+des Qt-, GTK- oder Quickshell-Clients ankreuzen, oder in den Einstellungen (Settings) des
 Terminal-Clients (`o`), oder:
 
 ```bash
