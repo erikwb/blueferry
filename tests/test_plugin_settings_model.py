@@ -138,6 +138,27 @@ def test_settings_form_round_trip_and_enable_switch(plugins) -> None:
     assert settings.state()["messageOk"] is False
 
 
+def test_an_open_form_does_not_start_a_plugin_disabled_elsewhere(plugins) -> None:
+    settings, manager, _runner, work = plugins
+    manager.commit(manager.prepare(URL))
+    settings.load()
+    work.drain()
+    settings.load_config("io.example.demo")
+    work.drain()
+    # `blueferry plugins disable` or another client, while the form is open.
+    manager.set_enabled("io.example.demo", False)
+    settings.save_config("io.example.demo", {"url": "https://b.example"})
+    work.drain()
+    assert DemoClient.saved == []
+    assert settings.state()["messageOk"] is False
+    refusal = "Demo photos is disabled. Turn it on to change its settings."
+    assert settings.state()["message"] == refusal
+    settings.close_config()
+    settings.load_config("io.example.demo")
+    work.drain()
+    assert settings.state()["config"]["loadError"] == refusal
+
+
 def test_update_and_remove_say_what_happened_to_the_running_plugin(plugins) -> None:
     settings, manager, runner, work = plugins
     manager.commit(manager.prepare(URL))
