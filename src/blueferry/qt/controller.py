@@ -174,6 +174,9 @@ class BridgeController(QObject):
         self._tasks: set[Task] = set()
         self._threads: list[dict] = []
         self._pending_group: tuple[str, str, str] | None = None
+        # Whether the last prompt asked to reply to the sender alone, so an
+        # answer that no longer matches it gets the sender's wording.
+        self._confirming_sender = False
         self._contact_results: list[dict] = []
         self._state = ConversationState(select_first=False)
         self._status: dict = {}
@@ -1342,7 +1345,10 @@ class BridgeController(QObject):
         self._pending_group = None
         if confirm_group:
             if pending is None or pending[:2] != (key, body.strip()):
-                self._set_error(ReplyDisposition.STALE_GROUP.message)
+                self._set_error((
+                    ReplyDisposition.STALE_SENDER if self._confirming_sender
+                    else ReplyDisposition.STALE_GROUP
+                ).message)
                 return
         plan = state.plan_reply(
             body, thread_key=key, confirm_group=confirm_group,
@@ -1354,10 +1360,12 @@ class BridgeController(QObject):
             return
         if plan.disposition is ReplyDisposition.CONFIRM_GROUP and thread is not None:
             self._pending_group = (key, plan.body, plan.expected_group_token)
+            self._confirming_sender = False
             self.groupConfirmationRequested.emit(key, draft, "\n".join(thread.recipients))
             return
         if plan.disposition is ReplyDisposition.CONFIRM_SENDER and thread is not None:
             self._pending_group = (key, plan.body, plan.expected_group_token)
+            self._confirming_sender = True
             self.senderConfirmationRequested.emit(
                 key, draft, thread.name, ", ".join(thread.recipients),
             )

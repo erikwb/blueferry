@@ -9,7 +9,7 @@ import pytest
 pytest.importorskip("PySide6")
 
 from blueferry.client import BackendError, TetherUnsupportedError
-from blueferry.conversation_state import ConversationSnapshot
+from blueferry.conversation_state import ConversationSnapshot, ReplyDisposition
 from blueferry.models import BackendStatus, Thread
 from blueferry.qt.controller import BridgeController
 from blueferry.setup_client import ConfigurationState
@@ -858,7 +858,12 @@ def test_reply_to_a_maybe_group_message_asks_to_reply_to_the_sender_only(monkeyp
     _apply_threads(controller, [Thread.from_dict({**alice, "sender_reply_token": "sender:two"})])
     controller.sendThread(alice["key"], "draft", True)
     assert not queued
-    assert "new message" in controller.errorText
+    assert controller.errorText == ReplyDisposition.STALE_SENDER.message
+    # A second click on the same prompt sends nothing and says the same.
+    controller._set_error("")
+    controller.sendThread(alice["key"], "draft", True)
+    assert not queued
+    assert controller.errorText == ReplyDisposition.STALE_SENDER.message
     controller.sendThread(alice["key"], "draft", False)
     controller.sendThread(alice["key"], "draft", True)
     assert len(queued) == 1
