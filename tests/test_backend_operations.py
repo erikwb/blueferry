@@ -319,6 +319,56 @@ def test_sender_only_confirmation_does_not_follow_the_sender_to_another_address(
     assert queued == []
 
 
+@pytest.mark.parametrize("arrived", [
+    # Nothing new; the confirmed reply goes to the address shown.
+    [],
+    # Another message from Alice that may be from Crew.
+    _maybe_group_events("+15551111111", "Alice", "11:00"),
+    # A plain message from Alice: the doubt is gone, but so is what the user saw.
+    [{"kind": "sms_received", "handle": "Alice-plain", "sender_address": "+15551111111",
+      "contact_name": "Alice", "body": "hi", "seen_at": "2026-08-12T11:00:00+00:00"}],
+    # A plain message from her other address in the same conversation.
+    [{"kind": "sms_received", "handle": "Alice-email", "sender_address": "alice@example.com",
+      "contact_name": "Alice", "body": "hi", "seen_at": "2026-08-12T11:00:00+00:00"}],
+], ids=["unchanged", "another-maybe-group", "plain-same-address", "plain-other-address"])
+def test_queued_sender_only_reply_is_refused_when_its_thread_changes(monkeypatch, arrived):
+    queued = []
+    operations = _operations(
+        submit_obex=lambda operation, **callbacks: queued.append((operation, callbacks)),
+    )
+    alice = SimpleNamespace(
+        thread_addresses=lambda _address: ("phone:15551111111",),
+        resolve=lambda _address: "Alice",
+        find_by_name=lambda _name: [],
+    )
+    events = _maybe_group_events("+15551111111", "Alice", "10:00")
+    operations._conversations.threads = lambda: build_threads(events, alice)
+    (thread,) = operations.list_threads(10)
+    sent = []
+    monkeypatch.setattr(
+        backend_operations, "send_message",
+        lambda _path, recipient, body: sent.append((recipient, body)) or "/transfer/1",
+    )
+    replies, errors = [], []
+
+    operations.send_to_thread(
+        thread["key"], "just you", True, replies.append, errors.append,
+        expected_group_token=thread["sender_reply_token"],
+    )
+    # These arrive while the reply waits behind another Bluetooth transfer.
+    events += arrived
+    while queued:
+        operation, callbacks = queued.pop(0)
+        callbacks["on_success"](operation())
+
+    if not arrived:
+        assert (sent, replies, errors) == ([("+15551111111", "just you")], ["/transfer/1"], [])
+        return
+    assert (sent, replies) == ([], [])
+    assert len(errors) == 1
+    assert isinstance(errors[0], ConfirmationRequiredError)
+
+
 def test_named_group_remembers_confirmation_until_roster_changes(monkeypatch):
     operations = _operations()
     thread = {**_group(), "group_origin": "named"}

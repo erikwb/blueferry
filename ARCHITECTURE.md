@@ -462,6 +462,8 @@ dbus-python; the guard tolerates that.
   `recipients.sender_reply_token` hashes the reply address and every such
   message in the thread, so a confirmation cannot cover a newer one; the
   backend refuses a stale token and, without one, keeps the thread read-only.
+  A queued reply checks its token again when its turn comes, so one that
+  waited while a message arrived is refused, even if the doubt is gone.
 
 ## Client architecture
 
