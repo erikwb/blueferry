@@ -821,11 +821,14 @@ A change to these rules has to be made in both places.
   is unframed, storage becomes unavailable without deleting records while live
   delivery continues. While `settings.json` exists but can't be read, the
   storage policy is unknown, so storage stays locked and nothing is retained;
-  the retry tick reads it again. Only an explicit client action may create or
-  unlock the key. History writes are transactional, and a monotonic revision
-  invalidates the projection. A storage reset deletes a database SQLite cannot
-  read, with its journal files; every other path leaves a damaged file in
-  place. When one stops storage preparation, the status offers that reset.
+  the retry tick reads it again. Policy changes and resets are refused with
+  a `Configuration` error before anything is erased, because erasing for an
+  assumed policy could lose data or keep plaintext the user believes is
+  encrypted. Only an explicit client action may create or unlock the key.
+  History writes are transactional, and a monotonic revision invalidates the
+  projection. A storage reset deletes a database SQLite cannot read, with its
+  journal files; every other path leaves a damaged file in place. When one
+  stops storage preparation, the status offers that reset.
   The projection, its rebuild after saving group members, and the
   full-archive read behind `DeleteThreads` run on the projection worker.
   History is read in short pages and decoded between them, so a slow read

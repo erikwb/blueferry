@@ -23,7 +23,7 @@ from blueferry.call_history_repository import CallHistoryRepository, clear_call_
 from blueferry.contact_repository import ContactRepository
 from blueferry.contact_sync import CONTACTS_REFRESH_SEC
 from blueferry.contacts import ContactsResolver, clear_contact_cache
-from blueferry.errors import ConfirmationRequiredError
+from blueferry.errors import ConfigurationError, ConfirmationRequiredError
 from blueferry.events import SmsEvent
 from blueferry.history import append_event, clear_events, read_events
 from blueferry.settings_store import SettingsStore
@@ -776,3 +776,96 @@ def test_replacement_key_is_not_trusted_over_encrypted_preferences(recovery):
     r.unlock(interactive=True)
     assert r.outcomes[-1]["storage_state"] == "ready"
     assert StarredThreadsStore(path, storage=r.storage).keys() == [thread]
+
+
+def _unreadable_settings_daemon(make_daemon, monkeypatch):
+    """Start with plaintext history and contacts, and settings.json damaged."""
+    wallet = _Wallet()
+    wallet.locked = False
+    monkeypatch.setattr(GLib, "timeout_add_seconds", lambda *_args: 1)
+    monkeypatch.setattr(GLib, "source_remove", lambda _source: True)
+    monkeypatch.setattr(daemon_mod, "ObexWorker", _Queue)
+    monkeypatch.setattr(
+        daemon_mod, "StorageSecurity",
+        lambda **kwargs: StorageSecurity(key_provider=wallet, **kwargs),
+    )
+    path = config.SETTINGS_JSON
+    SettingsStore(path).update(local_data="plaintext")
+    seeded = StorageSecurity(key_provider=wallet, initialize=False)
+    append_event({"kind": "sms_received", "handle": "kept", "body": "private"}, storage=seeded)
+    ContactRepository(seeded).replace([("Alice", ["15551111111"], [])])
+    saved = path.read_text(encoding="utf-8")
+    path.write_text(saved[:-3], encoding="utf-8")
+    daemon = make_daemon()
+    operations = BackendOperations(daemon.sessions, BackendDependencies(
+        storage=daemon.storage, contacts=daemon.contacts,
+        starred_threads=daemon.starred_threads, group_routes=daemon.group_routes,
+        confirmed_groups=daemon.confirmed_groups,
+        prepare_storage=preparation_mod.prepare_storage,
+        on_storage_prepared=daemon._apply_storage_preparation,
+        on_storage_changed=daemon._on_storage_changed,
+    ))
+    queue = _Queue()
+    daemon.storage.require_preparation()
+    operations.retry_storage_async(
+        queue.submit, lambda _status: None, lambda error: pytest.fail(str(error)),
+        initialize=True,
+    )
+    assert not queue.jobs
+    assert "settings.json cannot be read" in daemon.storage.status.detail
+    return SimpleNamespace(
+        daemon=daemon, operations=operations, queue=queue, wallet=wallet, saved=saved,
+    )
+
+
+@pytest.mark.parametrize("change", ["none", "plaintext", "encrypted", "reset"])
+def test_storage_changes_are_refused_while_settings_cannot_be_read(
+    make_daemon, monkeypatch, change,
+):
+    r = _unreadable_settings_daemon(make_daemon, monkeypatch)
+    before = {
+        path: path.read_bytes()
+        for path in (config.SETTINGS_JSON, config.EVENTS_DB, config.CONTACTS_DB)
+    }
+    status = r.daemon.storage.status
+
+    def replied(value):
+        pytest.fail(f"unexpected reply: {value}")
+
+    with pytest.raises(ConfigurationError, match=r"settings\.json can't be read") as caught:
+        if change == "reset":
+            r.operations.reset_storage_async(
+                r.queue.submit, replied, replied, confirmed=True,
+            )
+        else:
+            r.operations.change_storage_async(
+                r.queue.submit, replied, replied, policy=change,
+            )
+
+    assert caught.value.dbus_suffix == "Configuration"
+    # Nothing was erased, migrated or rewritten, and the wallet was untouched.
+    assert {path: path.read_bytes() for path in before} == before
+    assert not r.queue.jobs and r.wallet.deleted == 0 and r.wallet.created == 0
+    assert r.daemon.storage.status == status
+
+
+def test_policy_change_after_settings_reads_again_uses_the_saved_policy(
+    make_daemon, monkeypatch,
+):
+    r = _unreadable_settings_daemon(make_daemon, monkeypatch)
+    # Repaired before the retry tick has read it again.
+    config.SETTINGS_JSON.write_text(r.saved, encoding="utf-8")
+    outcomes = []
+
+    r.operations.change_storage_async(
+        r.queue.submit, outcomes.append, lambda error: pytest.fail(str(error)),
+        policy="encrypted",
+    )
+    r.queue.finish()
+
+    # The saved policy was plaintext, so its records were erased, not kept
+    # beside encrypted ones.
+    assert outcomes[-1]["storage_policy"] == "encrypted"
+    assert outcomes[-1]["storage_state"] == "ready"
+    assert _event_rows() == 0
+    assert SettingsStore(config.SETTINGS_JSON).read()["local_data"] == "encrypted"

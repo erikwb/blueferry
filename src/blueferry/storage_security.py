@@ -369,6 +369,19 @@ class StorageSecurity:
             self._detail = "Unlock the desktop keyring to retain encrypted local data"
         return True
 
+    def require_known_policy(self) -> None:
+        """Refuse a storage change while the saved policy can't be read.
+
+        Erasing or migrating for a policy that is only assumed could remove
+        data the saved one keeps, or keep plaintext the user believes is
+        encrypted.
+        """
+        if not self._policy_known and not self._load_policy():
+            raise UnreadableSettingsError(
+                f"{self._settings.path.name} can't be read, so local storage was "
+                "not changed; repair or remove the file and try again"
+            )
+
     @property
     def status(self) -> StorageStatus:
         return StorageStatus(self._policy, self._state, self._detail)
@@ -455,6 +468,8 @@ class StorageSecurity:
 
         if self.busy:
             raise StorageUnavailableError("a desktop wallet request is already pending")
+        if reset:
+            self.require_known_policy()
         if policy is None and not self._policy_known and not self._load_policy():
             on_success(self.status)
             return
@@ -714,6 +729,7 @@ class StorageSecurity:
         if selected not in STORAGE_POLICIES:
             choices = ", ".join(sorted(STORAGE_POLICIES))
             raise ValueError(f"local data policy must be one of: {choices}")
+        self.require_known_policy()
         previous = self._policy
         # The caller erased the data sealed under the previous policy.
         self._settings.update(
