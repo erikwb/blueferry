@@ -24,6 +24,10 @@ ShellRoot {
   property var backendStatus: ({})
   // Opt-in iPhone now playing as reduced by the bridge; empty while off.
   property var nowPlaying: ({})
+  // Running calls as reduced by the bridge (call card wording, duration
+  // included); empty while calls are off.
+  property var callsView: ({})
+  property bool callsWatched: false
   // Host fact from the bridge; kept when backendStatus is reset because the
   // daemon is unavailable. undefined means an older bridge did not send it.
   property var bluetoothRestartCommand: undefined
@@ -140,6 +144,23 @@ ShellRoot {
       backendBridge.cancelLatest("now_playing")
       root.nowPlaying = ({})
     }
+  }
+
+  // ListCalls only when calls are on: on a calls change, when they are
+  // switched on and after each action. The duration ticks via call_cards.
+  function refreshCalls() {
+    if (root.callsWatched) {
+      backendBridge.requestLatest("calls", {})
+    } else {
+      backendBridge.cancelLatest("calls")
+      backendBridge.cancelLatest("call_cards")
+      root.callsView = ({})
+    }
+  }
+
+  function applyCalls(result) {
+    root.callsView = root.callsWatched && typeof result === "object" && result !== null
+      ? result : ({})
   }
 
   function applyNowPlaying(result) {
@@ -318,6 +339,8 @@ ShellRoot {
     backendStatus = ({})
     backendBridge.cancelLatest("now_playing")
     nowPlaying = ({})
+    callsWatched = false
+    refreshCalls()
     statusErrorText = message
   }
 
@@ -412,6 +435,11 @@ ShellRoot {
         root.statusErrorText = ""
         root.maybeUnlockStorage()
         root.refreshNowPlaying()
+        const callsWanted = result.calls_enabled === true
+        if (callsWanted !== root.callsWatched || (daemonReturned && callsWanted)) {
+          root.callsWatched = callsWanted
+          root.refreshCalls()
+        }
       } else if (method === "threads") {
         if (!root.threadsBusy || requestId !== root.threadsRequestId) return
         root.threadsRequestId = 0
@@ -463,6 +491,9 @@ ShellRoot {
         // HistoryChanged reloads the thread list.
       } else if (method === "now_playing") {
         root.applyNowPlaying(result)
+      } else if (method === "calls" || method === "call_cards"
+                 || method === "answer_call" || method === "hangup_call") {
+        root.applyCalls(result)
       } else if (method === "media_command") {
         // NowPlayingChanged refreshes the strip.
       } else if (method === "delete_threads") {
@@ -632,6 +663,11 @@ ShellRoot {
         // Keep the conversation open even if MAP write-back fails.
       } else if (method === "now_playing") {
         root.nowPlaying = ({})
+      } else if (method === "calls" || method === "call_cards") {
+        root.callsView = ({})
+      } else if (method === "answer_call" || method === "hangup_call") {
+        root.errorText = message || "Could not control the call"
+        root.refreshCalls()
       } else if (method === "media_command") {
         root.errorText = message || "Could not control iPhone playback"
         root.refreshNowPlaying()
@@ -797,6 +833,7 @@ ShellRoot {
       if (name === "open-message") root.openMessage(String(data || ""))
       else if (name === "history-changed" || name === "status-changed") root.reload()
       else if (name === "now-playing-changed") root.refreshNowPlaying()
+      else if (name === "calls-changed") root.refreshCalls()
       else if (name === "notifications-changed" && root.notificationListWatched)
         root.refreshNotificationList()
       else if (name === "host" && data && typeof data.bluetooth_restart_command === "string")
@@ -814,6 +851,16 @@ ShellRoot {
       root.reload()
       setupController.refreshConfiguration()
     }
+  }
+
+  // The call duration: the bridge formats it from its cached ListCalls, so
+  // this asks no D-Bus question; only while an answered call is shown.
+  Timer {
+    objectName: "callTicker"
+    interval: 1000
+    repeat: true
+    running: root.callsWatched && root.callsView.ticking === true && window.visible
+    onTriggered: backendBridge.requestLatest("call_cards", {})
   }
 
   Component.onCompleted: {
@@ -892,6 +939,15 @@ ShellRoot {
             color: theme.muted
             font.pixelSize: theme.captionSize
           }
+        }
+
+        QuickshellCalls {
+          objectName: "calls"
+          ferryTheme: theme
+          Layout.fillWidth: true
+          view: root.callsView
+          onAnswerRequested: callId => backendBridge.request("answer_call", {call_id: callId})
+          onHangupRequested: callId => backendBridge.request("hangup_call", {call_id: callId})
         }
 
         QuickshellNowPlaying {

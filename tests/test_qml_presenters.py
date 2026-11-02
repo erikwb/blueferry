@@ -6109,6 +6109,73 @@ def test_quickshell_now_playing_renders_the_bridge_view(qml_engine) -> None:
         QGuiApplication.processEvents()
 
 
+def test_quickshell_call_card_renders_the_bridge_view(qml_engine) -> None:
+    from blueferry.models import CallsSnapshot
+    from blueferry.quickshell_bridge import calls_reply
+
+    theme = _component(qml_engine, "data/quickshell/ThemePalette.qml").create()
+    component = _component(qml_engine, "data/quickshell/QuickshellCalls.qml")
+    card = component.createWithInitialProperties({"ferryTheme": theme})
+    assert card is not None, component.errors()
+    window = QQuickWindow()
+    window.resize(640, 200)
+    card.setParentItem(window.contentItem())
+    window.show()
+    QGuiApplication.processEvents()
+    try:
+        assert card.property("visible") is False
+        ringing = {"call_id": "voicecall01", "state": "incoming",
+                   "contact_name": "<b>Kim</b>", "first_seen": "2026-10-26T09:59:50+00:00"}
+        card.setProperty("view", calls_reply(
+            CallsSnapshot.from_dict({"state": "ready", "calls": [ringing]}), 0.0,
+        ))
+        QGuiApplication.processEvents()
+        assert card.property("visible") is True
+        title = _quickshell_items(card, "callTitle")[0]
+        assert title.property("text") == "📞  <b>Kim</b>"
+        assert _quickshell_items(card, "callSubtitle")[0].property("text") == "Incoming call…"
+        answer = _quickshell_items(card, "callAnswer")[0]
+        hangup = _quickshell_items(card, "callHangup")[0]
+        assert answer.property("visible") is True and answer.property("text") == "Answer"
+        assert hangup.property("text") == "Decline"
+
+        answered, hung_up = [], []
+        card.answerRequested.connect(answered.append)
+        card.hangupRequested.connect(hung_up.append)
+        assert QMetaObject.invokeMethod(answer, "clicked")
+        assert QMetaObject.invokeMethod(hangup, "clicked")
+        assert answered == ["voicecall01"] and hung_up == ["voicecall01"]
+
+        active = {**ringing, "state": "active", "active_since": "2026-10-26T10:00:00+00:00"}
+        card.setProperty("view", calls_reply(
+            CallsSnapshot.from_dict({"state": "ready", "calls": [active]}),
+            1793008800.0 + 3725,
+        ))
+        QGuiApplication.processEvents()
+        assert _quickshell_items(card, "callSubtitle")[0].property("text") == "1:02:05"
+        assert _quickshell_items(card, "callAnswer")[0].property("visible") is False
+        assert _quickshell_items(card, "callHangup")[0].property("text") == "Hang Up"
+
+        card.setProperty("view", calls_reply(None, 0.0))
+        assert card.property("visible") is False
+    finally:
+        card.deleteLater()
+        QGuiApplication.processEvents()
+
+
+def test_quickshell_ticks_the_call_duration_only_while_a_call_is_answered() -> None:
+    shell = (ROOT / "data/quickshell/shell.qml").read_text()
+    ticker = shell[shell.index('objectName: "callTicker"'):]
+    ticker = ticker[:ticker.index("}")]
+    assert 'root.callsView.ticking === true' in ticker and "window.visible" in ticker
+    # The tick formats the bridge's cache; ListCalls only on a change.
+    assert 'requestLatest("call_cards"' in ticker
+    assert '"calls-changed") root.refreshCalls()' in shell
+    card = (ROOT / "data/quickshell/QuickshellCalls.qml").read_text()
+    # Caller names are remote text: every label is plain text.
+    assert card.count("textFormat: Text.PlainText") == card.count("FerryLabel {")
+
+
 def test_quickshell_now_playing_stays_hidden_during_empty_reconnects(qml_engine) -> None:
     from blueferry.quickshell_bridge import now_playing_view
 
