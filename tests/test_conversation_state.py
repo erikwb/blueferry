@@ -187,6 +187,46 @@ def test_reply_plan_enforces_read_only_and_group_confirmation() -> None:
     )
 
 
+def _maybe_group(token: str = "sender:one") -> Thread:
+    """Alice's conversation, whose latest message may be from a group."""
+    return replace(
+        _thread("alice", reply_ready=False), recipients=("+15551111111",),
+        extra={"group_ambiguous": True, "sender_reply_token": token},
+    )
+
+
+def test_reply_to_a_maybe_group_message_asks_to_reply_to_the_sender_only() -> None:
+    state = ConversationState()
+    alice = _maybe_group()
+    state.apply_snapshot(ConversationSnapshot(threads=(alice,)))
+
+    assert alice.can_compose is True
+    assert alice.confirmation_token == "sender:one"
+    displayed = state.plan_reply(" draft ")
+    assert displayed.disposition is ReplyDisposition.CONFIRM_SENDER
+
+    plan = state.plan_reply(
+        displayed.body, thread_key=alice.key, confirm_group=True,
+        expected_group_token=displayed.expected_group_token,
+    )
+    assert plan.ready and plan.confirm_group
+    assert plan.expected_group_token == "sender:one"
+    state.reply_sent(plan)
+    # The same messages need no second confirmation; a newer one does.
+    assert state.plan_reply("again").confirm_group is True
+    state.apply_snapshot(ConversationSnapshot(threads=(_maybe_group("sender:two"),)))
+    assert state.plan_reply("again").disposition is ReplyDisposition.CONFIRM_SENDER
+
+    stale = state.plan_reply(
+        "again", confirm_group=True, expected_group_token="sender:one",
+    )
+    assert stale.disposition is ReplyDisposition.STALE_SENDER
+    assert "new message" in stale.disposition.message
+    # Without a confirmation token the conversation stays read-only.
+    state.apply_snapshot(ConversationSnapshot(threads=(_thread("alice", reply_ready=False),)))
+    assert state.plan_reply("again").disposition is ReplyDisposition.READ_ONLY
+
+
 def test_daemon_remembered_roster_skips_client_confirmation() -> None:
     state = ConversationState()
     group = replace(_thread("group", group=True), group_confirmed=True)

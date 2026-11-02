@@ -544,7 +544,19 @@ class BackendOperations:
         if thread is None:
             raise NotFoundError("thread no longer exists in local history")
         thread_key = str(thread["key"])
-        if not thread["reply_ready"] or not thread["recipients"]:
+        sender_token = str(thread.get("sender_reply_token") or "")
+        if (
+            sender_token and not thread["is_group"]
+            and confirm_group and expected_group_token
+        ):
+            # The latest message may have been sent to a group; the user
+            # confirmed a reply to the sender alone for exactly these messages.
+            if expected_group_token != sender_token:
+                raise ConfirmationRequiredError(
+                    "a newer message may be from a group; review the "
+                    "conversation before replying"
+                )
+        elif not thread["reply_ready"] or not thread["recipients"]:
             raise NotReadyError("thread has no unambiguous reply destination")
         self._require_map()
 

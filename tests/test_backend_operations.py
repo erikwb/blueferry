@@ -210,6 +210,84 @@ def test_confirmed_group_reply_uses_backend_recipient_set(monkeypatch):
     assert replies == ["/transfer/1", "/transfer/1"]
 
 
+def _maybe_group_events(sender: str, name: str, at: str) -> list[dict]:
+    """Two equal texts from ``sender``; either may be the one sent to Crew."""
+    return [
+        {"kind": "sms_received", "handle": f"{name}-1-{at}", "sender_address": sender,
+         "contact_name": name, "body": "ok", "seen_at": f"2026-08-12T{at}:00+00:00"},
+        {"kind": "ancs_notification", "app_id": "com.apple.MobileSMS", "title": name,
+         "subtitle": "Crew", "body": "ok", "seen_at": f"2026-08-12T{at}:02+00:00"},
+        {"kind": "sms_received", "handle": f"{name}-2-{at}", "sender_address": sender,
+         "contact_name": name, "body": "ok", "seen_at": f"2026-08-12T{at}:30+00:00"},
+    ]
+
+
+def _stub_events(operations: BackendOperations, events: list[dict]) -> None:
+    operations._conversations.threads = lambda: build_threads(events)
+
+
+def test_sender_only_reply_needs_a_confirmation_for_the_messages_shown(monkeypatch):
+    operations = _operations()
+    events = _maybe_group_events("+15551111111", "Alice", "10:00")
+    _stub_events(operations, events)
+    (alice,) = operations.list_threads(10)
+    assert alice["reply_ready"] is False
+    assert alice["group_ambiguous"] is True
+    token = alice["sender_reply_token"]
+    assert token
+    sent = []
+    monkeypatch.setattr(
+        backend_operations, "send_message",
+        lambda _path, recipient, body: sent.append((recipient, body)) or "/transfer/1",
+    )
+
+    # Without the confirmation the conversation stays read-only.
+    for confirm, expected in ((False, token), (True, ""), (False, "")):
+        with pytest.raises(NotReadyError):
+            operations.send_to_thread(
+                alice["key"], "draft", confirm,
+                lambda _: pytest.fail("unexpected send"),
+                lambda error: pytest.fail(str(error)),
+                expected_group_token=expected,
+            )
+    assert sent == []
+
+    replies = []
+    operations.send_to_thread(
+        alice["key"], "just you", True, replies.append,
+        lambda error: pytest.fail(str(error)),
+        expected_group_token=token,
+    )
+    assert replies == ["/transfer/1"]
+    assert sent == [("+15551111111", "just you")]
+
+
+def test_sender_only_confirmation_does_not_cover_other_messages():
+    queued = []
+    operations = _operations(submit_obex=lambda *args, **kwargs: queued.append(args))
+    events = _maybe_group_events("+15551111111", "Alice", "10:00")
+    _stub_events(operations, events)
+    (alice,) = operations.list_threads(10)
+    confirmed = alice["sender_reply_token"]
+
+    # Another ambiguous pair from Alice arrives after she was confirmed.
+    newer = _maybe_group_events("+15551111111", "Alice", "11:00")
+    _stub_events(operations, [*events, *newer])
+    (alice,) = operations.list_threads(10)
+    assert alice["sender_reply_token"] not in ("", confirmed)
+    # Bob's equally ambiguous conversation has its own confirmation.
+    bob = build_threads(_maybe_group_events("+15552222222", "Bob", "10:00"))[0]
+    for stale in (confirmed, bob["sender_reply_token"]):
+        with pytest.raises(ConfirmationRequiredError, match="newer message"):
+            operations.send_to_thread(
+                alice["key"], "private draft", True,
+                lambda _: pytest.fail("unexpected send"),
+                lambda _: pytest.fail("unexpected queued operation"),
+                expected_group_token=stale,
+            )
+    assert queued == []
+
+
 def test_named_group_remembers_confirmation_until_roster_changes(monkeypatch):
     operations = _operations()
     thread = {**_group(), "group_origin": "named"}

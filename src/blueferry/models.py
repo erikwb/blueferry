@@ -515,8 +515,17 @@ class Thread:
     def confirmation_token(self) -> str:
         return (
             group_confirmation_token(self.recipients, self.roster_warning_id)
-            if self.is_group else ""
+            if self.is_group else self.sender_reply_token
         )
+
+    @property
+    def sender_reply_token(self) -> str:
+        """Set while the latest message may be from a group.
+
+        The user can still confirm a reply to its sender alone.
+        """
+        value = self.extra.get("sender_reply_token")
+        return value if isinstance(value, str) and not self.is_group else ""
 
     @property
     def roster_warning_key(self) -> str:
@@ -524,8 +533,16 @@ class Thread:
 
     @property
     def can_compose(self) -> bool:
-        """Whether a reply can be typed; a group may first need its members."""
-        return self.reply_ready or (self.is_group and self.participants_required)
+        """Whether a reply can be typed.
+
+        A group may first need its members, and a message that may be from a
+        group a confirmation that the reply goes to its sender alone.
+        """
+        return (
+            self.reply_ready
+            or (self.is_group and self.participants_required)
+            or bool(self.sender_reply_token)
+        )
 
     @property
     def missing_members(self) -> tuple[str, ...]:
