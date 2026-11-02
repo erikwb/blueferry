@@ -13,6 +13,7 @@ import dbus.service
 from gi.repository import GLib
 
 from blueferry.bus import get_system_bus
+from blueferry.dbus_object import StrictObject
 from blueferry.errors import PairingError
 
 log = logging.getLogger(__name__)
@@ -40,7 +41,7 @@ class _Rejected(dbus.exceptions.DBusException):
     _dbus_error_name = "org.bluez.Error.Rejected"
 
 
-class PairingAgent(dbus.service.Object):
+class PairingAgent(StrictObject):
     """Authorize only the device selected by this pairing transaction."""
 
     def __init__(
