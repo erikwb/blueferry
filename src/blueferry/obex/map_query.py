@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import time
+from datetime import datetime
 from typing import Any
 
 import dbus
@@ -15,7 +16,11 @@ import dbus.exceptions
 
 from blueferry.bus import obex
 from blueferry.events import normalize_phone, parse_map_timestamp
-from blueferry.limits import MAX_REMOTE_PROPERTY_CHARS, MAX_THREAD_BODY_CHARS
+from blueferry.limits import (
+    MAX_RECENT_QUERY_LIMIT,
+    MAX_REMOTE_PROPERTY_CHARS,
+    MAX_THREAD_BODY_CHARS,
+)
 from blueferry.otp_context import OtpMetadata
 
 log = logging.getLogger(__name__)
@@ -138,5 +143,68 @@ def list_recent_messages(
             "folder": _bounded_text(
                 raw.get("Folder"), MAX_REMOTE_PROPERTY_CHARS
             ) or folder,
+        })
+    return out
+
+
+# MAP's FilterPeriodBegin format. BlueZ passes the string through unchanged,
+# and the MAP specification reads it in the phone's local time.
+_PERIOD_FORMAT = "%Y%m%dT%H%M%S"
+INBOX_FOLDER = "telecom/msg/INBOX"
+
+
+def list_inbox_since(
+    session_path: str,
+    since: datetime | None,
+    limit: int,
+) -> list[dict[str, Any]]:
+    """List inbox summaries no older than ``since``, on the OBEX worker.
+
+    Returns the raw, bounded listing fields; the caller validates and
+    deduplicates them. BlueZ's ListMessages filter keys are ``MaxCount``
+    and ``PeriodBegin``. Whether iOS honours the period filter is not
+    established, so the caller filters by timestamp again. The listing
+    already carries every needed property, so no ``GetAll`` per message and
+    no bMessage download (which could change the phone's read state) is made.
+    """
+    bounded = max(1, min(int(limit), MAX_RECENT_QUERY_LIMIT))
+    deadline = time.monotonic() + QUERY_DEADLINE_SECONDS
+    map_iface = obex(session_path, "org.bluez.obex.MessageAccess1")
+    _navigate_to_folder(map_iface, INBOX_FOLDER, deadline=deadline)
+    filters = dbus.Dictionary(
+        {"MaxCount": dbus.UInt16(bounded)}, signature="sv",
+    )
+    if since is not None:
+        filters["PeriodBegin"] = dbus.String(
+            since.astimezone().strftime(_PERIOD_FORMAT)
+        )
+    listing = map_iface.ListMessages(
+        "", filters, timeout=_remaining(deadline, 30),
+    )
+    out: list[dict[str, Any]] = []
+    for path, props in listing.items():
+        if len(out) >= bounded:
+            break
+        path_s = str(path)
+        if not path_s.startswith(f"{session_path}/"):
+            continue
+        raw = dict(props)
+        read = raw.get("Read")
+        timestamp = raw.get("Timestamp")
+        out.append({
+            "handle": path_s.rsplit("/", 1)[-1],
+            "sender_address": _bounded_text(
+                raw.get("SenderAddress"), MAX_REMOTE_PROPERTY_CHARS
+            ),
+            "sender_name": _bounded_text(
+                raw.get("Sender"), MAX_REMOTE_PROPERTY_CHARS
+            ),
+            "body": _bounded_text(raw.get("Subject"), MAX_THREAD_BODY_CHARS),
+            "timestamp": (
+                _bounded_text(timestamp, 64) if isinstance(timestamp, str) else ""
+            ),
+            # Missing or malformed flags are reported as unknown.
+            "read": bool(read) if isinstance(read, (bool, dbus.Boolean)) else None,
+            "type": _bounded_text(raw.get("Type"), MAX_REMOTE_PROPERTY_CHARS),
         })
     return out
