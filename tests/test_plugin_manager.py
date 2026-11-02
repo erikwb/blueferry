@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 from pathlib import Path
 
 import pytest
@@ -435,6 +436,31 @@ def test_enable_and_disable_persist(setup) -> None:
     manager.set_enabled("io.a.b", True)
     assert manager.disabled() == frozenset({"io.c.d"})
     assert os.stat(manager.settings_path).st_mode & 0o077 == 0
+
+
+@pytest.mark.parametrize("state", ["installs", "settings"])
+def test_a_fifo_state_file_reads_as_empty_without_waiting_for_a_writer(setup, state) -> None:
+    manager, _runner = setup
+    manager.commit(manager.prepare(URL))
+    manager.set_enabled("io.example.demo", False)
+    path = manager.root / "installs.json" if state == "installs" else manager.settings_path
+    path.unlink()
+    os.mkfifo(path, 0o600)
+    result = []
+    reader = threading.Thread(
+        target=lambda: result.append((manager.records(), manager.disabled())), daemon=True,
+    )
+    reader.start()
+    reader.join(timeout=5)
+    if reader.is_alive():
+        # Release the blocked open so the hang fails this test only.
+        os.close(os.open(path, os.O_WRONLY | os.O_NONBLOCK))
+        reader.join(timeout=5)
+        pytest.fail("reading a FIFO blocked until a writer appeared")
+
+    records, disabled = result[0]
+    assert list(records) == ([] if state == "installs" else ["io.example.demo"])
+    assert disabled == (frozenset() if state == "settings" else {"io.example.demo"})
 
 
 def test_install_replaces_a_manually_installed_manifest(setup, monkeypatch) -> None:
