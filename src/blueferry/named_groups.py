@@ -1,4 +1,4 @@
-"""Named-group identity and saved reply routes, independent of event matching."""
+"""Group identity and saved reply routes, independent of event matching."""
 from __future__ import annotations
 
 import hashlib
@@ -6,6 +6,8 @@ import unicodedata
 from collections.abc import Iterable
 
 from blueferry.events import canonical_address
+
+UNNAMED_GROUP_PREFIX = "group:participants:"
 
 
 def _name(value: str) -> str:
@@ -16,6 +18,17 @@ def named_group_key(name: str) -> str:
     """Preserve distinct spelling; canonical Unicode forms denote the same name."""
     digest = hashlib.sha256(_name(name).encode("utf-8")).hexdigest()
     return f"group:named:v2:{digest}"
+
+
+def unnamed_group_key(members: Iterable[str]) -> str:
+    """Key an unnamed group by the member names iOS shows for it.
+
+    ANCS names the other members but carries no conversation ID, so this is
+    the only identity that both survives a member writing from a different
+    address and is known before every address is. Renaming a member in
+    Contacts or changing who is in the group changes the key.
+    """
+    return UNNAMED_GROUP_PREFIX + "|".join(sorted(member.casefold() for member in members))
 
 
 def legacy_named_group_key(name: str) -> str:
@@ -45,6 +58,7 @@ class NamedGroupRoutes:
     The iPhone exposes no conversation ID. Even the new key cannot distinguish
     two groups with exactly the same name; it only avoids *additional* collisions
     from case folding, compatibility characters, and collapsed whitespace.
+    Saved rosters for unnamed groups are kept under their member-name key.
     """
 
     def __init__(self, events: list[dict], observed_names: Iterable[str]) -> None:
@@ -57,12 +71,15 @@ class NamedGroupRoutes:
             if event.get("kind") != "group_route":
                 continue
             name = _stored_name(event)
-            if not name:
-                continue
-            key = named_group_key(name)
-            if event["group_key"] != key and not self.aliases(name):
-                # A roster saved for the previously merged thread cannot be
-                # assigned to either new conversation without user review.
+            if name:
+                key = named_group_key(name)
+                if event["group_key"] != key and not self.aliases(name):
+                    # A roster saved for the previously merged thread cannot
+                    # be assigned to either new conversation without review.
+                    continue
+            elif str(event.get("group_key") or "").startswith(UNNAMED_GROUP_PREFIX):
+                key = str(event["group_key"])
+            else:
                 continue
             raw_recipients = event.get("group_recipients")
             if not isinstance(raw_recipients, list | tuple):
@@ -88,30 +105,62 @@ class NamedGroupRoutes:
             return
         name = _stored_name(event)
         if not name:
+            key = str(event.get("group_key") or "")
+            if key.startswith(UNNAMED_GROUP_PREFIX):
+                event["group_origin"] = "unnamed"
+                if not self._apply_stored(event, key):
+                    event["group_reply_ready"] = False
+                    event["group_participants_required"] = True
             return
         key = named_group_key(name)
         was_legacy = event["group_key"] != key
         event["group_key"] = key
         event["group_aliases"] = self.aliases(name)
         event["group_origin"] = "named"
-        route = self._routes.get(key)
-        if route is not None:
-            # A roster edit also replaces historical outgoing routing metadata;
-            # otherwise old sends could re-add a participant the user removed.
-            event.update({
-                "group_name": str(route.get("group_name") or ""),
-                "group_members": list(route.get("group_members") or []),
-                "group_recipients": list(route["group_recipients"]),
-                "group_reply_ready": True,
-                "group_participants_required": False,
-            })
-        elif was_legacy and not self.aliases(name):
+        if not self._apply_stored(event, key) and was_legacy and not self.aliases(name):
             event["group_reply_ready"] = False
             event["group_participants_required"] = True
+
+    def _apply_stored(self, event: dict, key: str) -> bool:
+        route = self._routes.get(key)
+        if route is None:
+            return False
+        # A roster edit also replaces historical outgoing routing metadata;
+        # otherwise old sends could re-add a participant the user removed.
+        event.update({
+            "group_name": str(route.get("group_name") or ""),
+            "group_members": list(route.get("group_members") or []),
+            "group_recipients": list(route["group_recipients"]),
+            "group_reply_ready": True,
+            "group_participants_required": False,
+        })
+        return True
+
+    def has_route(self, key: str) -> bool:
+        return key in self._routes
 
     def received(self, name: str, sender_title: str, sender_address: str | None) -> dict:
         """Apply a saved roster only when the observed sender belongs to it."""
         key = named_group_key(name)
+        return {
+            **self._received(key, sender_title, sender_address),
+            "group_aliases": self.aliases(name),
+            "group_name": name,
+            "group_origin": "named",
+        }
+
+    def received_unnamed(
+        self, key: str, name: str, sender_title: str, sender_address: str | None,
+    ) -> dict:
+        """Like ``received`` for an unnamed group with a saved roster."""
+        return {
+            **self._received(key, sender_title, sender_address),
+            "group_aliases": [],
+            "group_name": name,
+            "group_origin": "unnamed",
+        }
+
+    def _received(self, key: str, sender_title: str, sender_address: str | None) -> dict:
         route = self._routes.get(key)
         recipients = [sender_address] if sender_address else []
         members = [sender_title] if sender_title else []
@@ -135,12 +184,9 @@ class NamedGroupRoutes:
                     warning_id = f"{route_version}:{sender_identity}"
         return {
             "group_key": key,
-            "group_aliases": self.aliases(name),
-            "group_name": name,
             "group_members": members,
             "group_recipients": recipients,
             "group_reply_ready": reply_ready,
-            "group_origin": "named",
             "group_participants_required": not reply_ready,
             "group_observed_recipient": sender_address or "",
             "group_observed_sender": sender_title,

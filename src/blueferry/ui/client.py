@@ -24,6 +24,7 @@ from blueferry.protocol import (
 )
 from blueferry.setup_client import SetupClient
 from blueferry.tether_status import TetherStatus
+from blueferry.ui.tasks import WorkerRunner
 
 log = logging.getLogger(__name__)
 T = TypeVar("T")
@@ -58,9 +59,13 @@ class DaemonClient(GObject.Object):
         "availability-changed": (GObject.SignalFlags.RUN_FIRST, None, (bool,)),
         "open-message-requested": (GObject.SignalFlags.RUN_FIRST, None, (str,)),
         "tether-invalidated": (GObject.SignalFlags.RUN_FIRST, None, ()),
-        # Content-free invalidations of the opt-in media and call history.
+        # Content-free invalidations of the opt-in media, call history and
+        # notification list.
         "now-playing-changed": (GObject.SignalFlags.RUN_FIRST, None, ()),
         "call-history-changed": (GObject.SignalFlags.RUN_FIRST, None, ()),
+        "notifications-changed": (GObject.SignalFlags.RUN_FIRST, None, ()),
+        # Running phone calls changed (Calls1); clients call ListCalls.
+        "calls-changed": (GObject.SignalFlags.RUN_FIRST, None, ()),
     }
 
     def __init__(self) -> None:
@@ -85,6 +90,8 @@ class DaemonClient(GObject.Object):
         # Each call opens a private connection, but all share one session bus,
         # so a verified daemon owner stays verified across calls.
         self._compatibility = CompatibilityCache()
+        # Worker pools of the shared client models (plugins, photos, tools).
+        self._runners: dict[str, WorkerRunner] = {}
         self._stopped = False
         self.available = False  # is the daemon reachable on D-Bus?
         self.healthy = False  # is the MAP session up?
@@ -135,6 +142,8 @@ class DaemonClient(GObject.Object):
         for signal_name, gobject_signal in (
             ("NowPlayingChanged", "now-playing-changed"),
             ("CallHistoryChanged", "call-history-changed"),
+            ("NotificationsChanged", "notifications-changed"),
+            ("CallsChanged", "calls-changed"),
         ):
             self._matches.append(
                 self._bus.add_signal_receiver(
@@ -157,6 +166,8 @@ class DaemonClient(GObject.Object):
         self._read_executor.shutdown(wait=False, cancel_futures=True)
         self._mutation_executor.shutdown(wait=False, cancel_futures=True)
         self._local_executor.shutdown(wait=False, cancel_futures=True)
+        for runner in self._runners.values():
+            runner.stop()
         # The interpreter joins the worker at exit: end a doctor run now
         # instead of waiting for its timeout.
         self._doctor_runner.stop()
@@ -596,6 +607,48 @@ class DaemonClient(GObject.Object):
             mutation=True,
         )
 
+    def calls_async(self, on_ok, on_err=None) -> None:
+        """Calls1.ListCalls: the running calls as a ``CallsSnapshot``."""
+        self._submit(
+            lambda: self._call_backend(lambda backend: backend.calls()),
+            on_ok,
+            on_err,
+        )
+
+    def answer_call_async(self, call_id: str, on_ok, on_err) -> None:
+        self._submit(
+            lambda: self._call_backend(lambda backend: backend.answer_call(call_id)),
+            on_ok,
+            on_err,
+            mutation=True,
+        )
+
+    def hangup_call_async(self, call_id: str, on_ok, on_err) -> None:
+        self._submit(
+            lambda: self._call_backend(lambda backend: backend.hangup_call(call_id)),
+            on_ok,
+            on_err,
+            mutation=True,
+        )
+
+    def swap_calls_async(self, on_ok, on_err) -> None:
+        """Hold the active call or resume the held one (AT+CHLD=2)."""
+        self._submit(
+            lambda: self._call_backend(lambda backend: backend.swap_calls()),
+            on_ok,
+            on_err,
+            mutation=True,
+        )
+
+    def send_call_tones_async(self, call_id: str, tones: str, on_ok, on_err) -> None:
+        """Keypad tones (DTMF) on the active call (Calls1.SendTones)."""
+        self._submit(
+            lambda: self._call_backend(lambda backend: backend.send_call_tones(call_id, tones)),
+            on_ok,
+            on_err,
+            mutation=True,
+        )
+
     def decline_call_with_message_async(self, call_id: str, text: str, on_ok, on_err) -> None:
         """Decline a ringing call and text the caller (Calls1.DeclineWithMessage)."""
         self._submit(
@@ -647,6 +700,14 @@ class DaemonClient(GObject.Object):
     def unlock_storage_async(self, on_ok, on_err) -> None:
         self._submit(
             lambda: self._call_backend(lambda backend: backend.unlock_storage()),
+            on_ok,
+            on_err,
+            mutation=True,
+        )
+
+    def reset_storage_async(self, on_ok, on_err) -> None:
+        self._submit(
+            lambda: self._call_backend(lambda backend: backend.reset_storage()),
             on_ok,
             on_err,
             mutation=True,
@@ -722,6 +783,55 @@ class DaemonClient(GObject.Object):
             on_ok,
             on_err,
         )
+
+    def sync_call_history_async(self, on_ok, on_err) -> None:
+        """Ask the daemon to read the iPhone's call history again now."""
+        self._submit(
+            lambda: self._call_backend(lambda backend: backend.sync_call_history()),
+            on_ok,
+            on_err,
+            mutation=True,
+        )
+
+    # ---- shared client models (blueferry.client_tasks) -------------------
+
+    def submit(self, operation, on_done=None, on_error=None, on_finished=None) -> None:
+        """:class:`blueferry.client_tasks.TaskRunner` on the read worker.
+
+        The shared models (``notification_history``) hand in blocking work
+        such as :meth:`notifications`; the callbacks run on the GTK thread.
+        """
+        def done(value) -> None:
+            if on_done is not None:
+                on_done(value)
+            if on_finished is not None:
+                on_finished()
+
+        def failed(message: str) -> None:
+            if on_error is not None:
+                on_error(message)
+            if on_finished is not None:
+                on_finished()
+
+        self._submit(operation, done, failed)
+
+    def task_runner(self, name: str, workers: int = 1) -> WorkerRunner:
+        """A :class:`blueferry.client_tasks.TaskRunner` with its own pool.
+
+        The plugin models call plugins, git and pip, which may take long;
+        on their own pool they never hold up the daemon's reads and
+        mutations. One pool per ``name``, stopped with the client.
+        """
+        runner = self._runners.get(name)
+        if runner is None:
+            runner = self._runners[name] = WorkerRunner(name, workers)
+            if self._stopped:
+                runner.stop()
+        return runner
+
+    def notifications(self, limit: int) -> dict:
+        """ListNotifications; blocking, so only for work passed to :meth:`submit`."""
+        return self._call_backend(lambda backend: backend.notifications(limit))
 
     # ---- settings: feature switches, service restart, doctor -------------
 

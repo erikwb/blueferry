@@ -71,12 +71,23 @@ addresses, and contacts that merely have the same name, stay separate.
 ## Group chats
 
 Bluetooth doesn't tell BlueFerry a group's ID or full member list, so it
-disables replies when the participants are unclear:
+asks you who is in a group when it can't tell:
 
 - For a named group, BlueFerry learns members only from the people who send to
-  it. It asks you to confirm the full reply list once.
+  it.
+- For an unnamed group, the iPhone names the members. BlueFerry fills in the
+  addresses it can match, but you choose for anyone with more than one phone
+  number or email, such as a number and an Apple ID.
+- When you send to such a group, BlueFerry asks you to confirm its members
+  first. It suggests contacts as you type and also accepts a phone number or
+  email. Your message waits in the reply box until the list is saved.
 - The saved list stays until you delete the conversation, clear history, or
   change the storage mode. It doesn't change the group on the iPhone.
+- If someone who isn't on the saved list writes, BlueFerry stops replying
+  until you review the list.
+- BlueFerry recognizes an unnamed group by its members' names. If you rename a
+  member in Contacts, or someone joins or leaves, the group becomes a new
+  conversation and BlueFerry asks again.
 - A message is filed under its group only when BlueFerry also receives the
   iPhone's notification for it. Without one, it appears in the sender's
   one-to-one conversation.

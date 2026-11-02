@@ -34,7 +34,7 @@ client:
 | Qt (KDE) | iPhone settings, "Contact Photos" |
 | GTK | Settings → Phone, "Contact Photos" |
 | Quickshell | iPhone settings, "Contact photos" |
-| Terminal (TUI) | press `o` for Options |
+| Terminal (TUI) | press `o` for Settings |
 | CLI | `blueferry contact-photos enable` (`disable`, `status`) |
 
 The backend saves the choice in `~/.config/blueferry/settings.json`,
