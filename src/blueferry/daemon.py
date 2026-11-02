@@ -1979,8 +1979,13 @@ class Daemon:
         }
 
     def _contact_photo_status(self) -> dict[str, object]:
+        settings = self.photo_settings
         status: dict[str, object] = {
-            "contact_photos": self.photo_settings.enabled,
+            # False while the choice is unknown, as for older clients.
+            "contact_photos": settings.enabled,
+            "contact_photos_state": (
+                "unknown" if not settings.known else "on" if settings.enabled else "off"
+            ),
             "contact_photo_cleanup_pending": (
                 self._photo_erase_pending or self._avatar_files.cleanup_pending
             ),

@@ -3086,6 +3086,38 @@ def test_quickshell_offers_the_contact_photo_opt_in_only_when_reported(
     theme.deleteLater()
 
 
+def test_quickshell_contact_photo_opt_in_is_unavailable_while_the_choice_is_unknown(
+    qml_engine, quickshell_setup,
+):
+    theme_component = _component(qml_engine, "data/quickshell/ThemePalette.qml")
+    theme = theme_component.create()
+    component = _component(qml_engine, "data/quickshell/PhoneSettingsPage.qml")
+    page = component.createWithInitialProperties({
+        "ferryTheme": theme, "setup": quickshell_setup,
+        "status": {
+            "contacts_only_notifications": False, "contact_photos": False,
+            "contact_photos_state": "unknown", "saved_opt_ins": True,
+        },
+    })
+    assert page is not None
+    quickshell_setup.setProperty("configured", True)
+    QGuiApplication.processEvents()
+    checkbox = page.findChild(QObject, "contactPhotosCheckBox")
+    notice = page.findChild(QObject, "contactPhotosUnavailable")
+    assert checkbox.property("visible") is True and checkbox.property("enabled") is False
+    assert notice.property("visible") is True
+    assert "settings.json cannot be read" in notice.property("text")
+
+    page.setProperty("status", {
+        "contacts_only_notifications": False, "contact_photos": False,
+        "contact_photos_state": "off", "saved_opt_ins": True,
+    })
+    QGuiApplication.processEvents()
+    assert checkbox.property("enabled") is True and notice.property("visible") is False
+    page.deleteLater()
+    theme.deleteLater()
+
+
 def test_quickshell_offers_the_one_time_code_opt_in_only_when_reported(
     qml_engine, quickshell_setup,
 ):
@@ -3343,6 +3375,111 @@ Item {
     )
     log = result.stdout + result.stderr
     assert result.returncode == 0 and "BLUEFERRY_STORAGE_RESET_OK" in log, log
+    assert "WARN scene:" not in log and "ReferenceError" not in log and "TypeError" not in log, log
+
+
+@pytest.mark.private_dbus
+def test_quickshell_shell_shows_an_unknown_photo_choice_as_unavailable(
+    tmp_path, quickshell_environment,
+):
+    """The real shell: while settings.json can't be read the photo option is
+    disabled with the reason, and it comes back once the daemon reads it."""
+    import shutil
+    import subprocess
+
+    executable = shutil.which("quickshell")
+    if executable is None:
+        pytest.skip("Quickshell is not installed")
+    for source in (ROOT / "data/quickshell").glob("*.qml"):
+        shutil.copyfile(source, tmp_path / source.name)
+    shutil.copyfile(
+        ROOT / "src/blueferry/qt/qml/ConversationLogic.qml",
+        tmp_path / "ConversationLogic.qml",
+    )
+    (tmp_path / "Theme.qml").write_text("import QtQuick\nThemePalette {}\n")
+    # No process can be started by either injected transport.
+    (tmp_path / "SetupTransport.qml").write_text('''import QtQuick
+Item {
+  signal lineReceived(int id, string kind, string line)
+  signal finished(int id, string kind, int code, string output, string diagnostic)
+  function execute(id, kind, command, interactive) {}
+  function cancel(id) {}
+  function write(id, text) {}
+}
+''')
+    (tmp_path / "BackendBridge.qml").write_text('''import QtQuick
+Item {
+  property bool desktopClient: false
+  property var calls: []
+  property int nextId: 1
+  signal response(string method, int requestId, var result)
+  signal failure(string method, int requestId, string message)
+  signal eventReceived(string name, var data)
+  function request(method, args) {
+    const id = nextId++;
+    calls.push({id: id, method: method, args: args});
+    return id;
+  }
+  function requestLatest(method, args) {}
+  function cancelLatest(method) {}
+}
+''')
+    config = tmp_path / "shell.qml"
+    source = config.read_text()
+    probe = r'''
+  Timer {
+    interval: 200; running: true
+    onTriggered: {
+      function check(value, message) { if (!value) throw new Error(message); }
+      function find(item, name) {
+        if (item.objectName === name) return item;
+        for (let index = 0; index < item.children.length; ++index) {
+          const found = find(item.children[index], name);
+          if (found) return found;
+        }
+        return null;
+      }
+      function status(id, photos, state) {
+        backendBridge.response("status", id, {
+          daemon: true, saved_opt_ins: true, storage_policy: "encrypted",
+          storage_state: "ready", contact_photos: photos, contact_photos_state: state
+        });
+      }
+      try {
+        setupController.configured = true;
+        root.presentWindow();
+        root.phoneSettingsVisible = true;
+        const checkbox = find(phoneSettingsPage, "contactPhotosCheckBox");
+        const notice = find(phoneSettingsPage, "contactPhotosUnavailable");
+        check(checkbox !== null && notice !== null, "photo row missing");
+
+        status(1, false, "unknown");
+        check(checkbox.visible && !checkbox.enabled && !checkbox.checked,
+          "unknown choice is offered as off");
+        check(notice.visible && notice.text.indexOf("settings.json cannot be read") >= 0,
+          "reason not shown");
+
+        status(2, true, "on");
+        check(checkbox.enabled && checkbox.checked && !notice.visible, "stuck after repair");
+        status(3, false, "unknown");
+        check(!checkbox.enabled && !checkbox.checked && notice.visible, "unknown after on");
+        status(4, false, "off");
+        check(checkbox.enabled && !checkbox.checked && !notice.visible, "off not shown");
+        console.log("BLUEFERRY_PHOTO_STATE_OK");
+      } catch (error) {
+        console.error(error);
+      }
+      Qt.quit();
+    }
+  }
+'''
+    config.write_text(source[:source.rfind("}")] + probe + "}\n")
+    result = subprocess.run(
+        [executable, "--path", str(config)], env=quickshell_environment,
+        capture_output=True, text=True, timeout=10, check=False,
+    )
+    log = result.stdout + result.stderr
+    assert result.returncode == 0 and "BLUEFERRY_PHOTO_STATE_OK" in log, log
     assert "WARN scene:" not in log and "ReferenceError" not in log and "TypeError" not in log, log
 
 
@@ -4314,6 +4451,31 @@ def test_contact_photo_opt_in_appears_only_for_supporting_daemons(qml_engine, se
     bridge.setProperty("status", {"daemon": True, "contact_photos": True, "saved_opt_ins": True})
     QGuiApplication.processEvents()
     assert checkbox.property("checked") is True
+
+
+def test_contact_photo_opt_in_is_unavailable_while_the_choice_is_unknown(
+    qml_engine, settings_window,
+):
+    window, bridge = settings_window
+    bridge.setProperty("setupLoaded", True)
+    bridge.setProperty("status", {
+        "daemon": True, "contact_photos": False, "contact_photos_state": "unknown",
+        "saved_opt_ins": True,
+    })
+    QGuiApplication.processEvents()
+    checkbox = _settings_object(window, "contactPhotosCheckBox")
+    assert checkbox.property("enabled") is False and checkbox.property("checked") is False
+    caption = _settings_object(window, "contactPhotosCaption").property("text")
+    assert "settings.json cannot be read" in caption
+
+    bridge.setProperty("status", {
+        "daemon": True, "contact_photos": True, "contact_photos_state": "on",
+        "saved_opt_ins": True,
+    })
+    QGuiApplication.processEvents()
+    assert checkbox.property("enabled") is True and checkbox.property("checked") is True
+    caption = _settings_object(window, "contactPhotosCaption").property("text")
+    assert "next contact sync" in caption
 
 
 def test_otp_autocopy_opt_in_appears_only_for_supporting_daemons(qml_engine, settings_window):

@@ -852,7 +852,9 @@ A change to these rules has to be made in both places.
   worker, after any queued pull) or at startup when it is off. While
   `settings.json` can't be read the choice is unknown: photos are neither
   erased, pulled nor shown, contact syncs wait, and the storage retry applies
-  the saved choice once the file reads. The photo
+  the saved choice once the file reads. `GetStatus` then reports
+  `contact_photos_state: unknown` next to the boolean `contact_photos`
+  (false), and clients show the option as unavailable. The photo
   table is created only when a sync stores a photo, and the off-path check is
   read-only, so a profile that never opted in keeps the upstream schema.
   A trigger created with the table deletes all photos whenever

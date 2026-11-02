@@ -60,6 +60,7 @@ class _OptionsBackend(_Backend):
     ) -> None:
         super().__init__()
         self.photos = photos
+        self.photos_state: str | None = None
         self.otp = otp
         self.fail = fail
         self.saved_opt_ins = saved_opt_ins
@@ -74,7 +75,8 @@ class _OptionsBackend(_Backend):
     def status(self) -> BackendStatus:  # type: ignore[override]
         return BackendStatus(
             daemon=True, map=True, pbap=True, ancs=True,
-            contact_photos=self.photos, otp_autocopy=self.otp,
+            contact_photos=self.photos, contact_photos_state=self.photos_state,
+            otp_autocopy=self.otp,
             saved_opt_ins=self.saved_opt_ins, notification_policy=self.policy,
             phone_battery_warning=self.battery, storage_policy="encrypted",
             storage_state="ready", extra=dict(self.extra),
@@ -222,6 +224,31 @@ def test_options_screen_saves_the_contact_photo_opt_in() -> None:
 
             await pilot.press("o")
             await _until(pilot, lambda: not isinstance(app.screen, OptionsScreen))
+
+    asyncio.run(scenario())
+
+
+def test_an_unknown_contact_photo_choice_is_unavailable_until_it_reads() -> None:
+    async def scenario() -> None:
+        backend = _OptionsBackend()
+        backend.photos_state = "unknown"
+        app = _app(backend)
+        async with app.run_test(size=(120, 40)) as pilot:
+            screen = await _open(app, pilot)
+            checkbox = screen.query_one("#opt-contact_photos", Checkbox)
+            assert checkbox.display is True and checkbox.disabled is True
+            caption = _plain(screen, "#opt-contact_photos-caption")
+            assert "settings.json cannot be read" in caption
+            checkbox.focus()
+            await pilot.press("space")
+            await pilot.pause()
+            assert backend.saved == [] and checkbox.value is False
+
+            backend.photos, backend.photos_state = True, "on"
+            screen.status_changed(backend.status())
+            await pilot.pause()
+            assert checkbox.disabled is False and checkbox.value is True
+            assert "next contact sync" in _plain(screen, "#opt-contact_photos-caption")
 
     asyncio.run(scenario())
 

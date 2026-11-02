@@ -354,9 +354,13 @@ class _CliBackend:
         self.photos: dict[str, bytes] = {}
         self.matches: list[tuple[str, str]] = []
         self.enabled = True
+        self.state: str | None = None
 
     def status(self):
-        return SimpleNamespace(to_dict=lambda: {"contact_photos": self.enabled})
+        status = {"contact_photos": self.enabled}
+        if self.state is not None:
+            status["contact_photos_state"] = self.state
+        return SimpleNamespace(to_dict=lambda: status)
 
     def find_contacts(self, _query):
         return list(self.matches)
@@ -449,3 +453,15 @@ def test_cli_reports_disabled_ambiguous_and_missing(cli_backend, tmp_path) -> No
     result = runner.invoke(app, ["contacts-photo", "+15559990000", "-o", str(target)])
     assert result.exit_code == 1
     assert not Path(target).exists()
+
+
+def test_cli_reports_an_unknown_photo_choice_instead_of_disabled(cli_backend, tmp_path) -> None:
+    runner = CliRunner()
+    cli_backend.enabled, cli_backend.state = False, "unknown"
+    result = runner.invoke(app, ["contact-photos", "status"])
+    assert result.exit_code == 0
+    assert "unknown" in result.output and "settings.json" in result.output
+    assert "disabled" not in result.output
+    result = runner.invoke(app, ["contacts-photo", "Alice", "-o", str(tmp_path / "out.jpg")])
+    assert result.exit_code == 2 and "settings.json" in result.output
+    assert "contact-photos enable" not in result.output
