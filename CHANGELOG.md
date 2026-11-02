@@ -21,7 +21,8 @@
 - Pass BlueZ's `MaxCount` filter key to MAP `ListMessages` instead of
   `MaxListCount`, which obexd ignored. The message query now asks the iPhone
   for only the requested number of messages instead of up to 1024. The
-  one-time-code lookup keeps listing up to 1024 inbox entries.
+  one-time-code lookup keeps listing up to 1024 inbox entries
+  ([#396](https://github.com/erikwb/blueferry/pull/396)).
 
 ## [0.9.1](https://github.com/erikwb/blueferry/releases/tag/v0.9.1) - 2026-10-30
 
