@@ -54,6 +54,11 @@ class ConversationIndex:
         except OSError:
             return 0, 0
 
+    @property
+    def generation(self) -> int:
+        """Changes on every invalidation, so late worker results can tell."""
+        return self._generation
+
     def invalidate(self) -> None:
         self._generation += 1
         self._signature = None
