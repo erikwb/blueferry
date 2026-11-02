@@ -139,6 +139,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `history.py` | Bounded, encrypted SQLite event history with a monotonic revision. |
 | `storage_security.py` | Retention policy and Secret Service-backed AES-256-GCM encryption. |
 | `storage_preparation.py` | Worker-side storage validation before the daemon commits it. |
+| `sqlite_files.py` | Recognizes damaged SQLite files and deletes one with its journals for a storage reset. |
 | `text_safety.py` | Escaping for remote text at terminal presentation boundaries. |
 | `message_links.py` | Escaped markup with safe clickable web URLs, shared by GTK and QML. |
 
@@ -805,7 +806,8 @@ A change to these rules has to be made in both places.
   is unframed, storage becomes unavailable without deleting records while live
   delivery continues. Only an explicit client action may create or unlock the
   key. History writes are transactional, and a monotonic revision invalidates
-  the projection.
+  the projection. A storage reset deletes a database SQLite cannot read, with
+  its journal files; every other path leaves a damaged file in place.
 - **Contact photos** are opt-in (`contact_photos` in `settings.json`, set
   through `Messages1.SetContactPhotos` and seeded by
   `BLUEFERRY_CONTACT_PHOTOS`; switching applies without a restart). The daemon keeps

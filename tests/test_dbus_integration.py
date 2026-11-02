@@ -974,7 +974,7 @@ def test_call_history_round_trip_and_content_free_signal(public_service) -> None
         def sync(self, success, _failure):
             success(1)
 
-        def clear(self):
+        def clear(self, *, discard_damaged=False):
             pass
 
     service.operations.dependencies = replace(

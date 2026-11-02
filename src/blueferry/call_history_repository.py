@@ -31,6 +31,7 @@ from blueferry.call_history import (
     wall_clock,
 )
 from blueferry.limits import MAX_CALL_HISTORY_RECORDS, MAX_CALL_HISTORY_SEEN_KEYS
+from blueferry.sqlite_files import is_damaged, remove_database
 from blueferry.storage_security import CorruptStorageError, StorageSecurity
 
 log = logging.getLogger(__name__)
@@ -357,18 +358,24 @@ class CallHistoryRepository:
                     )
         return len(expired)
 
-    def clear(self) -> None:
+    def clear(self, *, discard_damaged: bool = False) -> None:
         """Erase every retained call and the announcement state.
 
         Clearing the state means the next sync seeds silently again.
+        ``discard_damaged`` deletes a file SQLite cannot read.
         """
         if not self.path.exists():
             return
-        with closing(self._open()) as connection:
-            with connection:
-                connection.execute("DELETE FROM calls")
-                connection.execute("DELETE FROM state")
-            connection.execute("VACUUM")
+        try:
+            with closing(self._open()) as connection:
+                with connection:
+                    connection.execute("DELETE FROM calls")
+                    connection.execute("DELETE FROM state")
+                connection.execute("VACUUM")
+        except sqlite3.DatabaseError as error:
+            if not discard_damaged or not is_damaged(error):
+                raise
+            remove_database(self.path)
 
 
 def _normalize_phone_id(value: str | None) -> str | None:
@@ -468,6 +475,6 @@ def _unseen(
     return unseen
 
 
-def clear_call_history(path: Path | None = None) -> None:
+def clear_call_history(path: Path | None = None, *, discard_damaged: bool = False) -> None:
     """Erase the call-history mirror without needing a storage key."""
-    CallHistoryRepository(None, path=path).clear()
+    CallHistoryRepository(None, path=path).clear(discard_damaged=discard_damaged)

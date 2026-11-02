@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 
 from blueferry import config
 from blueferry.ancs.constants import MESSAGES_APP_ID
+from blueferry.sqlite_files import is_damaged, remove_database
 from blueferry.storage_security import (
     ENCRYPTED_STORAGE,
     PLAINTEXT_STORAGE,
@@ -526,13 +527,22 @@ def prune_events(
     return removed
 
 
-def clear_events(*, path: Path | None = None) -> None:
-    """Erase local history and scrub SQLite's reusable pages."""
-    with closing(_open_database(path)) as database:
-        database.execute("PRAGMA secure_delete = ON")
-        with database:
-            database.execute("DELETE FROM events")
-        database.execute("VACUUM")
+def clear_events(*, path: Path | None = None, discard_damaged: bool = False) -> None:
+    """Erase local history and scrub SQLite's reusable pages.
+
+    A storage reset passes ``discard_damaged`` so that a file SQLite cannot
+    read is deleted rather than blocking the reset.
+    """
+    try:
+        with closing(_open_database(path)) as database:
+            database.execute("PRAGMA secure_delete = ON")
+            with database:
+                database.execute("DELETE FROM events")
+            database.execute("VACUUM")
+    except sqlite3.DatabaseError as error:
+        if not discard_damaged or not is_damaged(error):
+            raise
+        remove_database(path or config.EVENTS_DB)
 
 
 def scrub_unprotected_events(
