@@ -15,7 +15,7 @@ from tests.gtk_broadway import run_scenario
     "scenario", [
         "layout", "card", "quick-settings", "dial-pad", "running-calls", "call-tones",
         "keypad-tones", "recent-calls",
-        "notifications", "close", "volume", "pins", "contacts", "search",
+        "notifications", "close", "volume", "pins", "contacts", "contact-photos", "search",
     ],
 )
 def test_gtk_phone_card(tmp_path, scenario):
@@ -146,6 +146,16 @@ class FakeClient:
 
             raise ContactNotFoundError("unknown contact")
         raise _Read(("card", contact_id))
+
+    # List photos: answered at once from ``row_photos`` so the page's worker
+    # step (read and decode) runs; ``None`` queues the read instead.
+    row_photos: dict | None = None
+
+    def contact_card_photos(self, contact_ids):
+        self.photo_reads = [*getattr(self, "photo_reads", []), list(contact_ids)]
+        if self.row_photos is None:
+            raise _Read(("photos", tuple(contact_ids)))
+        return {key: value for key, value in self.row_photos.items() if key in contact_ids}
 
     def search(self, query, limit):
         raise _Read(("search", query))
@@ -1179,6 +1189,52 @@ def _exercise_contacts():
     window.destroy()
 
 
+def _exercise_contact_photos():
+    from tests.client_fakes import ManualRunner
+    from tests.photo_fixtures import png
+
+    runner = ManualRunner()
+    window, client = _window(timer=runner.timer)
+    page = window.contacts
+    photo = png(8, 8)
+    client.row_photos = {"c1": photo}
+    status = {**CARDS_ON, "contact_photos": True, "contact_photo_revision": 1}
+    client.answer_status(status)
+    window.show_tab("contacts")
+    _settle()
+    cards = _cards_page()
+    cards["contacts"][0]["has_photo"] = True
+    client.take(("cards", 0, ""))[1](cards)
+    _settle()
+    avatars = [w for row in _rows(page.list) for w in _descendants(row)
+               if type(w).__name__ == "Avatar"]
+    assert [a.get_custom_image() for a in avatars] == [None, None], "initials first"
+    runner.fire_timers()
+    # Only the row with a photo is asked for, decoded on the worker step.
+    assert client.photo_reads == [["c1"]]
+    assert avatars[0].get_custom_image() is not None
+    assert avatars[1].get_custom_image() is None
+    assert page.book.row_photo("c1") == photo
+    runner.fire_timers()
+    assert client.photo_reads == [["c1"]], "a loaded photo is not read again"
+
+    # Turning photos off (a new revision) drops them: back to initials.
+    client.answer_status({**status, "contact_photos": False})
+    _settle()
+    assert avatars[0].get_custom_image() is None
+    assert page.book.row_photo("c1") == b""
+
+    # Leaving the tab forgets the photos with the rows.
+    client.answer_status(status)
+    _settle()
+    runner.fire_timers()
+    assert len(client.photo_reads) == 2 and page.book.row_photo("c1") == photo
+    window.show_tab("messages")
+    _settle()
+    assert page.book.row_photo("c1") == b"" and page._row_textures == {}
+    window.destroy()
+
+
 SEARCH_ANSWER = {
     "query": "noon", "limit": 20,
     "conversations": {"total": 1, "results": [
@@ -1284,6 +1340,7 @@ def _exercise_search():
 if __name__ == "__main__":
     {
         "contacts": _exercise_contacts,
+        "contact-photos": _exercise_contact_photos,
         "search": _exercise_search,
         "volume": _exercise_volume,
         "pins": _exercise_pins,
