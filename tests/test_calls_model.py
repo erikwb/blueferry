@@ -4,6 +4,8 @@ These tests call pure functions only; the harness forbids every real bus.
 """
 from __future__ import annotations
 
+from dataclasses import replace
+
 import dbus
 import pytest
 from hypothesis import given, settings
@@ -213,10 +215,34 @@ def test_start_time_needs_ofonos_iso_format_with_an_offset() -> None:
 
     assert record is not None and record.start_time == 1793369645.0
     assert "start_time" not in record.to_wire()
-    assert record.with_property("StartTime", "garbage").start_time is None
+    assert record.to_wire()["active_since"] == "2026-10-30T14:14:05+00:00"
+    # A malformed update keeps the start already known.
+    assert record.with_property("StartTime", "garbage").start_time == 1793369645.0
     for raw in ("2026-10-30T15:14:05", "", None, 42, "0001-01-01T00:00:00+2359"):
         parse_start_time(raw)  # never raises
     assert parse_start_time("2026-10-30T15:14:05") is None
+
+
+def test_the_first_active_sighting_is_the_start_until_ofono_reports_one() -> None:
+    ringing = parse_call(f"{PHONE_PATH}/voicecall01", {"State": "incoming"})
+    assert ringing is not None
+    assert ringing.with_active_start(100.0).start_time is None
+    assert ringing.to_wire()["active_since"] == ""
+
+    active = ringing.with_property("State", "active").with_active_start(100.0)
+    assert active.start_time == 100.0
+    assert active.to_wire()["active_since"] == "1970-01-01T00:01:40+00:00"
+    # Later sightings and holding keep the start; oFono's StartTime wins.
+    held = active.with_property("State", "held").with_active_start(500.0)
+    assert held.start_time == 100.0
+    corrected = held.with_property("StartTime", "1970-01-01T00:01:30+0000")
+    assert corrected.start_time == 90.0
+
+
+def test_an_impossible_start_is_not_sent() -> None:
+    record = parse_call(f"{PHONE_PATH}/voicecall01", {"State": "active"})
+    assert record is not None
+    assert replace(record, start_time=1e300).active_since == ""
 
 
 def test_unknown_state_is_normalized() -> None:

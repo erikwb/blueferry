@@ -324,6 +324,9 @@ class CallInfo:
     multiparty: bool = False
     emergency: bool = False
     first_seen: str = ""
+    # ISO 8601 start of the answered call; "" before that or from an older
+    # daemon (clients then count from ``first_seen``).
+    active_since: str = ""
     extra: Mapping[str, Any] = field(default_factory=dict, repr=False)
 
     @property
@@ -338,7 +341,7 @@ class CallInfo:
     def from_dict(cls, value: Mapping[str, Any]) -> CallInfo:
         known = {
             "call_id", "state", "direction", "number", "network_name",
-            "contact_name", "multiparty", "emergency", "first_seen",
+            "contact_name", "multiparty", "emergency", "first_seen", "active_since",
         }
         return cls(
             call_id=_str(value.get("call_id")),
@@ -350,6 +353,7 @@ class CallInfo:
             multiparty=_bool(value.get("multiparty")),
             emergency=_bool(value.get("emergency")),
             first_seen=_str(value.get("first_seen")),
+            active_since=_str(value.get("active_since")),
             extra={key: item for key, item in value.items() if key not in known},
         )
 
@@ -365,6 +369,7 @@ class CallInfo:
             "multiparty": self.multiparty,
             "emergency": self.emergency,
             "first_seen": self.first_seen,
+            "active_since": self.active_since,
             "display_peer": self.display_peer,
             "ringing": self.ringing,
         }
