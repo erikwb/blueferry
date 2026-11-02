@@ -61,7 +61,7 @@ from blueferry.limits import (
     MAX_THREAD_KEY_CHARS,
     MAX_THREAD_QUERY_LIMIT,
 )
-from blueferry.named_groups import stored_named_group_key
+from blueferry.named_groups import UNNAMED_GROUP_PREFIX, stored_named_group_key
 from blueferry.notification_open import MAX_ACTIVATION_TOKEN_CHARS, MAX_CLICK_ID_CHARS
 from blueferry.notification_open_map import open_map_entries
 from blueferry.obex.map_query import list_recent_messages
@@ -730,16 +730,24 @@ class BackendOperations:
     def set_group_participants(
         self, thread_key: str, recipients: Sequence[object]
     ) -> dict:
-        """Persist an explicit reply roster for one named iOS group."""
+        """Persist an explicit reply roster for a group BlueFerry can't route.
+
+        Named groups are keyed by their name, unnamed ones by the member names
+        iOS shows; neither identifies the conversation's addresses itself.
+        """
         if not thread_key.strip() or len(thread_key) > 1024:
             raise InvalidArgumentsError("invalid thread key")
         thread = self._conversations.find(thread_key)
         if thread is None:
             raise NotFoundError("thread no longer exists in local history")
         thread_key = str(thread["key"])
-        if not thread.get("is_group") or thread.get("group_origin") != "named":
+        if not thread.get("is_group") or (
+            thread.get("group_origin") != "named"
+            and not thread_key.startswith(UNNAMED_GROUP_PREFIX)
+        ):
             raise InvalidArgumentsError(
-                "participants can only be supplied for a named group"
+                "participants can only be supplied for a named group or an "
+                "unnamed group BlueFerry cannot route"
             )
 
         if isinstance(recipients, str | bytes) or not 2 <= len(recipients) <= 20:
@@ -798,7 +806,7 @@ class BackendOperations:
                 },
             )
         except (OSError, RuntimeError, ValueError) as error:
-            log.error("could not retain named group participants: %s", error)
+            log.error("could not retain group participants: %s", error)
             raise NotReadyError(
                 "could not retain the group participant list"
             ) from error
@@ -914,7 +922,7 @@ class BackendOperations:
                     CORRELATED_ANCS_ROW_IDS_FIELD: [],
                 }
                 for event_id, event in recent_rows
-            ], self.dependencies.contacts)
+            ] + self._group_routes(), self.dependencies.contacts)
             anchor_keys: dict[int, str] = {}
             recent_evidence_ids: set[int] = set()
             for event in recent:
@@ -940,7 +948,7 @@ class BackendOperations:
                     CORRELATED_ANCS_ROW_IDS_FIELD: [],
                 }
                 for event_id, event in all_rows
-            ], self.dependencies.contacts)
+            ] + self._group_routes(), self.dependencies.contacts)
             resolved_keys = set(selected)
             for event in correlated:
                 event_id = int(event.get(HISTORY_ROW_ID_FIELD, -1))
