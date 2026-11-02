@@ -500,7 +500,9 @@ class Daemon:
             observe=self._recovery_observation,
             probe=lambda: probe_map(self.sessions.map_path),
             probe_health=lambda: self.ancs.probe_health() if self.ancs else None,
-            reset_le=lambda: self.bearers.recover_le_transport(allow_disconnected=True),
+            reset_le=lambda since: self.bearers.recover_le_transport(
+                allow_disconnected=True, since=since,
+            ),
             pause=self._pause_for_recovery,
             resume=self._resume_after_recovery,
             blocked=lambda: self.bluez_health.unresponsive,

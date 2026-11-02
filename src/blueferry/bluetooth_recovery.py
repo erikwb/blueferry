@@ -482,7 +482,7 @@ class BluetoothRecovery:
         observe: Callable[[], RecoveryObservation],
         probe: Callable[[], None],
         probe_health: Callable[[], None],
-        reset_le: Callable[[], bool],
+        reset_le: Callable[[float], bool],
         pause: Callable[[], None],
         resume: Callable[[], None],
         settings: SettingsStore | None = None,
@@ -738,8 +738,8 @@ class BluetoothRecovery:
         if self._probing:
             return
         if self._soft_reset_at is None and now - self._le_outage_since >= SOFT_RESET_SECONDS:
-            # Only a reset that started counts; a refused one is asked again.
-            if self._reset_le():
+            # Only a reset that started in this outage counts; ask again until then.
+            if self._reset_le(self._le_outage_since):
                 self._soft_reset_at = now
             return
         # Power cycling still requires its own uninterrupted safe window and

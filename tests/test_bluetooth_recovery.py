@@ -88,7 +88,7 @@ class Harness:
         )
         self.recovery.start()
 
-    def reset_le(self):
+    def reset_le(self, _since):
         self.calls.append("reset-le")
         return self.reset_accepted
 

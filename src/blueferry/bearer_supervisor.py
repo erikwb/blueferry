@@ -377,6 +377,7 @@ class BearerSupervisor:
         # A reset the recovery budget refused for the current LE link, as its
         # allow_disconnected. ANCS asks only once, so the health poll retries.
         self._le_reset_wanted: bool | None = None
+        self._le_reset_started_at: float | None = None
         self._le_reset_down_seen = False
         self._le_reset_failures = 0
         self._next_le_reset_attempt = 0.0
@@ -576,11 +577,14 @@ class BearerSupervisor:
             self._le_reset_wanted = None
         self._le_recovery_budget.observe_health(healthy, proof)
 
-    def recover_le_transport(self, *, allow_disconnected: bool = False) -> bool:
+    def recover_le_transport(
+        self, *, allow_disconnected: bool = False, since: float | None = None,
+    ) -> bool:
         """Request one serialized LE reset after GATT and bearer state diverge.
 
         Returns whether the reset is under way. A reset that only the recovery
         budget refused is retried by the health poll once the budget allows.
+        With since, a reset that started at or after it also answers.
         """
         wanted = self._le_reset_wanted
         self._le_reset_wanted = None
@@ -597,12 +601,18 @@ class BearerSupervisor:
         if self._states["le"] is False and not allow_disconnected:
             return False
         if not self._le_reset_pending and not self._le_recovery_budget.take():
+            started = self._le_reset_started_at
+            if since is not None and started is not None and started >= since:
+                # The poll already ran a reset for this caller's outage.
+                self._le_reset_wanted = wanted
+                return True
             if wanted is None:
                 log.info("postponing the iPhone LE reset until the recovery budget allows it")
             self._le_reset_wanted = allow_disconnected or bool(wanted)
             return False
         if not self._le_reset_pending:
             self._le_reset_down_seen = False
+            self._le_reset_started_at = self._clock()
             log.warning(
                 "ANCS transport disagrees with BlueZ; resetting the LE bearer"
             )

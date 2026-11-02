@@ -2252,6 +2252,32 @@ def test_a_reset_refused_by_the_budget_runs_once_it_allows():
     assert disconnects == ["le", "le"]
 
 
+def test_a_postponed_reset_that_ran_answers_the_next_refused_request():
+    state = {"bredr": True, "le": True}
+    now = 0.0
+    disconnects = []
+    supervisor = BearerSupervisor(
+        "/device", read_connected=state.get, clock=lambda: now,
+        connect=lambda _kind, success, _error: success(),
+        disconnect=lambda kind, success, _error: (disconnects.append(kind), success()),
+        schedule=lambda _delay, _callback: 7, cancel=lambda _timer: None,
+    )
+    supervisor.start()
+    supervisor.recover_le_transport()
+    now = 10.0
+    supervisor.poke()
+    # The adapter watchdog asks during the cooldown; the poll runs it later.
+    assert not supervisor.recover_le_transport(allow_disconnected=True, since=5.0)
+    now = 30.0
+    supervisor.poke()
+    assert disconnects == ["le", "le"]
+    now = 40.0
+    assert supervisor.recover_le_transport(allow_disconnected=True, since=5.0)
+    now = 1000.0
+    supervisor.poke()
+    assert disconnects == ["le", "le"]
+
+
 def test_a_postponed_reset_waits_for_its_disconnect_reply():
     state = {"bredr": True, "le": True}
     now = 0.0
