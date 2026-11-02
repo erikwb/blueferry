@@ -14,6 +14,10 @@ ShellRoot {
   property string pendingThreadKey: ""
   property string pendingMessageHandle: ""
   property var groupParticipantsThread: null
+  // The confirm-members editor's {name, address} rows, and the reply it holds
+  // back until the members are saved ("" when only editing them).
+  property var participantEntries: []
+  property string groupParticipantsDraft: ""
   property var rosterChangedThread: null
   property string errorText: ""
   property bool phoneSettingsVisible: false
@@ -54,6 +58,22 @@ ShellRoot {
   property bool tetherUnsupported: false
   readonly property SavedChoice contactPhotos: SavedChoice {}
   readonly property SavedChoice otpAutocopy: SavedChoice {}
+  readonly property SavedChoice batteryWarning: SavedChoice {}
+  readonly property SavedChoice mirrorRemovals: SavedChoice {}
+  // local.env switches: the bridge's features view, and a
+  // choice being saved (name → value) until SetFeature answers.
+  property var features: ({})
+  property var featurePending: ({})
+  property bool restartBusy: false
+  property bool reconnectBusy: false
+  property bool syncContactsBusy: false
+  property string contactsSyncNotice: ""
+  property var doctor: ({})
+  // Recent iPhone notifications: private, read only while the settings
+  // page shows the list in a visible window, forgotten otherwise.
+  property var notificationList: ({})
+  readonly property bool notificationListWatched: window.visible && root.phoneSettingsVisible
+    && phoneSettingsPage.notificationsExpanded
   property bool storagePolicyBusy: false
   property bool storageUnlockBusy: false
 
@@ -157,6 +177,41 @@ ShellRoot {
 
   onSelectedThreadKeyChanged: root.markSelectedThreadRead()
   onPhoneSettingsVisibleChanged: root.markSelectedThreadRead()
+  // Read the switches when Settings opens, or once setup finishes while it
+  // is open; configurationUpdated repeats every refresh and would poll.
+  readonly property bool featuresWanted: setupController.configured && root.phoneSettingsVisible
+  onFeaturesWantedChanged: if (root.featuresWanted) root.loadFeatures()
+  onNotificationListWatchedChanged: root.refreshNotificationList()
+
+  function loadFeatures() {
+    if (setupController.configured) backendBridge.requestLatest("features", {})
+  }
+
+  // Event-driven like the other clients: on showing, on NotificationsChanged
+  // and when the list is switched on or off; never on a timer.
+  function refreshNotificationList() {
+    if (root.notificationListWatched) {
+      backendBridge.requestLatest("notifications", {})
+    } else {
+      backendBridge.cancelLatest("notifications")
+      root.notificationList = ({})
+    }
+  }
+
+  function applyFeatures(result) {
+    root.features = typeof result === "object" && result !== null ? result : ({})
+    root.featurePending = ({})
+  }
+
+  Timer {
+    id: restartFollowUp
+    // features_view.RESTART_FEATURES_DELAY_MS: once the restarted service answers.
+    interval: 1200
+    onTriggered: {
+      root.reload()
+      root.loadFeatures()
+    }
+  }
 
   function selectMessage(handle) {
     const thread = conversationLogic.threadForMessage(threads, handle)
@@ -198,8 +253,35 @@ ShellRoot {
     return conversationLogic.groupSignature(thread)
   }
 
-  function participantLines(value) {
-    return conversationLogic.participantLines(value)
+  function openGroupParticipants(thread, draft) {
+    groupParticipantsThread = thread
+    groupParticipantsDraft = draft
+    groupParticipantsPopup.open()
+  }
+
+  function addParticipant(value, name) {
+    const next = conversationLogic.addParticipant(participantEntries, value, name)
+    if (next === null) return false
+    participantEntries = next
+    participantSearch.text = ""
+    searchContacts("")
+    return true
+  }
+
+  // Saved members serve as the group approval, so Send confirms the group.
+  function sendComposer() {
+    var thread = conversationPane.thread
+    if (thread.is_group && thread.participants_required === true) {
+      openGroupParticipants(thread, composer.text)
+      return
+    }
+    sendBusy = true
+    backendBridge.request("send_to_thread", {
+      thread_key: thread.key,
+      body: composer.text,
+      confirm_group: thread.is_group,
+      expected_group_token: groupSignature(thread)
+    })
   }
 
   function warnAboutRosterChanges() {
@@ -266,7 +348,13 @@ ShellRoot {
           root.markStatusUnavailable("BlueFerry backend returned invalid status data")
           return
         }
+        const historyChanged = result.notification_history_enabled
+          !== root.backendStatus.notification_history_enabled
+        // The service came back: the switches read while it was away are
+        // only the local.env fallback.
+        const daemonReturned = result.daemon === true && root.backendStatus.daemon !== true
         root.backendStatus = result
+        if (daemonReturned && root.featuresWanted) root.loadFeatures()
         if (typeof result.bluetooth_restart_command === "string")
           root.bluetoothRestartCommand = result.bluetooth_restart_command
         var policy = result.notification_policy || "messages"
@@ -283,6 +371,11 @@ ShellRoot {
         root.missedCallPopups.reported(result.missed_call_notifications !== false)
         root.contactPhotos.reported(result.contact_photos === true)
         root.otpAutocopy.reported(result.otp_autocopy === true)
+        root.batteryWarning.reported(result.phone_battery_warning === true)
+        root.mirrorRemovals.reported(result.mirror_iphone_removals === true)
+        if (result.reconnect_view && result.reconnect_view.error)
+          root.errorText = String(result.reconnect_view.error)
+        if (historyChanged && root.notificationListWatched) root.refreshNotificationList()
         var storagePolicy = result.storage_policy || "encrypted"
         root.storagePolicy = ["encrypted", "plaintext", "none"].indexOf(storagePolicy) >= 0
           ? storagePolicy : "encrypted"
@@ -327,8 +420,15 @@ ShellRoot {
         root.threadsRequestId = 0
         root.threads = root.threads.map(thread => thread.key === result.key ? result : thread)
         root.groupParticipantsBusy = false
+        const draft = root.groupParticipantsDraft
         groupParticipantsPopup.close()
         root.reload()
+        // The reply that asked for these members goes out now, if it is
+        // still the draft of the conversation on screen.
+        const selected = root.selectedThread()
+        if (draft !== "" && result.reply_ready === true && selected
+            && selected.key === result.key && composer.text === draft)
+          root.sendComposer()
       } else if (method === "mark_thread_read") {
         // HistoryChanged reloads the thread list.
       } else if (method === "set_thread_starred") {
@@ -427,6 +527,36 @@ ShellRoot {
           root.storageDetail = result.storage_detail || root.storageDetail
         }
         root.reload()
+      } else if (method === "set_phone_battery_warning") {
+        root.batteryWarning.saved(result === true, root.statusBusy)
+        root.reload()
+      } else if (method === "set_mirror_notification_removals") {
+        root.mirrorRemovals.saved(result === true, root.statusBusy)
+        root.reload()
+      } else if (method === "reconnect_phone") {
+        root.reconnectBusy = false
+        if (typeof result === "object" && result !== null && result.error)
+          root.errorText = String(result.error)
+        root.reload()
+      } else if (method === "sync_contacts") {
+        root.syncContactsBusy = false
+        root.contactsSyncNotice = typeof result === "object" && result !== null
+          ? String(result.text || "") : ""
+        root.reload()
+      } else if (method === "features") {
+        root.applyFeatures(result)
+      } else if (method === "set_feature") {
+        root.applyFeatures(result)
+      } else if (method === "restart_backend") {
+        root.restartBusy = false
+        root.features = Object.assign({}, root.features, {notice: ""})
+        restartFollowUp.restart()
+      } else if (method === "doctor") {
+        root.doctor = typeof result === "object" && result !== null
+          ? result : ({running: false})
+      } else if (method === "notifications") {
+        if (root.notificationListWatched)
+          root.notificationList = typeof result === "object" && result !== null ? result : ({})
       }
     }
 
@@ -526,6 +656,38 @@ ShellRoot {
       } else if (method === "unlock_storage") {
         root.storageUnlockBusy = false
         root.errorText = message
+      } else if (method === "set_phone_battery_warning") {
+        root.batteryWarning.failed(root.backendStatus.phone_battery_warning === true)
+        root.errorText = message || "Could not save the battery warning preference"
+        root.reload()
+      } else if (method === "set_mirror_notification_removals") {
+        root.mirrorRemovals.failed(root.backendStatus.mirror_iphone_removals === true)
+        root.errorText = message || "Could not save the notification sync preference"
+        root.reload()
+      } else if (method === "reconnect_phone") {
+        root.reconnectBusy = false
+        root.errorText = message || "The reconnect request failed."
+      } else if (method === "sync_contacts") {
+        root.syncContactsBusy = false
+        root.contactsSyncNotice = ""
+        root.errorText = "Contact sync failed: " + (message || "BlueFerry is unavailable")
+      } else if (method === "features") {
+        root.features = ({})
+      } else if (method === "set_feature") {
+        root.featurePending = ({})
+        root.errorText = message || "Could not save the setting"
+        root.loadFeatures()
+      } else if (method === "restart_backend") {
+        root.restartBusy = false
+        root.errorText = message || "Could not restart the BlueFerry service"
+      } else if (method === "doctor") {
+        root.doctor = {running: false, ran: true, ok: false, level: "error",
+                       summary: "One or more checks failed.", text: message}
+      } else if (method === "notifications") {
+        if (root.notificationListWatched)
+          root.notificationList = {rows: [], failed: true,
+            title: "Notifications Are Unavailable",
+            explanation: message || "Notifications are unavailable"}
       } else {
         avatars.disconnected()
         root.statusBusy = false
@@ -559,6 +721,15 @@ ShellRoot {
           root.otpAutocopy.failed(root.backendStatus.otp_autocopy === true)
         root.storagePolicyBusy = false
         root.storageUnlockBusy = false
+        if (root.batteryWarning.busy)
+          root.batteryWarning.failed(root.backendStatus.phone_battery_warning === true)
+        if (root.mirrorRemovals.busy)
+          root.mirrorRemovals.failed(root.backendStatus.mirror_iphone_removals === true)
+        root.featurePending = ({})
+        root.restartBusy = false
+        root.reconnectBusy = false
+        root.syncContactsBusy = false
+        if (root.doctor.running === true) root.doctor = ({})
         root.errorText = message
       }
     }
@@ -568,6 +739,8 @@ ShellRoot {
       if (name === "open-message") root.openMessage(String(data || ""))
       else if (name === "history-changed" || name === "status-changed") root.reload()
       else if (name === "now-playing-changed") root.refreshNowPlaying()
+      else if (name === "notifications-changed" && root.notificationListWatched)
+        root.refreshNotificationList()
       else if (name === "host" && data && typeof data.bluetooth_restart_command === "string")
         root.bluetoothRestartCommand = data.bluetooth_restart_command
       else if (name === "tether-changed") backendBridge.requestLatest("tether_state", {})
@@ -989,13 +1162,11 @@ ShellRoot {
                 FerryButton {
                   ferryTheme: theme
                   visible: conversationPane.thread
-                    && conversationPane.thread.group_origin === "named"
+                    && (conversationPane.thread.group_origin === "named"
+                        || conversationPane.thread.group_origin === "unnamed")
                   text: "Members"
                   bare: true
-                  onClicked: {
-                    root.groupParticipantsThread = conversationPane.thread
-                    groupParticipantsPopup.open()
-                  }
+                  onClicked: root.openGroupParticipants(conversationPane.thread, "")
                 }
                 FerryLabel {
                   ferryTheme: theme
@@ -1149,10 +1320,7 @@ ShellRoot {
                     ferryTheme: theme
                     text: "Add participants"
                     highlighted: true
-                    onClicked: {
-                      root.groupParticipantsThread = conversationPane.thread
-                      groupParticipantsPopup.open()
-                    }
+                    onClicked: root.openGroupParticipants(conversationPane.thread, "")
                   }
                 }
               }
@@ -1174,7 +1342,8 @@ ShellRoot {
                     Layout.fillWidth: true
                     placeholderText: "Write a message…"
                     flat: true
-                    enabled: conversationPane.thread && conversationPane.thread.reply_ready
+                    // Send asks for unconfirmed group members first.
+                    enabled: conversationLogic.canCompose(conversationPane.thread)
                     onAccepted: {
                       if (sendMessageButton.enabled) sendMessageButton.clicked()
                     }
@@ -1187,16 +1356,7 @@ ShellRoot {
                     highlighted: true
                     enabled: composer.enabled && composer.text.trim() !== "" &&
                              !root.groupParticipantsBusy && !root.sendBusy
-                    onClicked: {
-                      var thread = conversationPane.thread
-                      root.sendBusy = true
-                      backendBridge.request("send_to_thread", {
-                        thread_key: thread.key,
-                        body: composer.text,
-                        confirm_group: thread.is_group,
-                        expected_group_token: root.groupSignature(thread)
-                      })
-                    }
+                    onClicked: root.sendComposer()
                   }
                 }
               }
@@ -1229,8 +1389,17 @@ ShellRoot {
             contact_photos: root.contactPhotos.value
           }, root.backendStatus.otp_autocopy === undefined ? {} : {
             otp_autocopy: root.otpAutocopy.value
+          }, root.backendStatus.phone_battery_warning === undefined ? {} : {
+            phone_battery_warning: root.batteryWarning.value
+          }, typeof root.backendStatus.mirror_iphone_removals !== "boolean" ? {} : {
+            mirror_iphone_removals: root.mirrorRemovals.value
           })
           tether: root.tether
+          features: root.features
+          featurePending: root.featurePending
+          doctor: root.doctor
+          notificationList: root.notificationList
+          contactsSyncNotice: root.contactsSyncNotice
           busy: ({notifications: root.notificationPolicyBusy,
                   contactsOnly: root.contactsOnlyNotificationsBusy,
                   ancsActions: root.ancsActionsBusy,
@@ -1244,6 +1413,12 @@ ShellRoot {
                   tether: root.tetherBusy,
                   photos: root.contactPhotos.busy,
                   otp: root.otpAutocopy.busy,
+                  batteryWarning: root.batteryWarning.busy,
+                  mirrorRemovals: root.mirrorRemovals.busy,
+                  reconnect: root.reconnectBusy,
+                  syncContacts: root.syncContactsBusy,
+                  features: Object.keys(root.featurePending).length > 0,
+                  restart: root.restartBusy,
                   storage: root.storagePolicyBusy})
           visible: root.phoneSettingsVisible
           Layout.fillWidth: true
@@ -1256,6 +1431,23 @@ ShellRoot {
             if (method === "set_notification_policy") root.notificationPolicyBusy = true
             if (method === "set_contact_photos") root.contactPhotos.request(args.enabled)
             if (method === "set_otp_autocopy") root.otpAutocopy.request(args.enabled)
+            if (method === "set_phone_battery_warning") root.batteryWarning.request(args.enabled)
+            if (method === "set_mirror_notification_removals") root.mirrorRemovals.request(args.enabled)
+            if (method === "reconnect_phone") root.reconnectBusy = true
+            if (method === "sync_contacts") {
+              root.contactsSyncNotice = ""
+              root.syncContactsBusy = true
+            }
+            if (method === "set_feature") {
+              const pending = Object.assign({}, root.featurePending)
+              pending[args.name] = args.enabled === true
+              root.featurePending = pending
+            }
+            if (method === "restart_backend") root.restartBusy = true
+            if (method === "doctor") {
+              if (root.doctor.running === true) return
+              root.doctor = Object.assign({}, root.doctor, {running: true})
+            }
             if (method === "set_contacts_only_notifications") {
               root.contactsOnlyNotifications = args.enabled
               root.contactsOnlyNotificationsBusy = true
@@ -1676,9 +1868,9 @@ ShellRoot {
               text: "Review participants"
               highlighted: true
               onClicked: {
-                root.groupParticipantsThread = root.rosterChangedThread
+                const thread = root.rosterChangedThread
                 rosterChangedPopup.close()
-                groupParticipantsPopup.open()
+                root.openGroupParticipants(thread, "")
               }
             }
           }
@@ -1695,11 +1887,32 @@ ShellRoot {
         focus: true
         closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
         padding: theme.scaled(18)
+        readonly property var thread: root.groupParticipantsThread
+        readonly property var missing: conversationLogic.missingMembers(
+          groupParticipantsPopup.thread, root.participantEntries)
+        // The query the current contact results answer. Results for an earlier
+        // query are never offered while the debounced search is pending.
+        property string searchedText: ""
+        readonly property var suggestions: participantSearch.text.trim() === ""
+          || participantSearch.text !== groupParticipantsPopup.searchedText
+          ? [] : conversationLogic.participantSuggestions(root.contactResults, root.participantEntries)
 
         onOpened: {
-          groupParticipantsEditor.text = root.groupParticipantsThread
-            ? (root.groupParticipantsThread.recipients || []).join("\n") : ""
-          groupParticipantsEditor.forceActiveFocus()
+          root.participantEntries = conversationLogic.participantDraft(root.groupParticipantsThread)
+          participantSearch.text = ""
+          root.searchContacts("")
+          participantSearch.forceActiveFocus()
+        }
+        // Cancel leaves the draft in the composer and sends nothing.
+        onClosed: root.groupParticipantsDraft = ""
+
+        Timer {
+          id: participantSearchTimer
+          interval: 180
+          onTriggered: {
+            groupParticipantsPopup.searchedText = participantSearch.text
+            root.searchContacts(participantSearch.text)
+          }
         }
 
         background: Rectangle {
@@ -1718,8 +1931,8 @@ ShellRoot {
 
           FerryLabel {
             ferryTheme: theme
-            text: root.groupParticipantsThread
-              ? "Who is in " + root.groupParticipantsThread.name + "?" : "Group participants"
+            text: groupParticipantsPopup.thread
+              ? "Who is in " + groupParticipantsPopup.thread.name + "?" : "Group participants"
             font.bold: true
             font.pixelSize: theme.headingSize
           }
@@ -1727,62 +1940,124 @@ ShellRoot {
             ferryTheme: theme
             Layout.fillWidth: true
             wrapMode: Text.Wrap
-            text: root.groupParticipantsThread
-              ? (root.groupParticipantsThread.prompt_sender || "Someone")
-                + " has sent a message to a group named "
-                + root.groupParticipantsThread.name
-                + ", which you're a member of. BlueFerry can't determine the participants of this group chat, but if you fill in the members, it can work."
-              : ""
+            text: !groupParticipantsPopup.thread ? ""
+              : groupParticipantsPopup.thread.group_origin === "unnamed"
+                ? "BlueFerry couldn't match everyone in this group to one phone number or email. Add everyone else in it so you can reply from here."
+                : "BlueFerry can't tell who is in " + groupParticipantsPopup.thread.name
+                  + ". Add everyone else in it so you can reply from here."
           }
           FerryLabel {
             ferryTheme: theme
             Layout.fillWidth: true
             wrapMode: Text.Wrap
             color: theme.muted
-            text: "Enter every other participant's phone number or Apple ID email, one per line."
+            text: "This changes only BlueFerry, not the group on your iPhone."
+          }
+          Repeater {
+            model: root.participantEntries
+            delegate: RowLayout {
+              id: participantRow
+              required property var modelData
+              Layout.fillWidth: true
+              spacing: theme.scaled(8)
+              Column {
+                Layout.fillWidth: true
+                Text {
+                  width: parent.width
+                  text: participantRow.modelData.name || participantRow.modelData.address
+                  textFormat: Text.PlainText
+                  elide: Text.ElideRight
+                  color: theme.windowText
+                  font.family: theme.fontFamily
+                  font.pixelSize: theme.baseFontSize
+                }
+                Text {
+                  width: parent.width
+                  visible: participantRow.modelData.name !== ""
+                  text: participantRow.modelData.address
+                  textFormat: Text.PlainText
+                  elide: Text.ElideRight
+                  color: theme.muted
+                  font.family: theme.fontFamily
+                  font.pixelSize: theme.captionSize
+                }
+              }
+              FerryButton {
+                ferryTheme: theme
+                text: "Remove"
+                bare: true
+                Accessible.name: "Remove " + (participantRow.modelData.name
+                  || participantRow.modelData.address)
+                onClicked: root.participantEntries = conversationLogic.removeParticipant(
+                  root.participantEntries, participantRow.modelData.address)
+              }
+            }
           }
           FerryLabel {
             ferryTheme: theme
+            objectName: "missingMembersHint"
             Layout.fillWidth: true
             wrapMode: Text.Wrap
-            color: theme.windowText
-            text: "Changing this list only updates BlueFerry's local understanding of the group. It does not add or remove anyone in Messages on your iPhone."
+            visible: groupParticipantsPopup.missing.length > 0
+            color: theme.warning
+            text: "Still needed: " + groupParticipantsPopup.missing.join(", ")
           }
-          Rectangle {
+          FerryTextField {
+            ferryTheme: theme
+            id: participantSearch
             Layout.fillWidth: true
-            Layout.preferredHeight: theme.scaled(150)
-            color: theme.control
-            border.color: groupParticipantsEditor.activeFocus
-              ? theme.accent : theme.divider
-            radius: theme.controlRadius
-            ScrollView {
-              anchors.fill: parent
-              anchors.margins: theme.scaled(2)
-              TextArea {
-                id: groupParticipantsEditor
-                color: theme.windowText
-                selectionColor: theme.accent
-                selectedTextColor: theme.highlightedText
-                font.family: theme.fontFamily
-                font.pixelSize: theme.baseFontSize
-                placeholderText: "One participant per line"
-                placeholderTextColor: theme.muted
-                wrapMode: TextEdit.NoWrap
-                background: null
-                Accessible.name: "Group participants"
+            placeholderText: "Add a contact, phone number, or email"
+            Accessible.name: "Add participant"
+            onTextEdited: participantSearchTimer.restart()
+            // A typed address first; otherwise the best contact match.
+            onAccepted: {
+              const suggestions = groupParticipantsPopup.suggestions
+              if (!root.addParticipant(text, "") && suggestions.length > 0)
+                root.addParticipant(suggestions[0].address, suggestions[0].name)
+            }
+          }
+          ListView {
+            id: participantSuggestions
+            Layout.fillWidth: true
+            Layout.preferredHeight: count > 0
+              ? Math.min(contentHeight, theme.scaled(160)) : 0
+            visible: count > 0
+            clip: true
+            model: groupParticipantsPopup.suggestions
+            delegate: ItemDelegate {
+              id: participantSuggestion
+              required property var modelData
+              width: participantSuggestions.width
+              implicitHeight: participantSuggestionText.implicitHeight + theme.scaled(12)
+              contentItem: Column {
+                id: participantSuggestionText
+                Text {
+                  text: participantSuggestion.modelData.name
+                  textFormat: Text.PlainText
+                  color: theme.windowText
+                  font.family: theme.fontFamily
+                  font.pixelSize: theme.baseFontSize
+                }
+                Text {
+                  text: participantSuggestion.modelData.address
+                  textFormat: Text.PlainText
+                  color: theme.muted
+                  font.family: theme.fontFamily
+                  font.pixelSize: theme.captionSize
+                }
               }
+              onClicked: root.addParticipant(
+                participantSuggestion.modelData.address, participantSuggestion.modelData.name)
             }
           }
           FerryLabel {
             ferryTheme: theme
             Layout.fillWidth: true
             wrapMode: Text.Wrap
+            visible: groupParticipantsPopup.thread !== null
+              && groupParticipantsPopup.thread.group_origin !== "unnamed"
             color: theme.warning
-            text: root.groupParticipantsThread
-              ? "BlueFerry identifies named groups by name. If you have multiple groups named "
-                + root.groupParticipantsThread.name
-                + ", BlueFerry may combine them and use the wrong participant list. This list can also become outdated if the group is renamed or its membership changes."
-              : ""
+            text: "Groups with the same name share this list."
           }
           RowLayout {
             Layout.alignment: Qt.AlignRight
@@ -1793,16 +2068,18 @@ ShellRoot {
             }
             FerryButton {
               ferryTheme: theme
+              id: saveParticipantsButton
               text: root.groupParticipantsBusy ? "Saving…" : "Save participants"
               highlighted: true
-              enabled: root.participantLines(groupParticipantsEditor.text).length >= 2
+              enabled: groupParticipantsPopup.thread !== null
+                && root.participantEntries.length >= 2
+                && root.participantEntries.length <= conversationLogic.maxParticipants
                 && !root.groupParticipantsBusy
               onClicked: {
-                var recipients = root.participantLines(groupParticipantsEditor.text)
                 root.groupParticipantsBusy = true
                 backendBridge.request("set_group_participants", {
                   thread_key: root.groupParticipantsThread.key,
-                  recipients: recipients
+                  recipients: root.participantEntries.map(entry => entry.address)
                 })
               }
             }

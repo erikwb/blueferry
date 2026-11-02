@@ -26,7 +26,7 @@ class _Wallet:
         self.key = key
         self.locked = False
 
-    def get_or_create(self, *, allow_prompt: bool, cancellable=None) -> bytes:
+    def get_or_create(self, *, allow_prompt: bool, cancellable=None, create=True) -> bytes:
         if self.locked:
             raise StorageUnavailableError("the desktop keyring is locked")
         return self.key

@@ -336,6 +336,38 @@ def test_dependent_switches_wait_for_their_parent() -> None:
     asyncio.run(scenario())
 
 
+def test_a_call_history_save_holds_the_missed_call_switch() -> None:
+    async def scenario() -> None:
+        release = threading.Event()
+        backend = _OptionsBackend()
+        backend.extra.update(call_history_enabled=True, missed_call_notifications=True)
+        original = backend.set_call_history
+
+        def slow(enabled: bool, missed: bool) -> dict:
+            release.wait(5)
+            return original(enabled, missed)
+
+        backend.set_call_history = slow  # type: ignore[method-assign]
+        app = _app(backend)
+        async with app.run_test(size=(120, 40)) as pilot:
+            screen = await _open(app, pilot, "calls")
+            missed = screen.query_one("#opt-missed_call_notifications", Checkbox)
+            assert not missed.disabled
+            screen.query_one("#opt-call_history_enabled", Checkbox).toggle()
+            await _until(pilot, lambda: "call_history_enabled" in screen.pending)
+            # Both share one setter: a second write could turn history back on.
+            assert missed.disabled
+            missed.toggle()
+            await pilot.pause(0.05)
+            release.set()
+            await _until(pilot, lambda: not screen.pending)
+            assert [c for c in backend.calls if c[0] == "call_history"] == [
+                ("call_history", False, True),
+            ]
+
+    asyncio.run(scenario())
+
+
 def test_sound_route_and_automatic_reset_are_options_too() -> None:
     async def scenario() -> None:
         backend = _OptionsBackend()
@@ -774,5 +806,18 @@ def test_a_status_forwarded_while_options_is_being_pushed_does_not_crash() -> No
             await _until(pilot, lambda: screen.values is not None)
             await pilot.pause(0.1)
             assert app.is_running
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("offered", [False, True])
+def test_storage_caption_names_the_reset_only_when_the_daemon_offers_it(offered) -> None:
+    async def scenario() -> None:
+        backend = _OptionsBackend(extra=dict(_FULL_EXTRA, storage_reset=offered))
+        app = _app(backend)
+        async with app.run_test(size=(120, 40)) as pilot:
+            screen = await _open(app, pilot, "security")
+            caption = _plain(screen, "#options-storage")
+            assert ("blueferry storage-reset" in caption) is offered
 
     asyncio.run(scenario())
