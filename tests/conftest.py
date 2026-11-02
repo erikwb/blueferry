@@ -479,12 +479,19 @@ def isolate_dbus(monkeypatch, request):
         expected = os.environ.get(PRIVATE_BUS_ADDRESS_ENV)
         if not active or active != expected:
             pytest.skip("requires an explicitly isolated dbus-run-session")
-        yield
-        # Free this test's connections and exported objects now. Left to a
-        # later collection, dbus-python can tear them down while another test
-        # dispatches ("does not have a Connection instance associated with
-        # it"), which failed the OBEX tests on Ubuntu 24.04.
-        gc.collect()
+        # Freezing what exists before the test keeps the collection below to
+        # this test's own objects; scanning everything collection loaded each
+        # time added about 15 seconds to CI.
+        gc.freeze()
+        try:
+            yield
+            # Free this test's connections and exported objects now. Left to a
+            # later collection, dbus-python can tear them down while another
+            # test dispatches ("does not have a Connection instance associated
+            # with it"), which failed the OBEX tests on Ubuntu 24.04.
+            gc.collect()
+        finally:
+            gc.unfreeze()
         return
 
     monkeypatch.setenv("DBUS_SESSION_BUS_ADDRESS", _unreachable_bus)
