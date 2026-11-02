@@ -316,6 +316,34 @@ def test_repeated_body_with_two_candidates_is_not_correlated() -> None:
     assert "group_key" not in correlated[1]
 
 
+def test_history_does_not_choose_between_contacts_with_the_same_name() -> None:
+    class Resolver:
+        @staticmethod
+        def find_by_name(name):
+            return [("Bob", "+15552222222"), ("Bob", "+15553333333")] if (
+                name.casefold() == "bob"
+            ) else []
+
+        @staticmethod
+        def resolve(_address):
+            return None
+
+    events = [
+        # History has heard from only one of the two Bobs.
+        _sms("+15552222222", "Bob", "hi", "2026-08-12T09:00:00+00:00"),
+        _sms("+15551111111", "Alice", "yo", "2026-08-12T10:00:00+00:00"),
+        _ancs("Alice", "To you & Bob", "yo", "2026-08-12T10:00:02+00:00"),
+    ]
+
+    group = next(
+        thread for thread in build_threads(events, Resolver()) if thread["is_group"]
+    )
+
+    assert group["reply_ready"] is False
+    assert group["participants_required"] is True
+    assert group["missing_members"] == ["Bob"]
+
+
 def test_contact_name_must_agree_with_ancs_sender_title() -> None:
     events = [
         _sms("+15551111111", "Mallory", "hello",

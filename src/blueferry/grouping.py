@@ -163,43 +163,59 @@ def _group_identity(
     return "group:addresses:" + "|".join(canonical), display
 
 
-def _contact_address(resolver, name: str) -> str | None:
-    if canonical_address(name):
-        return name.strip()
-    if resolver is None:
-        return None
-    exact = {
-        address
-        for display, address in resolver.find_by_name(name)
-        if display.casefold() == name.casefold()
-    }
-    # Picking arbitrarily among a contact's multiple numbers could add the
-    # wrong person/address to a group.  Only auto-resolve an unambiguous one.
-    return next(iter(exact)) if len(exact) == 1 else None
+class _ContactNames:
+    """Look each member name up in contacts once per correlation."""
+
+    def __init__(self, resolver) -> None:
+        self._resolver = resolver
+        self._addresses: dict[str, list[str]] = {}
+
+    def addresses(self, name: str) -> list[str]:
+        folded = name.casefold()
+        if folded not in self._addresses:
+            self._addresses[folded] = [] if self._resolver is None else [
+                address
+                for display, address in self._resolver.find_by_name(name)
+                if display.casefold() == folded
+            ]
+        return self._addresses[folded]
+
+
+def _member_address(
+    member: str,
+    addresses_by_name: dict[str, set[str]],
+    contacts: _ContactNames,
+) -> str | None:
+    """Return the one address that history and contacts give ``member``."""
+    if canonical_address(member):
+        return member.strip()
+    by_identity: dict[str, str] = {}
+    for address in [
+        *sorted(addresses_by_name.get(member.casefold(), ())),
+        *contacts.addresses(member),
+    ]:
+        if identity := canonical_address(address):
+            by_identity.setdefault(identity, address)
+    # Picking arbitrarily among a contact's multiple numbers, or between two
+    # contacts of the same name, could add the wrong person/address to a
+    # group. History proving one of them does not rule out the other.
+    return next(iter(by_identity.values())) if len(by_identity) == 1 else None
 
 
 def _member_roster_token(
     member: str,
     addresses_by_name: dict[str, set[str]],
-    resolver,
+    contacts: _ContactNames,
 ) -> str:
     """Prefer a proven address while retaining unresolved display identity."""
-    direct = canonical_address(member)
-    if direct:
-        return direct
-    known = addresses_by_name.get(member.casefold(), set())
-    if len(known) == 1:
-        resolved = canonical_address(next(iter(known)))
-        if resolved:
-            return resolved
-    contact = _contact_address(resolver, member)
-    return canonical_address(contact) or f"name:{member.casefold()}"
+    address = _member_address(member, addresses_by_name, contacts)
+    return canonical_address(address) or f"name:{member.casefold()}"
 
 
 def _reconcile_group_identities(
     events: list[dict],
     addresses_by_name: dict[str, set[str]],
-    resolver,
+    contacts: _ContactNames,
     routes: NamedGroupRoutes,
 ) -> None:
     """Collapse provisional and reply-ready views of the same group.
@@ -228,7 +244,7 @@ def _reconcile_group_identities(
         if len(members) < 2:
             continue
         roster = tuple(sorted(
-            _member_roster_token(member, addresses_by_name, resolver)
+            _member_roster_token(member, addresses_by_name, contacts)
             for member in members
         ))
         clusters.setdefault(roster, []).append(event)
@@ -292,6 +308,7 @@ def correlate_group_events(events: list[dict], resolver=None) -> list[dict]:
     for stored in out:
         named_routes.annotate_stored(stored)
     addresses_by_name: dict[str, set[str]] = {}
+    contacts = _ContactNames(resolver)
     message_candidates = _MessageCandidates(out, sms_indexes)
 
     # Learn trustworthy contact-name/address pairs from all MAP history first;
@@ -379,11 +396,7 @@ def correlate_group_events(events: list[dict], resolver=None) -> list[dict]:
                 if not sender_address:
                     missing.append(member)
             else:
-                known = addresses_by_name.get(member.casefold(), set())
-                if len(known) == 1:
-                    address = next(iter(known))
-                else:
-                    address = _contact_address(resolver, member)
+                address = _member_address(member, addresses_by_name, contacts)
                 if not address:
                     missing.append(member)
             if not address:
@@ -453,5 +466,5 @@ def correlate_group_events(events: list[dict], resolver=None) -> list[dict]:
         if isinstance(source_row_id, int):
             sms.setdefault(CORRELATED_ANCS_ROW_IDS_FIELD, []).append(source_row_id)
 
-    _reconcile_group_identities(out, addresses_by_name, resolver, named_routes)
+    _reconcile_group_identities(out, addresses_by_name, contacts, named_routes)
     return out
