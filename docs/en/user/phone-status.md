@@ -29,7 +29,8 @@ flowchart LR
 - **GTK**: battery, signal and network on the phone card above the tabs;
   hover for all values.
 - **Terminal client, Quickshell header**: battery and signal are added to
-  the connection line.
+  the connection line; the terminal client's **iPhone Overview** (command
+  palette) also shows the network.
 - **CLI**:
 
   ```bash

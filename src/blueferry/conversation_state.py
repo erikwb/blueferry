@@ -6,8 +6,12 @@ from enum import Enum
 from typing import Protocol
 
 from blueferry.client import BackendError
+from blueferry.events import canonical_address
 from blueferry.i18n import _
 from blueferry.models import BackendStatus, Thread
+from blueferry.recipients import InvalidRecipient, validate_recipient
+
+MAX_GROUP_PARTICIPANTS = 20
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,6 +54,8 @@ class ReplyDisposition(str, Enum):
     READ_ONLY = "read-only"
     CONFIRM_GROUP = "confirm-group"
     STALE_GROUP = "stale-group"
+    # The client asks who is in the group, then plans the reply again.
+    NEEDS_PARTICIPANTS = "needs-participants"
 
     @property
     def message(self) -> str:
@@ -59,6 +65,9 @@ class ReplyDisposition(str, Enum):
             ReplyDisposition.CONFIRM_GROUP: _("Group reply requires participant confirmation"),
             ReplyDisposition.STALE_GROUP: _(
                 "The group changed. Review the recipients and send again."
+            ),
+            ReplyDisposition.NEEDS_PARTICIPANTS: _(
+                "Confirm who is in this group before replying"
             ),
         }.get(self, "")
 
@@ -201,6 +210,8 @@ class ConversationState:
             return ReplyPlan(ReplyDisposition.NO_THREAD, None, message)
         if expected_group_token is not None and expected_group_token != selected.confirmation_token:
             return ReplyPlan(ReplyDisposition.STALE_GROUP, selected, message)
+        if selected.is_group and selected.participants_required:
+            return ReplyPlan(ReplyDisposition.NEEDS_PARTICIPANTS, selected, message)
         if not selected.reply_ready:
             return ReplyPlan(ReplyDisposition.READ_ONLY, selected, message)
         if (
@@ -280,4 +291,66 @@ class ConversationState:
         return [
             {"name": str(name), "address": str(address)}
             for name, address in self.contact_results
+        ]
+
+
+class ParticipantDraft:
+    """The confirm-members editor's list, shared by the GTK and terminal clients.
+
+    It starts with the addresses BlueFerry already knows. The backend still
+    validates the saved list; this only keeps the editor's rows sensible.
+    """
+
+    def __init__(self, thread: Thread) -> None:
+        self.thread = thread
+        self.entries: list[tuple[str, str]] = []
+        for name, address in thread.participant_draft:
+            self._append(name, address)
+
+    def _identity(self, address: str) -> str:
+        return canonical_address(address) or address.strip().casefold()
+
+    def _append(self, name: str, address: str) -> None:
+        identity = self._identity(address)
+        if all(self._identity(present) != identity for _name, present in self.entries):
+            self.entries.append((name, address))
+
+    def add(self, value: str, name: str = "") -> bool:
+        """Add a phone number or email; False if it isn't one or the list is full."""
+        try:
+            address = validate_recipient(value)
+        except InvalidRecipient:
+            return False
+        if len(self.entries) >= MAX_GROUP_PARTICIPANTS:
+            return False
+        self._append(name, address)
+        return True
+
+    def remove(self, address: str) -> None:
+        self.entries = [entry for entry in self.entries if entry[1] != address]
+
+    @property
+    def recipients(self) -> list[str]:
+        return [address for _name, address in self.entries]
+
+    @property
+    def can_save(self) -> bool:
+        return 2 <= len(self.entries) <= MAX_GROUP_PARTICIPANTS
+
+    @property
+    def missing(self) -> list[str]:
+        named = {name.casefold() for name, _address in self.entries if name}
+        return [member for member in self.thread.missing_members if member.casefold() not in named]
+
+    @property
+    def hint(self) -> str:
+        missing = self.missing
+        return _("Still needed: {names}").format(names=", ".join(missing)) if missing else ""
+
+    def suggestions(self, results: list[tuple[str, str]]) -> list[tuple[str, str]]:
+        """Contact matches not already in the list, one row per address."""
+        present = {self._identity(address) for _name, address in self.entries}
+        return [
+            (name, address) for name, address in results
+            if self._identity(address) not in present
         ]

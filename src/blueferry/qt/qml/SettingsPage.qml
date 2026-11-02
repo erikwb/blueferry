@@ -16,6 +16,7 @@ Kirigami.Page {
     required property var bridge
     signal closeRequested()
     signal clearHistoryRequested()
+    signal storageResetRequested()
     signal shortcutsRequested()
     signal aboutRequested()
     signal bluetoothRestartRequested()
@@ -212,6 +213,7 @@ Kirigami.Page {
             bridge: settingsPage.bridge
             onStoragePolicyRequested: policy => settingsPage.storagePolicyRequested(policy)
             onClearHistoryRequested: settingsPage.clearHistoryRequested()
+            onStorageResetRequested: settingsPage.storageResetRequested()
         }
     }
     Component {

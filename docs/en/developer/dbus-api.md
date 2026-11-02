@@ -79,7 +79,7 @@ and retries on a later status read.
 | `ListRecent` | `s folder, u limit` → `s json` (reads directly from the iPhone over MAP) |
 | `MarkThreadRead` | `s thread_key` → `u updated` |
 | `SetThreadStarred` | `s thread_key, b starred` → `b starred_state` |
-| `SetGroupParticipants` | `s thread_key, as recipients` → `s thread_json` |
+| `SetGroupParticipants` | `s thread_key, as recipients` → `s thread_json`: saves 2 to 20 reply addresses for a named group or an unnamed group BlueFerry cannot route (`group_origin` `named` or `unnamed`); the list must include every observed sender. An unnamed group's list is kept under its member-name key. Other threads get `InvalidArgs` |
 | `DeleteThreads` | `as thread_keys, b confirmed` → `u deleted_conversations` |
 | `ClearHistory` | `b confirmed` |
 
@@ -112,6 +112,7 @@ and retries on a later status read.
 | `SetOtpAutocopy` | `b enabled` → `s status_json`: saves the one-time code auto-copy opt-in in `settings.json` and applies it at once; returns `{"otp_autocopy": b}`. `GetStatus` reports the current value as `otp_autocopy`; `saved_opt_ins: true` advertises the runtime setter |
 | `GetStoragePolicy` / `SetStoragePolicy` | `s policy`: `encrypted`, `plaintext`, or `none`; `Set` returns `s status_json` |
 | `UnlockStorage` | → `s status_json` |
+| `ResetStorage` | `b confirmed` → `s status_json`: erases history, the contact cache, call history and the encrypted conversation preferences, removes BlueFerry's keyring key and prepares storage under a new one. The way out when `storage_detail` reports a lost or replaced key or records that failed authentication. `GetStatus` advertises it with `storage_reset: true`; destructive rate bucket |
 | `GetNotificationOpenMap` | → `s rules_json` (list of `bundle_id`, `target`, `kind`) |
 | `SetNotificationOpenTarget` | `s bundle_id, s target` → `s rules_json` |
 | `RemoveNotificationOpenTarget` | `s bundle_id` → `b removed` |
@@ -207,7 +208,7 @@ adds `calls_state` (`unavailable`, `searching`, `connecting`, `ready`,
 | `Answer` | `s call_id` | A waiting call holds the active one. 10 per minute |
 | `Hangup` | `s call_id` | Hangs up, or declines a ringing call |
 | `HangupAll` | | |
-| `SendTones` | `s call_id, s tones` | DTMF on the active call: `0-9`, `*`, `#` |
+| `SendTones` | `s call_id, s tones` | DTMF on the active call: `0-9`, `*`, `#`. Requests are played one after another in arrival order (at most 32 waiting); the log records only how many tones went out |
 | `SwapCalls` | | Swap active and held |
 | `HoldAndAnswer` | | Hold the active call and answer the waiting one. 10 per minute |
 
