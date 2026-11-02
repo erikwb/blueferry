@@ -16,6 +16,7 @@ from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from blueferry.settings_store import SettingsStore, UnreadableSettingsError
+from blueferry.sqlite_files import is_damaged
 
 log = logging.getLogger(__name__)
 
@@ -44,6 +45,10 @@ KEY_MISMATCH_DETAIL = (
     "The desktop keyring holds a different BlueFerry key than the one that "
     "encrypted saved history. Open the wallet that holds the original key and "
     "unlock again, or reset local storage to start over"
+)
+DAMAGED_DATABASE_DETAIL = (
+    "Local storage could not be prepared because a database is damaged. "
+    "Reset local storage to discard the unreadable data"
 )
 
 
@@ -487,6 +492,9 @@ class StorageSecurity:
                 elif isinstance(error, CorruptStorageError):
                     self._key_checked = checked
                     self.fail_closed(str(error))
+                elif isinstance(error, sqlite3.DatabaseError) and is_damaged(error):
+                    # Only a reset, which deletes the file, gets past this.
+                    self._fail(DAMAGED_DATABASE_DETAIL)
                 else:
                     self._fail("Local storage could not be prepared")
                 log.warning("local storage preparation failed: %s", error)

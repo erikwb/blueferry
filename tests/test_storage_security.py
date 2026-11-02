@@ -766,6 +766,43 @@ def test_settings_read_failure_during_preparation_is_retried(tmp_path, monkeypat
     assert path.read_text(encoding="utf-8") == saved
 
 
+@pytest.mark.parametrize(("read", "state"), [
+    pytest.param(OSError("transient"), "locked", id="transient"),
+    pytest.param("{not json", "error", id="malformed"),
+])
+def test_unreadable_settings_never_offer_the_storage_reset(
+    tmp_path, monkeypatch, read, state,
+) -> None:
+    # The reset erases saved data; it is for a damaged database, not settings.json.
+    from gi.repository import GLib
+
+    monkeypatch.setattr(GLib, "timeout_add_seconds", lambda *_args: 1)
+    monkeypatch.setattr(GLib, "source_remove", lambda _source: True)
+    settings = SettingsStore(tmp_path / "settings.json")
+    settings.update(local_data="encrypted")
+    storage = StorageSecurity(settings=settings, key_provider=_KeyProvider(), initialize=False)
+
+    def unreadable(*_args, **_kwargs):
+        if isinstance(read, Exception):
+            raise read
+        return read
+
+    monkeypatch.setattr(settings_store, "read_private_text", unreadable)
+    pending = []
+    storage.change_async(
+        lambda operation, **handlers: pending.append((operation, handlers)),
+        on_success=lambda _status: None, on_error=lambda error: pytest.fail(str(error)),
+        prepare=lambda _candidate: None,
+    )
+    operation, handlers = pending.pop()
+    with pytest.raises(UnreadableSettingsError) as raised:
+        operation()
+    handlers["on_error"](raised.value)
+
+    assert storage.status.state == state
+    assert not storage.reset_offered
+
+
 def test_revision_tracks_key_and_policy_changes_only(tmp_path) -> None:
     storage = _storage(tmp_path)
     start = storage.revision
