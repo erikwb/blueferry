@@ -22,8 +22,9 @@ Karte die Einstellung, die es einschaltet. Die Reiter wechselt man
 in der Kopfzeile, in einem schmalen Fenster unten:
 
 - **Messages**: Unterhaltungen und der Chat.
-- **Calls**: laufende [Anrufe](calls.md) mit annehmen, halten/fortsetzen
-  und auflegen sowie dem Ton-Schalter, ein Wählfeld, das auch deine
+- **Calls**: laufende [Anrufe](calls.md) mit annehmen, halten/fortsetzen,
+  auflegen, Tastentönen (0-9, `*`, `#`) für den aktiven Anruf sowie dem
+  Ton-Schalter, ein Wählfeld, das auch deine
   Kontakte nach Namen durchsucht, und die [Anrufliste](call-history.md) nach Tagen
   gruppiert, mit All und Missed, Rückruf- und Nachrichtenknöpfen und
   **Refresh from iPhone**. Jeder Anruf fragt vorher nach.
@@ -69,7 +70,7 @@ Einstellung, die sie einschaltet. Rechts gibt es drei Reiter:
 - **Messages**: Unterhaltungen mit den Filtern All, Unread und Starred und
   der Chat.
 - **Calls**: [Anrufe](calls.md) mit Wählfeld und laufenden Anrufen als
-  Karten (annehmen, halten, auflegen) und die [Anrufliste](call-history.md)
+  Karten (annehmen, halten, auflegen, Tastentöne für den aktiven Anruf) und die [Anrufliste](call-history.md)
   nach Tagen gruppiert, mit All und Missed.
 - **Notifications**: die [letzten iPhone-Mitteilungen](notification-history.md)
   anderer Apps.
@@ -157,6 +158,50 @@ Aktiviere es unter **Setup → Plugins** und füge es deiner Leiste hinzu.
 Kopplung, Nachrichten und Einstellungen erledigt weiterhin der vollständige
 Quickshell-Client.
 
+### Einstellungen
+
+**iPhone settings** hat dieselben Kategorien wie die Einstellungen des Qt-,
+GTK- und Terminal-Clients, untereinander angeordnet. Eine Einstellung
+erscheint nur, wenn der laufende Hintergrunddienst sie anbietet.
+
+| Kategorie | Was du dort findest |
+|---|---|
+| Phone | Kopplung, Verbindungszustand mit **Reconnect**, automatisches Zurücksetzen einer hängenden Verbindung, **Run Diagnostics**, Kontaktabgleich (**Sync Contacts**), Kontaktfotos |
+| Notifications | Welche Ereignisse Popups erzeugen, nur Kontakte, Mitteilungsinhalt, Aktionsknöpfe, Mitteilungen mit dem iPhone abgleichen, beim Wegklicken als gelesen markieren, letzte Mitteilungen behalten und die Liste dieser Mitteilungen |
+| Calls & Audio | Telefonanrufe, Anrufliste und Popups für verpasste Anrufe, Akku-Warnung, iPhone-Ton auf diesem Computer, Mediensteuerung und MPRIS |
+| Security | Einmalcodes, Abwesenheitssperre, die lokale Speicherung |
+| About | Der Hintergrunddienst, seine Version und **Restart Service** |
+
+Schalter, die einen Neustart brauchen, zeigen oben auf der Seite den
+Neustart-Hinweis mit **Restart Service**. Ein älterer Dienst, der sie noch
+nicht kennt, zeigt jeden Schalter ausgegraut mit der Variablen, die du
+stattdessen in `local.env` setzt.
+
+**Show Recent Notifications** listet die letzten 30 Mitteilungen, die
+**Keep recent iPhone notifications** behält: App, Uhrzeit und, falls
+erlaubt, Titel und Text. Die Liste wird nur gelesen, solange sie sichtbar
+ist, folgt neuen Mitteilungen und wird vergessen, sobald du sie
+ausblendest oder die Seite verlässt. Ist sie aus, leer oder nicht
+verfügbar, sagt sie, warum.
+
+### Was das Panel weglässt
+
+Quickshell ist ein kompaktes Panel, deshalb bleiben einige Teile bei den
+anderen Clients:
+
+| Weggelassen | Warum | Stattdessen |
+|---|---|---|
+| Plugin-Verwaltung und Plugin-Einstellungen | Jedes Plugin bringt sein eigenes Einstellungsformular mit Geheimnissen, Knöpfen und Protokoll mit, dazu kommt der Store mit installierbaren Plugins; das ist zu viel und zu unterschiedlich für ein kompaktes Panel | Qt- oder GTK-Einstellungen, `blueferry plugins` |
+| **Send to…** und der Tab **Photos** (Plugin-Funktionen) | Send to braucht eine Dateiauswahl oder Drag & Drop, die das Panel nicht hat; beides kommt von Plugins, die das Panel nicht verwaltet | Qt-Client (Photos), Qt- oder GTK-Client (Send to), `blueferry send`, `blueferry photos` |
+| Begleitwerkzeuge | Desktop-Helfer richtet man einmal ein; das ist keine Aufgabe für ein Panel | Qt- oder GTK-Einstellungen, `blueferry tools` |
+| Nachrichtenverlauf löschen | Bietet auch der Terminal-Client nicht an | `blueferry history-clear` |
+| Click Rules, letzte Anrufe, das Anruf-Panel | Noch nicht im Quickshell-Client | Qt-, GTK- oder Terminal-Client |
+
+Das Panel lädt keinen Übersetzungskatalog, seine eigenen Beschriftungen
+sind deshalb englisch. Texte aus dem gemeinsamen BlueFerry-Code, etwa der
+Hinweis zum Wiederverbinden, der Neustart-Hinweis oder der Platzhalter der
+Mitteilungsliste, folgen deiner Sprache.
+
 ## Terminal (TUI)
 
 Der Terminal-Client ist auf jeder Distribution Teil von `blueferry-backend`.
@@ -172,6 +217,67 @@ Suche in Unterhaltungen, ein mehrzeiliges Eingabefeld, Mausunterstützung,
 Themes und ein Layout, das sich schmalen Terminals anpasst.
 
 ![Terminal-Client](../../images/terminal.png)
+
+### Einstellungen
+
+`o` öffnet **Settings** mit denselben Kategorien wie die Einstellungen von Qt
+und GTK, als Reiter. Eine Einstellung erscheint nur, wenn der laufende
+Hintergrunddienst sie anbietet.
+
+| Kategorie | Inhalt |
+|---|---|
+| Phone | Zustand des Hintergrunddienstes, **Reconnect** (auch `b`), automatisches Zurücksetzen einer hängenden Verbindung (auch `B`), **Run Diagnostics**, Kontaktabgleich, Kontaktfotos |
+| Notifications | Welche Ereignisse Popups erzeugen, nur Kontakte, **Click Rules** (auch `l`), Mitteilungsinhalt, Aktionsknöpfe, Mitteilungen mit dem iPhone abgleichen, beim Wegklicken als gelesen markieren, letzte iPhone-Mitteilungen behalten |
+| Calls & Audio | Telefonate, Anrufliste und Popups für verpasste Anrufe, Akkuwarnung, iPhone-Ton auf diesem Computer (auch `a`), Mediensteuerung und MPRIS |
+| Security | Einmalcodes, Sperre bei Abwesenheit, die Speichereinstellung (nur angezeigt; ändern mit `blueferry storage-policy-set`) |
+| About | Version, der Hintergrunddienst mit **Restart Service**, die Tastenbelegung |
+
+Die Schalter, die einen Neustart brauchen (siehe oben), zeigen den Hinweis
+oben in Settings mit **Restart Service**. Ein Dienst, der sie noch nicht kennt,
+zeigt jeden Schalter ausgegraut mit der `local.env`-Variable, die stattdessen
+zu setzen ist.
+
+**Run Diagnostics** führt `blueferry doctor` aus und zeigt den Bericht.
+**Copy Report** legt ihn über das Terminal (OSC 52) in die Zwischenablage;
+reicht das Terminal das nicht weiter, markiere den Text mit der Maus.
+
+Die Befehlspalette (`Strg+P`) kennt außerdem **Settings: Phone** … **Settings:
+About** und **Run Diagnostics**. Die Kopplung bleibt bei `blueferry
+pair-setup` oder einem grafischen Client; Plugin-Einstellungen hat der
+Terminal-Client noch nicht.
+
+### iPhone, Anrufe und Mitteilungen
+
+**iPhone Overview** in der Befehlspalette ist die Telefon-Karte des
+Terminals: der Name des iPhones, die Verbindung, Akku, Empfang und Netz, was
+gerade läuft, und für jede ausgeschaltete optionale Funktion der Schalter,
+der sie einschaltet, samt seiner Kategorie in Settings. Die Knöpfe öffnen die
+Mitteilungsliste, die letzten Anrufe, das Anruf-Panel und Settings.
+
+**iPhone Notifications** (in der Palette und in der Übersicht) listet die
+letzten Mitteilungen von iPhone-Apps, die **Keep recent iPhone
+notifications** behält: App, Zeit und, wenn erlaubt, Titel und Text. Die
+Liste wird nur gelesen, solange sie offen ist, folgt neuen Mitteilungen und
+wird beim Schließen vergessen. Ist sie ausgeschaltet, leer oder nicht
+verfügbar, sagt sie warum; **Open Notification Settings** führt zu
+Settings › Notifications.
+
+Das Anruf-Panel (`c` oder **Phone Calls** in der Palette) beschreibt jeden
+Anruf wie Qt und GTK (eingehend, gehalten, die Dauer). Seine eine Knopfreihe
+wirkt auf den naheliegenden Anruf: **Answer** nimmt den klingelnden an,
+**Hold** bzw. **Resume** hält den verbundenen oder holt ihn zurück, **Hang
+Up** (oder **Decline**) beendet zuerst den aktiven; ein Anruf, der wartet,
+während ein anderer verbunden ist, bekommt ein eigenes **Decline**. Während eines aktiven
+Anrufs gehen die Tasten 0–9, `*` und `#` sofort als Tastentöne hinaus, etwa
+an ein Telefonmenü, ausser ein Textfeld hat den Fokus; das Panel zeigt sie
+als „Sent: …“. Das Tastentonfeld sendet eine ganze Folge wie eine PIN. Wer im Nummernfeld einen Namen tippt, bekommt die
+Telefonnummern passender Kontakte vorgeschlagen. Jeder Anruf wird zuerst
+bestätigt.
+
+**Recent calls** (`h`) sind nach Tagen gruppiert; `m` zeigt nur verpasste
+Anrufe, `s` (oder **Refresh from iPhone**) liest die Liste des iPhones neu
+ein. Enter oder **Call Back** ruft die gewählte Nummer nach der
+Bestätigung an, **Send a Message** beginnt eine neue Nachricht an sie.
 
 ## Kommandozeile
 
