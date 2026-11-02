@@ -204,9 +204,10 @@ class Daemon:
         self._photo_erase_pending = False
         self._photo_erase_running = False
         self._photo_erase_generation = 0
+        self._photo_cache_owed = False
         if self.photo_settings.enabled:
             self.photo_files = self._avatar_files
-        else:
+        elif self.photo_settings.known:
             self._photo_erase_pending = not self._erase_contact_photos()
         self.connectivity = Connectivity()
         self.notification_policy = NotificationPolicyStore()
@@ -438,7 +439,7 @@ class Daemon:
             contacts=self.contacts,
             submit=lambda *args, **kwargs: self.obex_worker.submit(*args, **kwargs),
             on_refreshed=self._contacts_refreshed,
-            photos=self._contact_photos_enabled,
+            photos=lambda: self.photo_settings.saved,
         )
         # Opt-in: until the user turns it on nothing is pulled, stored, or
         # scheduled, and no CallHistorySync exists.
@@ -1150,6 +1151,7 @@ class Daemon:
     def _retry_storage(self) -> bool:
         # A daemon activated before the desktop keyring opens must recover
         # without requiring a client launch. Wallet I/O stays off the GLib loop.
+        self._settle_contact_photos()
         try:
             if self._dbus_service is not None:
                 self._dbus_service.retry_storage_unlock()
@@ -1174,6 +1176,28 @@ class Daemon:
 
     def _contact_photos_enabled(self) -> bool:
         return self.photo_settings.enabled
+
+    def _settle_contact_photos(self) -> None:
+        """Apply the saved contact-photo choice once settings.json reads again.
+
+        Until then photos are neither erased, fetched nor shown.
+        """
+        if not self.photo_settings.known and self.photo_settings.reload():
+            if self.photo_settings.enabled:
+                self.photo_files = self._avatar_files
+                # A cache prepared while the choice was unknown has no photos,
+                # including one a preparation still running will install.
+                self._photo_cache_owed = True
+            else:
+                self._photo_erase_pending = True
+                self._queue_photo_erase()
+            # Pulls skipped while the choice was unknown are owed now.
+            if self.contact_sync.needed():
+                self.contact_sync.refresh()
+            self._emit_status()
+        if self._photo_cache_owed and self.storage.status.can_read:
+            self._photo_cache_owed = False
+            self._reload_contact_photos()
 
     def _contact_photo_path(self, address: str | None) -> str | None:
         photo_files = self.photo_files
@@ -1222,7 +1246,7 @@ class Daemon:
                 return  # _erase_contact_photos logged the failure; retry later
             if generation == self._photo_erase_generation:
                 self._photo_erase_pending = False
-            self._photos_erased()
+            self._reload_contact_photos()
             if self._photo_erase_pending:
                 self._queue_photo_erase()
             elif self.photo_settings.enabled:
@@ -1241,12 +1265,12 @@ class Daemon:
         except Exception as error:
             failed(error)
 
-    def _photos_erased(self) -> None:
-        # Reload the cache without photo references and tell clients.
+    def _reload_contact_photos(self) -> None:
+        # Reload the cache with or without photo references and tell clients.
         try:
             self.contacts.refresh()
         except Exception as error:
-            log.warning("could not reload contacts after erasing photos: %s",
+            log.warning("could not reload contacts after a photo change: %s",
                         type(error).__name__)
         self._emit_status()
 
@@ -1278,6 +1302,7 @@ class Daemon:
             self.call_history.adopt(prepared.call_history)
         if prepared.has_messages:
             self._mark_setup_task(MESSAGE_NOTIFICATIONS)
+        self._settle_contact_photos()
 
     def _on_storage_changed(self) -> None:
         self._clear_photo_files()
@@ -2206,7 +2231,9 @@ class Daemon:
     def _cleanup_bluetooth_worker(self) -> None:
         # Queued erasures may have been cancelled by shutdown. The worker is
         # now past every in-flight pull, so the last cleanup cannot be undone.
-        if self._photo_erase_pending or not self.photo_settings.enabled:
+        if self._photo_erase_pending or (
+            self.photo_settings.known and not self.photo_settings.enabled
+        ):
             self._erase_contact_photos()
         # A second daemon still runs stop() when claiming the name fails. It
         # must not replay or clear recovery state belonging to the live owner.
