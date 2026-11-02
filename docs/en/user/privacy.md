@@ -72,6 +72,12 @@ restarts. You choose how:
 - Starred conversations, saved group members, and group confirmations follow
   the same storage mode.
 - `blueferry history-clear` deletes local message history.
+- BlueFerry never replaces a missing storage key while it still has data
+  sealed with it, and it notices if the wallet returns a different key. It
+  then leaves the data untouched until the original key is back. If that key
+  is lost, **Reset Local Storage** in the client, or `blueferry
+  storage-reset`, erases all local data and starts over with a new key; see
+  [Troubleshooting](troubleshooting.md#saved-history-cant-be-opened-after-a-restart).
 
 Contact [card details](contacts.md) (number labels, postal addresses,
 company, job title) are kept only in encrypted contact records; with the
