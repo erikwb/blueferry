@@ -1667,6 +1667,20 @@ def test_keypad_tones_go_to_ofono_one_request_at_a_time_in_order(caplog) -> None
     assert "3#" not in logged  # never the tones themselves
 
 
+def test_waiting_tones_are_dropped_once_their_call_is_no_longer_active() -> None:
+    controller, transport, _timers, _changes, _events = _ready()
+    _ring(transport, state="active")
+    errors: list[Exception] = []
+    controller.send_tones("voicecall01", "1", _noop, errors.append)
+    controller.send_tones("voicecall01", "2", _noop, errors.append)
+    # A swap or hold while "2" waits: oFono would play it into whichever
+    # call is active then.
+    transport.emit(VOICE_CALL_IFACE, "PropertyChanged", CALL, "State", "held")
+    transport.take("SendTones").on_reply()
+    assert not [p for p in transport.pending if p.method == "SendTones"]
+    assert len(errors) == 1 and "no longer active" in str(errors[0])
+
+
 def test_a_flood_of_keypad_tones_is_bounded() -> None:
     from blueferry.calls.controller import MAX_QUEUED_TONE_REQUESTS
 

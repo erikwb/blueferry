@@ -43,8 +43,10 @@ class TextualTaskRunner:
 
         def deliver(worker: Worker[None], ok: bool, value: Any) -> None:
             # Runs on the UI thread, where cancellation also happens, so this
-            # check cannot race with the node going away.
-            if worker.is_cancelled:
+            # check cannot race with the node going away. A closing node has
+            # already lost its children but cancels its workers only after.
+            node = self._node
+            if worker.is_cancelled or not node.is_attached or node._closing:
                 return
             try:
                 if ok:

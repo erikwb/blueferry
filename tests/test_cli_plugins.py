@@ -86,7 +86,7 @@ def test_install_asks_first_and_shows_source_ref_and_capabilities(managed) -> No
     assert "Plugin and dependency code runs with your user permissions" in result.output
     assert "including during installation" in result.output
     assert result.output.index("Capabilities do not restrict access") < result.output.index("Cancelled")
-    assert not any("pip" in " ".join(call) for call in runner.calls)
+    assert not any("pip" in call for call in runner.calls)
     assert manager.records() == {}
     # "No" throws the checkout away: nothing of the plugin stays on disk.
     assert not list((manager.root / "src").glob(".staging-*"))

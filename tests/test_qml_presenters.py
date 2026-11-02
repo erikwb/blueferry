@@ -829,6 +829,7 @@ def settings_window(qml_engine):
             signal messageSendSucceeded(string recipient, string body)
             signal threadSendSucceeded(string key, string body)
             signal groupConfirmationRequested(string key, string body, string recipients)
+            signal groupParticipantsRequested(string key, string body)
             signal dialLinkRequested(string number, string problem)
             signal dialInputRequested(string text)
             property var contactNames: ({})
@@ -845,6 +846,7 @@ def settings_window(qml_engine):
             }
             function answerPairingConfirmation(approved) { record("answerPairingConfirmation", [approved]); }
             function setStoragePolicy(policy) { record("setStoragePolicy", [policy]); }
+            function resetStorage() { record("resetStorage", []); }
             function setProximityLock(enabled, grace) { record("setProximityLock", [enabled, grace]); }
             function setCallHistory(enabled, popups) { record("setCallHistory", [enabled, popups]); }
             property var notificationOpenMap: []
@@ -876,6 +878,10 @@ def settings_window(qml_engine):
             function watchNotifications(watched) { record("watchNotifications", [watched]); }
             function refreshNotifications() { record("refreshNotifications", []); }
             function setThreadStarred(key, starred) { record("setThreadStarred", [key, starred]); }
+            function sendThread(key, body, confirm) { record("sendThread", [key, body, confirm]); }
+            function setGroupParticipants(key, recipients, draft) {
+                record("setGroupParticipants", [key, recipients, draft]);
+            }
             function markThreadRead(key) { record("markThreadRead", [key]); }
             function watchPhotos(watched) { record("watchPhotos", [watched]); }
             function refreshPhotos() { record("refreshPhotos", []); }
@@ -1119,6 +1125,36 @@ def test_qt_storage_label_reports_unavailability_after_failed_reads(settings_win
         bridge.setProperty("status", state.status.to_dict())
         labels.append(status_label.property("text"))
     assert labels == [label, "Unavailable", label]
+
+
+def test_qt_offers_storage_reset_only_while_saved_data_cannot_be_opened(
+    qml_engine, settings_window,
+):
+    from PySide6.QtCore import QMetaObject
+
+    window, bridge = settings_window
+    bridge.setProperty("setupLoaded", True)  # Shows the settings page.
+    QGuiApplication.processEvents()
+    button = _settings_object(window, "storageResetButton")
+    for status, offered in (
+        ({"storage_policy": "encrypted", "storage_state": "locked", "storage_reset": False}, False),
+        ({"storage_policy": "encrypted", "storage_state": "locked"}, False),  # Older daemon.
+        ({"storage_policy": "encrypted", "storage_state": "locked", "storage_reset": True}, True),
+        ({"storage_policy": "plaintext", "storage_state": "error", "storage_reset": True}, True),
+    ):
+        bridge.setProperty("status", {"daemon": True, **status})
+        QGuiApplication.processEvents()
+        assert button.property("visible") is offered, status
+
+    QMetaObject.invokeMethod(button, "clicked")
+    QGuiApplication.processEvents()
+    dialog = _settings_object(window, "storageResetDialog")
+    assert dialog.property("visible")
+    methods = "testBridge.calls.map(c => c.method)"
+    assert "resetStorage" not in _evaluate(qml_engine, methods)  # Confirmation first.
+    qml_engine.globalObject().setProperty("storageResetDialog", qml_engine.newQObject(dialog))
+    _evaluate(qml_engine, "storageResetDialog.customFooterActions[0].trigger()")
+    assert _evaluate(qml_engine, methods)[-1] == "resetStorage"
 
 
 def test_qt_warns_about_a_suspect_le_bond_only_when_the_backend_reports_it(
@@ -2007,6 +2043,103 @@ def test_new_message_dialog_retains_edited_draft_after_earlier_send(qml_engine):
     dialog.deleteLater()
 
 
+def _unconfirmed_group_dict() -> dict:
+    """Issue #300 as the clients receive it: the son's address is ambiguous."""
+    from blueferry.models import Thread
+
+    return Thread.from_dict({
+        "key": "group:participants:son|wife", "name": "Son, Wife", "is_group": True,
+        "group_origin": "unnamed", "reply_ready": False, "participants_required": True,
+        "recipients": ["+15551111111"], "observed_recipients": ["+15551111111"],
+        "missing_members": ["Son"],
+        "messages": [{"handle": "1", "body": "dinner at 7", "timestamp": "2026-10-31T18:00:00Z",
+                      "outgoing": False, "read": True, "sender": "Wife",
+                      "address": "+15551111111"}],
+    }).to_dict()
+
+
+def test_qt_reply_to_unconfirmed_group_asks_for_members_with_contact_search(
+    qml_engine, settings_window,
+):
+    window, bridge = settings_window
+    thread = _unconfirmed_group_dict()
+    bridge.setProperty("threads", [thread])
+    window.setProperty("selectedThreadKey", thread["key"])
+    QGuiApplication.processEvents()
+    composer = window.findChild(QObject, "messageComposer")
+    send = window.findChild(QObject, "sendButton")
+    composer.setProperty("text", "on my way")
+    QGuiApplication.processEvents()
+    assert composer.property("enabled") is True
+    assert send.property("enabled") is True
+
+    dialog = window.findChild(QObject, "groupParticipantsDialog")
+    qml_engine.globalObject().setProperty("membersDialog", qml_engine.newQObject(dialog))
+    for attempt in range(2):
+        QMetaObject.invokeMethod(send, "clicked")
+        assert _evaluate(qml_engine, "testBridge.calls")[-1] == {
+            "method": "sendThread", "args": [thread["key"], "on my way", False],
+        }
+        # The controller answers NEEDS_PARTICIPANTS on every attempt.
+        bridge.groupParticipantsRequested.emit(thread["key"], "on my way")
+        QTest.qWait(50)
+        assert dialog.property("visible") is True
+        assert dialog.property("draft") == "on my way"
+        assert _evaluate(qml_engine, "membersDialog.entries") == [
+            {"name": "Wife", "address": "+15551111111"},
+        ]
+        assert _evaluate(qml_engine, "membersDialog.missing") == ["Son"]
+        if attempt == 0:
+            # Cancel sends nothing and keeps the draft.
+            QMetaObject.invokeMethod(dialog, "close")
+            _wait_closed(dialog)
+            assert "setGroupParticipants" not in _bridge_methods(qml_engine)
+            assert composer.property("text") == "on my way"
+            assert dialog.property("draft") == ""
+
+    # Typing searches contacts; each address is its own choice.
+    search = dialog.findChild(QObject, "participantSearch")
+    search.forceActiveFocus()
+    for char in "Son":
+        QTest.keyClick(window, char)
+    QTest.qWait(250)
+    assert {"method": "findContacts", "args": ["Son"]} in _evaluate(qml_engine, "testBridge.calls")
+    bridge.setProperty("contactResults", [
+        {"name": "Son", "address": "+15552222222"},
+        {"name": "Son", "address": "son@icloud.com"},
+        {"name": "Wife", "address": "+1 555 111 1111"},
+    ])
+    QGuiApplication.processEvents()
+    suggestions = dialog.findChild(QObject, "participantSuggestions")
+    suggestions.setProperty("width", 300)
+    QMetaObject.invokeMethod(suggestions, "forceLayout")
+    QGuiApplication.processEvents()
+    rows = {
+        str(item.property("subtitle")): item
+        for item in suggestions.property("contentItem").childItems()
+        if item.metaObject().indexOfSignal("clicked()") >= 0
+    }
+    assert set(rows) == {"+15552222222", "son@icloud.com"}
+    QMetaObject.invokeMethod(rows["+15552222222"], "clicked")
+    QGuiApplication.processEvents()
+    assert _evaluate(qml_engine, "membersDialog.missing") == []
+    assert search.property("text") == ""
+    # Results for an earlier query are not offered while the next one is pending.
+    QTest.keyClick(window, "B")
+    QGuiApplication.processEvents()
+    assert _evaluate(qml_engine, "membersDialog.suggestions") == []
+    QTest.keyClick(window, Qt.Key_Return)
+    assert len(_evaluate(qml_engine, "membersDialog.entries")) == 2
+    search.setProperty("text", "")
+
+    _evaluate(qml_engine, "membersDialog.customFooterActions[0].trigger()")
+    assert _evaluate(qml_engine, "testBridge.calls").count({
+        "method": "setGroupParticipants",
+        "args": [thread["key"], ["+15551111111", "+15552222222"], "on my way"],
+    }) == 1
+    _wait_closed(dialog)
+
+
 def test_group_confirmation_component_shows_literal_recipients(qml_engine):
     bridge = _MessageDialogBridge()
     component = _component(qml_engine, "src/blueferry/qt/qml/GroupConfirmationDialog.qml")
@@ -2055,23 +2188,54 @@ def test_quickshell_search_coalesces_queries_and_ignores_superseded_replies(qml_
     }
 
 
-@pytest.mark.parametrize("text", [
-    "  alice@example.com\n\n+15551111111\nalice@example.com  ",
-    "alice\rbob\r\nalice\u2028carol\u0085dave\v\ffrank",
-    "", " \n\t ",
-])
-def test_roster_parsing_matches_between_python_and_qml(qml_engine, text):
+def test_qml_participant_editor_matches_python_draft(qml_engine):
     import json
 
-    from blueferry.recipients import participant_lines
+    from blueferry.conversation_state import ParticipantDraft
+    from blueferry.models import Thread
 
     component = _component(qml_engine, "src/blueferry/qt/qml/ConversationLogic.qml")
     logic = component.create()
     assert logic is not None
     qml_engine.globalObject().setProperty("logic", qml_engine.newQObject(logic))
-    result = qml_engine.evaluate("JSON.stringify(logic.participantLines(" + json.dumps(text) + "))")
-    assert not result.isError(), result.toString()
-    assert json.loads(result.toString()) == participant_lines(text)
+    thread = _unconfirmed_group_dict()
+    draft = ParticipantDraft(Thread.from_dict(thread))
+    results = [
+        {"name": "Son", "address": "+15552222222"},
+        {"name": "Wife", "address": "+1 (555) 111-1111"},
+    ]
+    result = json.loads(_evaluate(qml_engine, '''(function() {
+        const thread = ''' + json.dumps(thread) + ''';
+        const results = ''' + json.dumps(results) + ''';
+        let entries = logic.participantDraft(thread);
+        const start = {entries: entries, missing: logic.missingMembers(thread, entries),
+            suggestions: logic.participantSuggestions(results, entries),
+            compose: logic.canCompose(thread),
+            readOnly: logic.canCompose(Object.assign({}, thread, {participants_required: false}))};
+        const invalid = logic.addParticipant(entries, "Son", "");
+        entries = logic.addParticipant(entries, " +15552222222 ", "Son");
+        const again = logic.addParticipant(entries, "+1 555 222 2222", "");
+        const added = {entries: entries, missing: logic.missingMembers(thread, entries),
+            invalid: invalid, duplicate: again.length};
+        entries = logic.removeParticipant(entries, "+15552222222");
+        return JSON.stringify({start: start, added: added,
+            removed: logic.missingMembers(thread, entries)});
+    })()'''))
+
+    assert result["start"] == {
+        "entries": [{"name": name, "address": address} for name, address in draft.entries],
+        "missing": draft.missing,
+        "suggestions": [{"name": name, "address": address}
+                        for name, address in draft.suggestions(
+                            [(row["name"], row["address"]) for row in results])],
+        "compose": True, "readOnly": False,
+    }
+    assert draft.add("+15552222222", "Son")
+    assert result["added"] == {
+        "entries": [{"name": name, "address": address} for name, address in draft.entries],
+        "missing": draft.missing, "invalid": None, "duplicate": 2,
+    }
+    assert result["removed"] == ["Son"]
     logic.deleteLater()
 
 
@@ -3422,7 +3586,16 @@ Item {
         root.threads = [pending];
         root.selectedThreadKey = pending.key;
         composer.text = "hello";
-        check(!sendMessageButton.enabled, "unconfigured group allowed a reply");
+        // Send asks for the members, every time, and Cancel sends nothing.
+        for (let attempt = 0; attempt < 2; ++attempt) {
+          check(sendMessageButton.enabled, "unconfirmed group blocked the reply box");
+          sendMessageButton.clicked();
+          check(groupParticipantsPopup.visible && root.groupParticipantsDraft === "hello",
+            "Send did not ask for the group's members");
+          groupParticipantsPopup.close();
+        }
+        check(sends().length === 0 && composer.text === "hello" && root.groupParticipantsDraft === "",
+          "cancelled members dialog sent or lost the draft");
         root.reload();
         const initialRead = latestRead();
 
@@ -3485,18 +3658,41 @@ Item {
 
         const changed = Object.assign({}, reviewed, {
           reply_ready: false, participants_required: true, roster_changed: true,
-          confirmation_token: "changed\nalice@example.com\ncarol@example.com"
+          confirmation_token: "changed\nalice@example.com\ncarol@example.com",
+          participant_draft: [{name: "", address: "alice@example.com"},
+                              {name: "", address: "carol@example.com"}]
         });
         root.threads = [changed];
         composer.text = "after roster change";
-        check(!sendMessageButton.enabled, "roster needing review allowed a reply");
+        sendMessageButton.clicked();
+        check(sends().length === 2 && groupParticipantsPopup.visible,
+          "roster needing review did not ask for the members");
+        check(root.participantEntries.map(entry => entry.address).join() === changed.recipients.join(),
+          "members dialog did not start from the known addresses");
+        // Contact matches already in the list are not offered again.
+        root.contactResults = [{name: "Carol", address: "carol@example.com"},
+                               {name: "Dan", address: "dan@example.com"}];
+        participantSearch.text = "a";
+        check(groupParticipantsPopup.suggestions.length === 0,
+          "results for an earlier query were offered");
+        groupParticipantsPopup.searchedText = "a";  // The debounced search answered.
+        check(groupParticipantsPopup.suggestions.length === 1
+          && groupParticipantsPopup.suggestions[0].address === "dan@example.com",
+          "suggestions were not filtered");
+        check(root.addParticipant("dan@example.com", "Dan") && !root.addParticipant("Dan", ""),
+          "adding a contact or rejecting a name failed");
+        check(groupParticipantsPopup.missing.length === 0, "unexpected missing members");
+        saveParticipantsButton.clicked();
+        const saveCall = backendBridge.calls.filter(call => call.method === "set_group_participants")[0];
+        check(saveCall.args.recipients.join() === "alice@example.com,carol@example.com,dan@example.com",
+          "Save did not send the listed members");
         const resolved = Object.assign({}, changed, {
           reply_ready: true, participants_required: false, roster_changed: false
         });
-        root.groupParticipantsBusy = true;
         backendBridge.response("set_group_participants", 4, resolved);
-        check(sendMessageButton.enabled, "reviewed roster required another confirmation");
-        sendMessageButton.clicked();
+        // The held draft then goes out through the normal Send path.
+        check(sends().length === 3 && sends()[2].args.body === "after roster change",
+          "saved members did not send the held draft");
         check(sends()[2].args.expected_group_token === resolved.confirmation_token,
           "reply reused the previous roster approval");
         backendBridge.response("send_to_thread", 5, "transfer");
