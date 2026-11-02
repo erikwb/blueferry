@@ -849,7 +849,10 @@ A change to these rules has to be made in both places.
   reading the header and never decodes pixels. It stores the raw bytes
   AES-GCM-sealed in a BLOB next to the contact records, in the same
   transaction, and erases them when the option is turned off (on the OBEX
-  worker, after any queued pull) or at startup when it is off. The photo
+  worker, after any queued pull) or at startup when it is off. While
+  `settings.json` can't be read the choice is unknown: photos are neither
+  erased, pulled nor shown, contact syncs wait, and the storage retry applies
+  the saved choice once the file reads. The photo
   table is created only when a sync stores a photo, and the off-path check is
   read-only, so a profile that never opted in keeps the upstream schema.
   A trigger created with the table deletes all photos whenever
