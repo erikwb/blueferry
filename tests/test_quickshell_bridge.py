@@ -1271,3 +1271,125 @@ def test_bridge_edits_the_replies_one_request_at_a_time() -> None:
         ("set_call_quick_replies", ["A", "B"]),
         ("set_call_quick_replies", ["A", "B", "C"]),
     ]
+
+
+class CallsClient:
+    """Calls1 for the panel's call card; counts ListCalls reads."""
+
+    def __init__(self, payload=None, *, error: str = "") -> None:
+        self.requests: list[tuple[str, str]] = []
+        self.payload = payload or {"state": "ready", "calls": []}
+        self.error = error
+        self.list_reads = 0
+
+    def calls(self):
+        from blueferry.client import BackendError
+        from blueferry.models import CallsSnapshot
+
+        self.list_reads += 1
+        if self.error:
+            raise BackendError(self.error)
+        return CallsSnapshot.from_dict(self.payload)
+
+    def answer_call(self, call_id):
+        self.requests.append(("answer_call", call_id))
+        self.payload = {"state": "ready", "calls": [
+            {**self.payload["calls"][0], "state": "active",
+             "active_since": "2026-10-26T10:00:00+00:00"},
+        ]}
+
+    def hangup_call(self, call_id):
+        from blueferry.client import BackendError
+
+        self.requests.append(("hangup_call", call_id))
+        raise BackendError("call already ended")
+
+
+_RINGING = {"call_id": "voicecall01", "state": "incoming", "direction": "incoming",
+            "number": "+41790000001", "contact_name": "<b>Kim</b>",
+            "first_seen": "2026-10-26T09:59:50+00:00"}
+_ANSWERED_AT = 1793008800.0  # 2026-10-26T10:00:00Z
+
+
+def test_bridge_words_running_calls_with_the_shared_call_card() -> None:
+    client = CallsClient({"state": "ready", "calls": [_RINGING]})
+    bridge = QuickshellBridge(client)  # type: ignore[arg-type]
+    bridge._clock = lambda: _ANSWERED_AT + 5
+
+    view = bridge.dispatch("calls", {})
+    assert view["visible"] is True and view["ticking"] is False
+    assert view["calls"] == [{
+        "call_id": "voicecall01", "title": "<b>Kim</b>", "subtitle": "Incoming call…",
+        "ringing": True, "active": False, "answer": "Answer", "hangup": "Decline",
+    }]
+    assert view["audio_hint"] == ""
+
+
+def test_bridge_ticks_the_duration_from_its_cached_calls() -> None:
+    client = CallsClient({"state": "ready", "calls": [_RINGING]})
+    bridge = QuickshellBridge(client)  # type: ignore[arg-type]
+    now = [_ANSWERED_AT + 5]
+    bridge._clock = lambda: now[0]
+    bridge.dispatch("calls", {})
+
+    view = bridge.dispatch("answer_call", {"call_id": "voicecall01"})
+    assert client.requests == [("answer_call", "voicecall01")]
+    assert view["ticking"] is True
+    assert view["calls"][0]["subtitle"] == "0:05"
+    assert view["calls"][0]["hangup"] == "Hang Up"
+    reads = client.list_reads
+    now[0] = _ANSWERED_AT + 3725
+    # The once-a-second request formats the cache: no D-Bus read.
+    assert bridge.dispatch("call_cards", {})["calls"][0]["subtitle"] == "1:02:05"
+    assert client.list_reads == reads
+
+
+def test_a_failed_call_action_still_rereads_the_calls() -> None:
+    client = CallsClient({"state": "ready", "calls": [_RINGING]})
+    bridge = QuickshellBridge(client)  # type: ignore[arg-type]
+    from blueferry.client import BackendError
+
+    with pytest.raises(BackendError, match="already ended"):
+        bridge.dispatch("hangup_call", {"call_id": "voicecall01"})
+    assert client.list_reads == 1
+    with pytest.raises(RequestError):
+        bridge.dispatch("answer_call", {"call_id": 1})
+
+
+def test_calls_off_or_unavailable_show_no_card() -> None:
+    bridge = QuickshellBridge(CallsClient(error="calls are disabled"))  # type: ignore[arg-type]
+    assert bridge.dispatch("calls", {}) == {
+        "visible": False, "ticking": False, "calls": [], "audio_hint": "",
+    }
+    assert bridge.dispatch("call_cards", {})["visible"] is False
+
+
+def test_the_call_card_carries_the_shared_call_audio_hint() -> None:
+    audio = {"state": "waiting", "muted": False,
+             "output": {"stream": False}, "input": {"stream": False}}
+    client = CallsClient({"state": "ready", "calls": [
+        {**_RINGING, "state": "active", "active_since": "2026-10-26T10:00:00+00:00"},
+    ], "audio": audio})
+    bridge = QuickshellBridge(client)  # type: ignore[arg-type]
+    assert bridge.dispatch("calls", {})["audio_hint"] == "Waiting for the call audio…"
+
+
+def test_calls_changed_is_forwarded_as_a_content_free_event(monkeypatch) -> None:
+    from blueferry import quickshell_bridge
+    from blueferry.protocol import EVENTS_IFACE
+
+    receivers: dict[str, tuple] = {}
+
+    class _Bus:
+        def add_signal_receiver(self, handler, signal_name, **keywords):
+            receivers[signal_name] = (handler, keywords)
+            return signal_name
+
+    monkeypatch.setattr(quickshell_bridge, "get_session_bus", lambda: _Bus())
+    output = io.StringIO()
+    bridge = QuickshellBridge(FakeClient(), output)  # type: ignore[arg-type]
+    quickshell_bridge._install_signal_receivers(bridge)
+    handler, keywords = receivers["CallsChanged"]
+    assert keywords["dbus_interface"] == EVENTS_IFACE
+    handler()
+    assert json.loads(output.getvalue()) == {"event": "calls-changed", "data": None}

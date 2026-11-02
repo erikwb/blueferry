@@ -13,6 +13,7 @@ import re
 import signal
 import sys
 import threading
+import time
 from collections.abc import Callable, Mapping
 from dataclasses import asdict
 from typing import Any, TextIO
@@ -32,6 +33,7 @@ from blueferry.client_activation import record_client_use
 from blueferry.config import FEATURE_SWITCHES
 from blueferry.contact_photos import image_type, valid_photo
 from blueferry.i18n import _
+from blueferry.models import CallsSnapshot
 from blueferry.phone_audio_view import phone_audio
 from blueferry.protocol import BUS_NAME, EVENTS_IFACE, OBJECT_PATH, TETHER_IFACE
 from blueferry.reconnect_view import ManualReconnect, reconnect_view
@@ -192,6 +194,37 @@ def now_playing_view(snapshot: object) -> dict[str, Any]:
     }
 
 
+def calls_reply(snapshot: CallsSnapshot | None, now: float) -> dict[str, Any]:
+    """The running calls as the panel's call card shows them.
+
+    The wording comes from ``phone_link_view.call_card`` like in the other
+    clients, so the duration (``subtitle``) is formatted here and the shell
+    only asks again once a second while ``ticking``. Rows are a plain array
+    (see ``features_reply``). ``audio_hint`` is the shared call audio line,
+    empty without one. Caller names and numbers stay in this local reply.
+    """
+    rows: list[dict[str, Any]] = []
+    for call in snapshot.calls if snapshot is not None else ():
+        card = phone_link_view.call_card(call.to_dict(), now)
+        rows.append({
+            "call_id": call.call_id,
+            "title": str(card["title"]),
+            "subtitle": str(card["subtitle"]),
+            "ringing": card["ringing"] is True,
+            "active": card["active"] is True,
+            "answer": str(card["answer"]),
+            "hangup": str(card["hangup"]),
+        })
+    audio = snapshot.audio if snapshot is not None else None
+    hint = str(call_audio_view.call_audio(audio)["hint"]) if audio is not None and rows else ""
+    return {
+        "visible": bool(rows),
+        "ticking": any(row["active"] for row in rows),
+        "calls": rows,
+        "audio_hint": hint,
+    }
+
+
 class QuickshellBridge:
     """Decode local requests and dispatch them through ``BackendClient``."""
 
@@ -219,6 +252,11 @@ class QuickshellBridge:
         # so the workers edit it one at a time: each read-modify-write
         # reads GetStatus right before it writes.
         self._quick_replies_lock = threading.Lock()
+        # The last ListCalls, so the once-a-second duration needs no D-Bus
+        # call; read again on CallsChanged and after each call action.
+        self._calls_lock = threading.Lock()
+        self._calls_snapshot: CallsSnapshot | None = None
+        self._clock: Callable[[], float] = time.time
 
     def host_info(self) -> dict[str, str]:
         """Return daemon-independent facts sent to the shell at startup."""
@@ -302,6 +340,30 @@ class QuickshellBridge:
             if not 0 <= index < len(current):
                 raise RequestError("index is out of range")
             return self._saved_quick_replies(quick_reply_view.with_removed(current, index))
+
+    def _refresh_calls(self) -> dict[str, Any]:
+        try:
+            snapshot: CallsSnapshot | None = self.client.calls()
+        except BackendError:
+            # Calls off, oFono missing or an older daemon: no card. The
+            # settings page explains why calls are unavailable.
+            snapshot = None
+        with self._calls_lock:
+            self._calls_snapshot = snapshot
+        return calls_reply(snapshot, self._clock())
+
+    def _call_cards(self) -> dict[str, Any]:
+        with self._calls_lock:
+            snapshot = self._calls_snapshot
+        return calls_reply(snapshot, self._clock())
+
+    def _call_action(self, action: Callable[[str], None], call_id: str) -> dict[str, Any]:
+        try:
+            action(call_id)
+        finally:
+            # Also after a failure: the call may already be gone.
+            reply = self._refresh_calls()
+        return reply
 
     def emit(self, payload: Mapping[str, Any]) -> None:
         line = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
@@ -434,6 +496,14 @@ class QuickshellBridge:
             if direction not in call_audio_view.DIRECTIONS:
                 raise RequestError("direction must be output or input")
             return self.client.set_call_audio_device(direction, _text(args, "name"))
+        if method == "calls":
+            return self._refresh_calls()
+        if method == "call_cards":
+            return self._call_cards()
+        if method == "answer_call":
+            return self._call_action(self.client.answer_call, _text(args, "call_id"))
+        if method == "hangup_call":
+            return self._call_action(self.client.hangup_call, _text(args, "call_id"))
         if method == "quick_replies":
             # The saved decline replies with their wording; the panel has no
             # gettext and no call view, so it only edits the list.
@@ -615,6 +685,12 @@ def _install_signal_receivers(bridge: QuickshellBridge) -> list[object]:
         bus.add_signal_receiver(
             lambda: bridge.emit_event("notifications-changed"),
             signal_name="NotificationsChanged",
+            **common,
+        ),
+        # Content-free; the shell rereads the calls with "calls".
+        bus.add_signal_receiver(
+            lambda: bridge.emit_event("calls-changed"),
+            signal_name="CallsChanged",
             **common,
         ),
     ]
