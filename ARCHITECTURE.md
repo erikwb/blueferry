@@ -792,9 +792,8 @@ A change to these rules has to be made in both places.
   subtitle and title that keeps repeated names, and is applied before address
   resolution, so later messages stay in that thread. Renaming a member in
   Contacts or changing the group's membership changes the key and orphans the
-  route; the group then needs its members again. The older unversioned key
-  dropped repeated names, so it carries over as an alias only when history
-  shows one roster for it with no repeated name or `|`.
+  route; the group then needs its members again. A route saved under the
+  older unversioned key, which dropped repeated names, does not carry over.
 - **Encryption at rest:** history, the contact cache, and the opt-in call
   history live in `0700` directories as `0600` SQLite files. Sensitive records, including event kind,
   timestamp, and content, are encrypted with AES-256-GCM under one random key

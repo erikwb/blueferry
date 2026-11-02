@@ -36,11 +36,6 @@ def unnamed_group_key(members: Iterable[str]) -> str:
     return f"{UNNAMED_GROUP_PREFIX}v2:{digest}"
 
 
-def legacy_unnamed_group_key(members: Iterable[str]) -> str:
-    """The old key, which dropped repeated names and did not escape ``|``."""
-    return UNNAMED_GROUP_PREFIX + "|".join(sorted({member.casefold() for member in members}))
-
-
 def legacy_named_group_key(name: str) -> str:
     """The old name-folding key, used only to interpret retained records."""
     normalized = " ".join(unicodedata.normalize("NFKC", name).strip().casefold().split())
@@ -71,27 +66,11 @@ class NamedGroupRoutes:
     Saved rosters for unnamed groups are kept under their member-name key.
     """
 
-    def __init__(
-        self, events: list[dict], observed_names: Iterable[str],
-        observed_rosters: Iterable[list[str]] = (),
-    ) -> None:
+    def __init__(self, events: list[dict], observed_names: Iterable[str]) -> None:
         self._names: dict[str, set[str]] = {}
         for name in (*observed_names, *(_stored_name(event) for event in events)):
             if name:
                 self._names.setdefault(legacy_named_group_key(name), set()).add(_name(name))
-        owners: dict[str, set[str]] = {}
-        for members in observed_rosters:
-            names = [member.casefold() for member in members]
-            exact = len(set(names)) == len(names) and not any("|" in name for name in names)
-            owners.setdefault(legacy_unnamed_group_key(members), set()).add(
-                unnamed_group_key(members) if exact else "",
-            )
-        # An old unnamed key carries over only to the one roster history shows
-        # for it, and only if it spelled that roster out exactly.
-        self._unnamed_successors = {
-            legacy: key for legacy, (key, *others) in owners.items() if key and not others
-        }
-        self._unnamed_aliases = {key: legacy for legacy, key in self._unnamed_successors.items()}
         self._routes: dict[str, dict] = {}
         for event in events:
             if event.get("kind") != "group_route":
@@ -104,9 +83,7 @@ class NamedGroupRoutes:
                     # be assigned to either new conversation without review.
                     continue
             elif str(event.get("group_key") or "").startswith(UNNAMED_GROUP_PREFIX):
-                # An old key no single roster owns keeps routing only the
-                # records saved under it: no new message gets that key.
-                key = self._unnamed_successors.get(event["group_key"], event["group_key"])
+                key = str(event["group_key"])
             else:
                 continue
             raw_recipients = event.get("group_recipients")
@@ -126,9 +103,6 @@ class NamedGroupRoutes:
         legacy = legacy_named_group_key(name)
         return [legacy] if self._names.get(legacy) == {_name(name)} else []
 
-    def unnamed_aliases(self, key: str) -> list[str]:
-        return [self._unnamed_aliases[key]] if key in self._unnamed_aliases else []
-
     def annotate_stored(self, event: dict) -> None:
         """Re-key a projection copy, preserving the original history on disk."""
         kind = str(event.get("kind") or "")
@@ -138,9 +112,6 @@ class NamedGroupRoutes:
         if not name:
             key = str(event.get("group_key") or "")
             if key.startswith(UNNAMED_GROUP_PREFIX):
-                key = self._unnamed_successors.get(key, key)
-                event["group_key"] = key
-                event["group_aliases"] = self.unnamed_aliases(key)
                 event["group_origin"] = "unnamed"
                 if not self._apply_stored(event, key):
                     event["group_reply_ready"] = False
@@ -189,7 +160,7 @@ class NamedGroupRoutes:
         """Like ``received`` for an unnamed group with a saved roster."""
         return {
             **self._received(key, sender_title, sender_address),
-            "group_aliases": self.unnamed_aliases(key),
+            "group_aliases": [],
             "group_name": name,
             "group_origin": "unnamed",
         }

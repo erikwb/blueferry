@@ -287,8 +287,6 @@ def correlate_group_events(events: list[dict], resolver=None) -> list[dict]:
     matched: set[int] = set()
     named_routes = NamedGroupRoutes(out, (
         name for event in out if (name := named_group_from_ancs(event))
-    ), (
-        members for event in out if (members := group_members_from_ancs(event))
     ))
     for stored in out:
         named_routes.annotate_stored(stored)
@@ -411,7 +409,6 @@ def correlate_group_events(events: list[dict], resolver=None) -> list[dict]:
 
         sms.update({
             "group_key": key,
-            "group_aliases": named_routes.unnamed_aliases(key),
             "group_name": name,
             "group_members": members,
             "group_recipients": recipients,

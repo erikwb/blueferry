@@ -259,29 +259,21 @@ def test_saved_unnamed_roster_does_not_follow_a_second_member_with_the_same_name
     assert joined["participants_required"] is True
 
 
-def test_old_unnamed_key_carries_over_to_the_one_roster_history_shows() -> None:
-    old_key = "group:participants:alice|bob"
-    events = [*_from_alice("To you & Bob", "first", "18:00"), _crew_route(old_key)]
+def test_roster_saved_under_the_old_unnamed_key_does_not_carry_over() -> None:
+    # The old key also named Alice, Bob and a second Bob, so its roster may
+    # include someone this group does not.
+    events = [
+        *_from_alice("To you & Bob", "first", "18:00"),
+        {**_crew_route("group:participants:alice|bob"),
+         "group_recipients": ["+15551111111", "+15552222222", "+15553333333"]},
+    ]
 
     group = _thread_with(build_threads(events), "first")
 
     assert group["key"] == unnamed_group_key(["Alice", "Bob"])
-    assert group["aliases"] == [old_key]
-    assert group["reply_ready"] is True
-
-
-def test_old_unnamed_key_shared_by_two_rosters_routes_neither() -> None:
-    events = [
-        *_from_alice("To you & Bob", "first", "18:00"),
-        _crew_route("group:participants:alice|bob"),
-        *_from_alice("To you & Bob, Bob", "second", "18:10"),
-    ]
-
-    threads = build_threads(events)
-
-    for body in ("first", "second"):
-        assert _thread_with(threads, body)["aliases"] == []
-        assert _thread_with(threads, body)["participants_required"] is True
+    assert group["aliases"] == []
+    assert group["participants_required"] is True
+    assert "+15553333333" not in group["recipients"]
 
 
 def test_ancs_title_cannot_replace_an_unverified_map_sender() -> None:
