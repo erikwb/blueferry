@@ -264,6 +264,9 @@ def _reconcile_group_identities(
             _member_roster_token(member, addresses_by_name, contacts)
             for member in members
         ))
+        if any(token.startswith("name:") for token in roster):
+            # An unresolved name may be a different person in each group.
+            continue
         clusters.setdefault(roster, []).append(event)
 
     for grouped in clusters.values():

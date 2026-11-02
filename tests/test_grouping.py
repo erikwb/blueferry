@@ -408,6 +408,42 @@ def test_history_does_not_choose_between_contacts_with_the_same_name() -> None:
     assert group["missing_members"] == ["Bob"]
 
 
+@pytest.mark.parametrize("bob_first", [False, True])
+def test_another_group_with_a_shared_name_does_not_lend_its_route(
+    bob_first: bool,
+) -> None:
+    class Resolver:
+        @staticmethod
+        def find_by_name(name):
+            return {
+                "alice": [("Alice", "+15551111111"), ("Alice", "+15553333333")],
+                "bob": [("Bob", "+15552222222")],
+            }.get(name.casefold(), [])
+
+        @staticmethod
+        def resolve(_address):
+            return None
+
+    from_alice = [
+        _sms("+15551111111", "Alice", "first", "2026-08-12T10:00:00+00:00"),
+        _ancs("Alice", "To you & Bob", "first", "2026-08-12T10:00:02+00:00"),
+    ]
+    # Bob's "Alice" may be the other contact of that name.
+    from_bob = [
+        _sms("+15552222222", "Bob", "second", "2026-08-12T11:00:00+00:00"),
+        _ancs("Bob", "To you & Alice", "second", "2026-08-12T11:00:02+00:00"),
+    ]
+    events = [*from_bob, *from_alice] if bob_first else [*from_alice, *from_bob]
+
+    correlated = correlate_group_events(events, Resolver())
+    second = next(event for event in correlated if event.get("body") == "second"
+                  and event["kind"] == "sms_received")
+
+    assert second["group_reply_ready"] is False
+    assert second["group_participants_required"] is True
+    assert second["group_missing_members"] == ["Alice"]
+
+
 def test_contact_name_must_agree_with_ancs_sender_title() -> None:
     events = [
         _sms("+15551111111", "Mallory", "hello",
