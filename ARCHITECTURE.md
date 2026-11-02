@@ -755,9 +755,11 @@ A change to these rules has to be made in both places.
   `AT+CNUM`) is retried once after 30 s. Values are cleared on
   `Powered=false`, interface or modem removal, an oFono owner change, and
   stop.
-- The battery does not need HFP: `phone_battery.py` reads it over LE from
-  the GATT Battery Level characteristic, with BlueZ's `Battery1` as the
-  fallback (async
+- The battery does not need HFP: `phone_battery.py` follows it over LE,
+  through BlueZ's `Battery1` when BlueZ's battery plugin publishes it
+  (`Source` "GATT Battery Service", the characteristic is then left alone),
+  otherwise from the GATT Battery Level characteristic with any other
+  `Battery1` as the fallback (async
   `GetManagedObjects`, `ReadValue`, `StartNotify`; `PropertiesChanged`
   afterwards) and restarts with bluetoothd. The daemon merges both sources
   into additive `GetStatus` keys (`null` when unknown; LE wins, only while

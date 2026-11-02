@@ -749,8 +749,9 @@ What happens then:
 
 BlueFerry shows the iPhone's battery while it is connected, read over the
 Bluetooth LE link it already holds for notifications: from the
-standard GATT Battery Service (Battery Level, read once, then followed
-through notifications), or from BlueZ's `Battery1` while that is missing. This
+standard GATT Battery Service (Battery Level), through BlueZ's `Battery1`
+where BlueZ's battery plugin already follows it, otherwise read once and then
+followed through notifications by BlueFerry itself. This
 needs neither HFP nor oFono, is exact to 1 %, and was confirmed present on an
 iPhone with iOS 27 (BlueZ 5.87 had cached its Battery Level); the reading
 path itself is tested against fakes only.

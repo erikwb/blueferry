@@ -448,3 +448,186 @@ def test_new_bluez_generation_does_not_keep_old_discovery_removals() -> None:
     assert watcher.percent is None
     fresh[5]({dbus.ObjectPath(CHAR): _char(80)})
     assert watcher.percent == 80
+
+
+# ---- BlueZ's battery plugin follows the characteristic itself -----------
+
+def _plugin_battery(level):
+    return {BATTERY1_IFACE: {
+        "Percentage": dbus.Byte(level), "Source": dbus.String("GATT Battery Service"),
+    }}
+
+
+def _gatt_calls(bus):
+    return [call[2] for call in bus.calls
+            if call[1] == GATT_CHAR_IFACE and call[2] != "StopNotify"]
+
+
+def test_plugin_battery1_is_followed_without_touching_the_characteristic() -> None:
+    watcher, bus, changes = _battery()
+    watcher.start()
+    bus.take("GetManagedObjects")[5]({
+        dbus.ObjectPath(CHAR): _char(91),
+        dbus.ObjectPath(DEVICE): _plugin_battery(90),
+    })
+    assert (watcher.percent, watcher.source) == (90, "bluez")
+    assert bus.calls == []
+
+    bus.emit("PropertiesChanged", BATTERY1_IFACE, {"Percentage": dbus.Byte(89)}, [],
+             path=DEVICE, arg0=BATTERY1_IFACE)
+    assert (watcher.percent, watcher.source) == (89, "bluez")
+    # Values that reach the characteristic object are BlueZ's business here.
+    bus.emit("PropertiesChanged", GATT_CHAR_IFACE, {"Value": [50]}, [],
+             path=CHAR, arg0=GATT_CHAR_IFACE)
+    watcher.link_up()
+    bus.emit("InterfacesRemoved", dbus.ObjectPath(CHAR), [GATT_CHAR_IFACE])
+    bus.emit("InterfacesAdded", dbus.ObjectPath(CHAR), _char(70))
+    assert (watcher.percent, watcher.source) == (89, "bluez")
+    assert bus.calls == []
+    assert len(changes) == 2
+
+    watcher.stop()
+    assert bus.calls == []
+
+
+def test_battery1_from_another_source_keeps_the_characteristic_preferred() -> None:
+    watcher, bus, _changes = _battery()
+    watcher.start()
+    bus.take("GetManagedObjects")[5]({
+        dbus.ObjectPath(DEVICE): {BATTERY1_IFACE: {
+            "Percentage": dbus.Byte(80), "Source": dbus.String("HFP"),
+        }},
+        dbus.ObjectPath(CHAR): _char(83),
+    })
+    bus.take("ReadValue")[5]([83])
+    bus.take("StartNotify")[5]()
+    assert (watcher.percent, watcher.source) == (83, "gatt")
+
+
+def test_plugin_battery1_appearing_later_stops_the_own_session() -> None:
+    watcher, bus, changes = _battery()
+    watcher.start()
+    bus.take("GetManagedObjects")[5]({dbus.ObjectPath(CHAR): _char(91)})
+    bus.take("ReadValue")[5]([90])
+    bus.take("StartNotify")[5]()
+    assert (watcher.percent, watcher.source) == (90, "gatt")
+    before = len(changes)
+
+    bus.emit("InterfacesAdded", dbus.ObjectPath(DEVICE), _plugin_battery(88))
+    assert bus.take("StopNotify")[0] == CHAR
+    assert bus.calls == []
+    assert (watcher.percent, watcher.source) == (88, "bluez")
+    assert len(changes) == before + 1
+    bus.emit("PropertiesChanged", GATT_CHAR_IFACE, {"Value": [95]}, [],
+             path=CHAR, arg0=GATT_CHAR_IFACE)
+    assert (watcher.percent, watcher.source) == (88, "bluez")
+
+
+def test_switching_to_battery1_drops_in_flight_replies_and_ends_a_late_session() -> None:
+    watcher, bus, _changes = _battery()
+    watcher.start()
+    bus.take("GetManagedObjects")[5]({dbus.ObjectPath(CHAR): _char(91)})
+    read, notify = bus.take("ReadValue"), bus.take("StartNotify")
+
+    bus.emit("InterfacesAdded", dbus.ObjectPath(DEVICE), _plugin_battery(88))
+    assert bus.calls == []  # no session yet, nothing to stop
+    read[5]([60])
+    notify[5]()
+    assert bus.take("StopNotify")[0] == CHAR
+    assert (watcher.percent, watcher.source) == (88, "bluez")
+    assert watcher._notifying is False
+
+
+def test_plugin_battery1_disappearing_falls_back_to_a_fresh_read() -> None:
+    watcher, bus, changes = _battery()
+    watcher.start()
+    bus.take("GetManagedObjects")[5]({
+        dbus.ObjectPath(DEVICE): _plugin_battery(88),
+        dbus.ObjectPath(CHAR): _char(97),  # BlueZ's cached value, not shown
+    })
+    assert bus.calls == []
+
+    bus.emit("InterfacesRemoved", dbus.ObjectPath(DEVICE), [BATTERY1_IFACE])
+    assert (watcher.percent, watcher.source) == (None, None)
+    bus.take("ReadValue")[5]([87])
+    bus.take("StartNotify")[5]()
+    assert (watcher.percent, watcher.source) == (87, "gatt")
+    bus.emit("PropertiesChanged", GATT_CHAR_IFACE, {"Value": [86]}, [],
+             path=CHAR, arg0=GATT_CHAR_IFACE)
+    assert watcher.percent == 86
+    assert len(changes) == 4  # 88, unknown, 87, 86
+
+
+def test_plugin_battery1_that_survives_the_link_is_checked_after_reconnect() -> None:
+    # bluetoothd 5.87 "error registering battery: path exists": the old
+    # Battery1 stays across an LE reconnect and keeps its level.
+    watcher, bus, _changes = _battery()
+    watcher.start()
+    bus.take("GetManagedObjects")[5]({
+        dbus.ObjectPath(DEVICE): _plugin_battery(100),
+        dbus.ObjectPath(CHAR): _char(100),
+    })
+    watcher.link_up()
+    assert bus.calls == []
+
+    watcher.link_down()
+    assert bus.calls == []  # nothing to read while LE is down
+    watcher.link_up()
+    bus.take("ReadValue")[5]([97])
+    bus.take("StartNotify")[5]()
+    assert (watcher.percent, watcher.source) == (97, "gatt")
+
+    # A moving level shows that BlueZ follows the phone again.
+    bus.emit("PropertiesChanged", BATTERY1_IFACE, {"Percentage": dbus.Byte(96)}, [],
+             path=DEVICE, arg0=BATTERY1_IFACE)
+    assert bus.take("StopNotify")[0] == CHAR
+    assert (watcher.percent, watcher.source) == (96, "bluez")
+
+
+def test_plugin_battery1_replaced_with_the_link_is_trusted_again() -> None:
+    watcher, bus, _changes = _battery()
+    watcher.start()
+    bus.take("GetManagedObjects")[5]({
+        dbus.ObjectPath(DEVICE): _plugin_battery(90),
+        dbus.ObjectPath(CHAR): _char(90),
+    })
+    watcher.link_up()
+    watcher.link_down()
+    bus.emit("InterfacesRemoved", dbus.ObjectPath(DEVICE), [BATTERY1_IFACE])
+    watcher.link_up()
+    read = bus.take("ReadValue")  # no Battery1 yet: the fallback reads
+    bus.take("StartNotify")
+    bus.emit("InterfacesAdded", dbus.ObjectPath(DEVICE), _plugin_battery(89))
+    read[5]([10])
+    assert bus.calls == []
+    assert (watcher.percent, watcher.source) == (89, "bluez")
+
+
+def test_source_of_battery1_is_learned_after_a_newer_level() -> None:
+    watcher, bus, _changes = _battery()
+    watcher.start()
+    initial = bus.take("GetManagedObjects")
+    bus.emit("PropertiesChanged", BATTERY1_IFACE, {"Percentage": dbus.Byte(67)}, [],
+             path=DEVICE, arg0=BATTERY1_IFACE)
+    initial[5]({
+        dbus.ObjectPath(CHAR): _char(60),
+        dbus.ObjectPath(DEVICE): _plugin_battery(50),
+    })
+    assert (watcher.percent, watcher.source) == (67, "bluez")
+    assert _gatt_calls(bus) == []
+
+
+def test_a_notify_session_left_from_before_the_reconnect_counts_as_ours() -> None:
+    watcher, bus, _changes = _battery()
+    watcher.start()
+    bus.take("GetManagedObjects")[5]({dbus.ObjectPath(CHAR): _char(80)})
+    bus.take("ReadValue")[5]([80])
+    bus.take("StartNotify")[5]()
+    watcher.link_up()
+    bus.take("ReadValue")[5]([79])
+    in_progress = dbus.exceptions.DBusException("busy", name="org.bluez.Error.InProgress")
+    bus.take("StartNotify")[6](in_progress)
+    assert watcher._notifying is True
+    assert (watcher.percent, watcher.source) == (79, "gatt")
+    watcher.stop()
+    assert bus.take("StopNotify")[0] == CHAR

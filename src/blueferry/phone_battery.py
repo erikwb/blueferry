@@ -2,12 +2,24 @@
 
 iOS exposes the standard GATT Battery Service (0x180F) with its Battery Level
 characteristic (0x2A19, one byte, 0-100 %) to the LE peer it is connected to,
-which BlueFerry already is for ANCS. Where BlueZ's battery plugin claims that
-service it also publishes ``org.bluez.Battery1.Percentage`` on the device.
-The characteristic is preferred: bluetoothd 5.87 can fail to register the
-battery again after an LE reconnect ("path exists") and then keeps publishing
-the level from before it. ``Battery1`` is the fallback. Failed refreshes
-discard cached GATT values; a new LE connection must supply a new reading.
+which BlueFerry already is for ANCS.
+
+Where BlueZ's battery plugin claims that service, it reads and subscribes to
+the characteristic itself and publishes ``org.bluez.Battery1.Percentage``
+with ``Source`` "GATT Battery Service" on the device. BlueFerry then follows
+only that property and leaves the characteristic alone: its own ReadValue
+and StartNotify competed with the plugin's (``Failed``, ``InProgress``) and
+could leave a frozen reading. Without such a ``Battery1`` (no battery
+plugin, or a ``Battery1`` from another source such as hands-free), BlueFerry
+reads the characteristic once and follows its notifications, and any other
+``Battery1`` is the fallback. A plugin ``Battery1`` that outlives the LE link
+is not trusted after the reconnect: bluetoothd 5.87 can fail to register the
+battery again ("path exists") and keep the old level. BlueFerry reads the
+characteristic itself until that object is replaced or its level changes.
+Switching between the two never brings back a cached value: the
+characteristic path starts with a fresh read, and its notification session
+is stopped when ``Battery1`` takes over. Failed refreshes discard cached
+GATT values; a new LE connection must supply a new reading.
 
 Everything here is asynchronous: GetManagedObjects, ReadValue, StartNotify and
 StopNotify are sent with reply handlers, and updates arrive as
@@ -17,7 +29,8 @@ PropertiesChanged signals. Values are range-checked; anything malformed is
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager
 from typing import Any
 
 import dbus
@@ -32,6 +45,8 @@ PROPERTIES_IFACE = "org.freedesktop.DBus.Properties"
 BATTERY1_IFACE = "org.bluez.Battery1"
 GATT_CHAR_IFACE = "org.bluez.GattCharacteristic1"
 BATTERY_LEVEL_UUID = "00002a19-0000-1000-8000-00805f9b34fb"
+# Battery1.Source of BlueZ's own battery plugin (profiles/battery).
+BLUEZ_GATT_BATTERY_SOURCE = "GATT Battery Service"
 CALL_TIMEOUT_SEC = 25
 
 SOURCE_BLUEZ = "bluez"
@@ -69,6 +84,17 @@ def _under(path: str, device_path: str) -> bool:
     return path.startswith(device_path + "/")
 
 
+def _is_plugin(battery: Mapping[Any, Any]) -> bool:
+    """Battery1 published by BlueZ's battery plugin from the GATT service."""
+    return str(battery.get("Source", "")) == BLUEZ_GATT_BATTERY_SOURCE
+
+
+def _dbus_name(error: Exception) -> str:
+    if isinstance(error, dbus.exceptions.DBusException):
+        return str(error.get_dbus_name())
+    return type(error).__name__
+
+
 class PhoneBattery:
     """Track one device's battery level from Battery1 or the GATT characteristic."""
 
@@ -100,6 +126,15 @@ class PhoneBattery:
         self._notifying = False
         self._battery1: int | None = None
         self._gatt: int | None = None
+        # Battery1 comes from BlueZ's battery plugin, which follows the
+        # characteristic itself.
+        self._battery1_plugin = False
+        # That Battery1 outlived an LE disconnect, so it may be the stale
+        # object bluetoothd 5.87 failed to replace ("path exists").
+        self._battery1_suspect = False
+        # The characteristic is left to BlueZ: no reads, no notify session.
+        self._deferring = False
+        self._publishing = False
         self._logged: set[str] = set()
 
     # ---- public state ---------------------------------------------------
@@ -161,6 +196,9 @@ class PhoneBattery:
         for match in self._matches:
             self._remove(match)
         self._matches = []
+        self._battery1_plugin = False
+        self._battery1_suspect = False
+        self._deferring = False
         changed = self._battery1 is not None
         self._battery1 = None
         if changed:
@@ -178,14 +216,20 @@ class PhoneBattery:
         """The LE link (re)connected: notification sessions start over."""
         self._link_connected = True
         self._reset_link()
-        if not self._running or self._char_path is None:
+        if not self._running or self._char_path is None or self._deferring:
             return
         self._subscribe(self._char_path)
 
     def link_down(self) -> None:
         """An old LE reading must not mask a still-connected Classic source."""
         self._link_connected = False
-        self._reset_link()
+        with self._publish():
+            self._reset_link()
+            if self._battery1_plugin:
+                # BlueZ normally removes its Battery1 with the link; one that
+                # stays is checked against the characteristic after reconnecting.
+                self._battery1_suspect = True
+                self._sync_source()
 
     def _reset_link(self) -> None:
         self._link_generation += 1
@@ -223,6 +267,7 @@ class PhoneBattery:
         on_error: Callable[[Exception], None],
         *,
         characteristic: bool = False,
+        on_stale_reply: Callable[[], None] | None = None,
     ) -> None:
         generation = self._generation
         char_generation = self._char_generation
@@ -240,6 +285,13 @@ class PhoneBattery:
         def replied(*values: Any) -> None:
             if current():
                 on_reply(*values)
+            elif (
+                on_stale_reply is not None and self._running
+                and generation == self._generation
+                and char_generation == self._char_generation
+            ):
+                # Same bluetoothd and characteristic object, older session.
+                on_stale_reply()
 
         def failed(error: Exception) -> None:
             if current():
@@ -255,10 +307,7 @@ class PhoneBattery:
 
     def _failed(self, what: str) -> Callable[[Exception], None]:
         def failed(error: Exception) -> None:
-            name = (
-                error.get_dbus_name() if isinstance(error, dbus.exceptions.DBusException)
-                else type(error).__name__
-            )
+            name = _dbus_name(error)
             # The iPhone may be out of range or between links; say it once.
             if what not in self._logged:
                 self._logged.add(what)
@@ -271,6 +320,42 @@ class PhoneBattery:
             self._on_change()
         except Exception:
             log.exception("phone battery callback failed")
+
+    @contextmanager
+    def _publish(self) -> Iterator[None]:
+        """Report one change for everything done inside, if percent or source moved."""
+        if self._publishing:
+            yield
+            return
+        self._publishing = True
+        previous = (self.percent, self.source)
+        try:
+            yield
+        finally:
+            self._publishing = False
+            if (self.percent, self.source) != previous:
+                self._changed()
+
+    def _sync_source(self) -> None:
+        """Leave the characteristic to BlueZ's Battery1, or take it back."""
+        defer = self._battery1_plugin and not self._battery1_suspect
+        if defer == self._deferring:
+            return
+        self._deferring = defer
+        if defer:
+            log.info("following the iPhone's battery through BlueZ's Battery1")
+            # Pending ReadValue/StartNotify replies belong to the old session.
+            self._link_generation += 1
+            if self._notifying and self._char_path is not None:
+                self._stop_notify(self._char_path)
+            self._notifying = False
+            self._set_gatt(None)
+            return
+        if self._running and self._char_path is not None and self._link_connected is not False:
+            log.info("reading the iPhone's GATT battery level directly")
+            self._notifying = False
+            self._set_gatt(None)
+            self._subscribe(self._char_path)
 
     @staticmethod
     def _remove(match: Any) -> None:
@@ -285,11 +370,24 @@ class PhoneBattery:
         changed, self._discovery_changes = self._discovery_changes or set(), None
         if not isinstance(objects, Mapping):
             return
-        for path, interfaces in objects.items():
+        # Battery1 first: when BlueZ follows the level, the characteristic
+        # found afterwards is never read or subscribed.
+        for path, interfaces in sorted(
+            objects.items(), key=lambda item: str(item[0]) != self.device_path,
+        ):
             # Object-manager signals and battery notifications are newer than
             # the initial snapshot. Keep their values and removal tombstones.
             if str(path) not in changed:
                 self._on_added(path, interfaces)
+            elif (
+                str(path) == self.device_path and isinstance(interfaces, Mapping)
+                and isinstance(interfaces.get(BATTERY1_IFACE), Mapping)
+                and self._battery1 is not None and not self._battery1_plugin
+            ):
+                # A newer PropertiesChanged kept the level; Source comes from here.
+                with self._publish():
+                    self._battery1_plugin = _is_plugin(interfaces[BATTERY1_IFACE])
+                    self._sync_source()
 
     def _on_managed_failed(self, error: Exception) -> None:
         self._discovery_changes = None
@@ -310,7 +408,11 @@ class PhoneBattery:
             self._note_discovery_change(path)
         battery = interfaces.get(BATTERY1_IFACE)
         if path == self.device_path and isinstance(battery, Mapping):
-            self._set_battery1(parse_battery1_percentage(battery.get("Percentage")))
+            with self._publish():
+                self._battery1_plugin = _is_plugin(battery)
+                self._battery1_suspect = False
+                self._set_battery1(parse_battery1_percentage(battery.get("Percentage")))
+                self._sync_source()
         char = interfaces.get(GATT_CHAR_IFACE)
         if (
             isinstance(char, Mapping) and _under(path, self.device_path)
@@ -330,7 +432,11 @@ class PhoneBattery:
         ):
             self._note_discovery_change(path)
         if path == self.device_path and BATTERY1_IFACE in names:
-            self._set_battery1(None)
+            with self._publish():
+                self._battery1_plugin = False
+                self._battery1_suspect = False
+                self._set_battery1(None)
+                self._sync_source()
         if path == self._char_path and GATT_CHAR_IFACE in names:
             self._forget_characteristic(stop_notify=False)
 
@@ -338,26 +444,24 @@ class PhoneBattery:
         if str(interface) == BATTERY1_IFACE and isinstance(changed, Mapping):
             if "Percentage" in changed:
                 self._note_discovery_change(self.device_path)
-                self._set_battery1(parse_battery1_percentage(changed["Percentage"]))
+                value = parse_battery1_percentage(changed["Percentage"])
+                with self._publish():
+                    if self._battery1_suspect and value is not None and value != self._battery1:
+                        # A level that moves is not the stale object.
+                        self._battery1_suspect = False
+                    self._set_battery1(value)
+                    self._sync_source()
             elif isinstance(invalidated, list | tuple) and "Percentage" in invalidated:
                 self._note_discovery_change(self.device_path)
                 self._set_battery1(None)
 
     def _set_battery1(self, value: int | None) -> None:
-        if value == self._battery1:
-            return
-        previous = (self.percent, self.source)
-        self._battery1 = value
-        if (self.percent, self.source) != previous:
-            self._changed()
+        with self._publish():
+            self._battery1 = value
 
     def _set_gatt(self, value: int | None) -> None:
-        if value == self._gatt:
-            return
-        previous = (self.percent, self.source)
-        self._gatt = value
-        if (self.percent, self.source) != previous:
-            self._changed()
+        with self._publish():
+            self._gatt = value
 
     def _adopt_characteristic(self, path: str, properties: Mapping[Any, Any]) -> None:
         self._forget_characteristic(stop_notify=True)
@@ -374,7 +478,7 @@ class PhoneBattery:
             self._char_path = None
             return
         log.info("found the iPhone's GATT battery characteristic")
-        if self._link_connected is False:
+        if self._link_connected is False or self._deferring:
             return
         cached = parse_battery_level(properties.get("Value"))
         if cached is not None:
@@ -402,6 +506,11 @@ class PhoneBattery:
                 self._set_gatt(None)
 
         def notify_failed(error: Exception) -> None:
+            if _dbus_name(error) == "org.bluez.Error.InProgress":
+                # This client's session from before the reconnect is still
+                # registered; BlueZ resumes it on its own.
+                self._notifying = True
+                return
             self._failed("StartNotify")(error)
             # A successful current read is still useful on a read-only
             # characteristic; only the unconfirmed cached value is suspect.
@@ -420,13 +529,18 @@ class PhoneBattery:
         def started(*_values: Any) -> None:
             self._notifying = True
 
+        def started_late() -> None:
+            # Battery1 took over while StartNotify was in flight.
+            if self._deferring:
+                self._stop_notify(path)
+
         self._call(
             path, GATT_CHAR_IFACE, "StartNotify", "", (), started, notify_failed,
-            characteristic=True,
+            characteristic=True, on_stale_reply=started_late,
         )
 
     def _on_char_changed(self, interface: object, changed: object, invalidated=None) -> None:
-        if self._link_connected is False:
+        if self._link_connected is False or self._deferring:
             return
         if str(interface) == GATT_CHAR_IFACE and isinstance(changed, Mapping):
             if "Value" in changed:
@@ -448,17 +562,20 @@ class PhoneBattery:
         self._remove(self._char_match)
         self._char_match = None
         if path is not None and stop_notify and self._notifying:
-            try:
-                self._bus_factory().call_async(
-                    BLUEZ, path, GATT_CHAR_IFACE, "StopNotify", "", (),
-                    lambda *_values: None,
-                    lambda _error: None,
-                    timeout=CALL_TIMEOUT_SEC,
-                )
-            except Exception:
-                log.debug("could not stop battery notifications", exc_info=True)
+            self._stop_notify(path)
         self._notifying = False
         self._set_gatt(None)
+
+    def _stop_notify(self, path: str) -> None:
+        try:
+            self._bus_factory().call_async(
+                BLUEZ, path, GATT_CHAR_IFACE, "StopNotify", "", (),
+                lambda *_values: None,
+                lambda _error: None,
+                timeout=CALL_TIMEOUT_SEC,
+            )
+        except Exception:
+            log.debug("could not stop battery notifications", exc_info=True)
 
 
 class BatteryWarningSettings:

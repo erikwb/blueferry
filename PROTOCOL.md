@@ -995,10 +995,25 @@ until the phone answers, concurrent callers get `org.ofono.Error.InProgress`.
 iOS additionally reports a 0-9 battery level through `AT+IPHONEACCEV`, which
 oFono does not decode, so the HFP battery is limited to 20 % steps. The
 battery does not need HFP, though: iOS exposes the standard GATT Battery
-Service (0x180F, Battery Level 0x2A19, read and notify) to its LE peer;
-BlueFerry prefers that value. BlueZ's `Battery1`, built from the same
-service, is only the fallback: bluetoothd 5.87 was seen to keep an old level
-there after an LE reconnect (`error registering battery: path exists`).
+Service (0x180F, Battery Level 0x2A19, read and notify) to its LE peer.
+BlueZ's battery plugin reads and subscribes to that characteristic itself and
+publishes the level as `Battery1.Percentage` with `Source` "GATT Battery
+Service". A second client on the same characteristic competes with it:
+BlueFerry's own `ReadValue` then failed with `org.bluez.Error.Failed`,
+`StartNotify` with `org.bluez.Error.InProgress`, and its reading could stay at
+the first value. So when that `Battery1` is present, BlueFerry follows only
+its `PropertiesChanged` and neither reads nor subscribes to 0x2A19 (an own
+notification session is stopped when it appears). Without it (no battery
+plugin, or a `Battery1` from another source such as hands-free) BlueFerry
+reads the characteristic once and follows its notifications, with any other
+`Battery1` as the fallback. bluetoothd 5.87 was seen to keep an old level in
+`Battery1` after an LE reconnect (`error registering battery: path exists`);
+BlueZ normally removes its `Battery1` with the LE link, so one that survives
+the disconnect is not trusted afterwards: BlueFerry reads the characteristic
+itself until that `Battery1` is replaced or its level changes. A switch
+between the two sources never shows a cached value: the characteristic path
+starts with a fresh read. `InProgress` from `StartNotify` after a reconnect
+means BlueFerry's session from before is still registered and is kept.
 
 ## Pairing diagnostics
 

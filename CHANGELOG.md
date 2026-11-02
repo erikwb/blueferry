@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- Follow the iPhone's battery through BlueZ's `Battery1` when BlueZ's
+  battery plugin already reads the GATT Battery Level, instead of reading and
+  subscribing to the same characteristic a second time. This removes the
+  `ReadValue failed: org.bluez.Error.Failed` and `StartNotify failed:
+  org.bluez.Error.InProgress` log lines and the battery value that could stay
+  at its first reading. Without that `Battery1`, BlueFerry still reads the
+  characteristic itself, and a plugin `Battery1` that survives an LE
+  reconnect unchanged is checked against it
+  ([#280](https://github.com/erikwb/blueferry/issues/280)).
+
 ## [0.9.1](https://github.com/erikwb/blueferry/releases/tag/v0.9.1) - 2026-10-30
 
 ### Fixed
