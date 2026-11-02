@@ -282,7 +282,13 @@ preferences.
 
 The Quickshell client follows Omarchy's active palette and system monospace
 font, with compact controls and thin frames. Sent message bubbles stay blue
-across themes. Outside Omarchy, it uses the desktop palette.
+across themes. Outside Omarchy, it uses the desktop palette. Its iPhone
+settings use the same categories as the other clients (Phone, Notifications,
+Calls & Audio, Security, About), with the restart-required feature switches
+and **Restart Service**, **Reconnect**, **Run Diagnostics**, **Sync
+Contacts** and a compact list of recent iPhone notifications. As a panel it
+leaves plugins, Send to, Photos and companion tools to the Qt and GTK
+clients; see [Clients](docs/en/user/clients.md#quickshell).
 
 ![Quickshell client with sample conversations](docs/images/quickshell.png)
 
@@ -485,10 +491,10 @@ Restart the user service after editing `local.env` settings.
 
 Three on/off switches without a setting of their own
 (`BLUEFERRY_SHOW_NOTIFICATION_CONTENT`, `BLUEFERRY_MARK_READ_ON_DISMISS`,
-`BLUEFERRY_NOTIFICATION_HISTORY`)
-can also be changed in the Qt or GTK settings (both offer **Restart Service**
-while a change waits) or with `blueferry features` (`blueferry features off
-mark_read_on_dismiss`). They are stored in
+`BLUEFERRY_NOTIFICATION_HISTORY`) can also be changed in the Qt, GTK,
+Quickshell or terminal settings (all offer **Restart Service** while a
+change waits) or with
+`blueferry features` (`blueferry features on notification_history`). They are stored in
 `~/.config/blueferry/settings.json`, override `local.env`, and apply after
 the service restarts; a variable set in the service's own environment still
 wins.
@@ -497,8 +503,8 @@ wins.
 
 With **All iPhone Notifications** selected, an iPhone app popup normally
 stays until it times out, even after you cleared the notification on the
-phone. Turn on **Sync notifications with iPhone** in the Qt or GTK client's
-settings, or run `blueferry notifications sync enable`, and a notification
+phone. Turn on **Sync notifications with iPhone** in the Qt, GTK, Quickshell
+or terminal client's settings, or run `blueferry notifications sync enable`, and a notification
 removed or dismissed on the iPhone also closes its desktop popup. It only
 closes popups and never sends anything to the phone. The choice is saved as
 `mirror_iphone_removals` in `settings.json` and reported under that key in
@@ -558,10 +564,12 @@ terminal client does not show photos.
 ### Recent app notifications (opt-in)
 
 `BLUEFERRY_NOTIFICATION_HISTORY=true` (or **Keep recent iPhone notifications**
-in the Qt or GTK settings, or `blueferry features on notification_history`, after a
-service restart) keeps the last 200 non-Messages iPhone app notifications in
-the daemon's memory so the Notifications tab of the Qt and GTK clients, the
-terminal client's **iPhone Notifications** and
+in the Qt, GTK, Quickshell or terminal settings, or `blueferry features on
+notification_history`, after a service restart) keeps the last 200
+non-Messages iPhone app notifications in the daemon's memory so the
+Notifications tab of the Qt and GTK clients, the terminal client's **iPhone
+Notifications**, **Show Recent Notifications** in the Quickshell settings
+(the newest 30) and
 `blueferry notifications recent` can list them. The list itself is not written to disk:
 BlueFerry's history deliberately retains only Messages records, so apart from
 pinned notifications the list starts empty after every backend restart. Titles and bodies are kept only with
@@ -785,7 +793,8 @@ terminal client's **iPhone Overview** also shows the network.
 An optional low-battery warning (off by default) fires once per discharge
 when the battery reaches the threshold, and again only after the phone has
 charged at least 20 % above it (and once more after a BlueFerry restart if
-the phone is still low). Switch it on in the Qt or GTK settings or with
+the phone is still low). Switch it on in the Qt, GTK, Quickshell or terminal
+settings or with
 `blueferry phone-status --warn`; the choice is saved in `settings.json`.
 `BLUEFERRY_PHONE_BATTERY_NOTIFY=true` seeds it and
 `BLUEFERRY_PHONE_BATTERY_LOW_PERCENT=20` (0-80) sets the threshold.
@@ -824,7 +833,8 @@ itself is PipeWire's job; BlueFerry only controls the call.
 
 ## Companion tools (optional)
 
-The Qt phone card (section **Tools**) and `blueferry tools` can start three
+The phone card of the GTK and Qt clients (section **Tools**; in GTK under
+**Plugins & Tools**) and `blueferry tools` can start three
 programs that BlueFerry does not ship. Each entry only works when its tool
 is installed; otherwise it stays greyed out with what to install. These are
 local client actions; the daemon is not involved.
@@ -861,13 +871,13 @@ installed by default.
 
 - **Install** with `blueferry plugins install URL` (any https Git URL) or
   pick one from the curated store (`blueferry plugins available`), or from
-  **Settings › Plugins** in the Qt client. Every install and update
+  **Settings › Plugins** in the GTK or Qt client. Every install and update
   shows the source, the pinned ref and commit, the capabilities and the
   command the plugin's manifest runs (`Exec`), and asks first. Each plugin
   gets its own virtual environment under `~/.local/share/blueferry/plugins`;
   pip fetches its dependencies from the network. Everything runs as you;
   nothing asks for root.
-- **Settings** of a plugin come from its schema: a form in the Qt client with
+- **Settings** of a plugin come from its schema: a form in the GTK and Qt clients with
   help links, **Test connection**, where offered a browser sign-in and the
   plugin's own buttons (such as "Set up iPhone"), or
   `blueferry plugins config ID --set KEY=VALUE --secret KEY` (`--test`,
@@ -879,7 +889,7 @@ installed by default.
   example the next calendar entry or a running transfer, with their
   actions; `blueferry send FILE --to TARGET` hands files to a plugin target
   such as "iPhone (LocalSend)".
-- **From Plugins** in the Qt phone card shows the same items with buttons;
+- **From Plugins** in the GTK and Qt phone card shows the same items with buttons;
   a plugin that fails shows a dimmed line. **Send to…** at the end of that
   section hands files to a plugin target, and an item can also take files
   directly (file dialog or drop).
@@ -890,7 +900,7 @@ installed by default.
 - **Photos**: with a plugin that has the `photos` capability, such as
   [blueferry-plugin-immich](https://github.com/joshii-h/blueferry-plugin-immich)
   for a self-hosted Immich server, `blueferry photos recent` lists the newest
-  photos and videos and the Qt client's **Photos** tab shows them.
+  photos and videos and the **Photos** tab of the GTK and Qt clients shows them.
 - **Logs**: plugins write `~/.local/state/blueferry/plugins/<id>.log`
   (owner-only, rotated, secrets masked); `blueferry plugins log ID` or **Show Log** in the settings.
 

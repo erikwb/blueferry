@@ -19,8 +19,23 @@ GridLayout {
     readonly property bool callsEnabled: (callsTab.bridge.status || {}).calls_enabled === true
     readonly property bool callsReady: callsTab.bridge.callsState === "ready"
     readonly property var phoneCalls: callsTab.bridge.phoneCalls || []
+    // The call keypad tones go to (phone_link_view.active_call_id).
+    readonly property string activeCall: callsTab.bridge.activeCallId || ""
+    // A call just connected: an empty number field must not swallow the
+    // keyboard's keypad keys meant for the call's menu.
+    onActiveCallChanged: {
+        if (callsTab.activeCall !== "" && dialField.activeFocus && dialField.text === "")
+            dialField.focus = false
+    }
+
     function append(key: string): void {
         dialField.text += key
+    }
+
+    // A pad key: a tone for the active call, else part of the number.
+    function padKey(key: string): void {
+        if (callsTab.activeCall === "" || !callsTab.bridge.pressCallTone(key))
+            callsTab.append(key)
     }
 
     function dial(): void {
@@ -117,6 +132,49 @@ GridLayout {
                             onClicked: callsTab.bridge.hangupCall(activeCall.modelData.call_id)
                         }
                     ]
+                    // Keypad tones (DTMF) go to the active call only. The text
+                    // is kept by the bridge: the cards are rebuilt on each
+                    // phoneCalls change.
+                    RowLayout {
+                        objectName: "callTonesRow"
+                        Layout.fillWidth: true
+                        visible: activeCall.card.active === true
+                        Controls.TextField {
+                            id: tonesField
+                            objectName: "callTonesField"
+                            Layout.fillWidth: true
+                            placeholderText: activeCall.card.tones || ""
+                            Accessible.name: placeholderText
+                            maximumLength: 32
+                            inputMethodHints: Qt.ImhDialableCharactersOnly
+                            validator: RegularExpressionValidator { regularExpression: /[0-9*#]*/ }
+                            text: callsTab.bridge.callTonesDraft || ""
+                            onTextEdited: callsTab.bridge.setCallTonesDraft(text)
+                            onAccepted: activeCall.sendTones()
+                        }
+                        Controls.Button {
+                            objectName: "callTonesSend"
+                            text: activeCall.card.send_tones || ""
+                            icon.name: "input-dialpad"
+                            // Tones queue up on their own; other actions do not block them.
+                            enabled: tonesField.text !== ""
+                            onClicked: activeCall.sendTones()
+                        }
+                    }
+                    function sendTones(): void {
+                        if (tonesField.text !== "")
+                            callsTab.bridge.sendCallTones(activeCall.modelData.call_id, tonesField.text)
+                    }
+                    // The tones sent so far ("Sent: 1 2"), from the pad, the
+                    // keyboard or the field above.
+                    Controls.Label {
+                        objectName: "callTonesSent"
+                        Layout.fillWidth: true
+                        visible: activeCall.card.active === true && text !== ""
+                        text: callsTab.bridge.callTonesSent || ""
+                        textFormat: Text.PlainText
+                        opacity: 0.7
+                    }
                 }
             }
 
@@ -238,11 +296,16 @@ GridLayout {
                                 Item { Layout.fillHeight: true }
                             }
                             // Qt suppresses clicked after a handled long press.
+                            // A long press on 0 dials "+"; during a call it is just 0.
                             onPressAndHold: {
-                                if (key.modelData[0] === "0")
-                                    callsTab.append("+")
+                                if (key.modelData[0] === "0") {
+                                    if (callsTab.activeCall !== "")
+                                        callsTab.padKey("0")
+                                    else
+                                        callsTab.append("+")
+                                }
                             }
-                            onClicked: callsTab.append(key.modelData[0])
+                            onClicked: callsTab.padKey(key.modelData[0])
                         }
                     }
                 }
