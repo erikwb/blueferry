@@ -227,6 +227,14 @@
       <annotation name="io.weirdware.BlueFerry.Errors"
                   value="NotReady"/>
     </method>
+    <method name="ResetStorage">
+      <annotation name="org.freedesktop.DBus.Description"
+                  value="Erase all retained local data (history, cached contacts, call history, conversation preferences), remove BlueFerry's keyring key and prepare storage again under a new one. For storage whose key is lost or replaced, or whose records failed authentication; GetStatus storage_reset advertises it"/>
+      <arg name="confirmed" type="b" direction="in"/>
+      <arg name="status_json" type="s" direction="out"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="ConfirmationRequired,NotReady"/>
+    </method>
     <method name="ListRecent">
       <arg name="folder" type="s" direction="in"/>
       <arg name="limit" type="u" direction="in"/>

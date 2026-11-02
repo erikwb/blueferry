@@ -808,3 +808,16 @@ def test_a_status_forwarded_while_options_is_being_pushed_does_not_crash() -> No
             assert app.is_running
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("offered", [False, True])
+def test_storage_caption_names_the_reset_only_when_the_daemon_offers_it(offered) -> None:
+    async def scenario() -> None:
+        backend = _OptionsBackend(extra=dict(_FULL_EXTRA, storage_reset=offered))
+        app = _app(backend)
+        async with app.run_test(size=(120, 40)) as pilot:
+            screen = await _open(app, pilot, "security")
+            caption = _plain(screen, "#options-storage")
+            assert ("blueferry storage-reset" in caption) is offered
+
+    asyncio.run(scenario())

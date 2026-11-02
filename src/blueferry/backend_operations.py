@@ -1041,15 +1041,59 @@ class BackendOperations:
             # Never mix plaintext and ciphertext in one archive. Clear before
             # changing policy so a crash can leave stale settings or an empty
             # archive, but never private data under the wrong policy.
-            clear_events()
-            clear_contact_cache()
-            self._clear_call_history()
-            if self.dependencies.starred_threads is not None:
-                self.dependencies.starred_threads.clear()
-            if self.dependencies.group_routes is not None:
-                self.dependencies.group_routes.clear()
-            self._clear_confirmed_groups()
+            self._erase_retained_data()
         return selected
+
+    def _erase_retained_data(self) -> None:
+        """Erase every store the storage policy protects; none needs the key."""
+        clear_events()
+        clear_contact_cache()
+        self._clear_call_history()
+        if self.dependencies.starred_threads is not None:
+            self.dependencies.starred_threads.clear()
+        if self.dependencies.group_routes is not None:
+            self.dependencies.group_routes.clear()
+        self._clear_confirmed_groups()
+
+    def reset_storage_async(
+        self, submit: Callable[..., object], success: Success, failure: Failure,
+        *, confirmed: bool,
+    ) -> None:
+        """Erase all retained local data, then prepare storage under a new key.
+
+        The way out when retained data cannot be opened: its keyring key is
+        gone or replaced, or the records failed authentication.
+        """
+        if not confirmed:
+            raise ConfirmationRequiredError(
+                "local storage reset requires explicit confirmation"
+            )
+        storage = self.dependencies.storage
+        if storage is None:
+            raise NotReadyError("local storage is unavailable")
+        if storage.busy and not storage.cancel_passive_request():
+            raise NotReadyError("a desktop wallet request is already pending")
+        completed = False
+
+        def succeeded(status: StorageStatus) -> None:
+            nonlocal completed
+            completed = True
+            try:
+                success(self._storage_changed(status))
+            except Exception as error:
+                failure(error)
+
+        # Erase before the key goes, as for a policy change: a crash leaves
+        # an empty archive, never records whose key has been deleted.
+        self._erase_retained_data()
+        if self.dependencies.notification_log is not None:
+            self.dependencies.notification_log.clear()
+        storage.change_async(
+            submit, reset=True, on_success=succeeded, on_error=failure,
+            **self._storage_preparation_args(),
+        )
+        if not completed:
+            self._storage_changed(storage.status)
 
     def change_storage_async(
         self, submit: Callable[..., object], success: Success, failure: Failure,

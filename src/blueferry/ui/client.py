@@ -683,6 +683,14 @@ class DaemonClient(GObject.Object):
             mutation=True,
         )
 
+    def reset_storage_async(self, on_ok, on_err) -> None:
+        self._submit(
+            lambda: self._call_backend(lambda backend: backend.reset_storage()),
+            on_ok,
+            on_err,
+            mutation=True,
+        )
+
     def _tether_operation(
         self, request: Callable[[BackendClient], TetherStatus]
     ) -> Callable[[], TetherStatus | None]:

@@ -287,6 +287,7 @@ blueferry sms-send Alice 'running late'
 blueferry contacts-sync              # pull contacts from the iPhone again
 blueferry storage-policy-set encrypted   # or plaintext, none
 blueferry storage-unlock             # ask the keyring to unlock stored data
+blueferry storage-reset              # erase all local data and replace the key
 blueferry history-clear              # delete local message history
 blueferry pairing-issue              # open a GitHub issue with the last pairing report
 blueferry version

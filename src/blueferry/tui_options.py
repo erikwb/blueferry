@@ -694,12 +694,19 @@ class OptionsScreen(ModalScreen[None]):
         self.query_one("#options-sync-contacts", Button).disabled = not daemon
         storage = str(values.get("storage_policy") or "")
         storage_state = str(values.get("storage_state") or "")
-        self.query_one("#options-storage", Static).update(Text(_one_line(
-            _("Storage: {policy} ({state}). Change it with "
-              "blueferry storage-policy-set encrypted|plaintext|none.").format(
-                policy=_STORAGE.get(storage, storage or "…"), state=storage_state or "…",
+        caption = _("Storage: {policy} ({state}). Change it with "
+                    "blueferry storage-policy-set encrypted|plaintext|none.").format(
+            policy=_STORAGE.get(storage, storage or "…"), state=storage_state or "…",
+        )
+        if values.get("storage_reset") is True:
+            # The explanation, and the way out when the saved data's key is lost.
+            detail = str(values.get("storage_detail") or "").rstrip(".")
+            if detail:
+                caption += f" {detail}."
+            caption += " " + _(
+                "To erase local data and start over, run blueferry storage-reset."
             )
-        )))
+        self.query_one("#options-storage", Static).update(Text(_one_line(caption)))
 
     # ---- saved switches ---------------------------------------------------
 
