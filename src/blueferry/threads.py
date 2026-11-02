@@ -195,6 +195,8 @@ def build_threads(events: list[dict], resolver=None) -> list[dict]:
     """
     correlated = correlate_group_events(events, resolver)
     by_key: dict[str, dict] = {}
+    # Messages, by id(), that may have been sent to a group instead.
+    maybe_group: set[int] = set()
     for event in correlated:
         if event.get("kind") not in MESSAGE_KINDS:
             continue
@@ -332,6 +334,8 @@ def build_threads(events: list[dict], resolver=None) -> list[dict]:
             "body_truncated": bool(event.get("body_truncated", False)),
         }
         thread["messages"].append(message)
+        if not is_group and event.get("group_ambiguous"):
+            maybe_group.add(id(message))
         if _timestamp_order(str(message["timestamp"])) >= _timestamp_order(thread["last_ts"]):
             thread["last_ts"] = message["timestamp"]
             if event.get("group_observed_sender"):
@@ -359,6 +363,10 @@ def build_threads(events: list[dict], resolver=None) -> list[dict]:
                 messages[-1],
             )
             thread["recipients"] = [latest_incoming["address"]]
+            if id(latest_incoming) in maybe_group:
+                # A reply here would reach the sender alone while the
+                # conversation may be a group.
+                thread["reply_ready"] = False
         if thread.get("participants_required"):
             thread["reply_ready"] = False
         thread["missing_members"] = thread["missing_members"] or []

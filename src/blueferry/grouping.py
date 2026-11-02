@@ -37,7 +37,7 @@ _MEMBER_SEPARATOR = re.compile(r"\s*(?:,|&)\s*")
 
 
 class _MessageCandidates:
-    """Index repeated bodies by time; ambiguity needs at most two candidates."""
+    """Index repeated bodies by time; ambiguity usually needs two candidates."""
 
     def __init__(self, events: list[dict], indexes: list[int]) -> None:
         self.exact: dict[str, list[tuple[float, int]]] = {}
@@ -67,7 +67,10 @@ class _MessageCandidates:
             for entries in index_by_prefix.values():
                 entries.sort()
 
-    def matching(self, body: str, when: datetime, excluded: set[int]) -> list[int]:
+    def matching(
+        self, body: str, when: datetime, excluded: set[int],
+        limit: int | None = 2,
+    ) -> list[int]:
         instant = when.timestamp()
         matches: list[int] = []
         buckets = [self.exact.get(body, [])]
@@ -87,7 +90,7 @@ class _MessageCandidates:
                 index = entries[position][1]
                 if index not in excluded:
                     matches.append(index)
-                    if len(matches) == 2:
+                    if len(matches) == limit:
                         return matches
         return matches
 
@@ -212,6 +215,20 @@ def _member_roster_token(
     return canonical_address(address) or f"name:{member.casefold()}"
 
 
+def _names_agree(notification: dict, sms: dict) -> bool:
+    """Whether a notification title can name this MAP message's sender."""
+    title = str(notification.get("title") or "").strip()
+    trusted = str(sms.get("contact_name") or "").strip()
+    return not (title and trusted and title.casefold() != trusted.casefold())
+
+
+def _notification_evidence(notification: dict) -> tuple[str, str]:
+    return (
+        str(notification.get("title") or "").strip(),
+        str(notification.get("subtitle") or "").strip(),
+    )
+
+
 def _reconcile_group_identities(
     events: list[dict],
     addresses_by_name: dict[str, set[str]],
@@ -291,8 +308,9 @@ def correlate_group_events(events: list[dict], resolver=None) -> list[dict]:
     Added SMS keys are ``group_key``, ``group_name``, ``group_members``,
     ``group_recipients``, and ``group_reply_ready``. A group without a safe
     route also gets ``group_participants_required``; a saved roster supplies
-    one. Minimal Messages ANCS records remain in the returned sequence as
-    correlation evidence.
+    one. A message that may belong to a group notification, but not
+    certainly, gets ``group_ambiguous`` instead. Minimal Messages ANCS records
+    remain in the returned sequence as correlation evidence.
     """
     # Correlation annotates only top-level keys; copying each record avoids the
     # cost of recursively cloning every message body and nested value.
@@ -321,6 +339,27 @@ def correlate_group_events(events: list[dict], resolver=None) -> list[dict]:
         if name and address:
             addresses_by_name.setdefault(name.casefold(), set()).add(address)
 
+    # Every Messages notification that could describe each MAP message, so a
+    # match must be unique from both sides. Copies of one notification agree.
+    evidence_by_sms: dict[int, set[tuple[str, str]]] = {}
+    for event in out:
+        if event.get("kind") != "ancs_notification":
+            continue
+        if event.get("app_id") != MESSAGES_APP_ID:
+            continue
+        ancs_body = str(event.get("body") or "")
+        ancs_time = _seen_at(event)
+        if not ancs_body or ancs_time is None:
+            continue
+        for index in message_candidates.matching(
+            ancs_body, ancs_time, set(), limit=None,
+        ):
+            if _names_agree(event, out[index]):
+                evidence_by_sms.setdefault(index, set()).add(
+                    _notification_evidence(event)
+                )
+    ambiguous: set[int] = set()
+
     for event in out:
         kind = event.get("kind")
         if kind != "ancs_notification":
@@ -335,11 +374,22 @@ def correlate_group_events(events: list[dict], resolver=None) -> list[dict]:
         if not ancs_body or ancs_time is None:
             continue
 
-        candidates = message_candidates.matching(ancs_body, ancs_time, matched)
+        candidates = message_candidates.matching(
+            ancs_body, ancs_time, set(), limit=None,
+        )
+        if candidates and set(candidates) <= matched:
+            # A copy of a notification whose message is already joined.
+            continue
         # A wrong group reply is worse than a missed correlation. Repeated
         # texts such as "ok" are common, so body + a broad time window is not
-        # enough evidence when more than one MAP message is eligible.
-        if len(candidates) != 1:
+        # enough evidence when more than one MAP message is eligible, or when
+        # the one MAP message could also be another notification's.
+        if len(candidates) != 1 or len(evidence_by_sms.get(candidates[0], ())) > 1:
+            # Either way one of them may have been sent to a group, so none
+            # is safe to answer as a 1:1 message.
+            ambiguous.update(
+                index for index in candidates if _names_agree(event, out[index])
+            )
             continue
 
         sms_index = candidates[0]
@@ -433,6 +483,9 @@ def correlate_group_events(events: list[dict], resolver=None) -> list[dict]:
             "group_participants_required": not reply_ready,
             "group_missing_members": [] if reply_ready else missing,
         })
+
+    for index in ambiguous - matched:
+        out[index]["group_ambiguous"] = True
 
     # Link direct ANCS evidence only when its body/time match is unambiguous.
     for event in out:
