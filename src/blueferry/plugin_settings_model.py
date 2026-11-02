@@ -170,7 +170,7 @@ class PluginSettingsModel:
     def load(self) -> None:
         def work() -> tuple:
             entries, ignored = self._manager.entries()
-            statuses = view.plugin_statuses(entries, self._client)
+            statuses = view.plugin_statuses(entries, self._enabled_client)
             return entries, ignored, statuses, index_urls(self._manager.settings())
 
         def done(value: tuple) -> None:
