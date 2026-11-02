@@ -29,8 +29,13 @@ flowchart LR
   nicht von selbst).
 - Zeigt bei einem eingehenden Anruf eine Desktop-Mitteilung mit **Answer**
   und **Decline**. Sie schließt sich, sobald es nicht mehr klingelt.
-- Der Qt-Client bekommt einen Dialog **Phone Calls**, der Terminal-Client
-  ein Anruf-Panel (`c`: annehmen, halten/fortsetzen, auflegen, Tastentöne,
+- Der Qt- und der GTK-Client zeigen laufende Anrufe als Karten im Tab
+  **Calls** (annehmen, halten/fortsetzen, auflegen und, solange ein Anruf
+  aktiv ist, Tastentöne: jede Taste des Wählfelds und jede außerhalb eines
+  Textfelds getippte 0–9, `*`, `#` geht sofort hinaus und erscheint als
+  „Sent: …“; ein Feld für Tastentöne mit **Send Tones** nimmt ganze Folgen
+  wie eine PIN), der
+  Terminal-Client ein Anruf-Panel (`c`: annehmen, halten/fortsetzen, auflegen, Tastentöne,
   Kontaktvorschläge) und die CLI die Befehlsgruppe `calls`:
 
   ```bash

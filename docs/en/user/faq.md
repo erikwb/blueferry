@@ -23,11 +23,10 @@ music audio on the iPhone.
 
 ## Why can't I reply to a group?
 
-Bluetooth doesn't tell BlueFerry a group's ID or complete member list. For a
-named group, BlueFerry learns members from the people who write in it and asks
-you to confirm the full list once. If the members are unclear, or someone new
-writes, replies stay disabled until you confirm again. See
-[Group chats](overview.md#group-chats).
+Bluetooth doesn't tell BlueFerry a group's ID or complete member list. When
+BlueFerry can't tell who is in a group, it asks you to confirm the members the
+first time you send to it, suggesting contacts as you type. If someone new
+writes, it asks again. See [Group chats](overview.md#group-chats).
 
 ## Can two computers use the same iPhone?
 
