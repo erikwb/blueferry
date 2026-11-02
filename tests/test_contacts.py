@@ -1,6 +1,7 @@
 """Tests for extracting messaging addresses from PBAP vCards."""
 from __future__ import annotations
 
+import sqlite3
 import textwrap
 from contextlib import closing
 from pathlib import Path
@@ -21,6 +22,19 @@ from blueferry.limits import (
 )
 from blueferry.obex import transfer
 from blueferry.vcard import iter_vcard_bodies
+
+
+def test_open_db_closes_connection_when_schema_initialization_fails(isolated_state, monkeypatch):
+    connection = sqlite3.connect(":memory:")
+    monkeypatch.setattr(contact_repository.sqlite3, "connect", lambda _path: connection)
+    monkeypatch.setattr(contact_repository, "_SCHEMA", "INVALID SQL")
+    try:
+        with pytest.raises(sqlite3.OperationalError, match="syntax error"):
+            contact_repository._open_db()
+        with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+            connection.execute("SELECT 1")
+    finally:
+        connection.close()
 
 
 @pytest.fixture(autouse=True)

@@ -14,6 +14,7 @@ Build-Depends:
  python3-gi,
  python3-hypothesis,
  python3-pytest,
+ python3-pytest-xdist,
  python3-setuptools,
  python3-typer (>= 0.9),
  python3-wheel,

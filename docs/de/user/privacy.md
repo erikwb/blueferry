@@ -83,6 +83,13 @@ Unterhaltungen einen Neustart überstehen. Du entscheidest, wie:
   [stummgeschaltete Apps](notification-mute.md) folgen demselben
   Speichermodus.
 - `blueferry history-clear` löscht den lokalen Nachrichtenverlauf.
+- Solange noch Daten mit einem Speicherschlüssel verschlüsselt sind, ersetzt
+  BlueFerry ihn nie, wenn er fehlt, und merkt, wenn der Schlüsselbund einen
+  anderen Schlüssel liefert. Die Daten bleiben dann unangetastet, bis der
+  ursprüngliche Schlüssel zurück ist. Ist er verloren, löscht **Reset Local
+  Storage** im Client oder `blueferry storage-reset` alle lokalen Daten und
+  beginnt mit einem neuen Schlüssel; siehe
+  [Fehlerbehebung](troubleshooting.md#gespeicherter-verlauf-lasst-sich-nach-einem-neustart-nicht-offnen).
 
 Die [Kartenangaben](contacts.md) der Kontakte (Bezeichnungen der Nummern,
 Postadressen, Firma, Position) liegen nur in verschlüsselten

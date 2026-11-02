@@ -700,6 +700,19 @@ class SettingsDialog(Adw.PreferencesDialog):
         clear_button.connect("clicked", self._confirm_clear_history)
         clear_row.add_suffix(clear_button)
         data_group.add(clear_row)
+        # Shown while saved data cannot be opened, e.g. after its keyring
+        # key was lost; the subtitle carries the backend's explanation.
+        self._storage_reset_row = Adw.ActionRow(
+            title=_("Reset Local Storage"), use_markup=False, visible=False,
+        )
+        self._storage_reset_button = Gtk.Button(
+            label=_("Reset"),
+            valign=Gtk.Align.CENTER,
+            css_classes=["destructive-action"],
+        )
+        self._storage_reset_button.connect("clicked", self._confirm_storage_reset)
+        self._storage_reset_row.add_suffix(self._storage_reset_button)
+        data_group.add(self._storage_reset_row)
 
         about_group = Adw.PreferencesGroup()
         version_row = Adw.ActionRow(
@@ -1540,6 +1553,9 @@ class SettingsDialog(Adw.PreferencesDialog):
         self._storage_policy_row.set_sensitive(reachable)
         self._applying_storage_policy = False
         locked = status.storage_policy == "encrypted" and status.storage_state != "ready"
+        self._storage_reset_row.set_visible(status.extra.get("storage_reset") is True)
+        self._storage_reset_row.set_subtitle(status.storage_detail)
+        self._storage_reset_button.set_sensitive(reachable)
         if reachable and locked and not self._storage_unlock_attempted:
             self._storage_unlock_attempted = True
             self._unlock_storage()
@@ -2099,6 +2115,40 @@ class SettingsDialog(Adw.PreferencesDialog):
                 self._refresh(),
             ),
         )
+
+    def _confirm_storage_reset(self, _button) -> None:
+        dialog = Adw.AlertDialog(
+            heading=_("Reset Local Storage?"),
+            body=_(
+                "This permanently deletes local message history, cached "
+                "contacts, call history and conversation preferences, and "
+                "replaces BlueFerry's keyring key. Nothing on the iPhone is "
+                "deleted."
+            ),
+        )
+        dialog.add_response("cancel", _("Cancel"))
+        dialog.add_response("reset", _("Erase and Start Over"))
+        dialog.set_close_response("cancel")
+        dialog.set_response_appearance("reset", Adw.ResponseAppearance.DESTRUCTIVE)
+
+        def responded(_dialog, response: str) -> None:
+            if response != "reset":
+                return
+            # The reset obtains its own key; skip the automatic unlock.
+            self._storage_unlock_attempted = True
+            self._storage_reset_button.set_sensitive(False)
+            self._client.reset_storage_async(
+                lambda _value: (self._toast(_("Local storage reset")), self._refresh()),
+                lambda error: (
+                    self._toast(_("Could not reset local storage: {error}").format(
+                        error=error,
+                    )),
+                    self._refresh(),
+                ),
+            )
+
+        dialog.connect("response", responded)
+        dialog.present(self.get_root())
 
     def _update_onboarding(self) -> None:
         transition = self._onboarding.update(

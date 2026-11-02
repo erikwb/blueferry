@@ -109,7 +109,7 @@ def test_saved_roster_survives_history_retention(isolated_state, monkeypatch):
 
 
 class _Wallet:
-    def get_or_create(self, *, allow_prompt, cancellable=None):
+    def get_or_create(self, *, allow_prompt, cancellable=None, create=True):
         return b"K" * 32
 
     def delete(self, *, allow_prompt, cancellable=None):

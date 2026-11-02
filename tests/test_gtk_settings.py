@@ -14,7 +14,7 @@ from tests.gtk_broadway import run_scenario
     "scenario", [
         "categories", "features", "old-daemon", "doctor", "mirror-removals",
         "battery-warning", "reconnect", "notification-rules", "muted-apps",
-        "feature-races", "status-save-races", "rule-races",
+        "feature-races", "status-save-races", "rule-races", "storage-reset",
     ],
 )
 def test_gtk_settings(tmp_path, scenario):
@@ -92,6 +92,8 @@ class FakeClient:
     def remove_notification_open_target_async(self, bundle, on_ok, on_err):
         self.calls.append((("remove_rule", bundle), on_ok, on_err))
 
+    def reset_storage_async(self, on_ok, on_err):
+        self.calls.append(("reset_storage", on_ok, on_err))
     def notification_apps_async(self, on_ok, on_err=None):
         self.calls.append(("apps", on_ok, on_err))
 
@@ -726,8 +728,46 @@ def _exercise_rule_races():
     window.destroy()
 
 
+def _exercise_storage_reset():
+    from unittest.mock import patch
+
+    from blueferry.models import BackendStatus
+    from blueferry.ui import status as status_module
+
+    dialog, window, client = _settings()
+    dialog.present(window)
+    row, button = dialog._storage_reset_row, dialog._storage_reset_button
+    locked = {"daemon": True, "storage_policy": "encrypted", "storage_state": "locked"}
+    dialog._apply_status(BackendStatus.from_dict(locked))  # an older daemon
+    assert not row.get_visible()
+    dialog._apply_status(BackendStatus.from_dict({**locked, "storage_reset": False}))
+    assert not row.get_visible()
+    detail = "The key for saved encrypted history is no longer in the desktop keyring"
+    dialog._apply_status(BackendStatus.from_dict(
+        {**locked, "storage_reset": True, "storage_detail": detail},
+    ))
+    assert row.get_visible() and row.get_subtitle() == detail and button.get_sensitive()
+
+    alerts = []
+    toasts = []
+    dialog._toast = toasts.append
+    with patch.object(
+        status_module.Adw.AlertDialog, "present", lambda alert, _parent: alerts.append(alert),
+    ):
+        dialog._confirm_storage_reset(button)
+        alerts[-1].emit("response", "cancel")
+        assert client.calls == []
+        dialog._confirm_storage_reset(button)
+        alerts[-1].emit("response", "reset")
+    assert not button.get_sensitive()
+    client.take("reset_storage")[1]({"storage_state": "ready"})
+    assert toasts == ["Local storage reset"]
+    window.destroy()
+
+
 if __name__ == "__main__":
     {
+        "storage-reset": _exercise_storage_reset,
         "muted-apps": _exercise_muted_apps,
         "notification-rules": _exercise_notification_rules,
         "feature-races": _exercise_feature_races,
