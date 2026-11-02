@@ -6243,14 +6243,22 @@ def test_quickshell_fetches_now_playing_only_with_the_opt_in(qml_engine) -> None
 
 def test_quickshell_discards_late_media_after_status_loss(qml_engine) -> None:
     source = (ROOT / "data/quickshell/shell.qml").read_text()
-    functions = _qml_functions(source, ("markStatusUnavailable", "applyNowPlaying"))
+    functions = _qml_functions(
+        source, ("markStatusUnavailable", "applyNowPlaying", "applyCalls"),
+    )
     script = '''(function() {
         var calls = [];
         var backendBridge = {cancelLatest: function(method) { calls.push(method); }};
         var backendStatus = {media_control_enabled: true};
         var nowPlaying = {visible: true};
         var statusErrorText = "";
+        var callsWatched = true;
+        var callsView = {visible: true};
         var root = {};
+        Object.defineProperty(root, "callsWatched", {get: function() {return callsWatched;}});
+        Object.defineProperty(root, "callsView", {
+            get: function() {return callsView;}, set: function(value) {callsView = value;}
+        });
         Object.defineProperty(root, "backendStatus", {get: function() {return backendStatus;}});
         Object.defineProperty(root, "nowPlaying", {
             get: function() {return nowPlaying;}, set: function(value) {nowPlaying = value;}
@@ -6259,6 +6267,8 @@ def test_quickshell_discards_late_media_after_status_loss(qml_engine) -> None:
         markStatusUnavailable("gone");
         applyNowPlaying({visible: true, title: "old"});
         if (nowPlaying.visible) throw new Error("late media restored after status loss");
+        applyCalls({visible: true, calls: [{call_id: "voicecall01"}]});
+        if (callsView.visible) throw new Error("late calls restored after status loss");
         backendStatus = {media_control_enabled: false};
         applyNowPlaying({visible: true});
         if (nowPlaying.visible) throw new Error("late media restored after opt-out");
@@ -6267,7 +6277,7 @@ def test_quickshell_discards_late_media_after_status_loss(qml_engine) -> None:
         if (!nowPlaying.visible) throw new Error("fresh media was hidden");
         return JSON.stringify(calls);
     })()'''
-    assert _evaluate(qml_engine, script) == '["now_playing"]'
+    assert _evaluate(qml_engine, script) == '["now_playing","calls","call_cards"]'
 
 
 # ---- Quickshell settings parity (QS-1) ----------------------------------------

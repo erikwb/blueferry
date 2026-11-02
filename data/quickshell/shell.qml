@@ -339,8 +339,11 @@ ShellRoot {
     backendStatus = ({})
     backendBridge.cancelLatest("now_playing")
     nowPlaying = ({})
+    // Likewise the call card: a late calls reply cannot bring it back.
     callsWatched = false
-    refreshCalls()
+    backendBridge.cancelLatest("calls")
+    backendBridge.cancelLatest("call_cards")
+    callsView = ({})
     statusErrorText = message
   }
 
