@@ -11,7 +11,7 @@
   A text that cannot be sent is reported; the call stays declined.
 - Edit the replies for declining a call in the Quickshell settings
   (Calls & Audio). Muting during a call and declining with a message stay
-  with the other clients, because the panel has no call view.
+  with the other clients.
 - Choose the speaker and microphone for phone calls, saved for every call or
   switched for the running call only, without changing the system defaults
   (`Calls1.ListCallAudioDevices`, `SetCallAudioDevice`,
