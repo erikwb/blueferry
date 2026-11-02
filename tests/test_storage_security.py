@@ -11,7 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from blueferry import config, contact_repository
+from blueferry import config, contact_repository, settings_store
 from blueferry.contacts import ContactsResolver
 from blueferry.history import (
     append_event,
@@ -22,7 +22,7 @@ from blueferry.history import (
     scrub_unprotected_events,
 )
 from blueferry.limits import MAX_CONTACT_ADDRESSES_PER_CARD
-from blueferry.settings_store import SettingsStore
+from blueferry.settings_store import SettingsStore, UnreadableSettingsError
 from blueferry.storage_security import (
     KEY_MISSING_DETAIL,
     CorruptStorageError,
@@ -734,6 +734,36 @@ def test_key_check_is_written_after_preparation_and_dropped_with_the_policy(
     prepare(policy="encrypted")
     assert storage.status.can_write  # The new key is now the one on record.
     assert settings.read()["storage_key_check"] != sealed
+
+
+def test_settings_read_failure_during_preparation_is_retried(tmp_path, monkeypatch) -> None:
+    from gi.repository import GLib
+
+    monkeypatch.setattr(GLib, "timeout_add_seconds", lambda *_args: 1)
+    monkeypatch.setattr(GLib, "source_remove", lambda _source: True)
+    path = tmp_path / "settings.json"
+    settings = SettingsStore(path)
+    settings.update(local_data="encrypted", starred_thread_keys="ciphertext")
+    saved = path.read_text(encoding="utf-8")
+    storage = StorageSecurity(settings=settings, key_provider=_KeyProvider(), initialize=False)
+
+    def unreadable(*_args, **_kwargs):
+        raise OSError("transient")
+
+    monkeypatch.setattr(settings_store, "read_private_text", unreadable)
+    pending = []
+    storage.change_async(
+        lambda operation, **handlers: pending.append((operation, handlers)),
+        on_success=lambda _status: None, on_error=lambda error: pytest.fail(str(error)),
+        prepare=lambda _candidate: None,
+    )
+    operation, handlers = pending.pop()
+    with pytest.raises(UnreadableSettingsError) as raised:
+        operation()
+    handlers["on_error"](raised.value)
+
+    assert storage.status.state == "locked"  # A passive retry may still unlock it.
+    assert path.read_text(encoding="utf-8") == saved
 
 
 def test_revision_tracks_key_and_policy_changes_only(tmp_path) -> None:
