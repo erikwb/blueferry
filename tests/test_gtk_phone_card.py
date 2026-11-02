@@ -150,9 +150,10 @@ class FakeClient:
     # List photos: answered at once from ``row_photos`` so the page's worker
     # step (read and decode) runs; ``None`` queues the read instead.
     row_photos: dict | None = None
+    photo_reads: list | None = None
 
     def contact_card_photos(self, contact_ids):
-        self.photo_reads = [*getattr(self, "photo_reads", []), list(contact_ids)]
+        self.photo_reads = [*(self.photo_reads or []), list(contact_ids)]
         if self.row_photos is None:
             raise _Read(("photos", tuple(contact_ids)))
         return {key: value for key, value in self.row_photos.items() if key in contact_ids}
@@ -1189,6 +1190,21 @@ def _exercise_contacts():
     window.destroy()
 
 
+def _settle_list(page, seconds=10.0):
+    """Settle until the contact list has a viewport and laid-out rows; under
+    a loaded test run the first allocation can take longer than _settle."""
+    import time
+
+    deadline = time.monotonic() + seconds
+    while True:
+        _settle()
+        rows = _rows(page.list)
+        if (page.list_scroll.get_vadjustment().get_page_size() > 0
+                and rows and rows[0].get_height() > 0):
+            return
+        assert time.monotonic() < deadline, "the contact list was never laid out"
+
+
 def _exercise_contact_photos():
     from tests.client_fakes import ManualRunner
     from tests.photo_fixtures import png
@@ -1205,7 +1221,7 @@ def _exercise_contact_photos():
     cards = _cards_page()
     cards["contacts"][0]["has_photo"] = True
     client.take(("cards", 0, ""))[1](cards)
-    _settle()
+    _settle_list(page)
     avatars = [w for row in _rows(page.list) for w in _descendants(row)
                if type(w).__name__ == "Avatar"]
     assert [a.get_custom_image() for a in avatars] == [None, None], "initials first"
@@ -1226,7 +1242,7 @@ def _exercise_contact_photos():
 
     # Leaving the tab forgets the photos with the rows.
     client.answer_status(status)
-    _settle()
+    _settle_list(page)
     runner.fire_timers()
     assert len(client.photo_reads) == 2 and page.book.row_photo("c1") == photo
     window.show_tab("messages")
