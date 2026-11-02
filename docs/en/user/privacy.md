@@ -72,6 +72,12 @@ restarts. You choose how:
 - Starred conversations, saved group members, group confirmations and pinned
   iPhone notifications follow the same storage mode.
 - `blueferry history-clear` deletes local message history.
+- BlueFerry never replaces a missing storage key while it still has data
+  sealed with it, and it notices if the wallet returns a different key. It
+  then leaves the data untouched until the original key is back. If that key
+  is lost, **Reset Local Storage** in the client, or `blueferry
+  storage-reset`, erases all local data and starts over with a new key; see
+  [Troubleshooting](troubleshooting.md#saved-history-cant-be-opened-after-a-restart).
 
 With the optional [contact photos](contact-photos.md), the contact cache
 also holds your contacts' pictures under the same storage mode, and the
