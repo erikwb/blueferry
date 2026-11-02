@@ -172,6 +172,10 @@ class GroupRoutes(Protocol):
         in_use: Iterable[str] | None = None,
     ) -> None: ...
 
+    def hold_roster_warning(
+        self, thread_keys: Iterable[str], warning_id: str, sender: str,
+    ) -> None: ...
+
     def discard(self, thread_keys: Iterable[str]) -> None: ...
 
     def clear(self) -> None: ...
@@ -313,6 +317,7 @@ class BackendOperations:
         self.sessions = sessions
         self.dependencies = dependencies or BackendDependencies()
         self._confirmed_groups: dict[str, str] = {}
+        self._roster_check_pending = False
         # Content-free GetStatus marker for click-rule edits. Clients reread
         # the rules only when it changes; a random start makes a restarted
         # daemon's value differ from what a client last saw.
@@ -605,8 +610,55 @@ class BackendOperations:
         if store is not None:
             store.clear()
 
+    def _hold_roster_warnings(self, threads: Sequence[dict]) -> None:
+        """Save each shown roster warning with its roster.
+
+        The warning exists only while the outsider's messages are in the
+        projection. Without this, their expiry would restore the old roster
+        and its old approval.
+        """
+        store = self.dependencies.group_routes
+        storage = self.dependencies.storage
+        if store is None or (storage is not None and not storage.status.can_write):
+            return
+        for thread in threads:
+            warning_id = str(thread.get("roster_warning_id") or "")
+            if not thread.get("roster_changed") or not warning_id:
+                continue
+            try:
+                store.hold_roster_warning(
+                    conversation_keys(thread), warning_id,
+                    str(thread.get("unexpected_sender") or ""),
+                )
+            except (OSError, ValueError, RuntimeError):
+                log.exception("could not retain a group roster warning")
+
+    def hold_roster_warnings(self, submit: Callable[..., object]) -> None:
+        """Save roster warnings when history changes, even if no client lists.
+
+        Otherwise a new sender's messages could expire before anyone lists
+        conversations, and the warning would never be saved.
+        """
+        if self._roster_check_pending or not self._group_routes():
+            return
+        self._roster_check_pending = True
+
+        def ready() -> None:
+            self._roster_check_pending = False
+            self._hold_roster_warnings(self._conversations.threads())
+
+        def failed(error: Exception) -> None:
+            self._roster_check_pending = False
+            log.warning("could not check saved group rosters: %s", error)
+
+        try:
+            self.prepare_conversations(submit, ready, failed)
+        except Exception as error:
+            failed(error)
+
     def _present_threads(self, threads: Sequence[dict]) -> list[dict]:
         presented = sort_threads(threads, starred_keys=self._starred_keys())
+        self._hold_roster_warnings(presented)
         rosters = {
             str(item["key"]): group_confirmation_token(
                 item.get("recipients") or [], item.get("roster_warning_id"),

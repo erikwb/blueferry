@@ -13,6 +13,7 @@ from blueferry.group_routes import GroupRoutesStore
 from blueferry.history import append_event, prune_events, read_events
 from blueferry.limits import MAX_GROUP_ROUTES
 from blueferry.named_groups import legacy_named_group_key, named_group_key
+from blueferry.recipients import group_confirmation_token
 from blueferry.settings_store import SettingsStore
 from blueferry.starred_threads import StarredThreadsStore
 from blueferry.storage_preparation import prepare_storage
@@ -106,6 +107,79 @@ def test_saved_roster_survives_history_retention(isolated_state, monkeypatch):
 
     assert _golf(backend)["recipients"] == [ALICE, BOB, CAROL]
     assert read_events(kinds={"group_route"}) == []
+
+
+def test_roster_warning_outlives_the_outsiders_messages(isolated_state, monkeypatch):
+    monkeypatch.setattr(backend_operations, "MAX_CONVERSATION_EVENTS", 10)
+    backend = _backend()
+    _retain(_group_message(1))
+    backend.set_group_participants(KEY, [ALICE, BOB])
+    approved = group_confirmation_token([ALICE, BOB])
+    _retain(_group_message(2, CAROL))
+    backend.invalidate_conversations()
+    warned = _golf(backend)
+    assert warned["roster_changed"] is True
+
+    # Carol's message leaves the window; a member writes again.
+    _retain(_direct_message(index) for index in range(20))
+    _retain(_group_message(3))
+    backend.invalidate_conversations()
+
+    thread = _golf(backend)
+    assert thread["roster_changed"] is True
+    assert thread["reply_ready"] is False
+    assert thread["roster_warning_id"] == warned["roster_warning_id"]
+    assert group_confirmation_token(
+        thread["recipients"], thread["roster_warning_id"],
+    ) != approved
+
+    backend.set_group_participants(KEY, [ALICE, BOB])
+    reviewed = _golf(backend)
+    assert reviewed["roster_changed"] is False
+    assert reviewed["reply_ready"] is True
+
+
+def test_roster_warning_is_kept_without_a_listing(isolated_state, monkeypatch):
+    monkeypatch.setattr(backend_operations, "MAX_CONVERSATION_EVENTS", 10)
+    backend = _backend()
+    _retain(_group_message(1))
+    backend.set_group_participants(KEY, [ALICE, BOB])
+    approved = group_confirmation_token([ALICE, BOB])
+
+    # Carol writes and her message leaves the window while no client lists.
+    _retain(_group_message(2, CAROL))
+    backend.hold_roster_warnings(
+        lambda job, on_success, on_error: on_success(job()),
+    )
+    _retain(_direct_message(index) for index in range(20))
+    _retain(_group_message(3))
+    backend.invalidate_conversations()
+
+    thread = _golf(backend)
+    assert thread["roster_changed"] is True
+    assert thread["reply_ready"] is False
+    assert group_confirmation_token(
+        thread["recipients"], thread["roster_warning_id"],
+    ) != approved
+
+
+def test_a_failed_roster_check_does_not_stop_later_ones(isolated_state, monkeypatch):
+    backend = _backend()
+    _retain(_group_message(1))
+    backend.set_group_participants(KEY, [ALICE, BOB])
+    _retain(_group_message(2, CAROL))
+    run = lambda job, on_success, on_error: on_success(job())  # noqa: E731
+
+    def busy(**_kwargs):
+        raise OSError("database is locked")
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(backend_operations, "history_revision", busy)
+        backend.hold_roster_warnings(run)
+    backend.hold_roster_warnings(run)
+
+    [route] = GroupRoutesStore(config.SETTINGS_JSON).routes()
+    assert route["group_roster_warning_id"]
 
 
 class _Wallet:

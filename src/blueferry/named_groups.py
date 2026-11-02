@@ -57,6 +57,30 @@ def stored_named_group_key(event: dict) -> str:
     return named_group_key(name) if name else ""
 
 
+def route_version(route: dict) -> str:
+    """Identify one save of a roster; a roster warning names the save it is for."""
+    return str(
+        route.get("seen_at") or stored_named_group_key(route)
+        or route.get("group_key") or ""
+    )
+
+
+def held_roster_warning(route: dict) -> dict:
+    """The saved warning about a sender outside this roster, if any.
+
+    It is kept with the roster because the sender's messages can leave
+    history before the user reviews the members again.
+    """
+    warning_id = str(route.get("group_roster_warning_id") or "")
+    if not warning_id.startswith(route_version(route) + ":"):
+        return {}
+    return {
+        "group_roster_changed": True,
+        "group_unexpected_sender": str(route.get("group_unexpected_sender") or ""),
+        "group_roster_warning_id": warning_id,
+    }
+
+
 class NamedGroupRoutes:
     """Resolve legacy metadata only when one spelling owns its old key.
 
@@ -132,12 +156,14 @@ class NamedGroupRoutes:
             return False
         # A roster edit also replaces historical outgoing routing metadata;
         # otherwise old sends could re-add a participant the user removed.
+        held = held_roster_warning(route)
         event.update({
             "group_name": str(route.get("group_name") or ""),
             "group_members": list(route.get("group_members") or []),
             "group_recipients": list(route["group_recipients"]),
-            "group_reply_ready": True,
-            "group_participants_required": False,
+            "group_reply_ready": not held,
+            "group_participants_required": bool(held),
+            **held,
         })
         return True
 
@@ -171,6 +197,7 @@ class NamedGroupRoutes:
         members = [sender_title] if sender_title else []
         reply_ready = False
         roster_changed = False
+        unexpected_sender = ""
         warning_id = ""
         if route is not None:
             recipients = [str(value) for value in route["group_recipients"]]
@@ -185,8 +212,15 @@ class NamedGroupRoutes:
                     recipients.append(sender_address)
                 if sender_identity is not None:
                     roster_changed = True
-                    route_version = str(route.get("seen_at") or key)
-                    warning_id = f"{route_version}:{sender_identity}"
+                    unexpected_sender = sender_title
+                    warning_id = f"{route_version(route)}:{sender_identity}"
+            held = held_roster_warning(route)
+            if held and not roster_changed:
+                # A member writing again does not answer an earlier warning.
+                reply_ready = False
+                roster_changed = True
+                unexpected_sender = held["group_unexpected_sender"]
+                warning_id = held["group_roster_warning_id"]
         return {
             "group_key": key,
             "group_members": members,
@@ -196,6 +230,6 @@ class NamedGroupRoutes:
             "group_observed_recipient": sender_address or "",
             "group_observed_sender": sender_title,
             "group_roster_changed": roster_changed,
-            "group_unexpected_sender": sender_title if roster_changed else "",
+            "group_unexpected_sender": unexpected_sender,
             "group_roster_warning_id": warning_id,
         }
