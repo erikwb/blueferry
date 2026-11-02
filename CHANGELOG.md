@@ -27,6 +27,10 @@
   the moment the call was answered instead of the first ring, and shows hours
   (`1:02:05`). `Calls1.ListCalls` reports the start as `active_since`
   ([#230](https://github.com/erikwb/blueferry/issues/230)).
+- The Quickshell panel shows running calls in a compact card with the
+  caller, the state or the live duration, **Answer** and **Hang Up**/
+  **Decline**; muting and declining with a message stay in the other
+  clients ([#230](https://github.com/erikwb/blueferry/issues/230)).
 
 ## [0.9.1](https://github.com/erikwb/blueferry/releases/tag/v0.9.1) - 2026-10-30
 

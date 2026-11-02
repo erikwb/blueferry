@@ -287,7 +287,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `qt/qml/CallHistorySettings.qml` | Call-history opt-in checkboxes in the iPhone settings. |
 | `qt/qml/NowPlayingBar.qml` | Opt-in iPhone now-playing bar with transport buttons. |
 | `qt/qml/MediaControlSettings.qml` | Media-control opt-in checkbox and state; loaded only for daemons that report it. |
-| `quickshell_bridge.py` | Persistent stdin/stdout JSON bridge from Quickshell to the session D-Bus API. Settings replies are built on the shared `features_view`, `phone_link_view.notifications_view`, `reconnect_view`, `doctor_report` and `quick_reply_view` helpers (the bridge checks a saved decline reply with `quick_reply_view.reply_error` before it is sent). Lists (threads, contacts, feature switches, recent notifications) are plain JSON arrays; Qt 6.12 hands arrays in a `var` signal argument over as sequence wrappers that fail `Array.isArray` (#213), so `shell.qml` passes every reply and event through `plainValue()`, a JSON round trip; content-free D-Bus signals become events (`status-changed`, `now-playing-changed`, `notifications-changed`, …). |
+| `quickshell_bridge.py` | Persistent stdin/stdout JSON bridge from Quickshell to the session D-Bus API. Settings replies are built on the shared `features_view`, `phone_link_view.notifications_view`, `reconnect_view`, `doctor_report` and `quick_reply_view` helpers (the bridge checks a saved decline reply with `quick_reply_view.reply_error` before it is sent). Lists (threads, contacts, feature switches, recent notifications) are plain JSON arrays; Qt 6.12 hands arrays in a `var` signal argument over as sequence wrappers that fail `Array.isArray` (#213), so `shell.qml` passes every reply and event through `plainValue()`, a JSON round trip; content-free D-Bus signals become events (`status-changed`, `now-playing-changed`, `notifications-changed`, `calls-changed`, …). Running calls use `phone_link_view.call_card` and `call_audio_view.call_audio`; the bridge keeps the last `ListCalls` so the once-a-second duration (`call_cards`) needs no D-Bus call. |
 
 ### Quickshell client (`data/quickshell/`)
 
@@ -303,6 +303,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `PhoneSettingsPage.qml` | Setup and preferences view, in the shared categories (Phone, Notifications, Calls & Audio, Security, About). |
 | `FerryCategoryHeading.qml` | Category heading of the settings page. |
 | `FerryFeatureSwitch.qml` | One restart-required `local.env` switch from the bridge's features view (`switches`); names the variable for older daemons. |
+| `QuickshellCalls.qml` | Compact running-call card (caller, state or duration, Answer, Hang Up/Decline, the call audio hint) from the bridge's `calls` reply; while a call is answered `shell.qml` asks for `call_cards` once a second, which the bridge formats from its cached `ListCalls` without a D-Bus call. |
 | `QuickshellNotificationList.qml` | Compact, read-only recent iPhone notifications; `shell.qml` reads them only while shown and forgets them when hidden. |
 | `Theme.qml` | Reads public Omarchy theme files. |
 | `ThemePalette.qml` | Pure color/geometry tokens with a system-palette fallback. |

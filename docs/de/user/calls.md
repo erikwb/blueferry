@@ -45,8 +45,11 @@ flowchart LR
   „Sent: …“; ein Feld für Tastentöne mit **Send Tones** nimmt ganze Folgen
   wie eine PIN), der
   Terminal-Client ein Anruf-Panel (`c`: annehmen, halten/fortsetzen, auflegen, Tastentöne,
-  Kontaktvorschläge) und die CLI die Befehlsgruppe `calls`. Läuft ein
-  angenommener Anruf, zeigen die Karten, das Panel und `blueferry calls`
+  Kontaktvorschläge), das Quickshell-Panel eine kompakte Karte über den
+  Unterhaltungen (Anrufer, Zustand oder Dauer, **Answer** solange es
+  klingelt, **Hang Up** oder **Decline**) und die CLI die Befehlsgruppe
+  `calls`. Läuft ein
+  angenommener Anruf, zeigen die Karten, die Panels und `blueferry calls`
   seine Dauer (`2:05`, ab einer Stunde `1:02:05`), gezählt ab dem Annehmen
   hier oder am iPhone (oder sobald die Gegenseite abnimmt), nicht ab dem
   ersten Klingeln. Die Desktop-Mitteilung nennt nur die Startzeit: Würde sie

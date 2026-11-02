@@ -38,8 +38,10 @@ flowchart LR
   tones: each dial pad key and each 0-9, `*`, `#` typed outside a text
   field is sent at once and shown as "Sent: …"; a keypad-tone field with
   **Send Tones** takes whole sequences such as a PIN), the terminal client a calls panel (`c`: answer, hold/resume, hang up, keypad tones, contact
-  suggestions), and the CLI a `calls` command group. While a call is
-  answered, the cards, the panel and `blueferry calls` show how long it has
+  suggestions), the Quickshell panel a compact card above the conversations
+  (caller, state or duration, **Answer** while it rings, **Hang Up** or
+  **Decline**), and the CLI a `calls` command group. While a call is
+  answered, the cards, the panels and `blueferry calls` show how long it has
   run (`2:05`, from one hour on `1:02:05`), counted from the moment it was
   answered here or on the iPhone (or the other side picked up), not from
   the first ring. The desktop notification only names the start time:
