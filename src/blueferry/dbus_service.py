@@ -68,7 +68,8 @@ class MessagesService(dbus.service.Object):
                 _method, declared = dbus.service._method_lookup(
                     self, message.get_member(), message.get_interface()
                 )
-            except dbus.exceptions.UnknownMethodException:
+            except Exception:
+                # The base class repeats the lookup and replies with its error.
                 declared = None
             expected = getattr(declared, "_dbus_in_signature", None)
             if expected is not None and message.get_signature() != expected:

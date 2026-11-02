@@ -1144,3 +1144,27 @@ def test_raw_call_with_the_wrong_argument_types_is_rejected(public_service) -> N
         "boolean": [],
     }
     assert cleared == [False]
+
+
+def test_raw_call_to_a_python_attribute_gets_the_usual_error(public_service) -> None:
+    name, _pending, _policy, _changes, _service = public_service
+    outcome = {}
+
+    def call() -> None:
+        try:
+            message = dbus.lowlevel.MethodCallMessage(
+                name, OBJECT_PATH, MESSAGES_IFACE, "caller_guard"
+            )
+            connection.send_message_with_reply_and_block(message, 5)
+        except dbus.exceptions.DBusException as error:
+            outcome["error"] = error.get_dbus_name()
+        finally:
+            connection.close()
+
+    connection = dbus.SessionBus(private=True, mainloop=dbus.mainloop.NULL_MAIN_LOOP)
+    client_thread = threading.Thread(target=call)
+    client_thread.start()
+    _dispatch_until(lambda: not client_thread.is_alive())
+    client_thread.join(timeout=1)
+
+    assert outcome == {"error": "org.freedesktop.DBus.Python.AttributeError"}
