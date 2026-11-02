@@ -86,8 +86,8 @@ from blueferry.tui_phone import (
     now_playing_text,
     volume_controls,
 )
-from blueferry.tui_tasks import TextualTaskRunner, TextualTimer
 from blueferry.tui_search import SearchResult, SearchScreen
+from blueferry.tui_tasks import TextualTaskRunner, TextualTimer
 
 _REFRESH_SECONDS = 15.0
 _SIGNAL_PUMP_SECONDS = 0.2
