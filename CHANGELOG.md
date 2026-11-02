@@ -8,6 +8,10 @@
   the caller, the start time, an **On hold** state, and a **Hang up** button.
   Closing it never ends the call
   ([#230](https://github.com/erikwb/blueferry/issues/230)).
+- The call duration in the clients and in `blueferry calls` now counts from
+  the moment the call was answered instead of the first ring, and shows hours
+  (`1:02:05`). `Calls1.ListCalls` reports the start as `active_since`
+  ([#230](https://github.com/erikwb/blueferry/issues/230)).
 
 ## [0.9.1](https://github.com/erikwb/blueferry/releases/tag/v0.9.1) - 2026-10-30
 
