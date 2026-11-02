@@ -77,3 +77,4 @@ src/blueferry/tui_doctor.py
 src/blueferry/tui_calls.py
 src/blueferry/tui_notifications.py
 src/blueferry/tui_phone.py
+src/blueferry/quickshell_bridge.py

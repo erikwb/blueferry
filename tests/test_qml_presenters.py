@@ -5866,6 +5866,446 @@ def test_quickshell_discards_late_media_after_status_loss(qml_engine) -> None:
     assert _evaluate(qml_engine, script) == '["now_playing"]'
 
 
+# ---- Quickshell settings parity (QS-1) ----------------------------------------
+
+
+def _quickshell_click(control) -> None:
+    assert QMetaObject.invokeMethod(control, "toggle")
+    assert QMetaObject.invokeMethod(control, "clicked")
+    QGuiApplication.processEvents()
+
+
+def _quickshell_press(button) -> None:
+    assert QMetaObject.invokeMethod(button, "clicked")
+    QGuiApplication.processEvents()
+
+
+def _scene_y(item) -> float:
+    return item.mapToScene(QPointF(0, 0)).y()
+
+
+def _quickshell_items(root, name: str) -> list:
+    """Visual descendants named ``name``; Repeater rows are not QObject children."""
+    found = []
+
+    def walk(item):
+        for child in item.childItems():
+            if child.objectName() == name:
+                found.append(child)
+            walk(child)
+
+    walk(root)
+    return found
+
+
+def _plain_text_format(engine, item) -> bool:
+    engine.globalObject().setProperty("probedLabel", engine.newQObject(item))
+    return _evaluate(engine, "Number(probedLabel.textFormat)") == 0  # Text.PlainText
+
+
+def _quickshell_features(**items):
+    from blueferry.quickshell_bridge import features_reply
+
+    state = features_view.loaded(features_view.initial(), {
+        name: {"value": value, "running": running, "source": source,
+               "variable": "BLUEFERRY_" + name.upper(), "restart_required": value != running}
+        for name, (value, running, source) in items.items()
+    })
+    return features_reply(state)
+
+
+def test_quickshell_settings_follow_the_other_clients_categories(qml_engine, quickshell_setup):
+    from blueferry.tui_options import categories
+
+    base = {"daemon": True, "notification_policy": "all"}
+    page, _calls, close = _quickshell_settings_page(qml_engine, quickshell_setup, base)
+    headings = [page.findChild(QObject, key + "Category") for key in
+                ("phone", "notifications", "calls", "security", "about")]
+    assert all(heading is not None for heading in headings)
+    # Same titles and order as the Qt, GTK and terminal clients.
+    assert [heading.property("text") for heading in headings] == [
+        category.title for category in categories()
+    ]
+    positions = [_scene_y(heading) for heading in headings]
+    assert positions == sorted(positions)
+    # Rows sit under their category.
+    phone_rows = page.findChild(QObject, "runDoctorButton")
+    away = page.findChild(QObject, "proximityLockCheckBox")
+    assert positions[0] < _scene_y(phone_rows) < positions[1]
+    assert page.findChild(QObject, "autoProfileResetCheckBox") is not None
+    otp = page.findChild(QObject, "storagePolicySelector")
+    assert positions[3] < _scene_y(otp) < positions[4]
+    assert away is not None
+    close()
+
+
+def test_quickshell_feature_switches_save_and_offer_the_restart(qml_engine, quickshell_setup):
+    base = {"daemon": True, "notification_policy": "all"}
+    page, calls, close = _quickshell_settings_page(qml_engine, quickshell_setup, base)
+    restart = page.findChild(QObject, "restartNotice")
+    assert restart.property("visible") is False
+    features = _quickshell_features(
+        show_notification_content=(True, True, "default"),
+        mark_read_on_dismiss=(False, False, "default"),
+        notification_history=(True, False, "settings"),
+    )
+    page.setProperty("features", features)
+    QGuiApplication.processEvents()
+    content = page.findChild(QObject, "feature_show_notification_content")
+    history = page.findChild(QObject, "feature_notification_history")
+    assert content.property("checked") is True and content.property("enabled") is True
+    assert history.property("checked") is True
+    assert page.findChild(QObject, "featureNote_notification_history").property("text").endswith(
+        "Applies after the service restarts."
+    )
+    assert restart.property("visible") is True
+    _quickshell_press(page.findChild(QObject, "restartServiceButton"))
+    _quickshell_click(page.findChild(QObject, "feature_mark_read_on_dismiss"))
+    assert calls == [
+        ("restart_backend", {}),
+        ("set_feature", {"name": "mark_read_on_dismiss", "enabled": True}),
+    ]
+    # While it is saved the box keeps the choice and every switch waits.
+    page.setProperty("featurePending", {"mark_read_on_dismiss": True})
+    page.setProperty("busy", {"features": True})
+    QGuiApplication.processEvents()
+    mark_read = page.findChild(QObject, "feature_mark_read_on_dismiss")
+    assert mark_read.property("checked") is True
+    assert content.property("enabled") is False
+    page.setProperty("featurePending", {})
+    page.setProperty("busy", {})
+    QGuiApplication.processEvents()
+    assert mark_read.property("checked") is False  # the reloaded view decides
+    close()
+
+
+def test_quickshell_feature_switches_name_the_variable_for_an_older_daemon(
+    qml_engine, quickshell_setup,
+):
+    from blueferry.quickshell_bridge import features_reply
+
+    page, _calls, close = _quickshell_settings_page(
+        qml_engine, quickshell_setup, {"daemon": True},
+    )
+    page.setProperty("features", features_reply(
+        features_view.unavailable(features_view.initial(), "UnknownMethod"),
+    ))
+    QGuiApplication.processEvents()
+    for name, variable in (
+        ("show_notification_content", "BLUEFERRY_SHOW_NOTIFICATION_CONTENT"),
+        ("mark_read_on_dismiss", "BLUEFERRY_MARK_READ_ON_DISMISS"),
+        ("notification_history", "BLUEFERRY_NOTIFICATION_HISTORY"),
+    ):
+        assert page.findChild(QObject, "feature_" + name).property("enabled") is False
+        assert variable in page.findChild(QObject, "featureNote_" + name).property("text")
+    close()
+
+
+def test_quickshell_shows_why_the_switches_fall_back(qml_engine, quickshell_setup):
+    from blueferry.quickshell_bridge import features_reply
+
+    page, _calls, close = _quickshell_settings_page(
+        qml_engine, quickshell_setup, {"daemon": True},
+    )
+    label = page.findChild(QObject, "featuresError")
+    page.setProperty("features", _quickshell_features(
+        mark_read_on_dismiss=(False, False, "default"),
+    ))
+    QGuiApplication.processEvents()
+    assert label.property("visible") is False
+    page.setProperty("features", features_reply(
+        features_view.unavailable(features_view.initial(), "<b>BlueFerry</b> is not running"),
+    ))
+    QGuiApplication.processEvents()
+    # An older daemon without GetFeatures: the rows' notes explain it.
+    assert label.property("visible") is False
+    page.setProperty("status", {"daemon": False})
+    QGuiApplication.processEvents()
+    assert label.property("visible") is True
+    assert label.property("text") == (
+        "Could not read the service's switches: <b>BlueFerry</b> is not running"
+    )
+    assert _plain_text_format(qml_engine, label)
+    close()
+
+
+def test_quickshell_lists_switches_it_has_no_wording_for(qml_engine, quickshell_setup):
+    page, calls, close = _quickshell_settings_page(
+        qml_engine, quickshell_setup, {"daemon": True},
+    )
+    page.setProperty("features", _quickshell_features(
+        notification_history=(False, False, "default"),
+        future_switch=(False, False, "default"),
+    ))
+    QGuiApplication.processEvents()
+    shown = [box for box in _quickshell_items(page, "feature_future_switch")
+             if box.property("visible")]
+    assert len(shown) == 1 and shown[0].property("text") == "BLUEFERRY_FUTURE_SWITCH"
+    # The known one is placed in its group, not repeated.
+    known = [box for box in _quickshell_items(page, "feature_notification_history")
+             if box.property("visible")]
+    assert len(known) == 1
+    _quickshell_click(shown[0])
+    assert calls == [("set_feature", {"name": "future_switch", "enabled": True})]
+    close()
+
+
+def test_quickshell_battery_warning_and_notification_sync_are_opt_in(
+    qml_engine, quickshell_setup,
+):
+    base = {"daemon": True, "notification_policy": "all", "phone_battery_warning": False}
+    page, calls, close = _quickshell_settings_page(qml_engine, quickshell_setup, base)
+    battery = page.findChild(QObject, "phoneBatteryWarningCheckBox")
+    mirror = page.findChild(QObject, "mirrorRemovalsCheckBox")
+    # BackendStatus always fills phone_battery_warning; only the threshold
+    # says the daemon offers it.
+    assert battery.property("visible") is False and mirror.property("visible") is False
+    page.setProperty("status", {
+        **base, "phone_battery_warning_percent": 15, "mirror_iphone_removals": True,
+    })
+    QGuiApplication.processEvents()
+    assert battery.property("visible") is True and battery.property("checked") is False
+    assert page.findChild(QObject, "phoneBatteryWarningNote").property("text") == (
+        "One desktop notification per discharge, at 15 % or less."
+    )
+    assert mirror.property("visible") is True and mirror.property("checked") is True
+    _quickshell_click(battery)
+    _quickshell_click(mirror)
+    assert calls == [
+        ("set_phone_battery_warning", {"enabled": True}),
+        ("set_mirror_notification_removals", {"enabled": False}),
+    ]
+    page.setProperty("busy", {"batteryWarning": True, "mirrorRemovals": True})
+    QGuiApplication.processEvents()
+    assert battery.property("enabled") is False and mirror.property("enabled") is False
+    close()
+
+
+def test_quickshell_reconnect_and_contact_sync_rows(qml_engine, quickshell_setup):
+    page, calls, close = _quickshell_settings_page(
+        qml_engine, quickshell_setup, {"daemon": True},
+    )
+    row = page.findChild(QObject, "reconnectRow")
+    assert row.property("visible") is False  # older daemons: no row
+    page.setProperty("status", {"daemon": True, "reconnect_view": {
+        "available": True, "offered": True, "attention": True,
+        "hint": "<b>iPhone</b> not reachable.", "error": "",
+    }})
+    QGuiApplication.processEvents()
+    assert row.property("visible") is True
+    hint = page.findChild(QObject, "reconnectHint")
+    assert hint.property("text") == "<b>iPhone</b> not reachable."
+    assert _plain_text_format(qml_engine, hint)
+    button = page.findChild(QObject, "reconnectButton")
+    _quickshell_press(button)
+    _quickshell_press(page.findChild(QObject, "syncContactsButton"))
+    assert calls == [("reconnect_phone", {}), ("sync_contacts", {})]
+    page.setProperty("busy", {"reconnect": True, "syncContacts": True})
+    page.setProperty("contactsSyncNotice", "Synced 3 contact destinations")
+    QGuiApplication.processEvents()
+    assert button.property("enabled") is False
+    assert page.findChild(QObject, "syncContactsButton").property("enabled") is False
+    assert page.findChild(QObject, "syncContactsNotice").property("visible") is True
+    page.setProperty("status", {"daemon": True, "reconnect_view": {
+        "available": True, "offered": False, "hint": "The iPhone is connected.",
+    }})
+    QGuiApplication.processEvents()
+    assert button.property("visible") is False
+    close()
+
+
+def test_quickshell_diagnostics_show_the_shared_summary(qml_engine, quickshell_setup):
+    page, calls, close = _quickshell_settings_page(
+        qml_engine, quickshell_setup, {"daemon": True},
+    )
+    button = page.findChild(QObject, "runDoctorButton")
+    assert page.findChild(QObject, "doctorReport").property("visible") is False
+    _quickshell_press(button)
+    assert calls == [("doctor", {})]
+    page.setProperty("doctor", {"running": True})
+    QGuiApplication.processEvents()
+    assert button.property("enabled") is False
+    page.setProperty("doctor", doctor_report.view(doctor_report.finished_state(
+        doctor_report.idle_state(), doctor_report.DoctorReport(False, False, "<i>FAIL</i>"),
+    )))
+    QGuiApplication.processEvents()
+    assert page.findChild(QObject, "doctorSummary").property("text") == "One or more checks failed."
+    report = page.findChild(QObject, "doctorReport")
+    assert report.property("visible") is True and report.property("text") == "<i>FAIL</i>"
+    close()
+
+
+def test_quickshell_notification_list_is_shown_on_request_and_forgotten_when_hidden(
+    qml_engine, quickshell_setup,
+):
+    from blueferry.quickshell_bridge import notifications_reply
+
+    page, _calls, close = _quickshell_settings_page(
+        qml_engine, quickshell_setup, {"daemon": True},
+    )
+    listing = page.findChild(QObject, "notificationList")
+    assert listing.property("visible") is False
+    assert page.property("notificationsExpanded") is False
+    _quickshell_press(page.findChild(QObject, "notificationListButton"))
+    assert page.property("notificationsExpanded") is True
+    page.setProperty("notificationList", notifications_reply({
+        "enabled": True, "content": True,
+        "notifications": [{"app_name": "<b>Mail</b>", "title": "Hi", "body": "<a href='x'>y</a>"}],
+    }, ""))
+    QGuiApplication.processEvents()
+    assert listing.property("visible") is True
+    [app] = _quickshell_items(page, "notificationApp0")
+    [body] = _quickshell_items(page, "notificationBody0")
+    assert app.property("text") == "<b>Mail</b>"
+    assert body.property("text") == "<a href='x'>y</a>"
+    assert _plain_text_format(qml_engine, app) and _plain_text_format(qml_engine, body)
+    assert page.findChild(QObject, "notificationListTitle").property("visible") is False
+    # Hiding the page collapses the list, so the shell stops reading it.
+    page.setProperty("visible", False)
+    QGuiApplication.processEvents()
+    assert page.property("notificationsExpanded") is False
+    page.setProperty("visible", True)
+    page.setProperty("notificationList", notifications_reply({}, "Turn it on in Settings."))
+    page.setProperty("notificationsExpanded", True)
+    QGuiApplication.processEvents()
+    assert page.findChild(QObject, "notificationListTitle").property("text") == (
+        "Notification List Is Off"
+    )
+    assert page.findChild(QObject, "notificationListExplanation").property("text") == (
+        "Turn it on in Settings."
+    )
+    close()
+
+
+@pytest.mark.private_dbus
+def test_quickshell_reads_settings_and_notifications_only_on_events(
+    tmp_path, quickshell_environment,
+):
+    """The real shell: features on opening Settings, the private list only
+    while shown, rereads on NotificationsChanged, nothing on a timer."""
+    import shutil
+    import subprocess
+
+    executable = shutil.which("quickshell")
+    if executable is None:
+        pytest.skip("Quickshell is not installed")
+    for source in (ROOT / "data/quickshell").glob("*.qml"):
+        shutil.copyfile(source, tmp_path / source.name)
+    shutil.copyfile(
+        ROOT / "src/blueferry/qt/qml/ConversationLogic.qml",
+        tmp_path / "ConversationLogic.qml",
+    )
+    (tmp_path / "Theme.qml").write_text("import QtQuick\nThemePalette {}\n")
+    (tmp_path / "SetupTransport.qml").write_text('''import QtQuick
+Item {
+  signal lineReceived(int id, string kind, string line)
+  signal finished(int id, string kind, int code, string output, string diagnostic)
+  function execute(id, kind, command, interactive) {}
+  function cancel(id) {}
+  function write(id, text) {}
+}
+''')
+    (tmp_path / "BackendBridge.qml").write_text('''import QtQuick
+Item {
+  property bool desktopClient: false
+  property int nextId: 1
+  property var log: []
+  signal response(string method, int requestId, var result)
+  signal failure(string method, int requestId, string message)
+  signal eventReceived(string name, var data)
+  function request(method, args) { log.push(method); return nextId++; }
+  function requestLatest(method, args) { log.push("latest:" + method); }
+  function cancelLatest(method) { log.push("cancel:" + method); }
+  function take(prefix) {
+    const found = log.filter(entry => entry.indexOf(prefix) === 0).length;
+    log = log.filter(entry => entry.indexOf(prefix) !== 0);
+    return found;
+  }
+}
+''')
+    config = tmp_path / "shell.qml"
+    source = config.read_text()
+    probe = r'''
+  Timer {
+    interval: 200; running: true
+    onTriggered: {
+      function check(value, message) { if (!value) throw new Error(message); }
+      try {
+        setupController.configured = true
+        root.presentWindow()
+        backendBridge.log = []
+        root.phoneSettingsVisible = true
+        check(backendBridge.take("latest:features") === 1, "features not read on opening")
+        setupController.configurationUpdated(true)
+        check(backendBridge.take("latest:features") === 0, "features polled on refresh")
+        root.markStatusUnavailable("gone")
+        backendBridge.response("status", 20, {daemon: true})
+        check(backendBridge.take("latest:features") === 1, "returning service not reread")
+        backendBridge.response("status", 21, {daemon: true})
+        check(backendBridge.take("latest:features") === 0, "running service reread")
+        check(backendBridge.take("latest:notifications") === 0, "list read before shown")
+        backendBridge.eventReceived("notifications-changed", null)
+        check(backendBridge.take("latest:notifications") === 0, "hidden list reread")
+        phoneSettingsPage.notificationsExpanded = true
+        check(backendBridge.take("latest:notifications") === 1, "shown list not read")
+        backendBridge.response("notifications", 1, {rows: [{app: "Mail"}]})
+        check(root.notificationList.rows.length === 1, "list reply ignored")
+        backendBridge.eventReceived("notifications-changed", null)
+        check(backendBridge.take("latest:notifications") === 1, "event did not reread")
+        backendBridge.response("status", 2, {daemon: true, notification_history_enabled: false})
+        backendBridge.take("latest:")
+        backendBridge.response("status", 3, {daemon: true, notification_history_enabled: true})
+        check(backendBridge.take("latest:notifications") === 1, "switching on did not reread")
+        backendBridge.response("status", 4, {daemon: true, notification_history_enabled: true})
+        check(backendBridge.take("latest:notifications") === 0, "unchanged status reread")
+        root.phoneSettingsVisible = false
+        check(backendBridge.take("cancel:notifications") === 1, "hidden list not cancelled")
+        check(root.notificationList.rows === undefined, "hidden list not forgotten")
+        check(phoneSettingsPage.notificationsExpanded === false, "list stays expanded")
+        backendBridge.response("notifications", 5, {rows: [{app: "Late"}]})
+        check(root.notificationList.rows === undefined, "late reply shown while hidden")
+
+        // A switch: kept while saved, replaced by the reloaded view.
+        root.phoneSettingsVisible = true
+        phoneSettingsPage.operationRequested("set_feature", {name: "mark_read_on_dismiss", enabled: true})
+        check(root.featurePending.mark_read_on_dismiss === true, "choice not kept")
+        backendBridge.response("set_feature", 6, {switches: [], restart_pending: true, notice: "n"})
+        check(Object.keys(root.featurePending).length === 0, "pending choice stuck")
+        check(root.features.restart_pending === true, "reloaded view ignored")
+        backendBridge.take("")
+        phoneSettingsPage.operationRequested("restart_backend", {})
+        check(root.restartBusy, "restart not busy")
+        backendBridge.response("restart_backend", 7, null)
+        check(!root.restartBusy && root.features.notice === "", "restart notice kept")
+
+        // Reconnect: the bridge's outcome text goes to the error line.
+        phoneSettingsPage.operationRequested("reconnect_phone", {})
+        backendBridge.response("reconnect_phone", 8, {result: "unreachable", error: "gone", notice: ""})
+        check(root.errorText === "gone" && !root.reconnectBusy, "reconnect error lost")
+        phoneSettingsPage.operationRequested("sync_contacts", {})
+        backendBridge.response("sync_contacts", 9, {count: 2, text: "Synced 2"})
+        check(root.contactsSyncNotice === "Synced 2", "sync notice lost")
+        phoneSettingsPage.operationRequested("doctor", {})
+        phoneSettingsPage.operationRequested("doctor", {})
+        check(backendBridge.take("doctor") === 1, "diagnostics ran twice")
+        console.log("BLUEFERRY_QS1_OK")
+      } catch (error) {
+        console.error(error);
+      }
+      Qt.quit();
+    }
+  }
+'''
+    config.write_text(source[:source.rfind("}")] + probe + "}\n")
+    result = subprocess.run(
+        [executable, "--path", str(config)], env=quickshell_environment,
+        capture_output=True, text=True, timeout=10, check=False,
+    )
+    log = result.stdout + result.stderr
+    assert result.returncode == 0 and "BLUEFERRY_QS1_OK" in log, log
+    assert "ReferenceError" not in log and "TypeError" not in log, log
+
+
 def test_quickshell_empty_activation_only_presents_the_window(qml_engine) -> None:
     source = (ROOT / "data/quickshell/shell.qml").read_text()
     functions = _qml_functions(source, ("openMessage",))

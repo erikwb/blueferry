@@ -17,6 +17,20 @@ Rectangle {
   readonly property bool tetherReachable: root.setup.configured && root.status.map !== undefined
   readonly property bool tetherTransitioning: root.busy.tether === true
     || root.tether.state === "connecting" || root.tether.state === "disconnecting"
+  // The bridge's features view, a choice being saved, the
+  // diagnostics run and the recent-notification list (see shell.qml).
+  property var features: ({})
+  property var featurePending: ({})
+  property var doctor: ({})
+  property var notificationList: ({})
+  property string contactsSyncNotice: ""
+  // The list is private: shell.qml reads it only while this is set, and
+  // hiding the page collapses it, so it is forgotten.
+  property bool notificationsExpanded: false
+  readonly property var reconnect: root.status.reconnect_view || ({})
+  readonly property bool featuresAllowed: root.setup.configured
+    && root.status.daemon === true && !root.busy.features
+  readonly property var knownFeatures: ["show_notification_content", "mark_read_on_dismiss", "notification_history"]
   readonly property var theme: ferryTheme
   readonly property var connectionStatus: root.setup.pairing
     ? root.setup.pairingTransports : root.status
@@ -65,6 +79,8 @@ Rectangle {
       + ", then wait for BlueFerry to reconnect. This briefly disconnects all Bluetooth devices.";
   }
 
+  onVisibleChanged: if (!visible) root.notificationsExpanded = false
+
   color: root.theme.windowSurface
   radius: root.theme.panelRadius
   border.color: root.theme.divider
@@ -100,6 +116,31 @@ Rectangle {
           Layout.fillWidth: true
           implicitHeight: 1
           color: root.theme.divider
+        }
+        // A switch that needs a restart: features_view's notice.
+        RowLayout {
+          objectName: "restartNotice"
+          Layout.fillWidth: true
+          visible: root.features.restart_pending === true
+          FerryLabel {
+            ferryTheme: root.theme
+            Layout.fillWidth: true
+            wrapMode: Text.Wrap
+            color: root.theme.warning
+            text: String(root.features.restart_notice || "")
+          }
+          FerryButton {
+            objectName: "restartServiceButton"
+            ferryTheme: root.theme
+            text: root.busy.restart ? "Restarting…" : "Restart Service"
+            enabled: !root.busy.restart
+            onClicked: root.operationRequested("restart_backend", {})
+          }
+        }
+        FerryCategoryHeading {
+          objectName: "phoneCategory"
+          ferryTheme: root.theme
+          text: "Phone"
         }
         FerryLabel {
           ferryTheme: root.theme
@@ -338,123 +379,29 @@ Rectangle {
           text: !root.setup.notificationsSupported ? "Bluetooth support: not required" : root.setup.bluezActive ? "Bluetooth support: active" : "Bluetooth support: restart required before pairing"
           color: root.setup.bluezActive || !root.setup.notificationsSupported ? root.theme.surfaceText : root.theme.warning
         }
-        FerrySectionLabel {
-          ferryTheme: root.theme
-          text: "Desktop notifications"
-        }
-        FerryComboBox {
-          id: notificationPolicyCombo
-          ferryTheme: root.theme
+        // Manual reconnect, as in the other clients: the automatic backoff
+        // can wait up to ten minutes. Hint and outcome are the shared
+        // reconnect_view texts the bridge adds to the status.
+        RowLayout {
+          objectName: "reconnectRow"
           Layout.fillWidth: true
-          model: ["All iPhone notifications", "Messages only", "None"]
-          currentIndex: root.status.notification_policy === "all" ? 0 : root.status.notification_policy === "none" ? 2 : 1
-          enabled: root.setup.configured && !root.busy.notifications
-          onActivated: {
-            var values = ["all", "messages", "none"];
-            root.operationRequested("set_notification_policy", {
-              policy: values[currentIndex]
-            });
+          visible: root.reconnect.available === true
+          FerryLabel {
+            objectName: "reconnectHint"
+            ferryTheme: root.theme
+            Layout.fillWidth: true
+            wrapMode: Text.Wrap
+            color: root.reconnect.attention === true ? root.theme.warning : root.theme.windowText
+            text: String(root.reconnect.hint || "")
           }
-        }
-        FerryCheckBox {
-          ferryTheme: root.theme
-          text: "Only notify for contacts"
-          checked: root.status.contacts_only_notifications
-          enabled: root.setup.configured && root.status.notification_policy !== "none" && !root.busy.contactsOnly
-          Accessible.description: "Unknown senders remain available in message history"
-          onClicked: {
-            root.operationRequested("set_contacts_only_notifications", {
-              enabled: checked
-            });
+          FerryButton {
+            objectName: "reconnectButton"
+            ferryTheme: root.theme
+            visible: root.reconnect.offered === true
+            text: root.busy.reconnect ? "Reconnecting…" : "Reconnect"
+            enabled: root.setup.configured && !root.busy.reconnect
+            onClicked: root.operationRequested("reconnect_phone", {})
           }
-        }
-        // Opt-in; only daemons that report the preference support it.
-        FerryCheckBox {
-          objectName: "ancsActionsCheckBox"
-          ferryTheme: root.theme
-          visible: root.status.ancs_actions_preference !== undefined
-          text: "Show iPhone action buttons (Accept, Decline, Clear…)"
-          checked: root.status.ancs_actions_preference === true
-          // A saved "on" can always be switched off; switching on needs All
-          // iPhone Notifications with content shown.
-          enabled: root.setup.configured && !root.busy.ancsActions && (checked || (root.status.notification_policy === "all" && root.status.notification_content_shown !== false))
-          Accessible.description: root.status.notification_content_shown === false ? "Unavailable while notification content is hidden." : "Clicking a button runs that action on the iPhone, for example answering or declining a call. Applies to All iPhone notifications."
-          onClicked: {
-            root.operationRequested("set_ancs_notification_actions", {
-              enabled: checked
-            });
-          }
-        }
-        // Only daemons that report the media-control keys support the settings.
-        FerrySectionLabel {
-          ferryTheme: root.theme
-          visible: root.status.media_control_enabled !== undefined
-          text: "Media control"
-        }
-        FerryCheckBox {
-          objectName: "mediaControlCheckBox"
-          ferryTheme: root.theme
-          visible: root.status.media_control_enabled !== undefined
-          text: "Show and control what the iPhone is playing"
-          checked: root.status.media_control_enabled === true
-          enabled: root.setup.configured && !root.busy.mediaControl
-          Accessible.description: "Uses the Bluetooth LE link that also carries notifications."
-          onClicked: root.operationRequested("set_media_control", {enabled: checked})
-        }
-        FerryCheckBox {
-          objectName: "mprisPlayerCheckBox"
-          ferryTheme: root.theme
-          visible: root.status.media_mpris_enabled !== undefined
-          text: "Also show it in the desktop media controls (MPRIS)"
-          checked: root.status.media_mpris_enabled === true
-          // The player needs media control, as in the Qt client.
-          enabled: root.setup.configured && !root.busy.mprisPlayer
-            && !root.busy.mediaControl && root.status.media_control_enabled === true
-          Accessible.description: mprisPlayerWarning.text
-          onClicked: root.operationRequested("set_mpris_player", {enabled: checked})
-        }
-        FerryLabel {
-          id: mprisPlayerWarning
-          objectName: "mprisPlayerWarning"
-          ferryTheme: root.theme
-          visible: root.status.media_mpris_enabled !== undefined
-          Layout.fillWidth: true
-          wrapMode: Text.Wrap
-          text: "Like any desktop music player, every application in your session can then read the title, artist and album."
-        }
-        // Only daemons that report the audio-route keys can switch the sound.
-        // An action, not a saved preference: it follows the reported route.
-        FerrySectionLabel {
-          ferryTheme: root.theme
-          visible: root.status.phone_audio_route !== undefined
-          text: "iPhone sound"
-        }
-        FerryCheckBox {
-          objectName: "phoneAudioCheckBox"
-          ferryTheme: root.theme
-          readonly property var view: root.status.phone_audio_view || ({})
-          visible: root.status.phone_audio_route !== undefined
-          text: "Play the iPhone's sound on this computer"
-          checked: root.status.phone_audio_route === "pc"
-          enabled: root.setup.configured && !root.busy.phoneAudio && view.available === true
-          Accessible.description: phoneAudioHint.text
-          onClicked: root.operationRequested("set_phone_audio_route", {route: checked ? "pc" : "phone"})
-        }
-        FerryLabel {
-          id: phoneAudioHint
-          objectName: "phoneAudioHint"
-          ferryTheme: root.theme
-          visible: root.status.phone_audio_route !== undefined && text !== ""
-          Layout.fillWidth: true
-          wrapMode: Text.Wrap
-          text: (root.status.phone_audio_view || {}).hint || ""
-        }
-
-        // Only daemons with the profile reset report its state.
-        FerrySectionLabel {
-          ferryTheme: root.theme
-          visible: root.status.profile_reset_auto !== undefined
-          text: "iPhone connection"
         }
         FerryCheckBox {
           objectName: "autoProfileResetCheckBox"
@@ -463,111 +410,8 @@ Rectangle {
           text: "Reset a stuck iPhone connection automatically"
           checked: root.status.profile_reset_auto === true
           enabled: root.setup.configured && !root.busy.autoProfileReset
-          Accessible.description: "Briefly disconnects the iPhone when call audio stays stuck, at most every ten minutes."
+          Accessible.description: "Briefly disconnects the iPhone when call audio stays stuck, at most every ten minutes. Reconnect still resets it on request."
           onClicked: root.operationRequested("set_auto_profile_reset", {enabled: checked})
-        }
-        // Only daemons that report the away-lock keys support the setting.
-        FerrySectionLabel {
-          ferryTheme: root.theme
-          visible: root.status.proximity_lock !== undefined
-          text: "Away lock"
-        }
-        FerryCheckBox {
-          objectName: "proximityLockCheckBox"
-          ferryTheme: root.theme
-          visible: root.status.proximity_lock !== undefined
-          text: "Lock the desktop when my iPhone goes away"
-          checked: root.status.proximity_lock_enabled === true
-          enabled: root.setup.configured && !root.busy.proximityLock
-          Accessible.description: "A convenience, not a security feature. BlueFerry never unlocks the desktop."
-          onClicked: {
-            // The checkbox only opts in or out; the saved grace period is kept.
-            root.operationRequested("set_proximity_lock", {
-              enabled: checked,
-              grace_seconds: root.status.proximity_lock_grace_sec || 60
-            });
-          }
-        }
-        FerryLabel {
-          ferryTheme: root.theme
-          visible: root.status.proximity_lock !== undefined
-          Layout.fillWidth: true
-          wrapMode: Text.Wrap
-          text: "Locks after " + (root.status.proximity_lock_grace_sec || 60) + " seconds away. A convenience, not a security feature: Bluetooth presence can be spoofed, and BlueFerry never unlocks the desktop."
-        }
-        // Shown only when the status carries calls_enabled, as in the Qt client.
-        FerrySectionLabel {
-          ferryTheme: root.theme
-          visible: root.status.calls_enabled !== undefined
-          text: "Phone calls"
-        }
-        FerryCheckBox {
-          objectName: "callsEnabledCheckBox"
-          ferryTheme: root.theme
-          visible: root.status.calls_enabled !== undefined
-          text: "Enable phone calls through this computer"
-          checked: root.status.calls_enabled === true
-          enabled: root.setup.configured && !root.busy.calls
-          Accessible.description: "Experimental. Needs oFono and extra setup."
-          onClicked: {
-            root.operationRequested("set_calls_enabled", {
-              enabled: checked
-            });
-          }
-        }
-        FerryLabel {
-          ferryTheme: root.theme
-          visible: root.status.calls_enabled !== undefined
-          Layout.fillWidth: true
-          wrapMode: Text.Wrap
-          text: "Experimental. While this is on, the iPhone's hands-free link stays connected to this computer, so calls can ring and be answered here and their audio plays here. Music stays on the iPhone. Working calls also need oFono set as the hands-free backend and BlueZ's own HFP plugin disabled; see \"Phone calls\" in the BlueFerry documentation. Make emergency calls on the iPhone itself."
-        }
-        // Only daemons that report the call-history keys support the settings.
-        FerrySectionLabel {
-          ferryTheme: root.theme
-          visible: root.status.call_history_enabled !== undefined
-          text: "Call history"
-        }
-        FerryCheckBox {
-          objectName: "callHistoryCheckBox"
-          ferryTheme: root.theme
-          visible: root.status.call_history_enabled !== undefined
-          text: "Keep the iPhone's recent calls"
-          checked: root.status.call_history_enabled === true
-          enabled: root.setup.configured && !root.busy.callHistory
-          Accessible.description: callHistoryNote.text
-          onClicked: {
-            root.operationRequested("set_call_history", {
-              enabled: checked,
-              missed_call_notifications: missedCallPopupsCheckBox.checked
-            });
-          }
-        }
-        FerryCheckBox {
-          id: missedCallPopupsCheckBox
-          objectName: "missedCallPopupsCheckBox"
-          ferryTheme: root.theme
-          visible: root.status.call_history_enabled !== undefined
-          text: "Notify me about missed calls"
-          checked: root.status.missed_call_notifications !== false
-          // Only offered while call history is on, as in the Qt client.
-          enabled: root.setup.configured && !root.busy.callHistory
-            && root.status.call_history_enabled === true
-          onClicked: {
-            root.operationRequested("set_call_history", {
-              enabled: true,
-              missed_call_notifications: checked
-            });
-          }
-        }
-        FerryLabel {
-          id: callHistoryNote
-          objectName: "callHistoryNote"
-          ferryTheme: root.theme
-          visible: root.status.call_history_enabled !== undefined
-          Layout.fillWidth: true
-          wrapMode: Text.Wrap
-          text: "Keeps the iPhone's recent calls (who called and when) under your local storage setting and can notify you about missed calls. It uses the iPhone's Sync Contacts permission and never places, answers, or listens to calls. Turning it off erases the retained calls."
         }
         // Opt-in Bluetooth tethering, matching the Qt client's section.
         // Until "Enable Bluetooth tethering" is ticked the daemon ignores
@@ -647,6 +491,72 @@ Rectangle {
             color: root.tether.state === "failed" ? root.theme.warning : root.theme.surfaceText
           }
         }
+        FerrySectionLabel {
+          ferryTheme: root.theme
+          text: "Diagnostics"
+        }
+        FerryLabel {
+          ferryTheme: root.theme
+          Layout.fillWidth: true
+          wrapMode: Text.Wrap
+          text: "Checks the Bluetooth controller, the BlueZ OBEX service, the configured iPhone and the notification link, like the command blueferry doctor."
+        }
+        FerryButton {
+          objectName: "runDoctorButton"
+          ferryTheme: root.theme
+          text: root.doctor.running === true ? "Running Diagnostics…" : "Run Diagnostics"
+          enabled: root.doctor.running !== true
+          onClicked: root.operationRequested("doctor", {})
+        }
+        // level and summary come from doctor_report.view(), shared with Qt
+        // and GTK. The report is local diagnostics, shown as plain text.
+        FerryLabel {
+          objectName: "doctorSummary"
+          ferryTheme: root.theme
+          Layout.fillWidth: true
+          visible: root.doctor.ran === true
+          wrapMode: Text.Wrap
+          font.bold: true
+          color: root.doctor.level === "ok" ? root.theme.windowText : root.theme.warning
+          text: String(root.doctor.summary || "")
+        }
+        TextEdit {
+          objectName: "doctorReport"
+          Layout.fillWidth: true
+          visible: root.doctor.ran === true
+          readOnly: true
+          selectByMouse: true
+          textFormat: TextEdit.PlainText
+          wrapMode: TextEdit.Wrap
+          color: root.theme.windowText
+          selectionColor: root.theme.accent
+          selectedTextColor: root.theme.highlightedText
+          font.family: root.theme.fontFamily
+          font.pixelSize: root.theme.captionSize
+          text: String(root.doctor.text || "")
+        }
+        FerrySectionLabel {
+          ferryTheme: root.theme
+          text: "Contacts"
+        }
+        RowLayout {
+          Layout.fillWidth: true
+          FerryButton {
+            objectName: "syncContactsButton"
+            ferryTheme: root.theme
+            text: root.busy.syncContacts ? "Syncing…" : "Sync Contacts"
+            enabled: root.setup.configured && root.status.daemon === true && !root.busy.syncContacts
+            onClicked: root.operationRequested("sync_contacts", {})
+          }
+          FerryLabel {
+            objectName: "syncContactsNotice"
+            ferryTheme: root.theme
+            Layout.fillWidth: true
+            wrapMode: Text.Wrap
+            visible: text !== ""
+            text: root.contactsSyncNotice
+          }
+        }
         // Only daemons that report contact_photos offer the setting.
         FerrySectionLabel {
           ferryTheme: root.theme
@@ -667,6 +577,338 @@ Rectangle {
             });
           }
         }
+        FerryCategoryHeading {
+          objectName: "notificationsCategory"
+          ferryTheme: root.theme
+          text: "Notifications"
+        }
+        FerrySectionLabel {
+          ferryTheme: root.theme
+          text: "Desktop notifications"
+        }
+        FerryComboBox {
+          id: notificationPolicyCombo
+          ferryTheme: root.theme
+          Layout.fillWidth: true
+          model: ["All iPhone notifications", "Messages only", "None"]
+          currentIndex: root.status.notification_policy === "all" ? 0 : root.status.notification_policy === "none" ? 2 : 1
+          enabled: root.setup.configured && !root.busy.notifications
+          onActivated: {
+            var values = ["all", "messages", "none"];
+            root.operationRequested("set_notification_policy", {
+              policy: values[currentIndex]
+            });
+          }
+        }
+        FerryCheckBox {
+          ferryTheme: root.theme
+          text: "Only notify for contacts"
+          checked: root.status.contacts_only_notifications
+          enabled: root.setup.configured && root.status.notification_policy !== "none" && !root.busy.contactsOnly
+          Accessible.description: "Unknown senders remain available in message history"
+          onClicked: {
+            root.operationRequested("set_contacts_only_notifications", {
+              enabled: checked
+            });
+          }
+        }
+        FerrySectionLabel {
+          ferryTheme: root.theme
+          text: "Content and actions"
+        }
+        // Why the switches below fall back to their local.env variables. Only
+        // while the service is away: an older daemon without GetFeatures is
+        // explained by each row's note, as in the Qt and GTK clients.
+        FerryLabel {
+          objectName: "featuresError"
+          ferryTheme: root.theme
+          Layout.fillWidth: true
+          visible: text !== "" && root.status.daemon !== true
+          wrapMode: Text.Wrap
+          color: root.theme.warning
+          text: root.features.error ? "Could not read the service's switches: " + String(root.features.error) : ""
+        }
+        FerryFeatureSwitch {
+          ferryTheme: root.theme
+          features: root.features
+          pending: root.featurePending
+          allowed: root.featuresAllowed
+          feature: "show_notification_content"
+          text: "Show message content in popups"
+          description: "Off: popups name the sender only."
+          onToggledTo: (feature, enabled) => root.operationRequested("set_feature", {name: feature, enabled: enabled})
+        }
+        // Opt-in; only daemons that report the preference support it.
+        FerryCheckBox {
+          objectName: "ancsActionsCheckBox"
+          ferryTheme: root.theme
+          visible: root.status.ancs_actions_preference !== undefined
+          text: "Show iPhone action buttons (Accept, Decline, Clear…)"
+          checked: root.status.ancs_actions_preference === true
+          // A saved "on" can always be switched off; switching on needs All
+          // iPhone Notifications with content shown.
+          enabled: root.setup.configured && !root.busy.ancsActions && (checked || (root.status.notification_policy === "all" && root.status.notification_content_shown !== false))
+          Accessible.description: root.status.notification_content_shown === false ? "Unavailable while notification content is hidden." : "Clicking a button runs that action on the iPhone, for example answering or declining a call. Applies to All iPhone notifications."
+          onClicked: {
+            root.operationRequested("set_ancs_notification_actions", {
+              enabled: checked
+            });
+          }
+        }
+        // Opt-in; only daemons that report mirror_iphone_removals support it.
+        FerryCheckBox {
+          objectName: "mirrorRemovalsCheckBox"
+          ferryTheme: root.theme
+          visible: typeof root.status.mirror_iphone_removals === "boolean"
+          text: "Sync notifications with iPhone"
+          checked: root.status.mirror_iphone_removals === true
+          enabled: root.setup.configured && !root.busy.mirrorRemovals
+          Accessible.description: mirrorRemovalsNote.text
+          onClicked: root.operationRequested("set_mirror_notification_removals", {enabled: checked})
+        }
+        FerryLabel {
+          id: mirrorRemovalsNote
+          ferryTheme: root.theme
+          visible: typeof root.status.mirror_iphone_removals === "boolean"
+          Layout.fillWidth: true
+          wrapMode: Text.Wrap
+          text: "A notification removed or dismissed on the iPhone also closes its popup here. Applies to All iPhone notifications."
+        }
+        FerryFeatureSwitch {
+          ferryTheme: root.theme
+          features: root.features
+          pending: root.featurePending
+          allowed: root.featuresAllowed
+          feature: "mark_read_on_dismiss"
+          text: "Mark read when a popup is dismissed"
+          onToggledTo: (feature, enabled) => root.operationRequested("set_feature", {name: feature, enabled: enabled})
+        }
+        FerrySectionLabel {
+          ferryTheme: root.theme
+          text: "History"
+        }
+        FerryFeatureSwitch {
+          ferryTheme: root.theme
+          features: root.features
+          pending: root.featurePending
+          allowed: root.featuresAllowed
+          feature: "notification_history"
+          text: "Keep recent iPhone notifications"
+          description: "Lists other apps' notifications under Recent notifications below (memory only)."
+          onToggledTo: (feature, enabled) => root.operationRequested("set_feature", {name: feature, enabled: enabled})
+        }
+        // Switches a newer service reports that this shell has no wording for.
+        Repeater {
+          objectName: "otherFeatureSwitches"
+          model: root.features.switches && root.features.switches.length !== undefined
+            ? Array.prototype.slice.call(root.features.switches) : []
+          delegate: FerryFeatureSwitch {
+            required property var modelData
+            readonly property var row: modelData || ({})
+            ferryTheme: root.theme
+            features: root.features
+            pending: root.featurePending
+            allowed: root.featuresAllowed
+            feature: String(row.name || "")
+            visible: root.knownFeatures.indexOf(feature) < 0
+            onToggledTo: (feature, enabled) => root.operationRequested("set_feature", {name: feature, enabled: enabled})
+          }
+        }
+        // Private: read only while shown, forgotten when hidden (the page
+        // collapses it whenever it is hidden), as in the other clients.
+        FerrySectionLabel {
+          ferryTheme: root.theme
+          text: "Recent notifications"
+        }
+        FerryButton {
+          objectName: "notificationListButton"
+          ferryTheme: root.theme
+          text: root.notificationsExpanded ? "Hide Recent Notifications" : "Show Recent Notifications"
+          enabled: root.setup.configured
+          onClicked: root.notificationsExpanded = !root.notificationsExpanded
+        }
+        QuickshellNotificationList {
+          objectName: "notificationList"
+          ferryTheme: root.theme
+          Layout.fillWidth: true
+          visible: root.notificationsExpanded
+          view: root.notificationList
+        }
+        FerryCategoryHeading {
+          objectName: "callsCategory"
+          ferryTheme: root.theme
+          text: "Calls & Audio"
+        }
+        // Shown only when the status carries calls_enabled, as in the Qt client.
+        FerrySectionLabel {
+          ferryTheme: root.theme
+          visible: root.status.calls_enabled !== undefined
+          text: "Phone calls"
+        }
+        FerryCheckBox {
+          objectName: "callsEnabledCheckBox"
+          ferryTheme: root.theme
+          visible: root.status.calls_enabled !== undefined
+          text: "Enable phone calls through this computer"
+          checked: root.status.calls_enabled === true
+          enabled: root.setup.configured && !root.busy.calls
+          Accessible.description: "Experimental. Needs oFono and extra setup."
+          onClicked: {
+            root.operationRequested("set_calls_enabled", {
+              enabled: checked
+            });
+          }
+        }
+        FerryLabel {
+          ferryTheme: root.theme
+          visible: root.status.calls_enabled !== undefined
+          Layout.fillWidth: true
+          wrapMode: Text.Wrap
+          text: "Experimental. While this is on, the iPhone's hands-free link stays connected to this computer, so calls can ring and be answered here and their audio plays here. Music stays on the iPhone. Working calls also need oFono set as the hands-free backend and BlueZ's own HFP plugin disabled; see \"Phone calls\" in the BlueFerry documentation. Make emergency calls on the iPhone itself."
+        }
+        // Only daemons that report the call-history keys support the settings.
+        FerrySectionLabel {
+          ferryTheme: root.theme
+          visible: root.status.call_history_enabled !== undefined
+          text: "Call history"
+        }
+        FerryCheckBox {
+          objectName: "callHistoryCheckBox"
+          ferryTheme: root.theme
+          visible: root.status.call_history_enabled !== undefined
+          text: "Keep the iPhone's recent calls"
+          checked: root.status.call_history_enabled === true
+          enabled: root.setup.configured && !root.busy.callHistory
+          Accessible.description: callHistoryNote.text
+          onClicked: {
+            root.operationRequested("set_call_history", {
+              enabled: checked,
+              missed_call_notifications: missedCallPopupsCheckBox.checked
+            });
+          }
+        }
+        FerryCheckBox {
+          id: missedCallPopupsCheckBox
+          objectName: "missedCallPopupsCheckBox"
+          ferryTheme: root.theme
+          visible: root.status.call_history_enabled !== undefined
+          text: "Notify me about missed calls"
+          checked: root.status.missed_call_notifications !== false
+          // Only offered while call history is on, as in the Qt client.
+          enabled: root.setup.configured && !root.busy.callHistory
+            && root.status.call_history_enabled === true
+          onClicked: {
+            root.operationRequested("set_call_history", {
+              enabled: true,
+              missed_call_notifications: checked
+            });
+          }
+        }
+        FerryLabel {
+          id: callHistoryNote
+          objectName: "callHistoryNote"
+          ferryTheme: root.theme
+          visible: root.status.call_history_enabled !== undefined
+          Layout.fillWidth: true
+          wrapMode: Text.Wrap
+          text: "Keeps the iPhone's recent calls (who called and when) under your local storage setting and can notify you about missed calls. It uses the iPhone's Sync Contacts permission and never places, answers, or listens to calls. Turning it off erases the retained calls."
+        }
+        // BackendStatus always fills phone_battery_warning; only daemons
+        // that offer the warning report its threshold.
+        FerrySectionLabel {
+          ferryTheme: root.theme
+          visible: root.status.phone_battery_warning_percent !== undefined
+          text: "Battery"
+        }
+        FerryCheckBox {
+          objectName: "phoneBatteryWarningCheckBox"
+          ferryTheme: root.theme
+          visible: root.status.phone_battery_warning_percent !== undefined
+          text: "Warn when the iPhone's battery runs low"
+          checked: root.status.phone_battery_warning === true
+          enabled: root.setup.configured && !root.busy.batteryWarning
+          Accessible.description: batteryWarningNote.text
+          onClicked: root.operationRequested("set_phone_battery_warning", {enabled: checked})
+        }
+        FerryLabel {
+          id: batteryWarningNote
+          objectName: "phoneBatteryWarningNote"
+          ferryTheme: root.theme
+          visible: root.status.phone_battery_warning_percent !== undefined
+          Layout.fillWidth: true
+          wrapMode: Text.Wrap
+          text: "One desktop notification per discharge, at " + (Number(root.status.phone_battery_warning_percent) || 20) + " % or less."
+        }
+        // Only daemons that report the audio-route keys can switch the sound.
+        // An action, not a saved preference: it follows the reported route.
+        FerrySectionLabel {
+          ferryTheme: root.theme
+          visible: root.status.phone_audio_route !== undefined
+          text: "iPhone sound"
+        }
+        FerryCheckBox {
+          objectName: "phoneAudioCheckBox"
+          ferryTheme: root.theme
+          readonly property var view: root.status.phone_audio_view || ({})
+          visible: root.status.phone_audio_route !== undefined
+          text: "Play the iPhone's sound on this computer"
+          checked: root.status.phone_audio_route === "pc"
+          enabled: root.setup.configured && !root.busy.phoneAudio && view.available === true
+          Accessible.description: phoneAudioHint.text
+          onClicked: root.operationRequested("set_phone_audio_route", {route: checked ? "pc" : "phone"})
+        }
+        FerryLabel {
+          id: phoneAudioHint
+          objectName: "phoneAudioHint"
+          ferryTheme: root.theme
+          visible: root.status.phone_audio_route !== undefined && text !== ""
+          Layout.fillWidth: true
+          wrapMode: Text.Wrap
+          text: (root.status.phone_audio_view || {}).hint || ""
+        }
+
+        // Only daemons that report the media-control keys support the settings.
+        FerrySectionLabel {
+          ferryTheme: root.theme
+          visible: root.status.media_control_enabled !== undefined
+          text: "Media control"
+        }
+        FerryCheckBox {
+          objectName: "mediaControlCheckBox"
+          ferryTheme: root.theme
+          visible: root.status.media_control_enabled !== undefined
+          text: "Show and control what the iPhone is playing"
+          checked: root.status.media_control_enabled === true
+          enabled: root.setup.configured && !root.busy.mediaControl
+          Accessible.description: "Uses the Bluetooth LE link that also carries notifications."
+          onClicked: root.operationRequested("set_media_control", {enabled: checked})
+        }
+        FerryCheckBox {
+          objectName: "mprisPlayerCheckBox"
+          ferryTheme: root.theme
+          visible: root.status.media_mpris_enabled !== undefined
+          text: "Also show it in the desktop media controls (MPRIS)"
+          checked: root.status.media_mpris_enabled === true
+          // The player needs media control, as in the Qt client.
+          enabled: root.setup.configured && !root.busy.mprisPlayer
+            && !root.busy.mediaControl && root.status.media_control_enabled === true
+          Accessible.description: mprisPlayerWarning.text
+          onClicked: root.operationRequested("set_mpris_player", {enabled: checked})
+        }
+        FerryLabel {
+          id: mprisPlayerWarning
+          objectName: "mprisPlayerWarning"
+          ferryTheme: root.theme
+          visible: root.status.media_mpris_enabled !== undefined
+          Layout.fillWidth: true
+          wrapMode: Text.Wrap
+          text: "Like any desktop music player, every application in your session can then read the title, artist and album."
+        }
+        FerryCategoryHeading {
+          objectName: "securityCategory"
+          ferryTheme: root.theme
+          text: "Security"
+        }
         // Only daemons that report otp_autocopy offer the setting.
         FerrySectionLabel {
           ferryTheme: root.theme
@@ -686,6 +928,35 @@ Rectangle {
               enabled: checked
             });
           }
+        }
+        // Only daemons that report the away-lock keys support the setting.
+        FerrySectionLabel {
+          ferryTheme: root.theme
+          visible: root.status.proximity_lock !== undefined
+          text: "Away lock"
+        }
+        FerryCheckBox {
+          objectName: "proximityLockCheckBox"
+          ferryTheme: root.theme
+          visible: root.status.proximity_lock !== undefined
+          text: "Lock the desktop when my iPhone goes away"
+          checked: root.status.proximity_lock_enabled === true
+          enabled: root.setup.configured && !root.busy.proximityLock
+          Accessible.description: "A convenience, not a security feature. BlueFerry never unlocks the desktop."
+          onClicked: {
+            // The checkbox only opts in or out; the saved grace period is kept.
+            root.operationRequested("set_proximity_lock", {
+              enabled: checked,
+              grace_seconds: root.status.proximity_lock_grace_sec || 60
+            });
+          }
+        }
+        FerryLabel {
+          ferryTheme: root.theme
+          visible: root.status.proximity_lock !== undefined
+          Layout.fillWidth: true
+          wrapMode: Text.Wrap
+          text: "Locks after " + (root.status.proximity_lock_grace_sec || 60) + " seconds away. A convenience, not a security feature: Bluetooth presence can be spoofed, and BlueFerry never unlocks the desktop."
         }
         FerrySectionLabel {
           ferryTheme: root.theme
@@ -717,6 +988,36 @@ Rectangle {
           id: confirmStorageChange
           ferryTheme: root.theme
           text: "I understand that changing storage mode clears local messages and contacts"
+        }
+        FerryCategoryHeading {
+          objectName: "aboutCategory"
+          ferryTheme: root.theme
+          text: "About"
+        }
+        FerrySectionLabel {
+          ferryTheme: root.theme
+          text: "BlueFerry"
+        }
+        FerryInfoRow {
+          objectName: "serviceState"
+          ferryTheme: root.theme
+          label: "Background service"
+          value: root.status.daemon === true ? "Running" : "Unavailable"
+          Layout.fillWidth: true
+        }
+        FerryInfoRow {
+          ferryTheme: root.theme
+          visible: root.status.daemon === true && typeof root.status.backend_release === "string"
+          label: "Service version"
+          value: String(root.status.backend_release || "")
+          Layout.fillWidth: true
+        }
+        FerryButton {
+          objectName: "aboutRestartButton"
+          ferryTheme: root.theme
+          text: root.busy.restart ? "Restarting…" : "Restart Service"
+          enabled: !root.busy.restart
+          onClicked: root.operationRequested("restart_backend", {})
         }
       }
     }

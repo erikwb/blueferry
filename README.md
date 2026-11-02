@@ -282,7 +282,13 @@ preferences.
 
 The Quickshell client follows Omarchy's active palette and system monospace
 font, with compact controls and thin frames. Sent message bubbles stay blue
-across themes. Outside Omarchy, it uses the desktop palette.
+across themes. Outside Omarchy, it uses the desktop palette. Its iPhone
+settings use the same categories as the other clients (Phone, Notifications,
+Calls & Audio, Security, About), with the restart-required feature switches
+and **Restart Service**, **Reconnect**, **Run Diagnostics**, **Sync
+Contacts** and a compact list of recent iPhone notifications. As a panel it
+leaves plugins, Send to, Photos and companion tools to the Qt and GTK
+clients; see [Clients](docs/en/user/clients.md#quickshell).
 
 ![Quickshell client with sample conversations](docs/images/quickshell.png)
 
@@ -474,10 +480,10 @@ Restart the user service after editing `local.env` settings.
 
 Three on/off switches without a setting of their own
 (`BLUEFERRY_SHOW_NOTIFICATION_CONTENT`, `BLUEFERRY_MARK_READ_ON_DISMISS`,
-`BLUEFERRY_NOTIFICATION_HISTORY`)
-can also be changed in the Qt or GTK settings (both offer **Restart Service**
-while a change waits) or with `blueferry features` (`blueferry features off
-mark_read_on_dismiss`). They are stored in
+`BLUEFERRY_NOTIFICATION_HISTORY`) can also be changed in the Qt, GTK,
+Quickshell or terminal settings (all offer **Restart Service** while a
+change waits) or with
+`blueferry features` (`blueferry features on notification_history`). They are stored in
 `~/.config/blueferry/settings.json`, override `local.env`, and apply after
 the service restarts; a variable set in the service's own environment still
 wins.
@@ -486,8 +492,8 @@ wins.
 
 With **All iPhone Notifications** selected, an iPhone app popup normally
 stays until it times out, even after you cleared the notification on the
-phone. Turn on **Sync notifications with iPhone** in the Qt or GTK client's
-settings, or run `blueferry notifications sync enable`, and a notification
+phone. Turn on **Sync notifications with iPhone** in the Qt, GTK, Quickshell
+or terminal client's settings, or run `blueferry notifications sync enable`, and a notification
 removed or dismissed on the iPhone also closes its desktop popup. It only
 closes popups and never sends anything to the phone. The choice is saved as
 `mirror_iphone_removals` in `settings.json` and reported under that key in
@@ -547,10 +553,12 @@ terminal client does not show photos.
 ### Recent app notifications (opt-in)
 
 `BLUEFERRY_NOTIFICATION_HISTORY=true` (or **Keep recent iPhone notifications**
-in the Qt or GTK settings, or `blueferry features on notification_history`, after a
-service restart) keeps the last 200 non-Messages iPhone app notifications in
-the daemon's memory so the Notifications tab of the Qt and GTK clients, the
-terminal client's **iPhone Notifications** and
+in the Qt, GTK, Quickshell or terminal settings, or `blueferry features on
+notification_history`, after a service restart) keeps the last 200
+non-Messages iPhone app notifications in the daemon's memory so the
+Notifications tab of the Qt and GTK clients, the terminal client's **iPhone
+Notifications**, **Show Recent Notifications** in the Quickshell settings
+(the newest 30) and
 `blueferry notifications recent` can list them. Nothing is written to disk: BlueFerry's
 history deliberately retains only Messages records, so the list starts empty
 after every backend restart. Titles and bodies are kept only with
@@ -767,7 +775,8 @@ terminal client's **iPhone Overview** also shows the network.
 An optional low-battery warning (off by default) fires once per discharge
 when the battery reaches the threshold, and again only after the phone has
 charged at least 20 % above it (and once more after a BlueFerry restart if
-the phone is still low). Switch it on in the Qt or GTK settings or with
+the phone is still low). Switch it on in the Qt, GTK, Quickshell or terminal
+settings or with
 `blueferry phone-status --warn`; the choice is saved in `settings.json`.
 `BLUEFERRY_PHONE_BATTERY_NOTIFY=true` seeds it and
 `BLUEFERRY_PHONE_BATTERY_LOW_PERCENT=20` (0-80) sets the threshold.
