@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Catch up on incoming messages that arrived while the iPhone was
+  disconnected. After each MAP or MNS reconnect, and only while message
+  history is kept and unlocked, the backend lists the iPhone's inbox once
+  and adds the missing messages to history: no popups, no one-time code
+  copies, the iPhone's read state kept. It looks back from shortly before
+  the newest stored message, within the retention period and at most 200
+  messages, and never restores messages erased locally. Such messages leave
+  the sender's conversation read-only until the sender writes again, because
+  MAP cannot say whether they went to a group. Messages sent from the
+  iPhone itself remain unavailable (related to
+  [#280](https://github.com/erikwb/blueferry/issues/280)).
+
 ## [0.9.1](https://github.com/erikwb/blueferry/releases/tag/v0.9.1) - 2026-10-30
 
 ### Fixed

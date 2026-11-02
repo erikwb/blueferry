@@ -247,7 +247,28 @@ conversation identifier in the observed format.
 
 The iPhone's MAP sent folder was empty in testing, and sending did not produce
 a useful outgoing MNS event. BlueFerry records successful local sends itself;
-it cannot reconstruct a complete sent history from the phone.
+it cannot reconstruct a complete sent history from the phone, nor catch up on
+messages sent from the iPhone while the computer was disconnected.
+
+iOS does not replay MNS events for messages that arrived while MAP was
+disconnected, but its inbox listing includes them. Observed on 2026-11-02
+with an iPhone on iOS 27, BlueZ 5.87 and an Intel AX200 on Gentoo (phone model
+and exact iOS build not recorded): with Bluetooth off on the computer, a message received
+on the iPhone produced no MNS event after Bluetooth came back and MAP and MNS
+reconnected, and it was missing from local history. `ListMessages` on
+`telecom/msg/INBOX` afterwards listed it with its sender, text, timestamp and
+read flag, together with older inbox messages BlueFerry had also never seen.
+BlueFerry therefore lists the inbox once after each MAP or MNS reconnect and
+stores what history lacks. Still unverified on hardware: whether iOS honours
+the `PeriodBegin` filter, the order in which it returns entries when
+`MaxCount` truncates the listing, how long the listing's `Subject` may be
+before iOS shortens it, and whether MAP handles stay stable across sessions.
+The backfill filters by time itself and does not rely on stable handles.
+
+BlueZ's `ListMessages` filter keys are `MaxCount`, `PeriodBegin` and so on;
+obexd silently ignores unknown keys (checked in BlueZ 5.87
+`obexd/client/map.c`). A `MaxListCount` key, as passed by the older listing
+code, leaves obexd's default of 1024 entries in effect.
 
 ## MAP send behavior
 

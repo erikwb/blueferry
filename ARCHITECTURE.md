@@ -47,6 +47,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `settings_store.py` | Small atomic store shared by daemon-owned preferences. |
 | `glib_timers.py` | `schedule_periodic`: a repeating GLib timer whose owner forgets the source id once GLib destroys the source (false return or exception). |
 | `read_receipts.py` | Delays MAP read acknowledgements so ANCS can still deliver group metadata. |
+| `message_backfill.py` | After each MAP/MNS (re)connect, lists the inbox on the OBEX worker and stores missed incoming messages straight to history (no sinks), deduplicated against history and live MNS messages; inert unless message history is kept and unlocked. |
 | `recipients.py` | Recipient validation and group confirmation tokens (shared by backend and Python clients). |
 | `connectivity.py` | MAP/PBAP connectivity state machine and retry policy, independent of GLib and BlueZ. |
 | `profile_supervisor.py` | Owns MAP/PBAP open, close, retry, loss, and resume transitions. |
@@ -77,7 +78,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `obex/worker.py` | Single worker serializing all blocking OBEX operations. |
 | `obex/transfer.py` | Shared `Transfer1` completion handling. |
 | `obex/map_events.py` | MAP MNS event subscription and asynchronous bMessage retrieval. |
-| `obex/map_query.py` | Direct MAP folder listing and message fetch. |
+| `obex/map_query.py` | Direct MAP folder listing and message fetch, including the time-bounded inbox listing for the missed-message backfill. |
 | `obex/map_send.py` | Builds and pushes outgoing bMessages (direct and group). |
 | `obex/map_read.py` | Best-effort MAP read-state write-back. |
 | `obex/bmessage.py` | Minimal bMessage parser. |
@@ -837,6 +838,22 @@ A change to these rules has to be made in both places.
   bounded to 64 files) and storage changes or daemon stop delete them. The
   pull logs one content-free summary per sync (size buckets, rejection
   reasons) so the caps can be checked against a real phone.
+- **Missed messages:** MNS has no replay, so after each MAP or MNS
+  (re)connect `message_backfill` lists `telecom/msg/INBOX` once on the OBEX
+  worker (`MaxCount` ≤ 200, `PeriodBegin`, and a client-side time filter).
+  It runs only while message history is kept and unlocked; that opt-in is
+  the only switch. The window starts two hours before the newest stored
+  received message, bounded by retention and by an erase floor that history
+  clears, storage-mode changes and conversation deletion raise in the
+  history `meta` table (a time, no content; a damaged database deleted by a
+  storage reset loses it). Matching is one-to-one on sender identity and
+  text, by MAP handle or nearest time within three hours. The decision runs
+  on the main loop next to live MNS delivery: a live copy during or after a
+  backfill is stored once and still notifies (`EventDispatcher.message(...,
+  persist=False)`). Missed messages bypass the sinks (no popup, code copy or
+  ANCS correlation), keep the phone's read flag, carry the phone's time as
+  `seen_at`, and are marked `group_ambiguous` because no group evidence can
+  exist for them. Clients see them through `HistoryChanged`.
 - **ANCS content:** the app is identified before any content is requested.
   The default policy never fetches content from other apps. The opt-in `all`
   policy applies exact bundle-ID allow/block rules first and delivers content

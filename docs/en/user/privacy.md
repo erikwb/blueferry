@@ -92,6 +92,31 @@ Encryption protects data at rest. Other programs running as your user can
 still use the BlueFerry D-Bus API and, while the wallet is unlocked, may be
 able to read its secrets.
 
+### Messages received while disconnected
+
+The iPhone announces new messages only while it is connected. After each
+reconnect (Bluetooth back on, back in range, resume from sleep), BlueFerry
+therefore reads the iPhone's inbox once and adds the incoming messages that
+history doesn't have yet:
+
+- It only does this while message history is kept and unlocked. With **Do
+  not retain local data**, or while the wallet is locked, nothing is read.
+  There is no separate setting.
+- It looks back from shortly before the newest stored message, never further
+  than `BLUEFERRY_HISTORY_RETENTION_DAYS`, and takes at most 200 messages. On
+  a new installation that can mean up to 200 messages from the retention
+  period.
+- Messages you deleted in BlueFerry stay deleted: after a history clear,
+  conversation deletion or change of storage mode, nothing older is fetched
+  again. Only the time of that erase is stored, without content.
+- Caught-up messages appear in the conversation list without popups or
+  one-time code copies, with the read state from the iPhone.
+- The iPhone doesn't say whether such a message went to a group. Its
+  sender's conversation stays read-only until the sender writes again, so a
+  reply meant for a group can't reach the sender alone.
+- Messages you sent from the iPhone itself can't be caught up: iOS keeps its
+  sent folder empty over Bluetooth.
+
 ## Files and folders
 
 | Path | Content |
