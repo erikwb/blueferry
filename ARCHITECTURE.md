@@ -48,7 +48,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `settings_store.py` | Small atomic store shared by daemon-owned preferences. |
 | `glib_timers.py` | `schedule_periodic`: a repeating GLib timer whose owner forgets the source id once GLib destroys the source (false return or exception). |
 | `read_receipts.py` | Delays MAP read acknowledgements so ANCS can still deliver group metadata. |
-| `recipients.py` | Recipient validation and group confirmation tokens (shared by backend and Python clients). |
+| `recipients.py` | Recipient validation, group confirmation and sender-only reply tokens (shared by backend and Python clients). |
 | `connectivity.py` | MAP/PBAP connectivity state machine and retry policy, independent of GLib and BlueZ. |
 | `profile_supervisor.py` | Owns MAP/PBAP open, close, retry, loss, and resume transitions. |
 | `background_worker.py` | Bounded local jobs completed on the owning GLib loop. |
@@ -271,6 +271,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `qt/qml/ProximityLockSettings.qml` | Away-lock toggle, grace period, and warning; loaded only for daemons that report it. |
 | `qt/qml/TetherSection.qml` | "Enable Bluetooth tethering" checkbox, then the connect switch and automatic choice; loaded only when the daemon offers `Tether1`. |
 | `qt/qml/GroupConfirmationDialog.qml` | Group recipient confirmation before sending. |
+| `qt/qml/SenderConfirmationDialog.qml` | Asks before replying only to the sender of a message that may be from a group. |
 | `qt/qml/GroupParticipantsDialog.qml` | Confirm a group's members, with contact suggestions. |
 | `qt/qml/NewMessageDialog.qml` | New message composition. |
 | `qt/qml/PhoneCard.qml` | The phone card left of the tabs: name, connection, battery/signal, now playing and quick switches (sound, away lock); opt-ins that are off stay greyed out with a hint. Folds behind a header button in a narrow window. |
@@ -453,6 +454,14 @@ dbus-python; the guard tolerates that.
   and, once the group is reply-ready, sends the draft through the normal path,
   first-send confirmation included. Without a saved roster the backend still
   refuses the send.
+- A direct thread whose latest incoming message may belong to a group
+  (`group_ambiguous`) is not reply-ready, but carries a `sender_reply_token`
+  while the reply would otherwise be allowed (`Thread.can_compose`). Sending
+  plans as `CONFIRM_SENDER`: every client asks whether to reply to the sender
+  only, then calls `SendToThreadChecked` with `confirm_group` and that token.
+  `recipients.sender_reply_token` hashes the reply address and every such
+  message in the thread, so a confirmation cannot cover a newer one; the
+  backend refuses a stale token and, without one, keeps the thread read-only.
 
 ## Client architecture
 

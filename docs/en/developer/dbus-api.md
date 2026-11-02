@@ -67,7 +67,7 @@ and retries on a later status read.
 | Method | Arguments → result | Notes |
 | --- | --- | --- |
 | `Send` | `s recipient, s body` → `s transfer_path` | New message to a phone number or email address |
-| `SendToThreadChecked` | `s thread_key, s body, b confirm_group, s expected_group_token` → `s transfer_path` | Reply to a thread. Group replies must pass the roster token the client displayed |
+| `SendToThreadChecked` | `s thread_key, s body, b confirm_group, s expected_group_token` → `s transfer_path` | Reply to a thread. Group replies must pass the roster token the client displayed. A direct thread whose latest message may be from a group (`ListThreads`: `group_ambiguous`, `reply_ready` false) accepts a reply to the sender only with `confirm_group` true and its `sender_reply_token`; a token from before a newer such message gets `ConfirmationRequired` |
 | `SendToThread` | `s thread_key, s body, b confirm_group` → `s transfer_path` | Legacy; direct threads only |
 
 ### History and conversations
