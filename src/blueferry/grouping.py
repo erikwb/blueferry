@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 
 from blueferry.ancs.constants import ANCS_MESSAGE_CAPS_REQUESTED, MESSAGES_APP_ID
 from blueferry.events import canonical_address, safe_event_address, spelled_on_keypad
-from blueferry.named_groups import NamedGroupRoutes
+from blueferry.named_groups import NamedGroupRoutes, unnamed_group_key
 from blueferry.named_groups import named_group_key as named_group_key
 
 CORRELATION_WINDOW_SECONDS = 60
@@ -153,17 +153,14 @@ def named_group_from_ancs(event: dict) -> str | None:
 def _group_identity(
     members: list[str], recipients: list[str], *, reply_ready: bool,
 ) -> tuple[str, str]:
-    if reply_ready:
-        canonical = sorted(
-            identity for address in recipients
-            if (identity := canonical_address(address)) is not None
-        )
-        prefix = "group:addresses:"
-    else:
-        canonical = sorted(member.casefold() for member in members)
-        prefix = "group:participants:"
-    display = sorted(members, key=str.casefold)
-    return prefix + "|".join(canonical), ", ".join(display)
+    display = ", ".join(sorted(members, key=str.casefold))
+    if not reply_ready:
+        return unnamed_group_key(members), display
+    canonical = sorted(
+        identity for address in recipients
+        if (identity := canonical_address(address)) is not None
+    )
+    return "group:addresses:" + "|".join(canonical), display
 
 
 def _contact_address(resolver, name: str) -> str | None:
@@ -203,6 +200,7 @@ def _reconcile_group_identities(
     events: list[dict],
     addresses_by_name: dict[str, set[str]],
     resolver,
+    routes: NamedGroupRoutes,
 ) -> None:
     """Collapse provisional and reply-ready views of the same group.
 
@@ -219,6 +217,10 @@ def _reconcile_group_identities(
         # key. Rewriting it after a roster is saved would invalidate the UI
         # thread the user just configured.
         if event.get("group_origin") == "named":
+            continue
+        # Likewise an unnamed group with a saved roster keeps its member-name
+        # key, so that later messages still find the roster.
+        if routes.has_route(str(event.get("group_key") or "")):
             continue
         members = _unique_names([
             str(value) for value in event.get("group_members", [])
@@ -262,14 +264,19 @@ def _reconcile_group_identities(
             event["group_name"] = name
             event["group_recipients"] = recipients
             event["group_reply_ready"] = True
+            event["group_origin"] = ""
+            event["group_participants_required"] = False
+            event["group_missing_members"] = []
 
 
 def correlate_group_events(events: list[dict], resolver=None) -> list[dict]:
     """Return copies of events with matched MAP messages annotated.
 
     Added SMS keys are ``group_key``, ``group_name``, ``group_members``,
-    ``group_recipients``, and ``group_reply_ready``. Minimal Messages ANCS
-    records remain in the returned sequence as correlation evidence.
+    ``group_recipients``, and ``group_reply_ready``. A group without a safe
+    route also gets ``group_participants_required``; a saved roster supplies
+    one. Minimal Messages ANCS records remain in the returned sequence as
+    correlation evidence.
     """
     # Correlation annotates only top-level keys; copying each record avoids the
     # cost of recursively cloning every message body and nested value.
@@ -352,7 +359,16 @@ def correlate_group_events(events: list[dict], resolver=None) -> list[dict]:
 
         if members is None:  # Defensive: named groups return above.
             continue
+        saved_key = unnamed_group_key(members)
+        if named_routes.has_route(saved_key):
+            sms.update(named_routes.received_unnamed(
+                saved_key, ", ".join(sorted(members, key=str.casefold)),
+                sender_title, sender_address,
+            ))
+            continue
         recipients: list[str] = []
+        # Members with no known address, for the participant editor's hint.
+        missing: list[str] = []
         unresolved = False
         for member in members:
             if sender_title and member.casefold() == sender_title.casefold():
@@ -360,12 +376,16 @@ def correlate_group_events(events: list[dict], resolver=None) -> list[dict]:
                 # not let a claimed title redirect the live MAP sender to a
                 # contact with that name.
                 address = sender_address if sender_name_verified else None
+                if not sender_address:
+                    missing.append(member)
             else:
                 known = addresses_by_name.get(member.casefold(), set())
                 if len(known) == 1:
                     address = next(iter(known))
                 else:
                     address = _contact_address(resolver, member)
+                if not address:
+                    missing.append(member)
             if not address:
                 unresolved = True
                 continue
@@ -393,7 +413,12 @@ def correlate_group_events(events: list[dict], resolver=None) -> list[dict]:
             "group_recipients": recipients,
             "group_reply_ready": reply_ready,
             "group_observed_sender": sender_title,
+            "group_observed_recipient": sender_address or "",
             "group_sender_verified": sender_name_verified,
+            # Without a route the backend never guesses: the user supplies one.
+            "group_origin": "" if reply_ready else "unnamed",
+            "group_participants_required": not reply_ready,
+            "group_missing_members": [] if reply_ready else missing,
         })
 
     # Link direct ANCS evidence only when its body/time match is unambiguous.
@@ -428,5 +453,5 @@ def correlate_group_events(events: list[dict], resolver=None) -> list[dict]:
         if isinstance(source_row_id, int):
             sms.setdefault(CORRELATED_ANCS_ROW_IDS_FIELD, []).append(source_row_id)
 
-    _reconcile_group_identities(out, addresses_by_name, resolver)
+    _reconcile_group_identities(out, addresses_by_name, resolver, named_routes)
     return out

@@ -1,7 +1,9 @@
 """The GTK settings dialog: one preferences page per category.
 
 The categories mirror the Qt client's settings page (Phone, Notifications,
-Calls & Audio, Network, Security, About); see :mod:`blueferry.ui.settings_presenter`.
+Calls & Audio, Network, Security, Plugins, About); see
+:mod:`blueferry.ui.settings_presenter`. The Plugins page lives in
+:mod:`blueferry.ui.plugin_settings`.
 """
 
 from __future__ import annotations
@@ -36,6 +38,7 @@ from blueferry.ui.call_audio import DeviceRow
 from blueferry.ui.doctor import DoctorSection
 from blueferry.ui.feature_switches import FeatureSwitches
 from blueferry.ui.notification_rules import NotificationRules
+from blueferry.ui.plugin_settings import ModelFactory, PluginSettingsPage, default_model
 from blueferry.ui.saved_choice import SavedChoice
 from blueferry.ui.settings_presenter import categories, service_state
 from blueferry.ui.setup_runner import SetupRunner
@@ -48,7 +51,10 @@ from blueferry.ui.status_presenter import (
 
 
 class SettingsDialog(Adw.PreferencesDialog):
-    def __init__(self, client, toast=None, *, doctor_runner=None, timer=None) -> None:
+    def __init__(
+        self, client, toast=None, *, doctor_runner=None, timer=None,
+        plugin_settings: ModelFactory | None = None,
+    ) -> None:
         super().__init__(
             title=_("Settings"), search_enabled=True, content_width=680, content_height=640,
         )
@@ -708,6 +714,19 @@ class SettingsDialog(Adw.PreferencesDialog):
         clear_button.connect("clicked", self._confirm_clear_history)
         clear_row.add_suffix(clear_button)
         data_group.add(clear_row)
+        # Shown while saved data cannot be opened, e.g. after its keyring
+        # key was lost; the subtitle carries the backend's explanation.
+        self._storage_reset_row = Adw.ActionRow(
+            title=_("Reset Local Storage"), use_markup=False, visible=False,
+        )
+        self._storage_reset_button = Gtk.Button(
+            label=_("Reset"),
+            valign=Gtk.Align.CENTER,
+            css_classes=["destructive-action"],
+        )
+        self._storage_reset_button.connect("clicked", self._confirm_storage_reset)
+        self._storage_reset_row.add_suffix(self._storage_reset_button)
+        data_group.add(self._storage_reset_row)
 
         about_group = Adw.PreferencesGroup()
         version_row = Adw.ActionRow(
@@ -752,7 +771,12 @@ class SettingsDialog(Adw.PreferencesDialog):
         ):
             for group in groups:
                 self.pages[key].add(group)
-        self.connect("closed", lambda _dialog: self.features.stop())
+        self.plugins = PluginSettingsPage(
+            self, self.pages["plugins"], plugin_settings or default_model(client),
+        )
+        self.connect("notify::visible-page-name", lambda *_args: self._plugins_shown())
+        self.connect("map", lambda _dialog: self._plugins_shown())
+        self.connect("closed", self._closed)
 
         client.connect("availability-changed", lambda *_: self._refresh_all())
         client.connect("status-invalidated", self._status_invalidated)
@@ -773,6 +797,15 @@ class SettingsDialog(Adw.PreferencesDialog):
         row.add_suffix(switch)
         row.set_activatable_widget(switch)
         return row, switch
+
+    def _plugins_shown(self) -> None:
+        # Like the Qt page: the plugins are read whenever the category opens.
+        if self.get_mapped() and self.get_visible_page_name() == "plugins":
+            self.plugins.shown()
+
+    def _closed(self, _dialog) -> None:
+        self.features.stop()
+        self.plugins.stop()
 
     def show_toast(self, text: str) -> None:
         self.add_toast(Adw.Toast(title=text, use_markup=False))
@@ -1535,6 +1568,9 @@ class SettingsDialog(Adw.PreferencesDialog):
         self._storage_policy_row.set_sensitive(reachable)
         self._applying_storage_policy = False
         locked = status.storage_policy == "encrypted" and status.storage_state != "ready"
+        self._storage_reset_row.set_visible(status.extra.get("storage_reset") is True)
+        self._storage_reset_row.set_subtitle(status.storage_detail)
+        self._storage_reset_button.set_sensitive(reachable)
         if reachable and locked and not self._storage_unlock_attempted:
             self._storage_unlock_attempted = True
             self._unlock_storage()
@@ -2142,6 +2178,40 @@ class SettingsDialog(Adw.PreferencesDialog):
                 self._refresh(),
             ),
         )
+
+    def _confirm_storage_reset(self, _button) -> None:
+        dialog = Adw.AlertDialog(
+            heading=_("Reset Local Storage?"),
+            body=_(
+                "This permanently deletes local message history, cached "
+                "contacts, call history and conversation preferences, and "
+                "replaces BlueFerry's keyring key. Nothing on the iPhone is "
+                "deleted."
+            ),
+        )
+        dialog.add_response("cancel", _("Cancel"))
+        dialog.add_response("reset", _("Erase and Start Over"))
+        dialog.set_close_response("cancel")
+        dialog.set_response_appearance("reset", Adw.ResponseAppearance.DESTRUCTIVE)
+
+        def responded(_dialog, response: str) -> None:
+            if response != "reset":
+                return
+            # The reset obtains its own key; skip the automatic unlock.
+            self._storage_unlock_attempted = True
+            self._storage_reset_button.set_sensitive(False)
+            self._client.reset_storage_async(
+                lambda _value: (self._toast(_("Local storage reset")), self._refresh()),
+                lambda error: (
+                    self._toast(_("Could not reset local storage: {error}").format(
+                        error=error,
+                    )),
+                    self._refresh(),
+                ),
+            )
+
+        dialog.connect("response", responded)
+        dialog.present(self.get_root())
 
     def _update_onboarding(self) -> None:
         transition = self._onboarding.update(
