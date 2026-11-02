@@ -103,7 +103,8 @@ def test_daemon_switches_photos_on_and_off_without_a_restart(make_daemon, monkey
     daemon.photo_files.clear = lambda: files.append("clear")
 
     assert daemon._set_contact_photos(False) == {
-        "contact_photos": False, "contact_photo_cleanup_pending": True,
+        "contact_photos": False, "contact_photos_state": "off",
+        "contact_photo_cleanup_pending": True,
     }
     assert json.loads(config.SETTINGS_JSON.read_text())["contact_photos"] is False
     assert daemon.photo_files is None and files == ["clear"]
@@ -151,7 +152,8 @@ def test_photo_erasure_retries_a_rejected_worker_queue(queued_photos, monkeypatc
 
     monkeypatch.setattr(daemon.obex_worker, "submit", refused)
     assert daemon._set_contact_photos(False) == {
-        "contact_photos": False, "contact_photo_cleanup_pending": True,
+        "contact_photos": False, "contact_photos_state": "off",
+        "contact_photo_cleanup_pending": True,
     }
     assert _photo_rows() == 1
     assert daemon.photo_files is None
@@ -397,6 +399,42 @@ def test_photos_survive_an_unreadable_settings_file_until_it_reads(
         _finish_photo_job(jobs)
         assert daemon.photo_files is None
     assert _photo_rows() == (1 if saved else 0)
+
+
+@pytest.mark.parametrize("saved", [True, False])
+def test_status_reports_an_unknown_photo_choice_until_settings_read_again(
+    unreadable_photo_choice, monkeypatch, saved,
+) -> None:
+    daemon, repair = unreadable_photo_choice(saved)
+    monkeypatch.setattr(daemon.obex_worker, "submit", lambda *_args, **_kwargs: None)
+    status = daemon._status()
+    assert status["contact_photos_state"] == "unknown"
+    # Older clients read only the boolean, which stays false while unknown.
+    assert status["contact_photos"] is False
+    assert json.loads(json.dumps(status))["contact_photos"] is False
+    daemon._retry_storage()
+    assert daemon._status()["contact_photos_state"] == "unknown"
+
+    emitted = []
+    monkeypatch.setattr(daemon, "_emit_status", lambda: emitted.append(True))
+    repair()
+    daemon._retry_storage()
+    # Clients refetch the status, so none stays on "unknown".
+    assert emitted
+    status = daemon._status()
+    assert status["contact_photos_state"] == ("on" if saved else "off")
+    assert status["contact_photos"] is saved
+
+
+@pytest.mark.parametrize("saved", [True, False])
+def test_status_reports_a_readable_photo_choice(make_daemon, monkeypatch, saved) -> None:
+    from blueferry.settings_store import SettingsStore
+
+    monkeypatch.setattr(config, "CONTACT_PHOTOS", False)
+    SettingsStore(config.SETTINGS_JSON).update(contact_photos=saved)
+    status = make_daemon()._status()
+    assert status["contact_photos_state"] == ("on" if saved else "off")
+    assert status["contact_photos"] is saved
 
 
 def test_no_contact_pull_while_the_photo_choice_is_unknown(

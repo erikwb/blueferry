@@ -571,13 +571,23 @@ Rectangle {
           text: "Show contact photos from the iPhone"
           visible: root.status.saved_opt_ins === true && root.status.contact_photos !== undefined
           checked: root.status.contact_photos === true
+          // While settings.json can't be read the saved choice is unknown.
           enabled: root.setup.configured && !root.busy.photos
-          Accessible.description: "Photos are kept with your contacts and arrive with the next contact sync. Turning this off erases them."
+            && root.status.contact_photos_state !== "unknown"
+          Accessible.description: root.status.contact_photos_state === "unknown" ? "Unavailable while settings.json cannot be read." : "Photos are kept with your contacts and arrive with the next contact sync. Turning this off erases them."
           onClicked: {
             root.operationRequested("set_contact_photos", {
               enabled: checked
             });
           }
+        }
+        FerryLabel {
+          objectName: "contactPhotosUnavailable"
+          ferryTheme: root.theme
+          Layout.fillWidth: true
+          wrapMode: Text.Wrap
+          visible: root.status.saved_opt_ins === true && root.status.contact_photos_state === "unknown"
+          text: "Unavailable while settings.json cannot be read."
         }
         FerryCategoryHeading {
           objectName: "notificationsCategory"

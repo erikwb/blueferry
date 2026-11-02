@@ -139,6 +139,20 @@ def _ancs_actions_editable(values: Values) -> bool:
     )
 
 
+def _contact_photos_unknown(values: Values) -> bool:
+    return values.get("contact_photos_state") == "unknown"
+
+
+def _contact_photos_caption(values: Values) -> str:
+    if _contact_photos_unknown(values):
+        return _("Unavailable while settings.json cannot be read")
+    return _(
+        "Photos are kept with your contacts and arrive with the next contact "
+        "sync. The terminal can't draw them; other clients and popups show "
+        "them. Turning this off erases them."
+    )
+
+
 def _battery_caption(values: Values) -> str:
     percent = values.get("phone_battery_warning_percent", 20)
     return _("One desktop notification per discharge, at {percent} % or less.").format(
@@ -187,12 +201,9 @@ SAVED_SWITCHES: dict[str, SavedSwitch] = {
         SavedSwitch(
             key="contact_photos",
             label=_("Show Contact Photos"),
-            caption=_text(_(
-                "Photos are kept with your contacts and arrive with the next contact "
-                "sync. The terminal can't draw them; other clients and popups show "
-                "them. Turning this off erases them."
-            )),
+            caption=_contact_photos_caption,
             shown=_saved_opt_in("contact_photos"),
+            editable=lambda values: not _contact_photos_unknown(values),
             save=lambda client, enabled, _values: client.set_contact_photos(enabled),
         ),
         SavedSwitch(
