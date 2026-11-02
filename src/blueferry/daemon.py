@@ -204,6 +204,7 @@ class Daemon:
         self._photo_erase_pending = False
         self._photo_erase_running = False
         self._photo_erase_generation = 0
+        self._photo_cache_owed = False
         if self.photo_settings.enabled:
             self.photo_files = self._avatar_files
         elif self.photo_settings.known:
@@ -1181,20 +1182,22 @@ class Daemon:
 
         Until then photos are neither erased, fetched nor shown.
         """
-        if self.photo_settings.known or not self.photo_settings.reload():
-            return
-        if self.photo_settings.enabled:
-            self.photo_files = self._avatar_files
-            if self.storage.status.can_read:
-                # A cache prepared while the choice was unknown has no photos.
-                self._reload_contact_photos()
-        else:
-            self._photo_erase_pending = True
-            self._queue_photo_erase()
-        # Pulls skipped while the choice was unknown are owed now.
-        if self.contact_sync.needed():
-            self.contact_sync.refresh()
-        self._emit_status()
+        if not self.photo_settings.known and self.photo_settings.reload():
+            if self.photo_settings.enabled:
+                self.photo_files = self._avatar_files
+                # A cache prepared while the choice was unknown has no photos,
+                # including one a preparation still running will install.
+                self._photo_cache_owed = True
+            else:
+                self._photo_erase_pending = True
+                self._queue_photo_erase()
+            # Pulls skipped while the choice was unknown are owed now.
+            if self.contact_sync.needed():
+                self.contact_sync.refresh()
+            self._emit_status()
+        if self._photo_cache_owed and self.storage.status.can_read:
+            self._photo_cache_owed = False
+            self._reload_contact_photos()
 
     def _contact_photo_path(self, address: str | None) -> str | None:
         photo_files = self.photo_files
