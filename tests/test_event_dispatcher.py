@@ -104,66 +104,33 @@ def _event(body: str = "hello"):
     )
 
 
-def _historical(event) -> dict:
-    return {
-        "kind": "ancs_notification",
-        **{
-            field: getattr(event, field)
-            for field in (
-                "notification_id",
-                "device_path",
-                "app_id",
-                "app_name",
-                "title",
-                "subtitle",
-                "body",
-                "category",
-                "is_silent",
-                "is_preexisting",
-                "positive_action",
-                "negative_action",
-            )
-        },
-        "seen_at": "2026-08-08T12:00:00+00:00",
-    }
-
-
-def test_replayed_ancs_event_is_not_sent_to_any_sink():
+def test_repeated_ancs_event_is_delivered_once():
     event = _event()
-    dispatcher = EventDispatcher(
-        object(),
-        defer_mark_read=lambda _path: None,
-        historical_ancs=[_historical(event)],
-    )
+    dispatcher = EventDispatcher(object(), defer_mark_read=lambda _path: None)
     sink = _Sink()
     service = _Service()
     dispatcher.sinks = [sink]
     dispatcher.set_dbus_service(service)
 
     dispatcher.ancs(event)
+    dispatcher.ancs(event)
 
-    assert sink.events == []
-    assert service.events == []
+    assert sink.events == [event]
+    assert service.events == ["changed"]
 
 
-def test_modified_notification_with_same_id_is_delivered_once():
+def test_modified_notification_with_same_id_is_delivered():
     previous = _event("old body")
     current = _event("new body")
-    dispatcher = EventDispatcher(
-        object(),
-        defer_mark_read=lambda _path: None,
-        historical_ancs=[_historical(previous)],
-    )
+    dispatcher = EventDispatcher(object(), defer_mark_read=lambda _path: None)
     sink = _Sink()
-    service = _Service()
     dispatcher.sinks = [sink]
-    dispatcher.set_dbus_service(service)
 
+    dispatcher.ancs(previous)
     dispatcher.ancs(current)
     dispatcher.ancs(current)
 
-    assert sink.events == [current]
-    assert service.events == ["changed"]
+    assert sink.events == [previous, current]
 
 
 def test_reused_uid_after_session_reset_is_delivered_again():

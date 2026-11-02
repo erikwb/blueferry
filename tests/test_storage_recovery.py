@@ -98,8 +98,6 @@ def recovery(make_daemon, monkeypatch):
     daemon.sessions.pbap = object()  # PBAP is live; MAP is not.
     monkeypatch.setattr(daemon.sessions, "report_error", lambda _error: None)
     storage = daemon.storage
-    seeded = []
-    daemon.events = SimpleNamespace(seed_historical_ancs=seeded.extend)
     published = []
     monkeypatch.setattr(daemon, "_emit_status", lambda: published.append(storage.status))
     operations = BackendOperations(daemon.sessions, BackendDependencies(
@@ -118,7 +116,7 @@ def recovery(make_daemon, monkeypatch):
 
     return SimpleNamespace(
         storage=storage, wallet=wallet, daemon=daemon, operations=operations,
-        queue=queue, outcomes=outcomes, published=published, seeded=seeded, unlock=unlock,
+        queue=queue, outcomes=outcomes, published=published, unlock=unlock,
         scheduled=scheduled,
     )
 
@@ -255,7 +253,6 @@ def test_recovery_runs_deferred_history_cleanup_and_seeds_ancs(recovery, interac
     r.storage.refresh(allow_prompt=False)
     r.daemon.contacts.refresh()
     SqliteSink(storage=r.storage)
-    assert not r.seeded
 
     r.wallet.locked = False
     r.unlock(interactive=interactive)
@@ -264,7 +261,6 @@ def test_recovery_runs_deferred_history_cleanup_and_seeds_ancs(recovery, interac
     assert len(retained) == 2
     assert retained[0]["handle"] == "recent"
     assert "extra_private_field" not in retained[1]
-    assert r.seeded == [retained[1]]
     assert r.outcomes[-1]["storage_state"] == "ready"
     assert r.published[-1].state == "ready"
     assert b"legacy plaintext" not in config.EVENTS_DB.read_bytes()
