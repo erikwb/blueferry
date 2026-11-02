@@ -325,6 +325,25 @@ def test_a_live_copy_after_the_backfill_notifies_without_a_second_row():
     assert harness.coordinator.live_message(live) is True
 
 
+def test_a_new_live_message_with_the_same_text_is_still_stored():
+    harness = Harness(listing=[_entry("message1", body="ok", minutes_ago=20)])
+    harness.coordinator.request("MAP connected")
+    harness.fire()
+    live = SmsEvent(
+        kind="sms_received", handle="message2", sender_address=ALICE,
+        sender_phone_norm=None, contact_name=None, body="ok",
+        timestamp=None, is_read=False, seen_at=NOW,
+    )
+    # During the listing: the missed "ok" is still backfilled.
+    assert harness.coordinator.live_message(live) is True
+    harness.worker.run_next()
+    harness.worker.run_next()
+    [(payloads, _handles)] = harness.writes
+    assert [payload["handle"] for payload in payloads] == ["message1"]
+    # After it: another "ok" is a new message, not the backfilled one.
+    assert harness.coordinator.live_message(live) is True
+
+
 def test_listing_failure_is_logged_without_content_and_retried_next_time(caplog):
     harness = Harness()
     harness.list_error = RuntimeError(f"{ALICE} secret text")

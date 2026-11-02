@@ -336,8 +336,12 @@ def store_backfill(
     return changed
 
 
-def _live_dict(event: SmsEvent) -> dict:
-    return event.to_dict()
+def _live_key(event: SmsEvent) -> tuple[str, str | None]:
+    return event.handle, _identity(event.sender_address)
+
+
+def _listed_key(message: ListedMessage) -> tuple[str, str | None]:
+    return message.handle, _identity(message.sender_address)
 
 
 class MessageBackfill:
@@ -383,8 +387,8 @@ class MessageBackfill:
         self._busy = False
         self._rerun = False
         self._generation = 0
-        # Live messages seen while a listing is in flight, as stored dicts.
-        self._live: list[dict] | None = None
+        # Live messages (handle, sender) seen while a listing is in flight.
+        self._live: set[tuple[str, str | None]] | None = None
         # Backfilled messages, so a late live copy is not stored twice.
         self._remembered: deque[ListedMessage] = deque(maxlen=MAX_REMEMBERED)
 
@@ -424,15 +428,16 @@ class MessageBackfill:
         """
         if event.kind != "sms_received":
             return True
-        if self._remembered:
-            _unmatched, pairs = match_listing(
-                list(self._remembered), [_live_dict(event)],
-            )
-            if pairs:
-                self._remembered.remove(pairs[0][0])
+        # Live and listed copies share the MAP session, so the same message
+        # has the same handle. Text and time are not enough here: a new
+        # "ok" minutes after a missed "ok" is a second message.
+        key = _live_key(event)
+        for message in self._remembered:
+            if _listed_key(message) == key:
+                self._remembered.remove(message)
                 return False
         if self._live is not None:
-            self._live.append(_live_dict(event))
+            self._live.add(key)
         return True
 
     # -- worker round trips ---------------------------------------------------
@@ -460,7 +465,7 @@ class MessageBackfill:
             return plan_backfill(listed, history, since=since), since
 
         self._busy = True
-        self._live = []
+        self._live = set()
         try:
             self._submit(
                 operation,
@@ -483,9 +488,11 @@ class MessageBackfill:
         ):
             self._finish(generation)
             return
-        live = self._live or []
+        live = self._live or set()
         self._live = None
-        missing, _pairs = match_listing(plan.missing, live)
+        missing = [
+            message for message in plan.missing if _listed_key(message) not in live
+        ]
         payloads = [
             history_payload(
                 message,
