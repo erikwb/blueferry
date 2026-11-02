@@ -1174,7 +1174,8 @@ class BackendOperations:
         """Erase all retained local data, then prepare storage under a new key.
 
         The way out when retained data cannot be opened: its keyring key is
-        gone or replaced, or the records failed authentication.
+        gone or replaced, the records failed authentication, or a database
+        is damaged.
         """
         if not confirmed:
             raise ConfirmationRequiredError(

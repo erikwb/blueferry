@@ -813,7 +813,8 @@ A change to these rules has to be made in both places.
   delivery continues. Only an explicit client action may create or unlock the
   key. History writes are transactional, and a monotonic revision invalidates
   the projection. A storage reset deletes a database SQLite cannot read, with
-  its journal files; every other path leaves a damaged file in place.
+  its journal files; every other path leaves a damaged file in place. When one
+  stops storage preparation, the status offers that reset.
 - **Contact photos** are opt-in (`contact_photos` in `settings.json`, set
   through `Messages1.SetContactPhotos` and seeded by
   `BLUEFERRY_CONTACT_PHOTOS`; switching applies without a restart). The daemon keeps
