@@ -313,10 +313,8 @@ class StorageSecurity:
     ) -> None:
         self._settings = settings or SettingsStore()
         self._provider = key_provider or SecretServiceKeyProvider()
-        selected = str(self._settings.read().get(
-            "local_data", DEFAULT_STORAGE_POLICY
-        ))
-        self._policy = selected if selected in STORAGE_POLICIES else DEFAULT_STORAGE_POLICY
+        self._policy = DEFAULT_STORAGE_POLICY
+        self._policy_known = False
         self._key: bytearray | None = None
         # The key opened this install's key check, or wrote it after
         # preparation proved that it opens the retained data.
@@ -329,6 +327,37 @@ class StorageSecurity:
         self._failure_generation = 0
         self._revision = 0
         self._followed: tuple[StorageSecurity, int] | None = None
+        self._state = "locked"
+        self._detail = ""
+        self._load_policy()
+        if initialize and self._policy_known and self._policy == ENCRYPTED_STORAGE:
+            self.refresh(allow_prompt=False)
+
+    def _load_policy(self) -> bool:
+        """Adopt the saved policy and return whether it could be read.
+
+        A settings file that exists but can't be read may hold a choice to
+        retain nothing, so nothing is retained until it reads again.
+        """
+        try:
+            saved = self._settings.load()
+        except UnreadableSettingsError as error:
+            detail = (
+                f"Local data is not retained while {self._settings.path.name} "
+                "cannot be read; repair or remove the file"
+            )
+            if self._detail != detail:
+                log.warning("local data policy could not be read: %s", error.__cause__ or error)
+            self._forget_key()
+            self._state = "locked"
+            self._detail = detail
+            return False
+        selected = str(saved.get("local_data", DEFAULT_STORAGE_POLICY))
+        selected = selected if selected in STORAGE_POLICIES else DEFAULT_STORAGE_POLICY
+        if selected != self._policy:
+            self._policy = selected
+            self._revision += 1
+        self._policy_known = True
         if self._policy == NO_STORAGE:
             self._state = "disabled"
             self._detail = "Local data is not retained"
@@ -338,8 +367,7 @@ class StorageSecurity:
         else:
             self._state = "locked"
             self._detail = "Unlock the desktop keyring to retain encrypted local data"
-        if initialize and self._policy == ENCRYPTED_STORAGE:
-            self.refresh(allow_prompt=False)
+        return True
 
     @property
     def status(self) -> StorageStatus:
@@ -427,6 +455,9 @@ class StorageSecurity:
 
         if self.busy:
             raise StorageUnavailableError("a desktop wallet request is already pending")
+        if policy is None and not self._policy_known and not self._load_policy():
+            on_success(self.status)
+            return
         if policy is not None:
             self._select_policy(policy)
         if reset:
@@ -659,6 +690,8 @@ class StorageSecurity:
             log.info("could not remove the previous storage key: %s", error)
 
     def refresh(self, *, allow_prompt: bool) -> StorageStatus:
+        if not self._policy_known and not self._load_policy():
+            return self.status
         if self._policy == NO_STORAGE:
             return self.status
         if self._policy == PLAINTEXT_STORAGE:
@@ -688,6 +721,7 @@ class StorageSecurity:
             **(self._cleared_key_check() if previous != selected else {}),
         )
         self._policy = selected
+        self._policy_known = True
         if previous != selected:
             self._revision += 1
         if selected == NO_STORAGE:
