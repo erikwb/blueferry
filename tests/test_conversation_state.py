@@ -8,6 +8,7 @@ import pytest
 from blueferry.conversation_state import (
     ConversationSnapshot,
     ConversationState,
+    ParticipantDraft,
     ReplyDisposition,
 )
 from blueferry.models import BackendStatus, Thread, ThreadMessage
@@ -323,3 +324,69 @@ def test_shared_snapshot_loader_distinguishes_empty_history_from_failure(status_
     assert snapshot.threads == (None if threads_fail else ())
     assert snapshot.status_error == ("status failed" if status_fails else "")
     assert snapshot.thread_error == ("threads failed" if threads_fail else "")
+
+
+def _unconfirmed_group(**changes) -> Thread:
+    """Issue #300: the wife wrote; the son's address is ambiguous."""
+    return Thread.from_dict({
+        "key": "group:participants:son|wife",
+        "name": "Son, Wife",
+        "is_group": True,
+        "recipients": ["+15551111111"],
+        "observed_recipients": ["+15551111111"],
+        "missing_members": ["Son"],
+        "reply_ready": False,
+        "participants_required": True,
+        "group_origin": "unnamed",
+        "messages": [{
+            "handle": "1", "body": "dinner at 7", "timestamp": "2026-10-31T18:00:00Z",
+            "outgoing": False, "read": True, "sender": "Wife",
+            "address": "+15551111111",
+        }],
+        **changes,
+    })
+
+
+def test_reply_to_a_group_without_confirmed_members_asks_for_them() -> None:
+    state = ConversationState()
+    thread = _unconfirmed_group()
+    state.threads = [thread]
+    state.selected_key = thread.key
+
+    assert thread.can_compose is True
+    plan = state.plan_reply("on my way", thread_key=thread.key)
+    assert plan.disposition is ReplyDisposition.NEEDS_PARTICIPANTS
+    assert plan.body == "on my way"
+    # Every attempt asks again; nothing is remembered.
+    assert state.plan_reply("on my way").disposition is ReplyDisposition.NEEDS_PARTICIPANTS
+
+    ready = replace(
+        thread, reply_ready=True, participants_required=False,
+        recipients=("+15551111111", "+15552222222"),
+    )
+    state.group_participants_saved(ready)
+    # The draft then takes the normal path, first-send confirmation included.
+    assert state.plan_reply("on my way").disposition is ReplyDisposition.CONFIRM_GROUP
+
+
+def test_participant_draft_starts_from_known_addresses_and_hints_the_rest() -> None:
+    draft = ParticipantDraft(_unconfirmed_group())
+
+    assert draft.entries == [("Wife", "+15551111111")]
+    assert draft.hint == "Still needed: Son"
+    assert not draft.can_save
+    assert draft.suggestions([("Son", "+15552222222"), ("Wife", "+1 555 111 1111")]) == [
+        ("Son", "+15552222222"),
+    ]
+
+    assert draft.add("+15552222222", "Son")
+    assert draft.hint == ""
+    assert draft.can_save
+    assert draft.recipients == ["+15551111111", "+15552222222"]
+    assert not draft.add("Son")
+    assert draft.add("+1 (555) 222-2222")
+    assert len(draft.entries) == 2, "the same number in another spelling is not added twice"
+
+    draft.remove("+15552222222")
+    assert draft.recipients == ["+15551111111"]
+    assert draft.hint == "Still needed: Son"
