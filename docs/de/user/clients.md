@@ -22,8 +22,9 @@ Karte die Einstellung, die es einschaltet. Die Reiter wechselt man
 in der Kopfzeile, in einem schmalen Fenster unten:
 
 - **Messages**: Unterhaltungen und der Chat.
-- **Calls**: laufende [Anrufe](calls.md) mit annehmen, halten/fortsetzen
-  und auflegen sowie dem Ton-Schalter, ein Wählfeld, das auch deine
+- **Calls**: laufende [Anrufe](calls.md) mit annehmen, halten/fortsetzen,
+  auflegen, Tastentönen (0-9, `*`, `#`) für den aktiven Anruf sowie dem
+  Ton-Schalter, ein Wählfeld, das auch deine
   Kontakte nach Namen durchsucht, und die [Anrufliste](call-history.md) nach Tagen
   gruppiert, mit All und Missed, Rückruf- und Nachrichtenknöpfen und
   **Refresh from iPhone**. Jeder Anruf fragt vorher nach.
@@ -77,7 +78,7 @@ Einstellung, die sie einschaltet. Rechts gibt es drei Reiter:
 - **Messages**: Unterhaltungen mit den Filtern All, Unread und Starred und
   der Chat.
 - **Calls**: [Anrufe](calls.md) mit Wählfeld und laufenden Anrufen als
-  Karten (annehmen, halten, auflegen) und die [Anrufliste](call-history.md)
+  Karten (annehmen, halten, auflegen, Tastentöne für den aktiven Anruf) und die [Anrufliste](call-history.md)
   nach Tagen gruppiert, mit All und Missed.
 - **Notifications**: die [letzten iPhone-Mitteilungen](notification-history.md)
   anderer Apps.
@@ -164,6 +165,50 @@ omarchy plugin add https://github.com/erikwb/omarchy-blueferry.git
 Aktiviere es unter **Setup → Plugins** und füge es deiner Leiste hinzu.
 Kopplung, Nachrichten und Einstellungen erledigt weiterhin der vollständige
 Quickshell-Client.
+
+### Einstellungen
+
+**iPhone settings** hat dieselben Kategorien wie die Einstellungen des Qt-,
+GTK- und Terminal-Clients, untereinander angeordnet. Eine Einstellung
+erscheint nur, wenn der laufende Hintergrunddienst sie anbietet.
+
+| Kategorie | Was du dort findest |
+|---|---|
+| Phone | Kopplung, Verbindungszustand mit **Reconnect**, automatisches Zurücksetzen einer hängenden Verbindung, **Run Diagnostics**, Kontaktabgleich (**Sync Contacts**), Kontaktfotos |
+| Notifications | Welche Ereignisse Popups erzeugen, nur Kontakte, Mitteilungsinhalt, Aktionsknöpfe, Mitteilungen mit dem iPhone abgleichen, beim Wegklicken als gelesen markieren, letzte Mitteilungen behalten und die Liste dieser Mitteilungen |
+| Calls & Audio | Telefonanrufe, Anrufliste und Popups für verpasste Anrufe, Akku-Warnung, iPhone-Ton auf diesem Computer, Mediensteuerung und MPRIS |
+| Security | Einmalcodes, Abwesenheitssperre, die lokale Speicherung |
+| About | Der Hintergrunddienst, seine Version und **Restart Service** |
+
+Schalter, die einen Neustart brauchen, zeigen oben auf der Seite den
+Neustart-Hinweis mit **Restart Service**. Ein älterer Dienst, der sie noch
+nicht kennt, zeigt jeden Schalter ausgegraut mit der Variablen, die du
+stattdessen in `local.env` setzt.
+
+**Show Recent Notifications** listet die letzten 30 Mitteilungen, die
+**Keep recent iPhone notifications** behält: App, Uhrzeit und, falls
+erlaubt, Titel und Text. Die Liste wird nur gelesen, solange sie sichtbar
+ist, folgt neuen Mitteilungen und wird vergessen, sobald du sie
+ausblendest oder die Seite verlässt. Ist sie aus, leer oder nicht
+verfügbar, sagt sie, warum.
+
+### Was das Panel weglässt
+
+Quickshell ist ein kompaktes Panel, deshalb bleiben einige Teile bei den
+anderen Clients:
+
+| Weggelassen | Warum | Stattdessen |
+|---|---|---|
+| Plugin-Verwaltung und Plugin-Einstellungen | Jedes Plugin bringt sein eigenes Einstellungsformular mit Geheimnissen, Knöpfen und Protokoll mit, dazu kommt der Store mit installierbaren Plugins; das ist zu viel und zu unterschiedlich für ein kompaktes Panel | Qt- oder GTK-Einstellungen, `blueferry plugins` |
+| **Send to…** und der Tab **Photos** (Plugin-Funktionen) | Send to braucht eine Dateiauswahl oder Drag & Drop, die das Panel nicht hat; beides kommt von Plugins, die das Panel nicht verwaltet | Qt-Client (Photos), Qt- oder GTK-Client (Send to), `blueferry send`, `blueferry photos` |
+| Begleitwerkzeuge | Desktop-Helfer richtet man einmal ein; das ist keine Aufgabe für ein Panel | Qt- oder GTK-Einstellungen, `blueferry tools` |
+| Nachrichtenverlauf löschen | Bietet auch der Terminal-Client nicht an | `blueferry history-clear` |
+| Click Rules, letzte Anrufe, das Anruf-Panel | Noch nicht im Quickshell-Client | Qt-, GTK- oder Terminal-Client |
+
+Das Panel lädt keinen Übersetzungskatalog, seine eigenen Beschriftungen
+sind deshalb englisch. Texte aus dem gemeinsamen BlueFerry-Code, etwa der
+Hinweis zum Wiederverbinden, der Neustart-Hinweis oder der Platzhalter der
+Mitteilungsliste, folgen deiner Sprache.
 
 ## Terminal (TUI)
 
@@ -316,6 +361,7 @@ blueferry sms-send Alice 'komme später'
 blueferry contacts-sync              # Kontakte neu vom iPhone holen
 blueferry storage-policy-set encrypted   # oder plaintext, none
 blueferry storage-unlock             # Schlüsselbund zum Entsperren auffordern
+blueferry storage-reset              # alle lokalen Daten löschen, Schlüssel ersetzen
 blueferry history-clear              # lokalen Nachrichtenverlauf löschen
 blueferry pairing-issue              # GitHub-Issue mit dem letzten Kopplungsbericht öffnen
 blueferry version

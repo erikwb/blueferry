@@ -36,9 +36,9 @@ All paths are relative to `src/blueferry/` unless noted.
 | `events.py` | Normalized MAP event dataclasses (`SmsEvent`) and address/timestamp normalization. |
 | `threads.py` | Backend-owned conversation projection, thread keys, and reply-routing metadata. |
 | `grouping.py` | Correlates MAP iMessages with ANCS Messages notification metadata to recover group membership. |
-| `named_groups.py` | Named-group identity keys and saved reply routes. |
+| `named_groups.py` | Group identity keys (named groups by name, unnamed ones by member names) and saved reply routes. |
 | `confirmed_groups.py` | Persistent confirmed group rosters in the owner-only settings document. |
-| `group_routes.py` | Saved named-group reply rosters in the settings document, outside history retention. |
+| `group_routes.py` | Saved group reply rosters in the settings document, outside history retention. |
 | `starred_threads.py` | Persistent starred-conversation keys in the settings document. |
 | `notification_policy.py` | Persistent desktop notification preferences, including per-app click rules. |
 | `notification_log.py` | Opt-in, memory-only ring of recent non-Messages ANCS notifications for `ListNotifications` (content-gated), with opaque record keys, removal marking, session-reset detaching and pins. |
@@ -49,7 +49,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `settings_store.py` | Small atomic store shared by daemon-owned preferences. |
 | `glib_timers.py` | `schedule_periodic`: a repeating GLib timer whose owner forgets the source id once GLib destroys the source (false return or exception). |
 | `read_receipts.py` | Delays MAP read acknowledgements so ANCS can still deliver group metadata. |
-| `recipients.py` | Recipient validation, participant-line parsing, and group confirmation tokens (shared by backend and Python clients). |
+| `recipients.py` | Recipient validation and group confirmation tokens (shared by backend and Python clients). |
 | `connectivity.py` | MAP/PBAP connectivity state machine and retry policy, independent of GLib and BlueZ. |
 | `profile_supervisor.py` | Owns MAP/PBAP open, close, retry, loss, and resume transitions. |
 | `background_worker.py` | Bounded local jobs completed on the owning GLib loop. |
@@ -275,7 +275,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `qt/avatars.py` | Image provider that decodes opt-in contact photos with `QImageReader` after header and size checks. |
 | `qt/activation.py` | Qt adapter for client activation. |
 | `qt/qml/Main.qml` | Kirigami window: navigation and composition. |
-| `qt/qml/ConversationLogic.qml` | Thread lookup, roster-warning dedup, participant parsing (also used by Quickshell). |
+| `qt/qml/ConversationLogic.qml` | Thread lookup, roster-warning dedup, the members editor's list (also used by Quickshell). |
 | `qt/qml/SettingsPage.qml` | Settings with categories on the left (Phone, Notifications, Calls & Audio, Network, Security, About), a drill-down list in a narrow window, and the restart notice for feature switches. Keeps the Phone category alive to preserve pairing choices. |
 | `qt/qml/Settings*.qml` | One page per category; every control of the former single iPhone settings page lives in one of them. `SettingsPhone` also runs `blueferry doctor` (`doctor_report.py`, child process on its own pool; the report's state map and summary are shared with GTK) and shows the report as plain text. |
 | `qt/qml/SubtitleSwitch.qml`, `qt/qml/FeatureSwitch.qml` | A switch row with a wrapped explanation; `FeatureSwitch` binds one `GetFeatures`/`SetFeature` switch to its row in `features_view.view()`, which falls back to the `local.env` hint on older daemons. |
@@ -286,6 +286,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `qt/qml/ProximityLockSettings.qml` | Away-lock toggle, grace period, and warning; loaded only for daemons that report it. |
 | `qt/qml/TetherSection.qml` | "Enable Bluetooth tethering" checkbox, then the connect switch and automatic choice; loaded only when the daemon offers `Tether1`. |
 | `qt/qml/GroupConfirmationDialog.qml` | Group recipient confirmation before sending. |
+| `qt/qml/GroupParticipantsDialog.qml` | Confirm a group's members, with contact suggestions. |
 | `qt/qml/NewMessageDialog.qml` | New message composition. |
 | `qt/qml/PhoneCard.qml` | The phone card left of the tabs: name, connection, battery/signal, now playing and quick switches (sound, away lock); opt-ins that are off stay greyed out with a hint. Folds behind a header button in a narrow window. |
 | `qt/qml/CallsTab.qml` | Calls tab: running calls as cards (answer, hold, hang up), dial pad, and the day-grouped recent calls (`RecentCallsPage.qml`). |
@@ -302,7 +303,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `qt/qml/CallHistorySettings.qml` | Call-history opt-in checkboxes in the iPhone settings. |
 | `qt/qml/NowPlayingBar.qml` | Opt-in iPhone now-playing bar with transport buttons. |
 | `qt/qml/MediaControlSettings.qml` | Media-control opt-in checkbox and state; loaded only for daemons that report it. |
-| `quickshell_bridge.py` | Persistent stdin/stdout JSON bridge from Quickshell to the session D-Bus API. |
+| `quickshell_bridge.py` | Persistent stdin/stdout JSON bridge from Quickshell to the session D-Bus API. Settings replies are built on the shared `features_view`, `phone_link_view.notifications_view`, `reconnect_view` and `doctor_report` helpers. Lists (threads, contacts, feature switches, recent notifications) are plain JSON arrays; Qt 6.12 hands arrays in a `var` signal argument over as sequence wrappers that fail `Array.isArray` (#213), so `shell.qml` passes every reply and event through `plainValue()`, a JSON round trip; content-free D-Bus signals become events (`status-changed`, `now-playing-changed`, `notifications-changed`, …). |
 
 ### Quickshell client (`data/quickshell/`)
 
@@ -315,7 +316,10 @@ All paths are relative to `src/blueferry/` unless noted.
 | `SetupController.qml` | Pure setup state; emits requests with monotonic IDs. |
 | `SetupTransport.qml` | Creates one `SetupJob` per request and routes tagged output. |
 | `SetupJob.qml` | One `pairing-*` helper process with a deadline. |
-| `PhoneSettingsPage.qml` | Setup and preferences view. |
+| `PhoneSettingsPage.qml` | Setup and preferences view, in the shared categories (Phone, Notifications, Calls & Audio, Security, About). |
+| `FerryCategoryHeading.qml` | Category heading of the settings page. |
+| `FerryFeatureSwitch.qml` | One restart-required `local.env` switch from the bridge's features view (`switches`); names the variable for older daemons. |
+| `QuickshellNotificationList.qml` | Compact, read-only recent iPhone notifications; `shell.qml` reads them only while shown and forgets them when hidden. |
 | `Theme.qml` | Reads public Omarchy theme files. |
 | `ThemePalette.qml` | Pure color/geometry tokens with a system-palette fallback. |
 | `Ferry*.qml` | Styled controls (button, check box, combo box, label, text field, composer, section label, info row). |
@@ -458,6 +462,12 @@ dbus-python; the guard tolerates that.
   and the Quickshell bridge serialize them for QML so JavaScript does not
   recompute them.
 - Group sender labels are display-only and never affect identity or routing.
+- A group with `participants_required` keeps its reply box open
+  (`Thread.can_compose`). Sending to it plans as `NEEDS_PARTICIPANTS`: every
+  client then opens its members editor, saves through `SetGroupParticipants`
+  and, once the group is reply-ready, sends the draft through the normal path,
+  first-send confirmation included. Without a saved roster the backend still
+  refuses the send.
 
 ## Client architecture
 
@@ -514,10 +524,11 @@ layer:
 - `data/quickshell/OnboardingState.qml` re-implements stage derivation and
   pending iPhone setup tasks rather than using `onboarding.py`.
 - `qt/qml/ConversationLogic.qml`, used by both Qt and Quickshell,
-  re-implements thread lookup, roster-warning deduplication, and participant
-  parsing (written to match `recipients.participant_lines`). Quickshell uses no
-  `conversation_state` logic. Python/QML behavior tests cover parts of these
-  contracts, such as serialized tokens and participant parsing.
+  re-implements thread lookup, roster-warning deduplication, and the members
+  editor's list (written to match `conversation_state.ParticipantDraft`).
+  Quickshell uses no `conversation_state` logic. Python/QML behavior tests
+  cover parts of these contracts, such as serialized tokens and the members
+  editor.
 
 A change to these rules has to be made in both places.
 
@@ -725,6 +736,9 @@ A change to these rules has to be made in both places.
 - `Dial` accepts plain numbers only (`+` and digits); `*`/`#` service codes
   are rejected so a caller cannot reconfigure the phone (for example call
   forwarding). Keypad symbols remain available as DTMF on an active call.
+  `SendTones` requests go to oFono one at a time in arrival order (at most
+  32 waiting), so fast keypad clicks keep their order; the log names only
+  the number of tones, never the tones (they can be a PIN).
   Well-known emergency numbers are refused (they belong on the phone), and
   every client confirms a number before dialing. `Answer`/`HoldAndAnswer`
   have their own quota; hanging up is never blocked by it.
@@ -779,8 +793,10 @@ A change to these rules has to be made in both places.
 - **Identity:** normalized phone or email addresses are identities, and
   contact names are display metadata only.
 - **Group routing:** named-group ANCS notifications start as read-only
-  threads. Only the backend retains a user-supplied route, and every observed
-  sender must remain in it. A sender outside the route raises a roster-change
+  threads, as do unnamed groups whose members don't each resolve to one
+  address (a member with a number and an Apple ID, say). Both are marked
+  `participants_required`. Only the backend retains a user-supplied route, and
+  every observed sender must remain in it. A sender outside the route raises a roster-change
   warning and disables replies. Routes are local and never modify iPhone
   groups. They are preferences in `settings.json`, not history events, so
   retention and the bounded conversation window never discard a route that
@@ -788,7 +804,12 @@ A change to these rules has to be made in both places.
   conversation ID. Versioned keys preserve spelling (NFC, trimmed), and editing
   a roster does not change the key. Legacy name-folded keys remain aliases
   only when history shows a single spelling, and reading history never
-  rewrites the database.
+  rewrites the database. An unnamed group's route is saved under its
+  `group:participants:` key, built from the member names in the ANCS subtitle
+  and title, and is applied before address resolution, so later messages stay
+  in that thread. Renaming a member in Contacts or changing the group's
+  membership changes the key and orphans the route; the group then needs its
+  members again.
 - **Encryption at rest:** history, the contact cache, and the opt-in call
   history live in `0700` directories as `0600` SQLite files. Sensitive records, including event kind,
   timestamp, and content, are encrypted with AES-256-GCM under one random key

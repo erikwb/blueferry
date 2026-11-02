@@ -370,7 +370,7 @@ def test_arbitrary_base64_payloads_only_yield_accepted_images(data: bytes, fold:
 # ---- storage -----------------------------------------------------------------
 
 class _Wallet:
-    def get_or_create(self, *, allow_prompt: bool, cancellable=None) -> bytes:
+    def get_or_create(self, *, allow_prompt: bool, cancellable=None, create=True) -> bytes:
         return b"K" * 32
 
     def delete(self, *, allow_prompt: bool, cancellable=None) -> bool:

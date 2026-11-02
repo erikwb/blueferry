@@ -6,7 +6,7 @@ from collections.abc import Coroutine
 from dataclasses import replace
 from typing import Any
 
-from textual.widgets import Input, ListView, Static, TextArea
+from textual.widgets import Input, ListView, OptionList, Static, TextArea
 
 from blueferry import tui as tui_module
 from blueferry.client import BackendError
@@ -15,8 +15,9 @@ from blueferry.tui import (
     BlueFerryApp,
     ConversationItem,
     DeleteConversationScreen,
+    GroupConfirmScreen,
+    GroupMembersScreen,
     MessageRow,
-    RosterChangedScreen,
     TuiState,
     _initials,
     _one_line,
@@ -67,6 +68,8 @@ class _Backend:
         self.marked = []
         self.starred = []
         self.group_participants = None
+        self.contact_queries = []
+        self.contacts = [("Son", "+15552222222"), ("Son", "son@icloud.com")]
 
     @staticmethod
     def status() -> BackendStatus:
@@ -100,6 +103,10 @@ class _Backend:
         ]
         return before - len(self.loaded)
 
+    def find_contacts(self, query: str) -> list[tuple[str, str]]:
+        self.contact_queries.append(query)
+        return list(self.contacts)
+
     def set_group_participants(
         self, thread_key: str, recipients: list[str],
     ) -> Thread:
@@ -109,6 +116,7 @@ class _Backend:
             current,
             recipients=tuple(recipients),
             reply_ready=True,
+            participants_required=False,
             roster_changed=False,
             unexpected_sender="",
             roster_warning_id="",
@@ -598,11 +606,11 @@ def test_textual_warns_once_when_saved_group_roster_changes() -> None:
         async with app.run_test(size=(120, 36)) as pilot:
             await _wait_for_threads(app, pilot, 1)
             await pilot.pause(0.1)
-            assert isinstance(app.screen, RosterChangedScreen)
+            assert isinstance(app.screen, GroupMembersScreen)
             await pilot.press("escape")
             app.action_refresh()
             await pilot.pause(0.2)
-            assert not isinstance(app.screen, RosterChangedScreen)
+            assert not isinstance(app.screen, GroupMembersScreen)
 
     _run_headless(scenario())
 
@@ -626,7 +634,7 @@ def test_textual_keeps_participant_editor_available_after_dismissal() -> None:
             assert button.display is True
 
             await pilot.click("#edit-group-participants")
-            assert isinstance(app.screen, RosterChangedScreen)
+            assert isinstance(app.screen, GroupMembersScreen)
 
     _run_headless(scenario())
 
@@ -645,9 +653,16 @@ def test_textual_roster_warning_can_save_reviewed_participants() -> None:
         async with app.run_test(size=(120, 36)) as pilot:
             await _wait_for_threads(app, pilot, 1)
             await pilot.pause(0.1)
-            editor = app.screen.query_one("#roster-participants", TextArea)
-            editor.text = "+15551111111\n+15553333333"
-            await pilot.click("#roster-changed-save")
+            assert isinstance(app.screen, GroupMembersScreen)
+            members = app.screen.query_one("#roster-members", OptionList)
+            members.focus()
+            members.highlighted = 1
+            await pilot.press("delete")
+            field = app.screen.query_one("#roster-add", Input)
+            field.focus()
+            field.value = "+15553333333"
+            await pilot.press("enter")
+            await pilot.click("#roster-save")
             for _attempt in range(30):
                 if backend.group_participants is not None:
                     break
@@ -682,17 +697,110 @@ def test_textual_reopens_participant_editor_after_save_failure() -> None:
         async with app.run_test(size=(120, 36)) as pilot:
             await _wait_for_threads(app, pilot, 1)
             await pilot.pause(0.1)
-            await pilot.click("#roster-changed-save")
+            await pilot.click("#roster-save")
             for _attempt in range(30):
                 if (
-                    isinstance(app.screen, RosterChangedScreen)
+                    isinstance(app.screen, GroupMembersScreen)
                     and app.state.error == "participant list rejected"
                 ):
                     break
                 await pilot.pause(0.05)
 
-            assert isinstance(app.screen, RosterChangedScreen)
+            assert isinstance(app.screen, GroupMembersScreen)
             assert app.state.error == "participant list rejected"
+
+    _run_headless(scenario())
+
+
+def _unconfirmed_group() -> Thread:
+    """Issue #300: the wife wrote; the son's address is ambiguous."""
+    return Thread.from_dict({
+        "key": "group:participants:son|wife", "name": "Son, Wife", "is_group": True,
+        "recipients": ["+15551111111"], "observed_recipients": ["+15551111111"],
+        "missing_members": ["Son"], "reply_ready": False, "participants_required": True,
+        "group_origin": "unnamed", "last_ts": "2026-10-31T18:00:00Z",
+        "messages": [{
+            "handle": "1", "body": "dinner at 7", "timestamp": "2026-10-31T18:00:00Z",
+            "outgoing": False, "read": True, "sender": "Wife", "address": "+15551111111",
+        }],
+    })
+
+
+async def _send_draft(app: BlueFerryApp, pilot, body: str) -> GroupMembersScreen:
+    composer = app.query_one("#composer", TextArea)
+    assert not composer.disabled, "a group needing members can still be written to"
+    composer.text = body
+    composer.focus()
+    await pilot.press("enter")
+    for _attempt in range(30):
+        if isinstance(app.screen, GroupMembersScreen):
+            break
+        await pilot.pause(0.05)
+    assert isinstance(app.screen, GroupMembersScreen)
+    return app.screen
+
+
+def test_textual_reply_asks_for_group_members_every_time_and_keeps_the_draft() -> None:
+    async def scenario() -> None:
+        backend = _Backend()
+        backend.loaded = [_unconfirmed_group()]
+        app = BlueFerryApp(TuiState(backend), monitor_factory=lambda: None)
+
+        async with app.run_test(size=(120, 40)) as pilot:
+            await _wait_for_threads(app, pilot, 1)
+            screen = await _send_draft(app, pilot, "on my way")
+            assert screen.query_one("#roster-hint", Static).render().plain == (
+                "Still needed: Son"
+            )
+            assert screen.query_one("#roster-save").disabled
+            await pilot.press("escape")
+            assert app.query_one("#composer", TextArea).text == "on my way"
+            assert backend.sent == [] and backend.group_participants is None
+            await _send_draft(app, pilot, "on my way")
+
+    _run_headless(scenario())
+
+
+def test_textual_group_members_suggest_contacts_and_save_then_send() -> None:
+    async def scenario() -> None:
+        backend = _Backend()
+        backend.loaded = [_unconfirmed_group()]
+        app = BlueFerryApp(TuiState(backend), monitor_factory=lambda: None)
+
+        async with app.run_test(size=(120, 40)) as pilot:
+            await _wait_for_threads(app, pilot, 1)
+            screen = await _send_draft(app, pilot, "on my way")
+            screen.query_one("#roster-add", Input).value = "Son"
+            suggestions = screen.query_one("#roster-suggestions", OptionList)
+            for _attempt in range(30):
+                if suggestions.option_count:
+                    break
+                await pilot.pause(0.05)
+            assert backend.contact_queries == ["Son"]
+            assert [str(suggestions.get_option_at_index(index).prompt)
+                    for index in range(suggestions.option_count)] == [
+                "Son  +15552222222", "Son  son@icloud.com",
+            ]
+            suggestions.highlighted = 0
+            suggestions.action_select()
+            await pilot.pause()
+            assert screen.draft.recipients == ["+15551111111", "+15552222222"]
+            await pilot.click("#roster-save")
+            for _attempt in range(30):
+                if isinstance(app.screen, GroupConfirmScreen):
+                    break
+                await pilot.pause(0.05)
+            assert backend.group_participants == (
+                "group:participants:son|wife", ["+15551111111", "+15552222222"],
+            )
+            # The draft continues through the normal path, confirmation first.
+            assert isinstance(app.screen, GroupConfirmScreen)
+            await pilot.click("#confirm-send")
+            for _attempt in range(30):
+                if backend.sent:
+                    break
+                await pilot.pause(0.05)
+            assert backend.sent == [("group:participants:son|wife", "on my way", True)]
 
     _run_headless(scenario())
 
@@ -1098,5 +1206,24 @@ def test_shift_b_toggles_the_automatic_profile_reset() -> None:
                 await pilot.pause(0.02)
             assert backend.saved == [False]
             assert notes and "no longer reset automatically" in notes[-1]
+
+    _run_headless(scenario())
+
+
+def test_textual_saved_members_never_send_the_draft_to_another_conversation() -> None:
+    async def scenario() -> None:
+        backend = _Backend()
+        backend.loaded = [_unconfirmed_group(), _thread("one", "Alice", "hi")]
+        app = BlueFerryApp(TuiState(backend), monitor_factory=lambda: None)
+
+        async with app.run_test(size=(120, 40)) as pilot:
+            await _wait_for_threads(app, pilot, 2)
+            # While the group's members were saving, the user moved to Alice
+            # with the same text in the composer.
+            app.state.selected_key = "one"
+            app.query_one("#composer", TextArea).text = "on my way"
+            await app._roster_finished("group:participants:son|wife", True, "on my way")
+            await pilot.pause(0.1)
+            assert backend.sent == []
 
     _run_headless(scenario())

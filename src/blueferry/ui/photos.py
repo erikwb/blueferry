@@ -235,6 +235,7 @@ class PhotosPage(Gtk.Box):
         *,
         open_file: Callable[[object], None] | None = None,
         thumbnails: ThumbnailLoader = load_thumbnail,
+        on_error: Callable[[str], None] = lambda _message: None,
     ) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL, hexpand=True, vexpand=True)
         self._thumbnails = thumbnails
@@ -248,7 +249,7 @@ class PhotosPage(Gtk.Box):
         self.originals = CountingRunner(open_runner, self._downloads_changed)
         self.model = PhotosTabModel(
             runner=runner, open_runner=self.originals, url=file_url,
-            open_file=self._opened, on_change=self._render,
+            open_file=self._opened, on_change=self._render, on_error=on_error,
         )
 
         header = Gtk.Box(

@@ -750,6 +750,29 @@ def storage_unlock() -> None:
         raise typer.Exit(code=2) from None
 
 
+@app.command("storage-reset")
+def storage_reset(
+    yes: bool = typer.Option(False, "--yes", help="Skip the confirmation prompt"),
+) -> None:
+    """Erase all local data and start over with a new keyring key."""
+    if not yes and not typer.confirm(
+        "Erase all local BlueFerry history, cached contacts, call history and "
+        "conversation preferences, and replace the storage key? "
+        "Nothing on the iPhone is deleted."
+    ):
+        raise typer.Exit()
+    import json
+
+    from blueferry.client import BackendError
+
+    client = _backend_client()
+    try:
+        typer.echo(json.dumps(client.reset_storage()))
+    except BackendError as error:
+        typer.echo(str(error), err=True)
+        raise typer.Exit(code=2) from None
+
+
 @app.command("history-clear")
 def history_clear(
     yes: bool = typer.Option(False, "--yes", help="Skip the confirmation prompt"),

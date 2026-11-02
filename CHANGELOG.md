@@ -65,8 +65,9 @@
   conversation, the contact card or the call in Recent calls. Contact
   photos are not shown.
 - Report the A/V sync delay of the iPhone's audio stream in `GetStatus`
-  (`phone_audio_delay_ms`, `phone_audio_delay_reporting`), show it next to the
-  iPhone sound status, and check AVDTP delay reporting in `blueferry doctor`.
+  (`phone_audio_delay_ms`, `phone_audio_delay_reporting`; the delay only while
+  the stream is active), show it next to the iPhone sound status, and check
+  AVDTP delay reporting in `blueferry doctor`.
 - Terminal client: the connection summary shows the A/V sync line next to
   the iPhone sound status.
 

@@ -492,8 +492,15 @@ ModalScreen {
     background: #151f35;
 }
 
-#roster-participants {
-    height: 10;
+#roster-members {
+    height: auto;
+    max-height: 8;
+    background: #151f35;
+}
+
+#roster-suggestions {
+    height: auto;
+    max-height: 6;
     background: #151f35;
 }
 

@@ -79,7 +79,7 @@ and retries on a later status read.
 | `ListRecent` | `s folder, u limit` → `s json` (reads directly from the iPhone over MAP) |
 | `MarkThreadRead` | `s thread_key` → `u updated` |
 | `SetThreadStarred` | `s thread_key, b starred` → `b starred_state` |
-| `SetGroupParticipants` | `s thread_key, as recipients` → `s thread_json` |
+| `SetGroupParticipants` | `s thread_key, as recipients` → `s thread_json`: saves 2 to 20 reply addresses for a named group or an unnamed group BlueFerry cannot route (`group_origin` `named` or `unnamed`); the list must include every observed sender. An unnamed group's list is kept under its member-name key. Other threads get `InvalidArgs` |
 | `DeleteThreads` | `as thread_keys, b confirmed` → `u deleted_conversations` |
 | `ClearHistory` | `b confirmed` |
 
@@ -115,6 +115,7 @@ and retries on a later status read.
 | `SetOtpAutocopy` | `b enabled` → `s status_json`: saves the one-time code auto-copy opt-in in `settings.json` and applies it at once; returns `{"otp_autocopy": b}`. `GetStatus` reports the current value as `otp_autocopy`; `saved_opt_ins: true` advertises the runtime setter |
 | `GetStoragePolicy` / `SetStoragePolicy` | `s policy`: `encrypted`, `plaintext`, or `none`; `Set` returns `s status_json` |
 | `UnlockStorage` | → `s status_json` |
+| `ResetStorage` | `b confirmed` → `s status_json`: erases history, the contact cache, call history and the encrypted conversation preferences, removes BlueFerry's keyring key and prepares storage under a new one. The way out when `storage_detail` reports a lost or replaced key or records that failed authentication. `GetStatus` advertises it with `storage_reset: true`; destructive rate bucket |
 | `GetNotificationOpenMap` | → `s rules_json` (list of `bundle_id`, `target`, `kind`) |
 | `SetNotificationOpenTarget` | `s bundle_id, s target` → `s rules_json` |
 | `RemoveNotificationOpenTarget` | `s bundle_id` → `b removed` |
@@ -199,9 +200,11 @@ opt-in; clients show the switch only when `phone_audio_route` exists):
 - `phone_audio_delay_ms`: the delay BlueZ reports to the phone, in
   milliseconds (`MediaTransport1.Delay` is in 1/10 ms), or `null` without
   delay reporting. It follows `PropertiesChanged`; iOS shifts video by it.
-  Both keys are reported while the transport exists, also when it is idle;
-  the value is the last report. A `Delay` that BlueZ only invalidates keeps
-  the last value (`null` with reporting `true` if none was seen yet).
+  The delay is only reported while the transport's `State` is `active`; an
+  idle or pending transport gives `null` here while
+  `phone_audio_delay_reporting` stays as it is (`true` when `Delay` exists).
+  A `Delay` that BlueZ only invalidates keeps the last value (`null` with
+  reporting `true` if none was seen yet).
 
 ## Calls1 methods (optional phone calls)
 
@@ -220,7 +223,7 @@ adds `calls_state` (`unavailable`, `searching`, `connecting`, `ready`,
 | `Answer` | `s call_id` | A waiting call holds the active one. 10 per minute |
 | `Hangup` | `s call_id` | Hangs up, or declines a ringing call |
 | `HangupAll` | | |
-| `SendTones` | `s call_id, s tones` | DTMF on the active call: `0-9`, `*`, `#` |
+| `SendTones` | `s call_id, s tones` | DTMF on the active call: `0-9`, `*`, `#`. Requests are played one after another in arrival order (at most 32 waiting); the log records only how many tones went out |
 | `SwapCalls` | | Swap active and held |
 | `HoldAndAnswer` | | Hold the active call and answer the waiting one. 10 per minute |
 

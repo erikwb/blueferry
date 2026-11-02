@@ -76,6 +76,14 @@ class MainWindow(Adw.ApplicationWindow):
         )
         self.add_tab("calls", _("Calls"), "call-start-symbolic", self.calls,
                      self.calls.set_watched)
+        # During an active call the keyboard's 0-9, * and # are keypad tones
+        # (outside text fields, which consume them first in this phase).
+        tone_keys = Gtk.EventControllerKey(propagation_phase=Gtk.PropagationPhase.BUBBLE)
+        tone_keys.connect(
+            "key-pressed",
+            lambda _controller, keyval, _code, state: self.calls.tone_key(keyval, state),
+        )
+        self.add_controller(tone_keys)
         self.notifications = NotificationsPage(
             client, open_settings=self.present_phone_settings, timer=timer,
         )
@@ -86,7 +94,9 @@ class MainWindow(Adw.ApplicationWindow):
         )
         list_runner, original_runner = photo_runners or (
             client.task_runner("photos"), client.task_runner("photo-originals"))
-        self.photos = PhotosPage(list_runner, original_runner, open_file=open_file)
+        self.photos = PhotosPage(
+            list_runner, original_runner, open_file=open_file, on_error=self.toast,
+        )
         self.add_tab("photos", _("Photos"), "folder-pictures-symbolic", self.photos,
                      self.photos.set_watched)
         self.stack.connect("notify::visible-child-name", lambda *_args: self.sync_watches())
