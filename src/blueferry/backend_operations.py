@@ -178,8 +178,8 @@ class GroupRoutes(Protocol):
         in_use: Iterable[str] | None = None,
     ) -> None: ...
 
-    def hold_roster_warning(
-        self, thread_keys: Iterable[str], warning_id: str, sender: str,
+    def hold_roster_warnings(
+        self, warnings: Iterable[tuple[Iterable[str], str, str]],
     ) -> None: ...
 
     def discard(self, thread_keys: Iterable[str]) -> None: ...
@@ -680,23 +680,28 @@ class BackendOperations:
 
         The warning exists only while the outsider's messages are in the
         projection. Without this, their expiry would restore the old roster
-        and its old approval.
+        and its old approval. Listing conversations holds them too, because
+        nothing else retries a save that failed, was skipped while storage
+        was locked, or never ran because the projection could not be read.
         """
         store = self.dependencies.group_routes
         storage = self.dependencies.storage
         if store is None or (storage is not None and not storage.status.can_write):
             return
-        for thread in threads:
-            warning_id = str(thread.get("roster_warning_id") or "")
-            if not thread.get("roster_changed") or not warning_id:
-                continue
-            try:
-                store.hold_roster_warning(
-                    conversation_keys(thread), warning_id,
-                    str(thread.get("unexpected_sender") or ""),
-                )
-            except (OSError, ValueError, RuntimeError):
-                log.exception("could not retain a group roster warning")
+        warnings = [
+            (
+                conversation_keys(thread), str(thread["roster_warning_id"]),
+                str(thread.get("unexpected_sender") or ""),
+            )
+            for thread in threads
+            if thread.get("roster_changed") and thread.get("roster_warning_id")
+        ]
+        if not warnings:
+            return
+        try:
+            store.hold_roster_warnings(warnings)
+        except (OSError, ValueError, RuntimeError):
+            log.exception("could not retain group roster warnings")
 
     def hold_roster_warnings(self, submit: Callable[..., object]) -> None:
         """Save roster warnings when history changes, even if no client lists.

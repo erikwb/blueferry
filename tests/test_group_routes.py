@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from blueferry import backend_operations, config
+from blueferry import backend_operations, config, settings_store
 from blueferry.backend_operations import BackendDependencies, BackendOperations
 from blueferry.confirmed_groups import ConfirmedGroupsStore
 from blueferry.group_routes import GroupRoutesStore
@@ -339,3 +339,136 @@ def test_a_full_store_never_evicts_a_roster_still_in_use(isolated_state):
     with pytest.raises(ValueError):
         store.save(route)
     assert KEY not in store.keys() and len(store.keys()) == MAX_GROUP_ROUTES
+
+
+_GROUPS = ("Golf", "Tennis", "Chess")
+_RUN = lambda job, on_success, on_error: on_success(job())  # noqa: E731
+
+
+def _warn_every_group(backend: BackendOperations, storage=None) -> None:
+    for group in _GROUPS:
+        _retain(_group_message(1, group=group), storage=storage)
+        backend.set_group_participants(named_group_key(group), [ALICE, BOB])
+    for group in _GROUPS:
+        _retain(_group_message(2, CAROL, group=group), storage=storage)
+    backend.invalidate_conversations()
+    backend.prepare_conversations(_RUN, lambda: None, pytest.fail)
+
+
+def _count_route_reads_and_writes(storage, monkeypatch) -> tuple[list, list]:
+    reads, writes = [], []
+    decrypt = storage.decrypt
+    write = settings_store.atomic_write_private_text
+
+    def counted_decrypt(value, *, purpose):
+        if purpose == "named_group_routes-v1":
+            reads.append(purpose)
+        return decrypt(value, purpose=purpose)
+
+    def counted_write(*args, **kwargs):
+        writes.append(args)
+        return write(*args, **kwargs)
+
+    monkeypatch.setattr(storage, "decrypt", counted_decrypt)
+    monkeypatch.setattr(settings_store, "atomic_write_private_text", counted_write)
+    return reads, writes
+
+
+def test_listing_saves_every_roster_warning_with_one_read_and_write(
+    encrypted, monkeypatch,
+):
+    backend = _backend(encrypted)
+    _warn_every_group(backend, encrypted)
+    reads, writes = _count_route_reads_and_writes(encrypted, monkeypatch)
+
+    warned = [thread for thread in backend.list_threads(100) if thread["roster_changed"]]
+
+    assert len(warned) == len(_GROUPS)
+    assert (len(reads), len(writes)) == (1, 1)
+    saved = {
+        route["group_key"]: route.get("group_roster_warning_id")
+        for route in GroupRoutesStore(storage=encrypted).routes()
+    }
+    assert saved == {thread["key"]: thread["roster_warning_id"] for thread in warned}
+
+    # Once saved, listing again reads the rosters once and writes nothing.
+    reads.clear()
+    writes.clear()
+    backend.list_threads(100)
+    assert (len(reads), len(writes)) == (1, 0)
+
+
+def test_roster_check_saves_every_warning_with_one_write(encrypted, monkeypatch):
+    backend = _backend(encrypted)
+    _warn_every_group(backend, encrypted)
+    _reads, writes = _count_route_reads_and_writes(encrypted, monkeypatch)
+
+    backend.hold_roster_warnings(_RUN)
+
+    assert len(writes) == 1
+    assert all(
+        route.get("group_roster_warning_id")
+        for route in GroupRoutesStore(storage=encrypted).routes()
+    )
+
+
+def test_a_failed_save_of_roster_warnings_is_retried_by_the_next_listing(
+    isolated_state, monkeypatch,
+):
+    backend = _backend()
+    _warn_every_group(backend)
+
+    def full(*_args, **_kwargs):
+        raise OSError("no space left on device")
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(settings_store, "atomic_write_private_text", full)
+        assert len(backend.list_threads(100)) == len(_GROUPS)
+    assert not any(
+        route.get("group_roster_warning_id") for route in GroupRoutesStore().routes()
+    )
+
+    backend.list_threads(100)
+    assert all(
+        route.get("group_roster_warning_id") for route in GroupRoutesStore().routes()
+    )
+
+
+def test_holding_warnings_skips_saved_and_outdated_ones(isolated_state, monkeypatch):
+    store = GroupRoutesStore()
+    for group in _GROUPS:
+        store.save({
+            "group_key": named_group_key(group), "group_name": group,
+            "group_recipients": [ALICE, BOB], "seen_at": f"{group}-save",
+        })
+    golf, tennis, chess = ([named_group_key(group)] for group in _GROUPS)
+    store.hold_roster_warnings([(golf, "Golf-save:carol", "Carol")])
+    writes = []
+    write = settings_store.atomic_write_private_text
+    monkeypatch.setattr(
+        settings_store, "atomic_write_private_text",
+        lambda *args, **kwargs: (writes.append(args), write(*args, **kwargs)),
+    )
+
+    store.hold_roster_warnings([
+        (golf, "Golf-save:carol", "Carol"),  # Already saved.
+        (tennis, "older-save:carol", "Carol"),  # Raised against an older save.
+    ])
+    assert writes == []
+
+    store.hold_roster_warnings([
+        (golf, "Golf-save:dana", "Dana"),  # The newest warning replaces it.
+        (chess, "Chess-save:carol", "Carol"),
+    ])
+    assert len(writes) == 1
+    held = {
+        route["group_name"]: (
+            route.get("group_roster_warning_id"), route.get("group_unexpected_sender"),
+        )
+        for route in store.routes()
+    }
+    assert held == {
+        "Golf": ("Golf-save:dana", "Dana"),
+        "Tennis": (None, None),
+        "Chess": ("Chess-save:carol", "Carol"),
+    }
