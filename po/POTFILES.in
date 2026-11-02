@@ -85,9 +85,9 @@ src/blueferry/tui_calls.py
 src/blueferry/tui_notifications.py
 src/blueferry/tui_phone.py
 src/blueferry/quickshell_bridge.py
-src/blueferry/media_volume_view.py
-src/blueferry/notification_apps_view.py
 src/blueferry/contacts_view.py
 src/blueferry/search_view.py
+src/blueferry/media_volume_view.py
+src/blueferry/notification_apps_view.py
 src/blueferry/tui_contacts.py
 src/blueferry/tui_search.py
