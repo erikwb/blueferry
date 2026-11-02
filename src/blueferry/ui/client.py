@@ -24,6 +24,7 @@ from blueferry.protocol import (
 )
 from blueferry.setup_client import SetupClient
 from blueferry.tether_status import TetherStatus
+from blueferry.ui.tasks import WorkerRunner
 
 log = logging.getLogger(__name__)
 T = TypeVar("T")
@@ -89,6 +90,8 @@ class DaemonClient(GObject.Object):
         # Each call opens a private connection, but all share one session bus,
         # so a verified daemon owner stays verified across calls.
         self._compatibility = CompatibilityCache()
+        # Worker pools of the shared client models (plugins, photos, tools).
+        self._runners: dict[str, WorkerRunner] = {}
         self._stopped = False
         self.available = False  # is the daemon reachable on D-Bus?
         self.healthy = False  # is the MAP session up?
@@ -163,6 +166,8 @@ class DaemonClient(GObject.Object):
         self._read_executor.shutdown(wait=False, cancel_futures=True)
         self._mutation_executor.shutdown(wait=False, cancel_futures=True)
         self._local_executor.shutdown(wait=False, cancel_futures=True)
+        for runner in self._runners.values():
+            runner.stop()
         # The interpreter joins the worker at exit: end a doctor run now
         # instead of waiting for its timeout.
         self._doctor_runner.stop()
@@ -635,6 +640,15 @@ class DaemonClient(GObject.Object):
             mutation=True,
         )
 
+    def send_call_tones_async(self, call_id: str, tones: str, on_ok, on_err) -> None:
+        """Keypad tones (DTMF) on the active call (Calls1.SendTones)."""
+        self._submit(
+            lambda: self._call_backend(lambda backend: backend.send_call_tones(call_id, tones)),
+            on_ok,
+            on_err,
+            mutation=True,
+        )
+
     def set_contact_photos_async(self, enabled: bool, on_ok, on_err) -> None:
         self._submit(
             lambda: self._call_backend(lambda backend: backend.set_contact_photos(enabled)),
@@ -664,6 +678,14 @@ class DaemonClient(GObject.Object):
     def unlock_storage_async(self, on_ok, on_err) -> None:
         self._submit(
             lambda: self._call_backend(lambda backend: backend.unlock_storage()),
+            on_ok,
+            on_err,
+            mutation=True,
+        )
+
+    def reset_storage_async(self, on_ok, on_err) -> None:
+        self._submit(
+            lambda: self._call_backend(lambda backend: backend.reset_storage()),
             on_ok,
             on_err,
             mutation=True,
@@ -770,6 +792,20 @@ class DaemonClient(GObject.Object):
                 on_finished()
 
         self._submit(operation, done, failed)
+
+    def task_runner(self, name: str, workers: int = 1) -> WorkerRunner:
+        """A :class:`blueferry.client_tasks.TaskRunner` with its own pool.
+
+        The plugin models call plugins, git and pip, which may take long;
+        on their own pool they never hold up the daemon's reads and
+        mutations. One pool per ``name``, stopped with the client.
+        """
+        runner = self._runners.get(name)
+        if runner is None:
+            runner = self._runners[name] = WorkerRunner(name, workers)
+            if self._stopped:
+                runner.stop()
+        return runner
 
     def notifications(self, limit: int) -> dict:
         """ListNotifications; blocking, so only for work passed to :meth:`submit`."""
