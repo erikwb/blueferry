@@ -13,6 +13,7 @@ ColumnLayout {
     required property var bridge
     signal storagePolicyRequested(string policy)
     signal clearHistoryRequested()
+    signal storageResetRequested()
     spacing: Kirigami.Units.largeSpacing
 
     function storageStatusText() {
@@ -99,6 +100,17 @@ ColumnLayout {
             icon.name: "document-decrypt"
             enabled: section.bridge.status.daemon === true && !section.bridge.busy
             onClicked: section.bridge.unlockStorage()
+        }
+
+        // The way out when the saved data's key is lost or replaced.
+        // Older daemons do not advertise the method.
+        Controls.Button {
+            objectName: "storageResetButton"
+            visible: section.bridge.status.storage_reset === true
+            text: qsTr("Reset Local Storage…")
+            icon.name: "edit-delete"
+            enabled: section.bridge.status.daemon === true && !section.bridge.busy
+            onClicked: section.storageResetRequested()
         }
     }
 
