@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import atexit
 import functools
+import gc
 import importlib.util
 import os
 import pathlib
@@ -478,6 +479,12 @@ def isolate_dbus(monkeypatch, request):
         expected = os.environ.get(PRIVATE_BUS_ADDRESS_ENV)
         if not active or active != expected:
             pytest.skip("requires an explicitly isolated dbus-run-session")
+        yield
+        # Free this test's connections and exported objects now. Left to a
+        # later collection, dbus-python can tear them down while another test
+        # dispatches ("does not have a Connection instance associated with
+        # it"), which failed the OBEX tests on Ubuntu 24.04.
+        gc.collect()
         return
 
     monkeypatch.setenv("DBUS_SESSION_BUS_ADDRESS", _unreachable_bus)
@@ -485,6 +492,7 @@ def isolate_dbus(monkeypatch, request):
     monkeypatch.setattr(bus_module, "_thread_state", threading.local())
     monkeypatch.setattr(dbus, "SessionBus", _forbid_live_bus("session"))
     monkeypatch.setattr(dbus, "SystemBus", _forbid_live_bus("system"))
+    yield
 
 
 @pytest.fixture(autouse=True)
