@@ -12,7 +12,11 @@ from pathlib import Path
 
 from blueferry import config
 from blueferry.limits import MAX_GROUP_ROUTES, MAX_THREAD_KEY_CHARS
-from blueferry.named_groups import route_version, stored_named_group_key
+from blueferry.named_groups import (
+    is_legacy_unnamed_group_key,
+    route_version,
+    stored_named_group_key,
+)
 from blueferry.private_preferences import PrivatePreference
 from blueferry.storage_security import StorageSecurity
 
@@ -42,6 +46,9 @@ def _route(value: object) -> dict | None:
     recipients = _strings(value.get("group_recipients"))
     members = _strings(value.get("group_members") or [])
     if not key or len(key) > MAX_THREAD_KEY_CHARS or not name or not recipients:
+        return None
+    if is_legacy_unnamed_group_key(key):
+        # The old key cannot say which group the roster was saved for.
         return None
     route = {
         "kind": "group_route",
@@ -82,6 +89,22 @@ class GroupRoutesStore:
 
     def migrate(self) -> None:
         self._preference.migrate()
+        self._discard_legacy_unnamed_rosters()
+
+    def _discard_legacy_unnamed_rosters(self) -> None:
+        """Remove rosters saved under the unversioned unnamed-group key.
+
+        Reading already ignores them; this keeps them out of settings.json.
+        """
+        raw = self._preference.read()
+        if not self._preference.writable or not isinstance(raw, dict):
+            return
+        if any(
+            isinstance(value, dict)
+            and is_legacy_unnamed_group_key(_text(value.get("group_key")))
+            for value in raw.values()
+        ):
+            self._preference.write(self._mapping())
 
     def _mapping(self) -> dict[str, dict]:
         raw = self._preference.read()

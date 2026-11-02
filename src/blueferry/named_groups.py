@@ -36,6 +36,40 @@ def unnamed_group_key(members: Iterable[str]) -> str:
     return f"{UNNAMED_GROUP_PREFIX}v2:{digest}"
 
 
+def is_unnamed_group_key(key: str) -> bool:
+    """Whether ``key`` is a current, versioned unnamed-group key."""
+    return key.startswith(UNNAMED_GROUP_PREFIX) and not is_legacy_unnamed_group_key(key)
+
+
+def is_legacy_unnamed_group_key(key: str) -> bool:
+    """Whether ``key`` is the unversioned unnamed-group key used before v2.
+
+    That key joined the member names with an unescaped ``|``, so it cannot say
+    which group it was saved for, and no new message is keyed by it.
+    """
+    if not key.startswith(UNNAMED_GROUP_PREFIX):
+        return False
+    rest = key[len(UNNAMED_GROUP_PREFIX):]
+    return not (
+        rest.startswith("v2:") and len(rest) == 67
+        and all(character in "0123456789abcdef" for character in rest[3:])
+    )
+
+
+def unnamed_group_key_for_legacy(key: str) -> str | None:
+    """The v2 key of the group an unversioned unnamed-group key most likely meant.
+
+    Reads the key as member names joined by ``|``. The old key dropped
+    repeated names and did not escape ``|``, so for some groups this is
+    another group's key. Use it only where a wrong guess is harmless, such as
+    a star, never for a reply roster.
+    """
+    if not is_legacy_unnamed_group_key(key):
+        return None
+    names = key[len(UNNAMED_GROUP_PREFIX):]
+    return unnamed_group_key(names.split("|")) if names else None
+
+
 def legacy_named_group_key(name: str) -> str:
     """The old name-folding key, used only to interpret retained records."""
     normalized = " ".join(unicodedata.normalize("NFKC", name).strip().casefold().split())
@@ -106,7 +140,7 @@ class NamedGroupRoutes:
                     # A roster saved for the previously merged thread cannot
                     # be assigned to either new conversation without review.
                     continue
-            elif str(event.get("group_key") or "").startswith(UNNAMED_GROUP_PREFIX):
+            elif is_unnamed_group_key(str(event.get("group_key") or "")):
                 key = str(event["group_key"])
             else:
                 continue
@@ -135,7 +169,13 @@ class NamedGroupRoutes:
         name = _stored_name(event)
         if not name:
             key = str(event.get("group_key") or "")
-            if key.startswith(UNNAMED_GROUP_PREFIX):
+            if is_legacy_unnamed_group_key(key):
+                # No roster applies under the old key, and none can be saved
+                # for it: new messages from the group join its v2 key.
+                event["group_origin"] = "unnamed"
+                event["group_reply_ready"] = False
+                event["group_participants_required"] = False
+            elif is_unnamed_group_key(key):
                 event["group_origin"] = "unnamed"
                 if not self._apply_stored(event, key):
                     event["group_reply_ready"] = False

@@ -1,6 +1,7 @@
 """Saved named-group rosters outlive the history window and retention (#174)."""
 from __future__ import annotations
 
+import hashlib
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
@@ -12,7 +13,12 @@ from blueferry.confirmed_groups import ConfirmedGroupsStore
 from blueferry.group_routes import GroupRoutesStore
 from blueferry.history import append_event, prune_events, read_events
 from blueferry.limits import MAX_GROUP_ROUTES
-from blueferry.named_groups import legacy_named_group_key, named_group_key
+from blueferry.named_groups import (
+    legacy_named_group_key,
+    named_group_key,
+    unnamed_group_key,
+)
+from blueferry.private_preferences import PrivatePreference
 from blueferry.recipients import group_confirmation_token
 from blueferry.settings_store import SettingsStore
 from blueferry.starred_threads import StarredThreadsStore
@@ -472,3 +478,99 @@ def test_holding_warnings_skips_saved_and_outdated_ones(isolated_state, monkeypa
         "Tennis": (None, None),
         "Chess": ("Chess-save:carol", "Carol"),
     }
+
+
+# 0.9.1 keyed an unnamed group by its casefolded member names joined with "|".
+OLD_CREW = "group:participants:alice|bob"
+CREW = unnamed_group_key(["Alice", "Bob"])
+
+
+def _crew_message(index: int) -> list[dict]:
+    stamp, body = _stamp(minute=index), f"crew {index}"
+    return [{
+        "kind": "sms_received", "handle": f"crew-{index}", "body": body,
+        "sender_address": ALICE, "contact_name": "Alice", "seen_at": stamp,
+    }, {
+        "kind": "ancs_notification", "app_id": "com.apple.MobileSMS",
+        "title": "Alice", "subtitle": "To you & Bob", "body": body, "seen_at": stamp,
+    }]
+
+
+def _crew_route(key: str) -> dict:
+    return {
+        "kind": "group_route", "group_key": key, "group_name": "Alice, Bob",
+        "group_members": ["Alice", "Bob"], "group_recipients": [ALICE, BOB],
+        "seen_at": _stamp(),
+    }
+
+
+def _starred(backend: BackendOperations) -> dict[str, bool]:
+    return {thread["key"]: thread["starred"] for thread in backend.list_threads(100)}
+
+
+def test_a_star_saved_under_the_old_unnamed_key_stars_the_new_conversation(encrypted):
+    _retain(_crew_message(1), storage=encrypted)
+    stars = StarredThreadsStore(storage=encrypted)
+    stars.set_starred(OLD_CREW, True)
+    backend = _backend(encrypted)
+    assert _starred(backend) == {CREW: False}
+
+    prepare_storage(encrypted)
+    backend.invalidate_conversations()
+
+    assert stars.keys() == [OLD_CREW, CREW]
+    assert _starred(backend) == {CREW: True}
+    # Carried once: a star removed from the new conversation stays removed.
+    backend.set_thread_starred(CREW, False)
+    prepare_storage(encrypted)
+    assert stars.keys() == [OLD_CREW]
+
+
+def test_a_roster_saved_under_the_old_unnamed_key_is_dropped(encrypted):
+    sent = {
+        **_crew_route(OLD_CREW), "kind": "sms_sent", "handle": "sent-1",
+        "body": "on my way", "group_reply_ready": True,
+    }
+    _retain([sent, *_crew_message(1)], storage=encrypted)
+    token = group_confirmation_token([ALICE, BOB])
+    digest = hashlib.sha256(token.encode()).hexdigest()
+    PrivatePreference(config.SETTINGS_JSON, "named_group_routes", encrypted).write({
+        OLD_CREW: _crew_route(OLD_CREW), KEY: {**_crew_route(KEY), "group_name": "Golf"},
+    })
+    raw_confirmed = PrivatePreference(
+        config.SETTINGS_JSON, "confirmed_group_rosters", encrypted,
+    )
+    raw_confirmed.write({OLD_CREW: digest, KEY: digest})
+    confirmed = ConfirmedGroupsStore(storage=encrypted)
+    backend = _backend(encrypted)
+
+    # Ignored before it is removed: neither conversation replies to it.
+    threads = {thread["key"]: thread for thread in backend.list_threads(100)}
+    assert threads[OLD_CREW]["reply_ready"] is False
+    assert threads[OLD_CREW]["participants_required"] is False
+    assert threads[CREW]["participants_required"] is True
+    assert not confirmed.matches(OLD_CREW, token)
+    assert confirmed.matches(KEY, token)
+
+    prepare_storage(encrypted)
+
+    routes = PrivatePreference(config.SETTINGS_JSON, "named_group_routes", encrypted)
+    assert set(routes.read()) == {KEY}
+    assert set(raw_confirmed.read()) == {KEY}
+    backend.invalidate_conversations()
+    assert {thread["key"]: thread["reply_ready"] for thread in backend.list_threads(100)} \
+        == {OLD_CREW: False, CREW: False}
+
+
+def test_nothing_is_written_while_settings_json_cannot_be_read(encrypted):
+    _retain(_crew_message(1), storage=encrypted)
+    StarredThreadsStore(storage=encrypted).set_starred(OLD_CREW, True)
+    PrivatePreference(config.SETTINGS_JSON, "named_group_routes", encrypted).write(
+        {OLD_CREW: _crew_route(OLD_CREW)},
+    )
+    damaged = config.SETTINGS_JSON.read_bytes()[:-20]
+    config.SETTINGS_JSON.write_bytes(damaged)
+
+    prepare_storage(encrypted)
+
+    assert config.SETTINGS_JSON.read_bytes() == damaged

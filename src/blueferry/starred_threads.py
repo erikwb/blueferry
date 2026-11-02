@@ -6,10 +6,13 @@ from pathlib import Path
 
 from blueferry import config
 from blueferry.limits import MAX_STARRED_THREADS, MAX_THREAD_KEY_CHARS
+from blueferry.named_groups import unnamed_group_key_for_legacy
 from blueferry.private_preferences import PrivatePreference
 from blueferry.storage_security import StorageSecurity
 
 _SETTINGS_KEY = "starred_thread_keys"
+# Set once stars saved under unversioned unnamed-group keys were carried over.
+_CARRIED_KEY = "starred_unnamed_groups_carried"
 
 
 def _normalized_key(value: object) -> str:
@@ -31,6 +34,29 @@ class StarredThreadsStore:
 
     def migrate(self) -> None:
         self._preference.migrate()
+        self._carry_unnamed_group_stars()
+
+    def _carry_unnamed_group_stars(self) -> None:
+        """Star the v2 key of each unnamed group starred under its old key.
+
+        New messages from such a group join a thread under its v2 key. The
+        old key keeps its star for the conversation still saved under it.
+        A star never chooses who a reply goes to, so the likely reading of
+        the old key is enough here. This runs once, so a star the user later
+        removes from the new conversation stays removed.
+        """
+        if not self._preference.writable or self._preference.setting(_CARRIED_KEY):
+            return
+        current = self.keys()
+        added = False
+        for key in list(current):
+            carried = unnamed_group_key_for_legacy(key)
+            if not carried or carried in current or len(current) >= MAX_STARRED_THREADS:
+                continue
+            current.append(carried)
+            added = True
+        if added:
+            self._preference.write(current, **{_CARRIED_KEY: True})
 
     def keys(self) -> list[str]:
         raw = self._preference.read()
