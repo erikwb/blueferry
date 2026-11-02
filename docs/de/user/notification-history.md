@@ -1,16 +1,17 @@
 # Letzte iPhone-Mitteilungen
 
 BlueFerry kann eine Liste der letzten App-Mitteilungen des iPhones (außer
-Nachrichten) für den Reiter **Notifications** des KDE-Clients und die
-Kommandozeile führen. Die Liste liegt nur im Speicher des Hintergrunddienstes
+Nachrichten) für den Reiter **Notifications** des KDE- und des GTK-Clients
+und die Kommandozeile führen. Die Liste liegt nur im Speicher des Hintergrunddienstes
 und wird nie auf die Festplatte geschrieben.
 
 Sie ist **standardmäßig aus**.
 
 ## Einschalten
 
-Im KDE-Client **Settings › Notifications** öffnen und **Keep recent iPhone
-notifications** einschalten, oder:
+Im KDE- oder GTK-Client **Settings › Notifications** öffnen und **Keep
+recent iPhone notifications** einschalten (der Knopf **Open Notification
+Settings** im Reiter führt dorthin), oder:
 
 ```bash
 blueferry features on notification_history
@@ -27,7 +28,8 @@ Notifications** unter **Show Popups**.
 ## Benutzen
 
 Der Reiter **Notifications** zeigt die neuesten zuerst, mit App, Zeit und,
-wenn erlaubt, Titel und Text. Im Terminal:
+wenn erlaubt, Titel und Text; der Terminal-Client zeigt dieselbe Liste
+unter **iPhone Notifications** in seiner Befehlspalette. Im Terminal:
 
 ```bash
 blueferry notifications recent             # die letzten 20
@@ -49,5 +51,6 @@ blueferry notifications recent --limit 100
 ## Datenschutz
 
 Die Liste gibt es nur über BlueFerrys authentifizierte, ratenbegrenzte
-D-Bus-Methode; das Änderungssignal enthält nichts. Nichts von diesen
+D-Bus-Methode; das Änderungssignal enthält nichts. Die Clients lesen sie nur,
+solange ihre Liste sichtbar ist, und vergessen sie danach. Nichts von diesen
 Mitteilungen landet in BlueFerrys Verlauf, der nur Nachrichten behält.
