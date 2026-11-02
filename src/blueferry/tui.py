@@ -24,11 +24,13 @@ from textual.widgets import (
     Input,
     ListItem,
     ListView,
+    OptionList,
     Static,
     Switch,
     TabbedContent,
     TextArea,
 )
+from textual.widgets.option_list import Option
 
 from blueferry import config, phone_link_view, phone_overview
 from blueferry.backend_lifecycle import BackendLifecycleError, ensure_backend_current
@@ -37,6 +39,7 @@ from blueferry.client import BackendClient, BackendError, TetherUnsupportedError
 from blueferry.conversation_state import (
     ConversationSnapshot,
     ConversationState,
+    ParticipantDraft,
     ReplyDisposition,
     fetch_conversation_snapshot,
 )
@@ -53,7 +56,6 @@ from blueferry.models import (
 from blueferry.onboarding import ancs_unavailable_detail
 from blueferry.phone_audio_view import phone_audio
 from blueferry.protocol import BUS_NAME, EVENTS_IFACE, OBJECT_PATH, TETHER_IFACE
-from blueferry.recipients import participant_lines
 from blueferry.reconnect_view import (
     UNSUPPORTED_AUTO_RESET_TEXT,
     auto_reset_text,
@@ -75,6 +77,7 @@ from blueferry.tui_phone import (
     load_phone_name,
     now_playing_text,
 )
+from blueferry.tui_tasks import TextualTaskRunner, TextualTimer
 
 _REFRESH_SECONDS = 15.0
 _SIGNAL_PUMP_SECONDS = 0.2
@@ -533,71 +536,190 @@ class DeleteConversationScreen(ModalScreen[bool]):
         self.dismiss(False)
 
 
-class RosterChangedScreen(ModalScreen[tuple[str, ...] | None]):
+_MEMBER_SEARCH_DELAY_MS = 200
+# Groups whose participant list the user can supply: BlueFerry can't route
+# them from what the iPhone reports.
+_EDITABLE_GROUP_ORIGINS = ("named", "unnamed")
+
+
+def _group_members_copy(thread: Thread) -> str:
+    if thread.roster_changed:
+        sender = thread.unexpected_sender or _("Someone new")
+        return _(
+            "{sender} sent a message to {group}, but is not in BlueFerry's "
+            "saved participant list. Replies are disabled until you review it. "
+            "This may also mean you have multiple groups with the name {group}, "
+            "which BlueFerry cannot distinguish."
+        ).format(sender=sender, group=thread.name)
+    if thread.group_origin == "unnamed":
+        return _(
+            "BlueFerry couldn't match everyone in this group to one phone "
+            "number or email. Add everyone else in it so you can reply from here."
+        )
+    return " ".join((
+        _(
+            "BlueFerry can't tell who is in {group}. Add everyone else in it "
+            "so you can reply from here."
+        ).format(group=thread.name),
+        _("Groups with the same name share this list."),
+    ))
+
+
+class GroupMembersScreen(ModalScreen[tuple[str, ...] | None]):
+    """Confirm who is in a group, suggesting contacts as the user types.
+
+    ``find_contacts`` is the slow seam: it runs on a worker thread.
+    """
+
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("escape", "cancel", "Cancel", show=False)
+        Binding("escape", "cancel", "Cancel", show=False),
+        Binding("delete", "remove", "Remove", show=False),
     ]
 
-    def __init__(self, thread: Thread) -> None:
+    def __init__(
+        self, thread: Thread, find_contacts: Callable[[str], list[tuple[str, str]]],
+    ) -> None:
         super().__init__()
         self.thread = thread
+        self.draft = ParticipantDraft(thread)
+        self._find_contacts = find_contacts
+        self._contacts = ConversationState(select_first=False)
+        self._suggestions: list[tuple[str, str]] = []
+        self._search_runner = TextualTaskRunner(self, group="group-members-search")
+        self._search_timer = TextualTimer(self, self._search_contacts)
 
     def compose(self) -> ComposeResult:
-        sender = self.thread.unexpected_sender or "Someone new"
-        if self.thread.roster_changed:
-            title = "Group membership may have changed"
-            copy = (
-                f"{sender} sent a message to {self.thread.name}, but is not in "
-                "BlueFerry's saved participant list. Replies are disabled until "
-                "you review it. This may also mean you have multiple groups with "
-                f"the name {self.thread.name}, which BlueFerry cannot distinguish."
-            )
-        else:
-            title = "Edit group participants"
-            copy = (
-                "BlueFerry uses this local list when replying to "
-                f"{self.thread.name}. Groups with the same name cannot be "
-                "distinguished."
-            )
-        copy += (
-            "\n\nChanging BlueFerry's saved list does not add or remove anyone "
-            "in Messages on your iPhone."
+        title = (
+            _("Group membership may have changed") if self.thread.roster_changed
+            else _("Who is in {group}?").format(group=self.thread.name)
         )
         with Vertical(id="roster-changed-dialog", classes="dialog"):
-            yield Static(title, classes="dialog-title")
-            yield Static(Text(terminal_text(copy)), classes="dialog-copy")
-            yield Static("BlueFerry participant list", classes="field-label")
-            yield TextArea(
-                soft_wrap=False,
-                show_line_numbers=False,
-                id="roster-participants",
+            yield Static(Text(terminal_text(title)), classes="dialog-title")
+            yield Static(
+                Text(terminal_text(_group_members_copy(self.thread))), classes="dialog-copy",
+            )
+            yield OptionList(id="roster-members")
+            yield Static("", id="roster-hint", classes="dialog-copy")
+            yield Input(
+                placeholder=_("Add a contact, phone number, or email"), id="roster-add",
+                max_length=256,
+            )
+            yield OptionList(id="roster-suggestions")
+            yield Static(
+                _("This changes only BlueFerry, not the group on your iPhone."),
+                classes="dialog-copy",
             )
             with Horizontal(classes="dialog-actions"):
-                yield Button("Not now", id="roster-changed-cancel")
-                yield Button(
-                    "Save participants", variant="primary",
-                    id="roster-changed-save",
-                )
+                yield Button(_("Cancel"), id="roster-cancel")
+                yield Button(_("Remove"), id="roster-remove")
+                yield Button(_("Save participants"), variant="primary", id="roster-save")
 
     def on_mount(self) -> None:
-        editor = self.query_one("#roster-participants", TextArea)
-        editor.text = "\n".join(self.thread.recipients)
-        editor.focus()
+        self._render_members()
+        self._render_suggestions()
+        self.query_one("#roster-add", Input).focus()
 
-    @on(Button.Pressed, "#roster-changed-cancel")
+    def _render_members(self) -> None:
+        members = self.query_one("#roster-members", OptionList)
+        members.clear_options()
+        for name, address in self.draft.entries:
+            label = Text(_one_line(name or address))
+            if name:
+                label.append(f"  {_one_line(address)}", style="dim")
+            members.add_option(Option(label))
+        hint = self.draft.hint
+        self.query_one("#roster-hint", Static).update(Text(_one_line(hint)))
+        self.query_one("#roster-hint", Static).display = bool(hint)
+        self.query_one("#roster-remove", Button).disabled = not self.draft.entries
+        self.query_one("#roster-save", Button).disabled = not self.draft.can_save
+
+    def _render_suggestions(self) -> None:
+        options = self.query_one("#roster-suggestions", OptionList)
+        self._suggestions = self.draft.suggestions(self._contacts.contact_results)
+        options.clear_options()
+        for name, address in self._suggestions:
+            label = Text(_one_line(name))
+            label.append(f"  {_one_line(address)}", style="dim")
+            options.add_option(Option(label))
+        options.display = bool(self._suggestions)
+
+    @on(Input.Changed, "#roster-add")
+    def add_changed(self) -> None:
+        self._search_timer.stop()
+        self._contacts.begin_contact_search("")
+        self._render_suggestions()
+        self._search_timer.start(_MEMBER_SEARCH_DELAY_MS)
+
+    def _search_contacts(self) -> None:
+        text = self.query_one("#roster-add", Input).value.strip()
+        request = self._contacts.begin_contact_search(text if len(text) >= 2 else "")
+        if request is None:
+            self._render_suggestions()
+            return
+
+        def found(matches: object) -> None:
+            results = [
+                (str(name), str(address))
+                for name, address in (matches if isinstance(matches, list) else [])
+            ]
+            if self._contacts.apply_contact_results(request, results):
+                self._render_suggestions()
+
+        self._search_runner.submit(
+            lambda: self._find_contacts(request.query), found, lambda _message: None,
+        )
+
+    def _added(self) -> None:
+        field = self.query_one("#roster-add", Input)
+        self._search_timer.stop()
+        self._contacts.begin_contact_search("")
+        with field.prevent(Input.Changed):
+            field.value = ""
+        self._render_members()
+        self._render_suggestions()
+        field.focus()
+
+    @on(OptionList.OptionSelected, "#roster-suggestions")
+    def suggestion_selected(self, event: OptionList.OptionSelected) -> None:
+        if not 0 <= event.option_index < len(self._suggestions):
+            return
+        name, address = self._suggestions[event.option_index]
+        if self.draft.add(address, name):
+            self._added()
+
+    @on(Input.Submitted, "#roster-add")
+    def add_submitted(self, event: Input.Submitted) -> None:
+        text = event.value.strip()
+        if not text:
+            return
+        if self.draft.add(text):
+            self._added()
+        else:
+            self.notify(_("Enter a phone number or email address"), severity="warning")
+
+    @on(Button.Pressed, "#roster-remove")
+    def remove_button(self) -> None:
+        self.action_remove()
+
+    def action_remove(self) -> None:
+        members = self.query_one("#roster-members", OptionList)
+        index = members.highlighted
+        if index is None or not 0 <= index < len(self.draft.entries):
+            return
+        self.draft.remove(self.draft.entries[index][1])
+        self._render_members()
+        self._render_suggestions()
+
+    @on(Button.Pressed, "#roster-cancel")
     def cancel_button(self) -> None:
         self.dismiss(None)
 
-    @on(Button.Pressed, "#roster-changed-save")
+    @on(Button.Pressed, "#roster-save")
     def save_button(self) -> None:
-        recipients = participant_lines(self.query_one("#roster-participants", TextArea).text)
-        if not 2 <= len(recipients) <= 20:
-            self.notify(
-                "Enter 2 to 20 participants, one per line",
-                severity="warning",
-            )
+        if not self.draft.can_save:
+            self.notify(_("Add 2 to 20 participants"), severity="warning")
             return
-        self.dismiss(tuple(recipients))
+        self.dismiss(tuple(self.draft.recipients))
 
     def action_cancel(self) -> None:
         self.dismiss(None)
@@ -1138,22 +1260,23 @@ class BlueFerryApp(App[None]):
         if thread is not None:
             self._open_roster_editor(thread)
 
-    def _open_roster_editor(self, thread: Thread) -> None:
+    def _open_roster_editor(self, thread: Thread, then_send: str = "") -> None:
+        """Ask who is in a group; ``then_send`` is the reply to continue."""
         self.push_screen(
-            RosterChangedScreen(thread),
+            GroupMembersScreen(thread, self.state.client.find_contacts),
             lambda recipients, key=thread.key: self._roster_review_ready(
-                key, recipients
+                key, recipients, then_send,
             ),
         )
 
     def _roster_review_ready(
-        self, thread_key: str, recipients: tuple[str, ...] | None,
+        self, thread_key: str, recipients: tuple[str, ...] | None, then_send: str = "",
     ) -> None:
         if recipients is None:
             return
         self.state.notice = "Saving group participants…"
         self._update_notice()
-        self._save_group_participants_worker(thread_key, list(recipients))
+        self._save_group_participants_worker(thread_key, list(recipients), then_send)
 
     def _filtered_threads(self) -> list[Thread]:
         query = self.query_one("#thread-search", Input).value.strip().casefold()
@@ -1230,7 +1353,7 @@ class BlueFerryApp(App[None]):
             Text(f"{unread} unread" if unread else "up to date")
         )
         roster_button.display = bool(
-            thread.group_origin == "named"
+            thread.group_origin in _EDITABLE_GROUP_ORIGINS
             or thread.key.startswith("group:named:")
         )
 
@@ -1251,9 +1374,9 @@ class BlueFerryApp(App[None]):
             await timeline.mount(*widgets)
         else:
             await timeline.mount(Static("No messages yet", id="empty-conversation"))
-        composer.disabled = self._sending or not thread.reply_ready
+        composer.disabled = self._sending or not thread.can_compose
         composer.placeholder = (
-            "Write a reply…" if thread.reply_ready else "This conversation is read-only"
+            "Write a reply…" if thread.can_compose else "This conversation is read-only"
         )
         send_button.disabled = composer.disabled
         timeline.scroll_end(animate=False, immediate=True)
@@ -1830,6 +1953,10 @@ class BlueFerryApp(App[None]):
             self.notify(f"Messages are limited to {_MAX_INPUT} characters", severity="error")
             return
         plan = self.state.plan_reply(body)
+        if plan.disposition is ReplyDisposition.NEEDS_PARTICIPANTS:
+            # The draft stays in the composer whether or not they save.
+            self._open_roster_editor(thread, then_send=body)
+            return
         if plan.disposition is ReplyDisposition.CONFIRM_GROUP:
             self.push_screen(
                 GroupConfirmScreen(thread),
@@ -1859,7 +1986,7 @@ class BlueFerryApp(App[None]):
         self._sending = sending
         self.state.notice = notice
         thread = self.state.selected
-        disabled = sending or thread is None or not thread.reply_ready
+        disabled = sending or thread is None or not thread.can_compose
         self.query_one("#composer", TextArea).disabled = disabled
         self.query_one("#send-reply", Button).disabled = disabled
         self._update_notice()
@@ -1884,10 +2011,12 @@ class BlueFerryApp(App[None]):
 
     @work(thread=True, group="roster", exclusive=True, exit_on_error=False)
     def _save_group_participants_worker(
-        self, thread_key: str, recipients: list[str],
+        self, thread_key: str, recipients: list[str], then_send: str = "",
     ) -> None:
         succeeded = self.state.save_group_participants(thread_key, recipients)
-        self.call_from_thread(self._schedule_roster_finished, succeeded)
+        self.call_from_thread(
+            self._schedule_roster_finished, thread_key, succeeded, then_send,
+        )
 
     @work(thread=True, group="delete", exclusive=True, exit_on_error=False)
     def _delete_thread_worker(self, thread_key: str) -> None:
@@ -1913,26 +2042,39 @@ class BlueFerryApp(App[None]):
                 severity="error", markup=False,
             )
 
-    def _schedule_roster_finished(self, succeeded: bool) -> None:
+    def _schedule_roster_finished(
+        self, thread_key: str, succeeded: bool, then_send: str = "",
+    ) -> None:
         self.run_worker(
-            self._roster_finished(succeeded),
+            self._roster_finished(thread_key, succeeded, then_send),
             name="render-roster-result",
             group="render",
             exclusive=True,
         )
 
-    async def _roster_finished(self, succeeded: bool) -> None:
+    async def _roster_finished(
+        self, thread_key: str, succeeded: bool, then_send: str = "",
+    ) -> None:
         await self._populate_threads()
         await self._render_conversation()
         self._update_notice()
+        thread = self.state.selected
         if not succeeded:
-            thread = self.state.selected
             if thread is not None:
                 self.notify(
                     _one_line(self.state.error or "Could not save group participants"),
                     severity="error", markup=False,
                 )
-                self._open_roster_editor(thread)
+                self._open_roster_editor(thread, then_send)
+            return
+        composer = self.query_one("#composer", TextArea)
+        if (
+            then_send and thread is not None and thread.reply_ready
+            # Only the group and draft that asked; the user may have moved on.
+            and thread.key == thread_key and composer.text.strip() == then_send
+        ):
+            # Continue the reply that asked for the members.
+            self.action_send_reply()
 
     def _schedule_send_finished(self, succeeded: bool, sent_body: str) -> None:
         self.run_worker(
