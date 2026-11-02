@@ -27,8 +27,11 @@ flowchart LR
 - **Empfang und Netz**: nur mit eingeschalteten Anrufen, von oFono.
 - **Qt**: eine kleine Akku- (und Empfangs-)Anzeige neben „Conversations“;
   der Tooltip zeigt das Netz.
-- **Terminal-Client, Quickshell-Kopfzeile, GTK-Statusseite**: Akku und
-  Empfang stehen in der Verbindungszeile.
+- **GTK**: Akku, Empfang und Netz auf der Telefon-Karte über den Reitern;
+  der Tooltip zeigt alle Werte.
+- **Terminal-Client, Quickshell-Kopfzeile**: Akku und Empfang stehen in der
+  Verbindungszeile; die **iPhone Overview** des Terminal-Clients
+  (Befehlspalette) zeigt auch das Netz.
 - **CLI**:
 
   ```bash
