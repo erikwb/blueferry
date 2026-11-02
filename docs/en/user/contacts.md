@@ -46,8 +46,12 @@ Contact view in the clients:
 ## Photos
 
 A card's photo is shown only with [contact photos](contact-photos.md)
-turned on. The list itself never transfers photos; `contacts show` fetches
-the one photo of the card you open.
+turned on. `contacts list` never transfers photos; `contacts show` fetches
+the one photo of the card you open. The contact lists of the KDE and GTK
+clients load the small photos of the rows on screen and show initials until
+a photo arrives and for cards without one. Those photos stay in the
+client's memory only and are dropped when you leave the Contacts tab. The
+terminal client shows initials.
 
 ## Storage and privacy
 
