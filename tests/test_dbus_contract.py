@@ -167,6 +167,9 @@ def test_contact_card_methods_page_and_return_the_photo_as_bytes() -> None:
     assert methods["ListContactCards"]._dbus_out_signature == "s"
     assert methods["GetContact"]._dbus_in_signature == "s"
     assert methods["GetContact"]._dbus_out_signature == "say"
+    # List avatars: a bounded batch of card ids to photo bytes.
+    assert methods["GetContactCardPhotos"]._dbus_in_signature == "as"
+    assert methods["GetContactCardPhotos"]._dbus_out_signature == "a{say}"
     # The older address-grouped enumeration keeps its signature.
     assert methods["ListContacts"]._dbus_in_signature == "uu"
 

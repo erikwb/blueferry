@@ -29,6 +29,10 @@
   `contact_card_count` and `contact_card_epoch` (changes when card ids may
   no longer resolve). Card queries ignore case, accents and Unicode forms.
   CLI: `blueferry contacts list|show`.
+- Contact list photos: `Messages1.GetContactCardPhotos` returns the photos of
+  up to 50 cards by id in one call (bounded reply, no decoding in the
+  daemon), and the shared contact list model loads them for the rows on
+  screen, in memory only, with initials as the fallback.
 - Global search: `Messages1.Search` looks through conversations, messages,
   contact cards and call history in one call and groups the hits with the
   ids to open them. It searches only the decrypted data the daemon already

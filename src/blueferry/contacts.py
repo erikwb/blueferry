@@ -860,6 +860,10 @@ class ContactsResolver:
     def load_photo(self, ref: int) -> bytes | None:
         return self._repository.load_photo(ref)
 
+    def load_photos(self, refs: Sequence[int]) -> dict[int, bytes]:
+        """Validated photos for several stored ids, read over one connection."""
+        return self._repository.load_photos(refs)
+
     def photo(self, raw: str | None) -> bytes | None:
         """Validated photo bytes for an unambiguous address, else ``None``."""
         ref = self.photo_ref(raw)
