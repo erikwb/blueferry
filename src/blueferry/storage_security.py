@@ -15,7 +15,7 @@ from typing import Any, Protocol
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-from blueferry.settings_store import SettingsStore
+from blueferry.settings_store import SettingsStore, UnreadableSettingsError
 
 log = logging.getLogger(__name__)
 
@@ -70,6 +70,10 @@ class _PreparedKey:
 
 
 def _retryable_preparation_error(error: Exception) -> bool:
+    if isinstance(error, UnreadableSettingsError):
+        # Whether the settings file may read on a retry depends on why it failed.
+        cause = error.__cause__
+        return isinstance(cause, Exception) and _retryable_preparation_error(cause)
     if isinstance(error, OSError):
         return not isinstance(error, PermissionError)
     if not isinstance(error, sqlite3.OperationalError):
