@@ -196,8 +196,7 @@ Live messages still arrive.
    wallet other than the default one, open that wallet, then run
    `blueferry storage-unlock` (or choose **Unlock Local Data** in the Qt
    client).
-2. If there are two BlueFerry keys, delete the newer one and unlock again.
-3. If the key is gone, the saved data can't be recovered. Choose **Reset
+2. If the key is gone, the saved data can't be recovered. Choose **Reset
    Local Storage** in the client's local data settings, or run:
 
    ```bash

@@ -270,6 +270,20 @@ def test_secret_service_stores_into_the_collection_it_checked(monkeypatch) -> No
     assert calls == ["unlock", ("store", _LOGIN)]
 
 
+
+def test_reset_is_offered_only_while_saved_data_is_unreadable(tmp_path) -> None:
+    storage = _storage(tmp_path)
+    storage.require_preparation()
+    assert not storage.reset_offered  # Waiting for the wallet; data intact.
+    storage._accept_key(b"K" * 32)
+    assert not storage.reset_offered
+    storage._fail("Local storage could not be prepared")
+    assert not storage.reset_offered
+
+    storage.fail_closed("Encrypted local history could not be authenticated")
+
+    assert storage.reset_offered
+
 def _storage(tmp_path, provider=None) -> StorageSecurity:
     return StorageSecurity(
         settings=SettingsStore(tmp_path / "settings.json"),

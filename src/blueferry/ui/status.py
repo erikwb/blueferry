@@ -1549,10 +1549,7 @@ class SettingsDialog(Adw.PreferencesDialog):
         self._storage_policy_row.set_sensitive(reachable)
         self._applying_storage_policy = False
         locked = status.storage_policy == "encrypted" and status.storage_state != "ready"
-        self._storage_reset_row.set_visible(
-            status.extra.get("storage_reset") is True
-            and (locked or status.storage_state == "error")
-        )
+        self._storage_reset_row.set_visible(status.extra.get("storage_reset") is True)
         self._storage_reset_row.set_subtitle(status.storage_detail)
         self._storage_reset_button.set_sensitive(reachable)
         if reachable and locked and not self._storage_unlock_attempted:

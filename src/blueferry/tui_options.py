@@ -698,10 +698,7 @@ class OptionsScreen(ModalScreen[None]):
                     "blueferry storage-policy-set encrypted|plaintext|none.").format(
             policy=_STORAGE.get(storage, storage or "…"), state=storage_state or "…",
         )
-        unreadable = storage_state == "error" or (
-            storage == "encrypted" and storage_state not in {"", "ready"}
-        )
-        if values.get("storage_reset") is True and unreadable:
+        if values.get("storage_reset") is True:
             # The explanation, and the way out when the saved data's key is lost.
             detail = str(values.get("storage_detail") or "").rstrip(".")
             if detail:

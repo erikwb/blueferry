@@ -1132,7 +1132,7 @@ def test_qt_offers_storage_reset_only_while_saved_data_cannot_be_opened(
     QGuiApplication.processEvents()
     button = _settings_object(window, "storageResetButton")
     for status, offered in (
-        ({"storage_policy": "encrypted", "storage_state": "ready", "storage_reset": True}, False),
+        ({"storage_policy": "encrypted", "storage_state": "locked", "storage_reset": False}, False),
         ({"storage_policy": "encrypted", "storage_state": "locked"}, False),  # Older daemon.
         ({"storage_policy": "encrypted", "storage_state": "locked", "storage_reset": True}, True),
         ({"storage_policy": "plaintext", "storage_state": "error", "storage_reset": True}, True),

@@ -206,8 +206,7 @@ unangetastet und benutzt sie nicht mehr. Neue Nachrichten kommen trotzdem an.
    local storage key**. Liegt er in einer anderen als der Standard-Wallet,
    öffne diese und führe dann `blueferry storage-unlock` aus (oder wähle im
    Qt-Client **Unlock Local Data**).
-2. Gibt es zwei BlueFerry-Schlüssel, lösche den neueren und entsperre erneut.
-3. Ist der Schlüssel verloren, lassen sich die gespeicherten Daten nicht
+2. Ist der Schlüssel verloren, lassen sich die gespeicherten Daten nicht
    wiederherstellen. Wähle in den Einstellungen für lokale Daten **Reset
    Local Storage** oder führe aus:
 

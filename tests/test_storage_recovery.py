@@ -554,6 +554,7 @@ def test_lost_keyring_key_is_reported_instead_of_silently_replaced(recovery, int
     assert r.wallet.created == 0
     assert r.storage.status == StorageStatus("encrypted", "locked", KEY_MISSING_DETAIL)
     assert r.outcomes[-1]["storage_detail"] == KEY_MISSING_DETAIL
+    assert r.storage.reset_offered
     assert config.EVENTS_DB.read_bytes() == before
     # Unlike corruption, this keeps the passive retry watching for the key.
     r.wallet.key = original
@@ -636,3 +637,24 @@ def test_reset_erases_unreadable_storage_and_starts_over(recovery):
     r.unlock()
     assert r.outcomes[-1]["storage_state"] == "ready"
     assert [event["handle"] for event in read_events(storage=r.storage)] == ["new"]
+
+
+def test_replacement_key_is_not_trusted_over_encrypted_preferences(recovery):
+    r = recovery
+    path = r.storage.settings_path
+    thread = "address:phone:15551111111"
+    # An earlier release kept no key check and, here, no history either.
+    r.wallet.locked = False
+    r.storage.refresh(allow_prompt=False)
+    StarredThreadsStore(path, storage=r.storage).set_starred(thread, True)
+    original, r.wallet.key = r.wallet.key, None
+    r.storage.require_preparation()
+
+    r.unlock(interactive=True)
+
+    assert r.storage.status.state == "error"
+    assert not SettingsStore(path).read().get(KEY_CHECK_SETTING)
+    r.wallet.key = original
+    r.unlock(interactive=True)
+    assert r.outcomes[-1]["storage_state"] == "ready"
+    assert StarredThreadsStore(path, storage=r.storage).keys() == [thread]

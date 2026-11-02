@@ -337,6 +337,12 @@ class StorageSecurity:
         return StorageStatus(self._policy, self._state, self._detail)
 
     @property
+    def reset_offered(self) -> bool:
+        """Saved data can't be opened: its key is missing or differs, or it is damaged."""
+        # Only those details, and fail_closed's, point to the reset.
+        return self._state != "ready" and "reset local storage" in self._detail.casefold()
+
+    @property
     def revision(self) -> int:
         """Changes whenever the policy or key changes.
 

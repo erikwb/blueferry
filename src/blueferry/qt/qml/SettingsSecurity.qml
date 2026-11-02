@@ -107,9 +107,6 @@ ColumnLayout {
         Controls.Button {
             objectName: "storageResetButton"
             visible: section.bridge.status.storage_reset === true
-                && (section.bridge.status.storage_state === "error"
-                    || (section.bridge.status.storage_policy === "encrypted"
-                        && section.bridge.status.storage_state !== "ready"))
             text: qsTr("Reset Local Storage…")
             icon.name: "edit-delete"
             enabled: section.bridge.status.daemon === true && !section.bridge.busy
