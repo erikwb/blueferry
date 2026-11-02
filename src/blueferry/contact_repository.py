@@ -437,11 +437,13 @@ class ContactRepository:
             with closing(_open_read_only(timeout=_PHOTO_READ_TIMEOUT_SECONDS)) as connection:
                 if not _has_photo_table(connection):
                     return {}
-                marks = ",".join("?" * len(selected))
-                rows = connection.execute(
-                    f"SELECT id, payload FROM contact_photos WHERE id IN ({marks})",  # nosec B608
-                    selected,
-                ).fetchall()
+                rows = [
+                    (ref, row[0])
+                    for ref in selected
+                    if (row := connection.execute(
+                        "SELECT payload FROM contact_photos WHERE id = ?", (ref,)
+                    ).fetchone()) is not None
+                ]
         except sqlite3.Error as error:
             if _is_busy_error(error):
                 raise PhotoStoreBusy("contact photos are being updated") from error
