@@ -280,7 +280,10 @@ class PluginManager:
         return self.root / f"{plugin_id}.plugin"
 
     def service_path(self, manifest: PluginManifest) -> Path:
-        return self.data_home / "dbus-1" / "services" / f"{manifest.bus_name}.service"
+        return self._service_file(manifest.id)
+
+    def _service_file(self, plugin_id: str) -> Path:
+        return self.data_home / "dbus-1" / "services" / f"{bus_name_for(plugin_id)}.service"
 
     def records(self) -> dict[str, InstallRecord]:
         """Valid entries of ``installs.json``; anything odd is left out."""
@@ -605,6 +608,10 @@ class PluginManager:
         if commit == record.commit:
             return None
         prepared = self.prepare(record.url, ref)
+        if prepared.manifest.id != plugin_id:
+            self.discard(prepared)
+            raise InstallError(f"the new release of {plugin_id} declares the plugin ID "
+                               f"{prepared.manifest.id}; an update cannot rename a plugin")
         try:
             log = self.runner.run(
                 ["git", "-C", str(prepared.staging), "log", "--oneline", "--no-decorate",
@@ -627,14 +634,10 @@ class PluginManager:
         if record is None:
             raise InstallError(f"{plugin_id} was not installed with `blueferry plugins install`")
         removed: list[Path] = []
-        manifest_file = self.manifest_path(plugin_id)
-        try:
-            manifest = parse_manifest(manifest_file.read_text(encoding="utf-8"))
-        except (OSError, ManifestError):
-            manifest = None
-        paths = [manifest_file, self.source_dir(plugin_id)]
-        if manifest is not None:
-            paths.append(self.service_path(manifest))
+        # Paths follow the record's id, never the manifest on disk: it may be
+        # damaged or have been replaced with another plugin's.
+        paths = [self.manifest_path(plugin_id), self.source_dir(plugin_id),
+                 self._service_file(plugin_id)]
         venvs = self._plugin_venvs(plugin_id)
         if Path(record.venv) not in venvs:
             venvs.append(Path(record.venv))

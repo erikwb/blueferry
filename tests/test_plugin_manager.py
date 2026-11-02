@@ -374,6 +374,25 @@ def test_update_shows_the_change_and_replaces_the_venv(setup) -> None:
         manager.check_update("io.example.other")
 
 
+@pytest.mark.parametrize("other_installed", [False, True])
+def test_an_update_cannot_change_the_plugin_id(setup, other_installed) -> None:
+    manager, runner = setup
+    renamed = MANIFEST.format(version="0.2.0").replace(
+        "Id=io.example.demo", "Id=io.example.demo-extra")
+    if other_installed:
+        runner.files[OLD] = {"data/extra.plugin": renamed.replace("0.2.0", "0.1.0")}
+        manager.commit(manager.prepare(URL))
+        runner.files[OLD] = {"data/io.example.demo.plugin": MANIFEST.format(version="0.1.0")}
+    manager.commit(manager.prepare(URL))
+    records = manager.records()
+    runner.tags["v0.2.0"] = NEW
+    runner.files[NEW] = {"data/extra.plugin": renamed}
+    with pytest.raises(InstallError, match="cannot rename"):
+        manager.prepare_update("io.example.demo")
+    assert manager.records() == records
+    assert sorted(path.name for path in (manager.root / "src").iterdir()) == sorted(records)
+
+
 def test_remove_deletes_only_what_install_wrote(setup, tmp_path) -> None:
     manager, _runner = setup
     manager.commit(manager.prepare(URL))
@@ -388,6 +407,25 @@ def test_remove_deletes_only_what_install_wrote(setup, tmp_path) -> None:
     assert manager.disabled() == frozenset()
     with pytest.raises(InstallError):
         manager.remove("io.example.demo")
+
+
+@pytest.mark.parametrize("manifest", ["another plugin's", "damaged"])
+def test_remove_deletes_its_own_service_whatever_the_manifest_says(setup, manifest) -> None:
+    manager, runner = setup
+    original_files = runner.files[OLD]
+    runner.files[OLD] = {"data/extra.plugin": MANIFEST.format(version="0.1.0").replace(
+        "Id=io.example.demo", "Id=io.example.demo-extra")}
+    other = manager.commit(manager.prepare(URL))
+    runner.files[OLD] = original_files
+    demo = manager.prepare(URL)
+    manager.commit(demo)
+    other_manifest = manager.manifest_path(other.id)
+    other_service = manager.service_path(parse_manifest(other_manifest.read_text()))
+    manager.manifest_path("io.example.demo").write_text(
+        other_manifest.read_text() if manifest == "another plugin's" else "[garbage")
+    manager.remove("io.example.demo")
+    assert not manager.service_path(demo.manifest).exists()
+    assert other_service.is_file() and other_manifest.is_file()
 
 
 def test_enable_and_disable_persist(setup) -> None:
