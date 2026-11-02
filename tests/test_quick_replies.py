@@ -244,7 +244,7 @@ def test_without_map_or_obex_worker_the_call_keeps_ringing() -> None:
     sessions.map = None
     calls = FakeCalls()
 
-    with pytest.raises(NotReadyError, match="MAP"):
+    with pytest.raises(NotReadyError, match="message connection"):
         _decline(_operations(calls=calls, sessions=sessions))
     no_worker = BackendOperations(_Sessions(), BackendDependencies(
         calls=calls, quick_replies=FakeReplies(),
