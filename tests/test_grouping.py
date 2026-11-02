@@ -221,7 +221,7 @@ def _from_alice(subtitle: str, body: str, at: str) -> list[dict]:
     ]
 
 
-def _crew_route(key: str) -> dict:
+def _unnamed_crew_route(key: str) -> dict:
     return {
         "kind": "group_route", "group_key": key, "group_name": "Alice, Bob",
         "group_members": ["Alice", "Bob"],
@@ -244,7 +244,7 @@ def test_saved_unnamed_roster_does_not_follow_a_second_member_with_the_same_name
     events = [
         _sms("+15552222222", "Bob", "hi", "2026-10-31T09:00:00+00:00"),
         *_from_alice("To you & Bob", "first", "18:00"),
-        _crew_route(unnamed_group_key(["Alice", "Bob"])),
+        _unnamed_crew_route(unnamed_group_key(["Alice", "Bob"])),
         *_from_alice("To you & Bob, Bob", "second", "18:10"),
     ]
 
@@ -264,7 +264,7 @@ def test_roster_saved_under_the_old_unnamed_key_does_not_carry_over() -> None:
     # include someone this group does not.
     events = [
         *_from_alice("To you & Bob", "first", "18:00"),
-        {**_crew_route("group:participants:alice|bob"),
+        {**_unnamed_crew_route("group:participants:alice|bob"),
          "group_recipients": ["+15551111111", "+15552222222", "+15553333333"]},
     ]
 
