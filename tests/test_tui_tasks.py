@@ -4,6 +4,8 @@ from __future__ import annotations
 import asyncio
 import threading
 
+import pytest
+from textual import events
 from textual.app import App, ComposeResult
 from textual.screen import Screen
 from textual.widgets import Static
@@ -112,6 +114,51 @@ def test_a_removed_screen_gets_no_late_answer() -> None:
             await _until(pilot, lambda: worker.is_finished or worker.is_cancelled)
             await pilot.pause(0.1)
             assert delivered == []
+
+    asyncio.run(scenario())
+
+
+class _SlowUnmountScreen(Screen):
+    """Hold the gap in which a closing screen has lost its children but not
+    yet cancelled its workers (Unmount does that), and answer there."""
+
+    def __init__(self, answer: threading.Event) -> None:
+        super().__init__()
+        self.answer = answer
+
+    def compose(self) -> ComposeResult:
+        yield Static("x", id="content")
+
+    async def _dispatch_message(self, message):
+        if isinstance(message, events.Unmount):
+            self.answer.set()
+            await asyncio.sleep(0.2)
+        return await super()._dispatch_message(message)
+
+
+@pytest.mark.parametrize("closing", ["pop", "quit"])
+def test_an_answer_while_the_screen_closes_is_dropped(closing) -> None:
+    async def scenario() -> None:
+        app = _App()
+        answer = threading.Event()
+        screen = _SlowUnmountScreen(answer)
+        delivered: list[str] = []
+
+        def done(_value: object) -> None:
+            screen.query_one("#content")  # raised NoMatches before the fix
+            delivered.append("done")
+
+        async with app.run_test() as pilot:
+            await app.push_screen(screen)
+            TextualTaskRunner(screen).submit(
+                lambda: answer.wait(5), done,
+                lambda _message: delivered.append("error"),
+                lambda: delivered.append("finished"),
+            )
+            if closing == "pop":
+                await app.pop_screen()
+                await pilot.pause(0.4)
+        assert answer.is_set() and delivered == []
 
     asyncio.run(scenario())
 
