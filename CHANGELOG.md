@@ -39,8 +39,9 @@
   entries gain an opaque `id`, and `GetStatus` reports `search_result_limit`.
   CLI: `blueferry search`.
 - Report the A/V sync delay of the iPhone's audio stream in `GetStatus`
-  (`phone_audio_delay_ms`, `phone_audio_delay_reporting`), show it next to the
-  iPhone sound status, and check AVDTP delay reporting in `blueferry doctor`.
+  (`phone_audio_delay_ms`, `phone_audio_delay_reporting`; the delay only while
+  the stream is active), show it next to the iPhone sound status, and check
+  AVDTP delay reporting in `blueferry doctor`.
 - KDE client: the iPhone sound switches in Settings and on the phone card
   show the A/V sync line under the sound status.
 - Client models: `contacts_model` and `search_model` hold the paging,
