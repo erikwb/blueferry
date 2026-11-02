@@ -815,7 +815,8 @@ itself is PipeWire's job; BlueFerry only controls the call.
 
 ## Companion tools (optional)
 
-The Qt phone card (section **Tools**) and `blueferry tools` can start three
+The phone card of the GTK and Qt clients (section **Tools**; in GTK under
+**Plugins & Tools**) and `blueferry tools` can start three
 programs that BlueFerry does not ship. Each entry only works when its tool
 is installed; otherwise it stays greyed out with what to install. These are
 local client actions; the daemon is not involved.
@@ -870,7 +871,7 @@ installed by default.
   example the next calendar entry or a running transfer, with their
   actions; `blueferry send FILE --to TARGET` hands files to a plugin target
   such as "iPhone (LocalSend)".
-- **From Plugins** in the Qt phone card shows the same items with buttons;
+- **From Plugins** in the GTK and Qt phone card shows the same items with buttons;
   a plugin that fails shows a dimmed line. **Send to…** at the end of that
   section hands files to a plugin target, and an item can also take files
   directly (file dialog or drop).
@@ -881,7 +882,7 @@ installed by default.
 - **Photos**: with a plugin that has the `photos` capability, such as
   [blueferry-plugin-immich](https://github.com/joshii-h/blueferry-plugin-immich)
   for a self-hosted Immich server, `blueferry photos recent` lists the newest
-  photos and videos and the Qt client's **Photos** tab shows them.
+  photos and videos and the **Photos** tab of the GTK and Qt clients shows them.
 - **Logs**: plugins write `~/.local/state/blueferry/plugins/<id>.log`
   (owner-only, rotated, secrets masked); `blueferry plugins log ID` or **Show Log** in the settings.
 

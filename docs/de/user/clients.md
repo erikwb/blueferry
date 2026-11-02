@@ -31,6 +31,17 @@ in der Kopfzeile, in einem schmalen Fenster unten:
 - **Notifications**: die [letzten iPhone-Mitteilungen](notification-history.md)
   anderer Apps. Ist die Liste aus, sagt der Reiter warum und öffnet die
   Einstellung.
+- **Photos**: die neuesten Fotos und Videos eines [Foto-Plugins](plugins.md),
+  mit All, Photos und Videos; ein Klick lädt das Original und öffnet es,
+  ein geöffnetes lässt sich in andere Apps ziehen.
+
+**Plugins & Tools** auf der Karte klappt auf, was der KDE-Client unter
+seinen Schaltern zeigt: **From Plugins** (was [Plugins](plugins.md)
+anbieten, mit ihren Knöpfen, und **Send to…**; auf ein Geräte-Element
+gezogene Dateien gehen an dieses Gerät) und **Tools** (Bildschirm spiegeln,
+LocalSend, die Fotos des iPhones über USB). Der Bereich bleibt, wie du ihn
+verlassen hast, und klappt von selbst auf, wenn ein Plugin etwas Neues
+bringt, etwa eine laufende Übertragung.
 
 **Settings** (Hauptmenü, `Strg+,`) hat dieselben Kategorien wie der
 KDE-Client, je eine Seite; die Umschaltleiste sitzt in der Kopfzeile, in
@@ -48,10 +59,7 @@ einem schmalen Fenster unten, und der Suchknopf findet jede Einstellung:
 
 Die Schalter, die einen Neustart brauchen (unten), funktionieren wie im
 KDE-Client: Solange eine Änderung auf den Neustart wartet, beginnt jede
-Seite mit einem Hinweis und **Restart Service**. Den Reiter Photos und den
-Plugin-Abschnitt der Karte hat der GTK-Client noch nicht; dafür gibt es den
-KDE-Client oder auf der Kommandozeile `blueferry photos` und
-`blueferry cards`.
+Seite mit einem Hinweis und **Restart Service**.
 
 ## KDE Plasma (Kirigami)
 

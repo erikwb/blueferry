@@ -7,7 +7,8 @@ background service, and nothing is installed by default.
 
 ## Companion tools
 
-The **Tools** section of the KDE client's phone card and `blueferry tools`
+The **Tools** section of the phone card (in the GTK client under
+**Plugins & Tools**) and `blueferry tools`
 start three programs BlueFerry does not ship. Each is greyed out, with what
 to install, until its tool is there.
 
@@ -82,7 +83,20 @@ blueferry plugins config ID --action ACTION  # press one of them
   `blueferry send`.
 - **Popups** that follow your notification settings.
 - **Photos**: a plugin with photos, such as the Immich plugin, lists the
-  newest ones and fills the **Photos** tab.
+  newest ones and fills the **Photos** tab. Immich sends thumbnails as WebP.
+  The GTK client decodes them with GdkPixbuf, which needs a WebP loader;
+  without one the tab shows a banner naming it instead of thumbnails. The
+  KDE client needs Qt's image format plugins instead. The native packages
+  pull these in; on other systems install them yourself:
+
+  | System | GTK client | KDE client |
+  | --- | --- | --- |
+  | Arch Linux | `webp-pixbuf-loader` | `qt6-imageformats` |
+  | Debian, Ubuntu | `webp-pixbuf-loader` | `qt6-image-formats-plugins` |
+  | Fedora | built in (gdk-pixbuf2 uses glycin) | `qt6-qtimageformats` |
+  | Gentoo | `gui-libs/gdk-pixbuf-loader-webp` | `dev-qt/qtimageformats:6` |
+
+  Restart the client after installing the loader.
 
 ```bash
 blueferry cards

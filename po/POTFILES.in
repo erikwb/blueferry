@@ -20,6 +20,9 @@ src/blueferry/ui/doctor.py
 src/blueferry/ui/notification_rules.py
 src/blueferry/ui/plugin_settings.py
 src/blueferry/ui/plugin_settings_presenter.py
+src/blueferry/ui/plugin_cards.py
+src/blueferry/ui/companion_tools.py
+src/blueferry/ui/photos.py
 src/blueferry/qt/controller.py
 src/blueferry/qt/tray.py
 src/blueferry/qt/tray_presenter.py

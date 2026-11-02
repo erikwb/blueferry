@@ -137,6 +137,10 @@ class PluginSurfacesModel:
     def clear_message(self) -> None:
         self._update(message="")
 
+    def stop(self) -> None:
+        """The client closes: drop a pending coalesced reload."""
+        self._timer.stop()
+
     # ---- share ------------------------------------------------------------------
 
     def load_targets(self) -> None:

@@ -7,7 +7,8 @@ läuft im Hintergrunddienst, und nichts ist ab Werk installiert.
 
 ## Begleitprogramme
 
-Der Abschnitt **Tools** der Telefonkarte im KDE-Client und `blueferry tools`
+Der Abschnitt **Tools** der Telefonkarte (im GTK-Client unter
+**Plugins & Tools**) und `blueferry tools`
 starten drei Programme, die BlueFerry nicht mitbringt. Jeder Eintrag bleibt
 ausgegraut, mit dem Hinweis, was zu installieren ist, bis das Programm da
 ist.
@@ -87,7 +88,21 @@ blueferry plugins config ID --action ACTION  # einen davon drücken
   und `blueferry send`.
 - **Popups**, die deinen Mitteilungseinstellungen folgen.
 - **Photos**: ein Plugin mit Fotos, etwa das Immich-Plugin, listet die
-  neuesten und füllt den Reiter **Photos**.
+  neuesten und füllt den Reiter **Photos**. Immich liefert Vorschaubilder
+  als WebP. Der GTK-Client dekodiert sie mit GdkPixbuf, das dafür einen
+  WebP-Loader braucht; fehlt er, zeigt der Reiter statt der Vorschaubilder
+  ein Banner, das ihn nennt. Der KDE-Client braucht stattdessen Qts
+  Bildformat-Plugins. Die nativen Pakete ziehen sie mit; auf anderen
+  Systemen installierst du sie selbst:
+
+  | System | GTK-Client | KDE-Client |
+  | --- | --- | --- |
+  | Arch Linux | `webp-pixbuf-loader` | `qt6-imageformats` |
+  | Debian, Ubuntu | `webp-pixbuf-loader` | `qt6-image-formats-plugins` |
+  | Fedora | eingebaut (gdk-pixbuf2 nutzt glycin) | `qt6-qtimageformats` |
+  | Gentoo | `gui-libs/gdk-pixbuf-loader-webp` | `dev-qt/qtimageformats:6` |
+
+  Nach der Installation den Client neu starten.
 
 ```bash
 blueferry cards
