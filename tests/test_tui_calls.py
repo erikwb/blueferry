@@ -507,8 +507,9 @@ def test_keypad_keys_send_tones_to_the_active_call_unless_a_field_has_focus() ->
         app = BlueFerryApp(TuiState(backend), monitor_factory=lambda: None)
         async with app.run_test(size=(120, 40)) as pilot:
             screen = await _open_calls(app, pilot)
-            # The empty number field gave up the focus when the call connected.
-            assert not isinstance(screen.focused, Input)
+            # The empty number field gave up the focus when the call connected
+            # (after the snapshot rendered, which may lag the screen opening).
+            await _until(pilot, lambda: not isinstance(screen.focused, Input))
             await pilot.press("1", "2", "#")
             release.set()
             await _until(pilot, lambda: [r for r in backend.requests if r[0] == "tones"] == [
