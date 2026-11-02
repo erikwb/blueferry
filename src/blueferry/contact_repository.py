@@ -129,8 +129,12 @@ def _open_db() -> sqlite3.Connection:
     with config.open_state_file(config.CONTACTS_DB, "a"):
         pass
     connection = sqlite3.connect(config.CONTACTS_DB)
-    connection.executescript(_SCHEMA)
-    return connection
+    try:
+        connection.executescript(_SCHEMA)
+        return connection
+    except Exception:
+        connection.close()
+        raise
 
 
 class ContactRepository:
