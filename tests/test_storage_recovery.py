@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sqlite3
+import threading
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -10,6 +11,7 @@ import pytest
 from gi.repository import GLib
 
 from blueferry import config
+from blueferry import contact_repository as repository_mod
 from blueferry import contacts as contacts_mod
 from blueferry import daemon as daemon_mod
 from blueferry import history as history_mod
@@ -28,6 +30,7 @@ from blueferry.settings_store import SettingsStore
 from blueferry.sinks.sqlite import SqliteSink
 from blueferry.starred_threads import StarredThreadsStore
 from blueferry.storage_security import (
+    DAMAGED_DATABASE_DETAIL,
     KEY_CHECK_SETTING,
     KEY_MISMATCH_DETAIL,
     KEY_MISSING_DETAIL,
@@ -676,6 +679,82 @@ def test_reset_replaces_a_database_sqlite_cannot_open(recovery, database, clear)
     assert read_events(storage=r.storage) == []
     assert ContactRepository(r.storage).load() == []
     assert CallHistoryRepository(r.storage).load(now=now) == []
+
+
+def test_reset_waits_for_a_contact_sync_that_has_the_cache_open(monkeypatch):
+    ContactRepository().replace([("Old", ["15550000000"], [])])
+    reset_thread = threading.current_thread()
+    opened = threading.Event()
+    reset_waiting = threading.Event()
+    real_open, real_lock = repository_mod._open_db, repository_mod._STORE_LOCK
+
+    class WatchedLock:
+        def __enter__(self):
+            if threading.current_thread() is reset_thread:
+                reset_waiting.set()
+            real_lock.acquire()
+
+        def __exit__(self, *exc_info):
+            real_lock.release()
+
+    def open_db():
+        connection = real_open()
+        if threading.current_thread() is not reset_thread:
+            # Connected but not yet writing: the window the reset must respect.
+            opened.set()
+            reset_waiting.wait(timeout=10)
+        return connection
+
+    monkeypatch.setattr(repository_mod, "_STORE_LOCK", WatchedLock())
+    monkeypatch.setattr(repository_mod, "_open_db", open_db)
+    errors: list[BaseException] = []
+
+    def sync():
+        try:
+            ContactRepository().replace([("Alice", ["15551111111"], [])])
+        except BaseException as error:
+            errors.append(error)
+
+    worker = threading.Thread(target=sync)
+    worker.start()
+    assert opened.wait(timeout=10)
+    clear_contact_cache(discard_damaged=True)
+    reset_waiting.set()
+    worker.join(timeout=10)
+
+    assert not worker.is_alive()
+    assert errors == []
+    # The reset ran after the sync's write, so nothing it wrote survives.
+    assert ContactRepository().load(strict=True) == []
+    path = config.CONTACTS_DB
+    assert not path.with_name(path.name + "-journal").exists()
+
+
+def test_damaged_history_offers_the_reset_that_clears_it(recovery):
+    r = recovery
+    _seal_history(r)
+    damaged = b"not a database" * 512
+    config.EVENTS_DB.write_bytes(damaged)
+    r.storage.require_preparation()  # A restart.
+
+    r.unlock()
+
+    assert r.storage.status == StorageStatus("encrypted", "error", DAMAGED_DATABASE_DETAIL)
+    status = r.daemon._status()
+    assert status["storage_reset"] is True
+    assert status["storage_detail"] == DAMAGED_DATABASE_DETAIL
+    assert config.EVENTS_DB.read_bytes() == damaged
+
+    r.operations.reset_storage_async(
+        r.queue.submit, r.outcomes.append, lambda error: pytest.fail(str(error)),
+        confirmed=True,
+    )
+    r.queue.finish()
+
+    assert r.outcomes[-1]["storage_state"] == "ready"
+    assert r.daemon._status()["storage_reset"] is False
+    append_event({"kind": "sms_received", "handle": "new", "body": "kept"}, storage=r.storage)
+    assert [event["handle"] for event in read_events(storage=r.storage)] == ["new"]
 
 
 def test_replacement_key_is_not_trusted_over_encrypted_preferences(recovery):

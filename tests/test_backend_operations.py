@@ -10,13 +10,16 @@ from blueferry.backend_operations import BackendDependencies, BackendOperations
 from blueferry.confirmed_groups import ConfirmedGroupsStore
 from blueferry.contact_repository import ContactRepository
 from blueferry.contacts import ContactsResolver
+from blueferry.dbus_service import MessagesService
 from blueferry.errors import (
+    ConfigurationError,
     ConfirmationRequiredError,
     InvalidArgumentsError,
     NotFoundError,
     NotReadyError,
     OperationFailedError,
 )
+from blueferry.features import FeatureSettings
 from blueferry.group_routes import GroupRoutesStore
 from blueferry.grouping import named_group_key
 from blueferry.history import append_event, read_events
@@ -27,6 +30,8 @@ from blueferry.limits import (
     MAX_THREAD_BODY_CHARS,
 )
 from blueferry.models import Thread
+from blueferry.notification_policy import NotificationPolicyStore
+from blueferry.protocol import ERROR_PREFIX
 from blueferry.recipients import group_confirmation_token
 from blueferry.starred_threads import StarredThreadsStore
 from blueferry.threads import build_threads
@@ -319,6 +324,49 @@ def test_confirmed_group_roster_survives_a_new_operations_instance(
     assert second.list_threads(10)[0]["group_confirmed"] is True
 
 
+def test_queued_reply_is_refused_when_its_thread_becomes_read_only(monkeypatch):
+    queued = []
+    operations = _operations(
+        submit_obex=lambda operation, **callbacks: queued.append((operation, callbacks)),
+    )
+    events = [
+        {"kind": "group_route", "group_key": named_group_key("Crew"),
+         "group_name": "Crew", "group_members": ["Alice", "Bob"],
+         "group_recipients": ["+15551111111", "+15552222222"],
+         "seen_at": "2026-08-12T09:00:00+00:00"},
+        {"kind": "sms_received", "handle": "first", "sender_address": "+15551111111",
+         "contact_name": "Alice", "body": "ok", "seen_at": "2026-08-12T10:00:00+00:00"},
+    ]
+    operations._conversations.threads = lambda: build_threads(events)
+    sent = []
+    monkeypatch.setattr(
+        backend_operations, "send_message",
+        lambda _path, recipient, _body: sent.append(recipient) or "/transfer/1",
+    )
+    errors = []
+
+    operations.send_to_thread(
+        "address:phone:15551111111", "on my way", False,
+        lambda _result: pytest.fail("unexpected successful reply"), errors.append,
+    )
+    # While the reply waits its turn, a second "ok" arrives that either it or
+    # the first may be the one sent to Crew.
+    events += [
+        {"kind": "ancs_notification", "notification_id": 42,
+         "app_id": "com.apple.MobileSMS", "title": "Alice", "subtitle": "Crew",
+         "body": "ok", "seen_at": "2026-08-12T10:00:02+00:00"},
+        {"kind": "sms_received", "handle": "second", "sender_address": "+15551111111",
+         "contact_name": "Alice", "body": "ok", "seen_at": "2026-08-12T10:00:30+00:00"},
+    ]
+    while queued:
+        operation, callbacks = queued.pop(0)
+        callbacks["on_success"](operation())
+
+    assert sent == []
+    assert len(errors) == 1
+    assert isinstance(errors[0], NotReadyError)
+
+
 def test_group_reply_records_the_projected_member_roster(monkeypatch):
     recorded = []
     operations = _operations(
@@ -518,6 +566,32 @@ def test_invalid_notification_policy_has_public_invalid_args_error() -> None:
         operations.set_notification_policy("bad")
 
     assert getattr(caught.value, "dbus_suffix", None) == "InvalidArgs"
+
+
+@pytest.mark.parametrize("save", [
+    lambda operations: operations.set_contacts_only_notifications(True),
+    lambda operations: operations.set_feature(config.FEATURE_SWITCHES[0][0], True),
+], ids=["notification-policy", "feature"])
+def test_refused_settings_save_reaches_dbus_as_configuration_error(tmp_path, save) -> None:
+    path = tmp_path / "settings.json"
+    path.write_text("{not json", encoding="utf-8")
+    path.chmod(0o600)
+    operations = _operations(
+        notification_policy=NotificationPolicyStore(path),
+        features=FeatureSettings(
+            path, running=dict, explicit=frozenset(), local_env=dict,
+        ),
+    )
+
+    with pytest.raises(ConfigurationError) as caught:
+        save(operations)
+
+    error = MessagesService._dbus_error(caught.value)
+    assert error.get_dbus_name() == f"{ERROR_PREFIX}.Configuration"
+    assert error.get_dbus_message().startswith(
+        "settings.json could not be read, so the change was not saved"
+    )
+    assert path.read_text(encoding="utf-8") == "{not json"
 
 
 def test_storage_policy_change_clears_data_before_switching(monkeypatch) -> None:
@@ -1272,9 +1346,12 @@ def test_successful_group_send_is_acknowledged_when_preferences_fail(monkeypatch
             thread["recipients"], thread.get("roster_warning_id"),
         ),
     )
+    turn = Future()
+    turn.set_result(None)
+    ObexWorker._deliver(turn, *pending.pop(0))
     result = Future()
     result.set_result("/transfer/sent")
-    ObexWorker._deliver(result, *pending[0])
+    ObexWorker._deliver(result, *pending.pop(0))
     assert replies == ["/transfer/sent"]
     assert len(recorded) == 1
 

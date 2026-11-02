@@ -69,6 +69,7 @@ from blueferry.obex.map_query import list_recent_messages
 from blueferry.obex.map_send import send_group_message, send_message
 from blueferry.protocol import MESSAGES_API_VERSION
 from blueferry.recipients import InvalidRecipient, group_confirmation_token, validate_recipient
+from blueferry.settings_store import UnreadableSettingsError
 from blueferry.storage_security import (
     STORAGE_POLICIES,
     CorruptStorageError,
@@ -468,7 +469,13 @@ class BackendOperations:
         failure: Failure,
         *,
         expected_group_token: str = "",
+        refresh: Callable[[Callable[[], None], Failure], None] | None = None,
     ) -> None:
+        """Queue a reply, then re-resolve its route when its turn comes.
+
+        ``refresh`` brings the conversation projection up to date off the
+        main loop before that check; without it the check rebuilds inline.
+        """
         if len(expected_group_token) > MAX_GROUP_CONFIRMATION_TOKEN_CHARS:
             raise InvalidArgumentsError("group confirmation token is too long")
         if not thread_key.strip():
@@ -476,6 +483,64 @@ class BackendOperations:
         if len(thread_key) > 1024:
             raise InvalidArgumentsError("thread key is too long")
         self._validate_body(body)
+        accepted = self._thread_route(
+            thread_key, confirm_group, expected_group_token,
+        )[1]
+        map_path = self.sessions.map_path
+
+        def send() -> None:
+            try:
+                thread, recipients, token = self._thread_route(
+                    thread_key, confirm_group, expected_group_token,
+                )
+            except Exception as error:
+                failure(error)
+                return
+            if recipients != accepted:
+                failure(NotReadyError(
+                    "the conversation changed; review it before sending"
+                ))
+                return
+            if token is None:
+                self._queue_send(recipients[0], body, success, failure)
+                return
+
+            def succeeded(transfer: str) -> None:
+                self._remember_confirmed_group(str(thread["key"]), token)
+                if self.dependencies.on_group_sent is not None:
+                    try:
+                        self.dependencies.on_group_sent(
+                            recipients, thread["key"],
+                            thread["name"], body, transfer,
+                            thread["members"],
+                        )
+                    except Exception:
+                        log.exception("on_group_sent hook failed (message was still sent)")
+                success(transfer)
+
+            self._queue(
+                lambda: send_group_message(map_path, recipients, body),
+                succeeded,
+                lambda error: self._operation_failed("Send", error, failure),
+            )
+
+        def dequeued(_result: object) -> None:
+            # Messages fetched by work queued ahead of this reply are in
+            # history now, and may have made the thread read-only or moved
+            # its destination.
+            if refresh is None:
+                send()
+            else:
+                refresh(send, failure)
+
+        # A no-op holds the reply's place in the Bluetooth queue and returns
+        # it to the main loop when its turn comes.
+        self._queue(lambda: None, dequeued, failure)
+
+    def _thread_route(
+        self, thread_key: str, confirm_group: bool, expected_group_token: str,
+    ) -> tuple[dict, list[str], str | None]:
+        """Return a thread, its destinations and, for a group, its roster token."""
         thread = self._conversations.find(thread_key)
         if thread is None:
             raise NotFoundError("thread no longer exists in local history")
@@ -519,31 +584,11 @@ class BackendOperations:
                     "confirm the displayed participant list before replying "
                     "to this group"
                 )
-
-            def succeeded(transfer: str) -> None:
-                self._remember_confirmed_group(thread_key, token)
-                if self.dependencies.on_group_sent is not None:
-                    try:
-                        self.dependencies.on_group_sent(
-                            group_recipients, thread["key"],
-                            thread["name"], body, transfer,
-                            thread["members"],
-                        )
-                    except Exception:
-                        log.exception("on_group_sent hook failed (message was still sent)")
-                success(transfer)
-
-            map_path = self.sessions.map_path
-            self._queue(
-                lambda: send_group_message(map_path, group_recipients, body),
-                succeeded,
-                lambda error: self._operation_failed("Send", error, failure),
-            )
-            return
+            return thread, group_recipients, token
 
         if len(thread["recipients"]) != 1:
             raise NotReadyError("one-to-one thread has an invalid recipient set")
-        self._queue_send(thread["recipients"][0], body, success, failure)
+        return thread, [thread["recipients"][0]], None
 
     def list_events(self, kinds: Iterable[object], limit: int) -> list[dict]:
         raw_kinds = list(kinds)
@@ -693,6 +738,8 @@ class BackendOperations:
             result = store.set_starred(thread["key"], bool(starred))
             self._conversations.invalidate()
             return result
+        except UnreadableSettingsError:
+            raise
         except ValueError as error:
             raise InvalidArgumentsError(str(error)) from error
 
@@ -858,6 +905,8 @@ class BackendOperations:
                     for key in conversation_keys(existing)
                 },
             )
+        except UnreadableSettingsError:
+            raise
         except (OSError, RuntimeError, ValueError) as error:
             log.error("could not retain group participants: %s", error)
             raise NotReadyError(
@@ -1128,7 +1177,8 @@ class BackendOperations:
         """Erase all retained local data, then prepare storage under a new key.
 
         The way out when retained data cannot be opened: its keyring key is
-        gone or replaced, or the records failed authentication.
+        gone or replaced, the records failed authentication, or a database
+        is damaged.
         """
         if not confirmed:
             raise ConfirmationRequiredError(
@@ -1266,6 +1316,8 @@ class BackendOperations:
             raise NotReadyError("notification policy storage is unavailable")
         try:
             selected = self.dependencies.notification_policy.set(value)
+        except UnreadableSettingsError:
+            raise
         except ValueError as error:
             raise InvalidArgumentsError(str(error)) from error
         if self.dependencies.on_notification_policy_changed is not None:
@@ -1284,6 +1336,8 @@ class BackendOperations:
             selected = self.dependencies.notification_policy.set_contacts_only(
                 enabled
             )
+        except UnreadableSettingsError:
+            raise
         except ValueError as error:
             raise InvalidArgumentsError(str(error)) from error
         if self.dependencies.on_notification_policy_changed is not None:
@@ -1304,6 +1358,8 @@ class BackendOperations:
             selected = self.dependencies.notification_policy.set_ancs_actions(
                 enabled
             )
+        except UnreadableSettingsError:
+            raise
         except ValueError as error:
             raise InvalidArgumentsError(str(error)) from error
         if self.dependencies.on_notification_policy_changed is not None:
@@ -1329,6 +1385,8 @@ class BackendOperations:
             selected = self.dependencies.notification_policy.set_mirror_removals(
                 enabled
             )
+        except UnreadableSettingsError:
+            raise
         except ValueError as error:
             raise InvalidArgumentsError(str(error)) from error
         if self.dependencies.on_notification_policy_changed is not None:
@@ -1342,6 +1400,8 @@ class BackendOperations:
             raise NotReadyError("proximity lock is unavailable")
         try:
             return dict(configure(enabled, grace_sec))
+        except UnreadableSettingsError:
+            raise
         except ValueError as error:
             raise InvalidArgumentsError(str(error)) from error
         except OSError as error:
@@ -1366,6 +1426,8 @@ class BackendOperations:
             raise InvalidArgumentsError("bundle ID and target must be strings")
         try:
             mapping = policy.set_open_target(bundle_id, target)
+        except UnreadableSettingsError:
+            raise
         except ValueError as error:
             raise InvalidArgumentsError(str(error)) from error
         self._open_map_revision += 1
@@ -1394,6 +1456,8 @@ class BackendOperations:
             raise InvalidArgumentsError("invalid bundle ID")
         try:
             removed = policy.remove_open_target(bundle_id)
+        except UnreadableSettingsError:
+            raise
         except ValueError as error:
             raise InvalidArgumentsError(str(error)) from error
         if removed:
@@ -1474,6 +1538,8 @@ class BackendOperations:
             raise NotReadyError("call history is unavailable")
         try:
             return dict(configure(enabled, missed_call_notifications))
+        except UnreadableSettingsError:
+            raise
         except ValueError as error:
             raise InvalidArgumentsError(str(error)) from error
         except OSError as error:
@@ -1573,6 +1639,8 @@ class BackendOperations:
             return features.set(str(name), bool(enabled))
         except KeyError:
             raise InvalidArgumentsError("unknown feature") from None
+        except UnreadableSettingsError:
+            raise
         except (OSError, ValueError) as error:
             raise NotReadyError(f"could not store the setting: {type(error).__name__}") from None
 
@@ -1585,7 +1653,7 @@ class BackendOperations:
         audio.set_route(
             route, success,
             lambda error: failure(
-                error if isinstance(error, NotReadyError)
+                error if isinstance(error, (NotReadyError, UnreadableSettingsError))
                 else OperationFailedError("AudioRoute", error)
             ),
         )
@@ -1606,6 +1674,8 @@ class BackendOperations:
             raise NotReadyError("media control settings are unavailable")
         try:
             return dict(configure(enabled))
+        except UnreadableSettingsError:
+            raise
         except ValueError as error:
             raise InvalidArgumentsError(str(error)) from error
         except OSError as error:
@@ -1635,6 +1705,8 @@ class BackendOperations:
             raise NotReadyError("Bluetooth tethering is unavailable in this backend")
         try:
             return dict(configure(enabled, autoconnect))
+        except UnreadableSettingsError:
+            raise
         except ValueError as error:
             raise InvalidArgumentsError(str(error)) from error
         except OSError as error:
@@ -1659,6 +1731,8 @@ class BackendOperations:
             raise NotReadyError("the phone battery warning is unavailable")
         try:
             return bool(configure(bool(enabled)).get("phone_battery_warning"))
+        except UnreadableSettingsError:
+            raise
         except ValueError as error:
             raise InvalidArgumentsError(str(error)) from error
         except OSError as error:
@@ -1672,6 +1746,8 @@ class BackendOperations:
             raise NotReadyError("the automatic profile reset is unavailable")
         try:
             return bool(configure(bool(enabled)).get("profile_reset_auto"))
+        except UnreadableSettingsError:
+            raise
         except ValueError as error:
             raise InvalidArgumentsError(str(error)) from error
         except OSError as error:
@@ -1685,6 +1761,8 @@ class BackendOperations:
             raise NotReadyError("phone-call settings are unavailable")
         try:
             return dict(configure(bool(enabled)))
+        except UnreadableSettingsError:
+            raise
         except ValueError as error:
             raise InvalidArgumentsError(str(error)) from error
         except OSError as error:
@@ -1702,6 +1780,8 @@ class BackendOperations:
             raise NotReadyError("contact photo settings are unavailable")
         try:
             return dict(configure(bool(enabled)))
+        except UnreadableSettingsError:
+            raise
         except ValueError as error:
             raise InvalidArgumentsError(str(error)) from error
         except OSError as error:
@@ -1715,6 +1795,8 @@ class BackendOperations:
             raise NotReadyError("one-time code settings are unavailable")
         try:
             return dict(configure(bool(enabled)))
+        except UnreadableSettingsError:
+            raise
         except ValueError as error:
             raise InvalidArgumentsError(str(error)) from error
         except OSError as error:

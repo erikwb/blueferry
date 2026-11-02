@@ -31,6 +31,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `dbus_service.py` | Session D-Bus adapter (`Messages1`/`Events1`/`Presence1`/`CallHistory1`) that maps operations to wire types; claims the bus name. |
 | `dbus_security.py` | Caller UID validation and per-connection/daemon-wide rate limits. |
 | `dbus_call.py` | Asynchronous dbus-python calls with an explicit input signature (`call_async`), plus typed `ay`/`a{sv}` builders. |
+| `dbus_object.py` | `StrictObject`: base class for every exported dbus-python object; rejects a call whose argument types differ from the method's declared `in_signature` with `InvalidArgs`. |
 | `protocol.py` | Stable D-Bus identifiers and the API-generation compatibility check. |
 | `event_dispatcher.py` | Builds messages from MAP/ANCS events and fans them out to persistence, desktop, and D-Bus sinks. |
 | `events.py` | Normalized MAP event dataclasses (`SmsEvent`) and address/timestamp normalization. |
@@ -811,7 +812,8 @@ A change to these rules has to be made in both places.
   delivery continues. Only an explicit client action may create or unlock the
   key. History writes are transactional, and a monotonic revision invalidates
   the projection. A storage reset deletes a database SQLite cannot read, with
-  its journal files; every other path leaves a damaged file in place.
+  its journal files; every other path leaves a damaged file in place. When one
+  stops storage preparation, the status offers that reset.
 - **Contact photos** are opt-in (`contact_photos` in `settings.json`, set
   through `Messages1.SetContactPhotos` and seeded by
   `BLUEFERRY_CONTACT_PHOTOS`; switching applies without a restart). The daemon keeps

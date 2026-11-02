@@ -13,6 +13,7 @@ from blueferry.backend_operations import BackendDependencies, BackendOperations,
 from blueferry.background_worker import BackgroundWorker
 from blueferry.bus import get_session_bus
 from blueferry.client_activation import GTK_CLIENT
+from blueferry.dbus_object import StrictObject
 from blueferry.dbus_security import CallerGuard
 from blueferry.errors import (
     BlueFerryError,
@@ -39,7 +40,7 @@ from blueferry.protocol import (
 log = logging.getLogger(__name__)
 
 
-class MessagesService(dbus.service.Object):
+class MessagesService(StrictObject):
     """Translate stable Messages1 wire types to :class:`BackendOperations`."""
 
     def __init__(
@@ -58,28 +59,6 @@ class MessagesService(dbus.service.Object):
         # One active lookup plus an interactive request queued behind a
         # cancelled passive lookup. The executor still runs one job at a time.
         self._wallet_worker = BackgroundWorker("blueferry-wallet", maximum=2)
-
-    def _message_cb(self, connection, message) -> None:
-        # dbus-python dispatches without checking a method's in_signature, so
-        # bool() would read the string "false" as a confirmation. Reject any
-        # call whose arguments do not match before the method runs.
-        if isinstance(message, dbus.lowlevel.MethodCallMessage):
-            try:
-                _method, declared = dbus.service._method_lookup(
-                    self, message.get_member(), message.get_interface()
-                )
-            except Exception:
-                # The base class repeats the lookup and replies with its error.
-                declared = None
-            expected = getattr(declared, "_dbus_in_signature", None)
-            if expected is not None and message.get_signature() != expected:
-                if not message.get_no_reply():
-                    connection.send_message(dbus.lowlevel.ErrorMessage(
-                        message, "org.freedesktop.DBus.Error.InvalidArgs",
-                        f"expected arguments of type '{expected}'",
-                    ))
-                return
-        super()._message_cb(connection, message)
 
     @property
     def caller_guard(self) -> CallerGuard:
@@ -140,6 +119,11 @@ class MessagesService(dbus.service.Object):
             error_handler,
         )
 
+    def _refresh_conversations(self, ready, failure) -> None:
+        self.operations.prepare_conversations(
+            self._projection_worker.submit, ready, failure,
+        )
+
     @dbus.service.method(
         IFACE, in_signature="ss", out_signature="s",
         async_callbacks=("reply_handler", "error_handler"),
@@ -175,6 +159,7 @@ class MessagesService(dbus.service.Object):
             lambda: self.operations.send_to_thread(
                 thread_key, body, bool(confirm_group), reply_handler,
                 lambda error: error_handler(self._dbus_error(error)),
+                refresh=self._refresh_conversations,
             ),
             error_handler,
         )
@@ -194,6 +179,7 @@ class MessagesService(dbus.service.Object):
                 thread_key, body, bool(confirm_group), reply_handler,
                 lambda error: error_handler(self._dbus_error(error)),
                 expected_group_token=expected_group_token,
+                refresh=self._refresh_conversations,
             ),
             error_handler,
         )

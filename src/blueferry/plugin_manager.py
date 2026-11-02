@@ -40,6 +40,7 @@ import os
 import re
 import shlex
 import shutil
+import stat
 import subprocess  # nosec B404
 import sys
 import tempfile
@@ -754,9 +755,15 @@ def _rewrite(text: str, exec_argv: Sequence[str], cli_argv: Sequence[str]) -> st
 
 
 def _read_json(path: Path) -> dict:
+    # O_NONBLOCK keeps a FIFO from blocking the open; the fstat below rejects
+    # it, and the flag has no effect on reads from a regular file. Symlinks
+    # are still followed, as plugin_prefs.read_settings follows them.
     try:
-        with path.open(encoding="utf-8") as stream:
-            value = json.loads(stream.read(1024 * 1024))
+        descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
+        with os.fdopen(descriptor, "rb") as stream:
+            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                return {}
+            value = json.loads(stream.read(1024 * 1024).decode("utf-8"))
     except (OSError, ValueError):
         return {}
     return value if isinstance(value, dict) else {}
