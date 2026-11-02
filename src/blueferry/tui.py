@@ -3,19 +3,20 @@ from __future__ import annotations
 
 import sys
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
+from functools import partial
 from pathlib import Path
 from typing import ClassVar, Protocol
 
 from gi.repository import GLib
 from rich.text import Text
 from textual import events, on, work
-from textual.app import App, ComposeResult
+from textual.app import App, ComposeResult, SystemCommand
 from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.css.query import NoMatches
 from textual.message import Message
-from textual.screen import ModalScreen
+from textual.screen import ModalScreen, Screen
 from textual.widgets import (
     Button,
     Checkbox,
@@ -23,21 +24,27 @@ from textual.widgets import (
     Input,
     ListItem,
     ListView,
+    OptionList,
     Static,
     Switch,
+    TabbedContent,
     TextArea,
 )
+from textual.widgets.option_list import Option
 
-from blueferry import config, phone_overview
+from blueferry import config, phone_link_view, phone_overview
 from blueferry.backend_lifecycle import BackendLifecycleError, ensure_backend_current
 from blueferry.bus import get_session_bus
 from blueferry.client import BackendClient, BackendError, TetherUnsupportedError
 from blueferry.conversation_state import (
     ConversationSnapshot,
     ConversationState,
+    ParticipantDraft,
     ReplyDisposition,
     fetch_conversation_snapshot,
 )
+from blueferry.doctor_report import DoctorReport
+from blueferry.i18n import _
 from blueferry.models import (
     BackendStatus,
     CallHistoryEntry,
@@ -49,7 +56,6 @@ from blueferry.models import (
 from blueferry.onboarding import ancs_unavailable_detail
 from blueferry.phone_audio_view import phone_audio
 from blueferry.protocol import BUS_NAME, EVENTS_IFACE, OBJECT_PATH, TETHER_IFACE
-from blueferry.recipients import participant_lines
 from blueferry.reconnect_view import (
     UNSUPPORTED_AUTO_RESET_TEXT,
     auto_reset_text,
@@ -60,9 +66,18 @@ from blueferry.tether_status import TetherStatus
 from blueferry.text_safety import terminal_text
 from blueferry.time_display import format_message_timestamp
 from blueferry.tui_calls import CallsScreen
+from blueferry.tui_doctor import DoctorScreen
 from blueferry.tui_notification_rules import REVISION_KEY, NotificationRulesScreen
-from blueferry.tui_options import OptionsScreen
-from blueferry.tui_phone import RecentCallsScreen, now_playing_text
+from blueferry.tui_notifications import NotificationsScreen
+from blueferry.tui_options import OptionsScreen, RestartState, categories
+from blueferry.tui_phone import (
+    PhoneOverviewScreen,
+    RecentCallsResult,
+    RecentCallsScreen,
+    load_phone_name,
+    now_playing_text,
+)
+from blueferry.tui_tasks import TextualTaskRunner, TextualTimer
 
 _REFRESH_SECONDS = 15.0
 _SIGNAL_PUMP_SECONDS = 0.2
@@ -111,6 +126,16 @@ class _Client(_TetherClient, Protocol):
 
     def hangup_call(self, call_id: str) -> None: ...
 
+    def swap_calls(self) -> None: ...
+
+    def send_call_tones(self, call_id: str, tones: str) -> None: ...
+
+    # Contact matches for the calls panel's number field.
+    def find_contacts(self, query: str) -> list[tuple[str, str]]: ...
+
+    # Opt-in recent iPhone notifications (ListNotifications).
+    def notifications(self, limit: int = 50) -> dict: ...
+
     # Notification click rules; used only by the rules panel.
     def notification_open_map(self) -> list[dict[str, str]]: ...
 
@@ -124,6 +149,15 @@ class _Client(_TetherClient, Protocol):
     # Manual Classic reconnect (Messages1.ReconnectPhone).
     def reconnect_phone(self) -> str: ...
 
+    # Options screen: local.env switches, the popup policy, contact sync.
+    def features(self) -> dict: ...
+
+    def set_feature(self, name: str, enabled: bool) -> str: ...
+
+    def set_notification_policy(self, policy: str) -> str: ...
+
+    def sync_contacts(self) -> int: ...
+
     # Messages1.SetAutoProfileReset; returns the saved value.
     def set_auto_profile_reset(self, enabled: bool) -> bool: ...
 
@@ -133,6 +167,8 @@ class _Client(_TetherClient, Protocol):
     def send_media_command(self, command: str) -> None: ...
 
     def call_history(self, limit: int = 200) -> list[CallHistoryEntry]: ...
+
+    def sync_call_history(self) -> int: ...
 
 
 class _Monitor(Protocol):
@@ -264,6 +300,7 @@ class _EventMonitor:
         self.tether_changed = False
         self.now_playing_changed = False
         self.call_history_changed = False
+        self.notifications_changed = False
         self._context = GLib.MainContext.default()
         bus = get_session_bus()
         common = {
@@ -312,6 +349,12 @@ class _EventMonitor:
                 signal_name="CallHistoryChanged",
                 **common,
             ),
+            # Content-free; the list itself comes from ListNotifications.
+            bus.add_signal_receiver(
+                lambda: setattr(self, "notifications_changed", True),
+                signal_name="NotificationsChanged",
+                **common,
+            ),
         ]
 
     def _calls_changed(self) -> None:
@@ -327,6 +370,10 @@ class _EventMonitor:
 
     def take_call_history_changed(self) -> bool:
         changed, self.call_history_changed = self.call_history_changed, False
+        return changed
+
+    def take_notifications_changed(self) -> bool:
+        changed, self.notifications_changed = self.notifications_changed, False
         return changed
 
     def _invalidate(self) -> None:
@@ -489,71 +536,190 @@ class DeleteConversationScreen(ModalScreen[bool]):
         self.dismiss(False)
 
 
-class RosterChangedScreen(ModalScreen[tuple[str, ...] | None]):
+_MEMBER_SEARCH_DELAY_MS = 200
+# Groups whose participant list the user can supply: BlueFerry can't route
+# them from what the iPhone reports.
+_EDITABLE_GROUP_ORIGINS = ("named", "unnamed")
+
+
+def _group_members_copy(thread: Thread) -> str:
+    if thread.roster_changed:
+        sender = thread.unexpected_sender or _("Someone new")
+        return _(
+            "{sender} sent a message to {group}, but is not in BlueFerry's "
+            "saved participant list. Replies are disabled until you review it. "
+            "This may also mean you have multiple groups with the name {group}, "
+            "which BlueFerry cannot distinguish."
+        ).format(sender=sender, group=thread.name)
+    if thread.group_origin == "unnamed":
+        return _(
+            "BlueFerry couldn't match everyone in this group to one phone "
+            "number or email. Add everyone else in it so you can reply from here."
+        )
+    return " ".join((
+        _(
+            "BlueFerry can't tell who is in {group}. Add everyone else in it "
+            "so you can reply from here."
+        ).format(group=thread.name),
+        _("Groups with the same name share this list."),
+    ))
+
+
+class GroupMembersScreen(ModalScreen[tuple[str, ...] | None]):
+    """Confirm who is in a group, suggesting contacts as the user types.
+
+    ``find_contacts`` is the slow seam: it runs on a worker thread.
+    """
+
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("escape", "cancel", "Cancel", show=False)
+        Binding("escape", "cancel", "Cancel", show=False),
+        Binding("delete", "remove", "Remove", show=False),
     ]
 
-    def __init__(self, thread: Thread) -> None:
+    def __init__(
+        self, thread: Thread, find_contacts: Callable[[str], list[tuple[str, str]]],
+    ) -> None:
         super().__init__()
         self.thread = thread
+        self.draft = ParticipantDraft(thread)
+        self._find_contacts = find_contacts
+        self._contacts = ConversationState(select_first=False)
+        self._suggestions: list[tuple[str, str]] = []
+        self._search_runner = TextualTaskRunner(self, group="group-members-search")
+        self._search_timer = TextualTimer(self, self._search_contacts)
 
     def compose(self) -> ComposeResult:
-        sender = self.thread.unexpected_sender or "Someone new"
-        if self.thread.roster_changed:
-            title = "Group membership may have changed"
-            copy = (
-                f"{sender} sent a message to {self.thread.name}, but is not in "
-                "BlueFerry's saved participant list. Replies are disabled until "
-                "you review it. This may also mean you have multiple groups with "
-                f"the name {self.thread.name}, which BlueFerry cannot distinguish."
-            )
-        else:
-            title = "Edit group participants"
-            copy = (
-                "BlueFerry uses this local list when replying to "
-                f"{self.thread.name}. Groups with the same name cannot be "
-                "distinguished."
-            )
-        copy += (
-            "\n\nChanging BlueFerry's saved list does not add or remove anyone "
-            "in Messages on your iPhone."
+        title = (
+            _("Group membership may have changed") if self.thread.roster_changed
+            else _("Who is in {group}?").format(group=self.thread.name)
         )
         with Vertical(id="roster-changed-dialog", classes="dialog"):
-            yield Static(title, classes="dialog-title")
-            yield Static(Text(terminal_text(copy)), classes="dialog-copy")
-            yield Static("BlueFerry participant list", classes="field-label")
-            yield TextArea(
-                soft_wrap=False,
-                show_line_numbers=False,
-                id="roster-participants",
+            yield Static(Text(terminal_text(title)), classes="dialog-title")
+            yield Static(
+                Text(terminal_text(_group_members_copy(self.thread))), classes="dialog-copy",
+            )
+            yield OptionList(id="roster-members")
+            yield Static("", id="roster-hint", classes="dialog-copy")
+            yield Input(
+                placeholder=_("Add a contact, phone number, or email"), id="roster-add",
+                max_length=256,
+            )
+            yield OptionList(id="roster-suggestions")
+            yield Static(
+                _("This changes only BlueFerry, not the group on your iPhone."),
+                classes="dialog-copy",
             )
             with Horizontal(classes="dialog-actions"):
-                yield Button("Not now", id="roster-changed-cancel")
-                yield Button(
-                    "Save participants", variant="primary",
-                    id="roster-changed-save",
-                )
+                yield Button(_("Cancel"), id="roster-cancel")
+                yield Button(_("Remove"), id="roster-remove")
+                yield Button(_("Save participants"), variant="primary", id="roster-save")
 
     def on_mount(self) -> None:
-        editor = self.query_one("#roster-participants", TextArea)
-        editor.text = "\n".join(self.thread.recipients)
-        editor.focus()
+        self._render_members()
+        self._render_suggestions()
+        self.query_one("#roster-add", Input).focus()
 
-    @on(Button.Pressed, "#roster-changed-cancel")
+    def _render_members(self) -> None:
+        members = self.query_one("#roster-members", OptionList)
+        members.clear_options()
+        for name, address in self.draft.entries:
+            label = Text(_one_line(name or address))
+            if name:
+                label.append(f"  {_one_line(address)}", style="dim")
+            members.add_option(Option(label))
+        hint = self.draft.hint
+        self.query_one("#roster-hint", Static).update(Text(_one_line(hint)))
+        self.query_one("#roster-hint", Static).display = bool(hint)
+        self.query_one("#roster-remove", Button).disabled = not self.draft.entries
+        self.query_one("#roster-save", Button).disabled = not self.draft.can_save
+
+    def _render_suggestions(self) -> None:
+        options = self.query_one("#roster-suggestions", OptionList)
+        self._suggestions = self.draft.suggestions(self._contacts.contact_results)
+        options.clear_options()
+        for name, address in self._suggestions:
+            label = Text(_one_line(name))
+            label.append(f"  {_one_line(address)}", style="dim")
+            options.add_option(Option(label))
+        options.display = bool(self._suggestions)
+
+    @on(Input.Changed, "#roster-add")
+    def add_changed(self) -> None:
+        self._search_timer.stop()
+        self._contacts.begin_contact_search("")
+        self._render_suggestions()
+        self._search_timer.start(_MEMBER_SEARCH_DELAY_MS)
+
+    def _search_contacts(self) -> None:
+        text = self.query_one("#roster-add", Input).value.strip()
+        request = self._contacts.begin_contact_search(text if len(text) >= 2 else "")
+        if request is None:
+            self._render_suggestions()
+            return
+
+        def found(matches: object) -> None:
+            results = [
+                (str(name), str(address))
+                for name, address in (matches if isinstance(matches, list) else [])
+            ]
+            if self._contacts.apply_contact_results(request, results):
+                self._render_suggestions()
+
+        self._search_runner.submit(
+            lambda: self._find_contacts(request.query), found, lambda _message: None,
+        )
+
+    def _added(self) -> None:
+        field = self.query_one("#roster-add", Input)
+        self._search_timer.stop()
+        self._contacts.begin_contact_search("")
+        with field.prevent(Input.Changed):
+            field.value = ""
+        self._render_members()
+        self._render_suggestions()
+        field.focus()
+
+    @on(OptionList.OptionSelected, "#roster-suggestions")
+    def suggestion_selected(self, event: OptionList.OptionSelected) -> None:
+        if not 0 <= event.option_index < len(self._suggestions):
+            return
+        name, address = self._suggestions[event.option_index]
+        if self.draft.add(address, name):
+            self._added()
+
+    @on(Input.Submitted, "#roster-add")
+    def add_submitted(self, event: Input.Submitted) -> None:
+        text = event.value.strip()
+        if not text:
+            return
+        if self.draft.add(text):
+            self._added()
+        else:
+            self.notify(_("Enter a phone number or email address"), severity="warning")
+
+    @on(Button.Pressed, "#roster-remove")
+    def remove_button(self) -> None:
+        self.action_remove()
+
+    def action_remove(self) -> None:
+        members = self.query_one("#roster-members", OptionList)
+        index = members.highlighted
+        if index is None or not 0 <= index < len(self.draft.entries):
+            return
+        self.draft.remove(self.draft.entries[index][1])
+        self._render_members()
+        self._render_suggestions()
+
+    @on(Button.Pressed, "#roster-cancel")
     def cancel_button(self) -> None:
         self.dismiss(None)
 
-    @on(Button.Pressed, "#roster-changed-save")
+    @on(Button.Pressed, "#roster-save")
     def save_button(self) -> None:
-        recipients = participant_lines(self.query_one("#roster-participants", TextArea).text)
-        if not 2 <= len(recipients) <= 20:
-            self.notify(
-                "Enter 2 to 20 participants, one per line",
-                severity="warning",
-            )
+        if not self.draft.can_save:
+            self.notify(_("Add 2 to 20 participants"), severity="warning")
             return
-        self.dismiss(tuple(recipients))
+        self.dismiss(tuple(self.draft.recipients))
 
     def action_cancel(self) -> None:
         self.dismiss(None)
@@ -564,11 +730,17 @@ class NewMessageScreen(ModalScreen[tuple[str, str] | None]):
         Binding("escape", "cancel", "Cancel", show=False),
     ]
 
+    def __init__(self, recipient: str = "") -> None:
+        super().__init__()
+        self.recipient = recipient
+
     def compose(self) -> ComposeResult:
         with Vertical(id="new-message-dialog", classes="dialog"):
             yield Static("New message", classes="dialog-title")
             yield Static("Phone number or email", classes="field-label")
-            yield Input(placeholder="+1 555 123 4567", id="new-recipient")
+            yield Input(
+                value=self.recipient, placeholder="+1 555 123 4567", id="new-recipient",
+            )
             yield Static("Message", classes="field-label")
             yield MessageComposer(
                 placeholder="Write a message…",
@@ -581,7 +753,10 @@ class NewMessageScreen(ModalScreen[tuple[str, str] | None]):
                 yield Button("Send message", variant="primary", id="new-send")
 
     def on_mount(self) -> None:
-        self.query_one("#new-recipient", Input).focus()
+        if self.recipient:
+            self.query_one("#new-body", TextArea).focus()
+        else:
+            self.query_one("#new-recipient", Input).focus()
 
     @on(Button.Pressed, "#new-cancel")
     def cancel_button(self) -> None:
@@ -637,7 +812,7 @@ class HelpScreen(ModalScreen[None]):
             self.phone_audio
         ) else ""
         if self.call_history:
-            calls_line += "[bold #7dd3fc]Recent calls[/]  h\n"
+            calls_line += "[bold #7dd3fc]Recent calls · refresh from iPhone[/]  h · s\n"
         if self.media_control:
             calls_line += "[bold #7dd3fc]iPhone play/pause · previous · next[/]  p \\[ ]\n"
         help_text = Text.from_markup(
@@ -651,8 +826,9 @@ class HelpScreen(ModalScreen[None]):
             "[bold #7dd3fc]Delete conversation[/]  Delete\n"
             f"{calls_line}"
             "[bold #7dd3fc]Internet sharing[/]  t\n"
-            "[bold #7dd3fc]Options[/]  o\n"
+            "[bold #7dd3fc]Settings · diagnostics · restart service[/]  o\n"
             "[bold #7dd3fc]Notification click rules[/]  l\n"
+            "[bold #7dd3fc]iPhone overview · iPhone notifications[/]  Ctrl+P\n"
             f"{audio_line}"
             "[bold #7dd3fc]Reconnect iPhone[/]  b\n"
             "[bold #7dd3fc]Automatic connection reset on/off[/]  B\n"
@@ -844,7 +1020,7 @@ class BlueFerryApp(App[None]):
         Binding("delete", "delete_thread", "Delete"),
         Binding("c", "calls", "Calls", show=False),
         Binding("t", "tethering", "Tethering"),
-        Binding("o", "options", "Options"),
+        Binding("o", "options", "Settings"),
         Binding("l", "click_rules", "Click rules", show=False),
         Binding("a", "phone_audio", "Sound", show=False),
         Binding("b", "reconnect", "Reconnect iPhone", show=False),
@@ -861,9 +1037,19 @@ class BlueFerryApp(App[None]):
         state: TuiState,
         *,
         monitor_factory: Callable[[], _Monitor | None] = _EventMonitor,
+        restart: Callable[[], None] | None = None,
+        doctor: Callable[[], DoctorReport] | None = None,
+        phone_name: Callable[[], str] = load_phone_name,
     ) -> None:
         super().__init__()
         self.state = state
+        # Blocking; read on a worker when the iPhone overview opens.
+        self._phone_name_loader = phone_name
+        self._phone_name = ""
+        # Seams for tests; None keeps OptionsScreen's restart_backend.
+        self._restart = restart
+        self._doctor = doctor
+        self._restart_state = RestartState()
         self._monitor_factory = monitor_factory
         self._monitor: _Monitor | None = None
         self._pending_open_handle: str | None = None
@@ -944,6 +1130,11 @@ class BlueFerryApp(App[None]):
     def on_unmount(self) -> None:
         if self._monitor is not None:
             self._monitor.close()
+        # A diagnostics run still going would hold up interpreter exit
+        # until its timeout.
+        for screen in self.screen_stack:
+            if isinstance(screen, DoctorScreen):
+                screen.cancel()
 
     def on_resize(self, event: events.Resize) -> None:
         self._update_responsive(event.size.width)
@@ -971,6 +1162,11 @@ class BlueFerryApp(App[None]):
             self.screen, RecentCallsScreen,
         ):
             self.screen.refresh_calls()
+        take_notifications = getattr(self._monitor, "take_notifications_changed", None)
+        if take_notifications is not None and take_notifications():
+            for screen in self.screen_stack:
+                if isinstance(screen, NotificationsScreen):
+                    screen.invalidated()
         if handle:
             self._pending_open_handle = handle
             if self.state.select_message(handle):
@@ -1042,6 +1238,17 @@ class BlueFerryApp(App[None]):
         if self.state.status != previous_status:
             self._update_status()
             self._update_notice()
+            values = self.state.status.to_dict()
+            for screen in self.screen_stack:
+                # An Options screen not mounted yet loads the status itself;
+                # the phone screens keep it and show it once mounted.
+                if isinstance(screen, OptionsScreen):
+                    if screen.is_mounted:
+                        screen.status_changed(self.state.status)
+                elif isinstance(screen, (
+                    PhoneOverviewScreen, CallsScreen, RecentCallsScreen, NotificationsScreen,
+                )):
+                    screen.status_changed(values)
         elif self.state.error != previous_error:
             self._update_notice()
         if threads_changed:
@@ -1053,22 +1260,23 @@ class BlueFerryApp(App[None]):
         if thread is not None:
             self._open_roster_editor(thread)
 
-    def _open_roster_editor(self, thread: Thread) -> None:
+    def _open_roster_editor(self, thread: Thread, then_send: str = "") -> None:
+        """Ask who is in a group; ``then_send`` is the reply to continue."""
         self.push_screen(
-            RosterChangedScreen(thread),
+            GroupMembersScreen(thread, self.state.client.find_contacts),
             lambda recipients, key=thread.key: self._roster_review_ready(
-                key, recipients
+                key, recipients, then_send,
             ),
         )
 
     def _roster_review_ready(
-        self, thread_key: str, recipients: tuple[str, ...] | None,
+        self, thread_key: str, recipients: tuple[str, ...] | None, then_send: str = "",
     ) -> None:
         if recipients is None:
             return
         self.state.notice = "Saving group participants…"
         self._update_notice()
-        self._save_group_participants_worker(thread_key, list(recipients))
+        self._save_group_participants_worker(thread_key, list(recipients), then_send)
 
     def _filtered_threads(self) -> list[Thread]:
         query = self.query_one("#thread-search", Input).value.strip().casefold()
@@ -1145,7 +1353,7 @@ class BlueFerryApp(App[None]):
             Text(f"{unread} unread" if unread else "up to date")
         )
         roster_button.display = bool(
-            thread.group_origin == "named"
+            thread.group_origin in _EDITABLE_GROUP_ORIGINS
             or thread.key.startswith("group:named:")
         )
 
@@ -1166,9 +1374,9 @@ class BlueFerryApp(App[None]):
             await timeline.mount(*widgets)
         else:
             await timeline.mount(Static("No messages yet", id="empty-conversation"))
-        composer.disabled = self._sending or not thread.reply_ready
+        composer.disabled = self._sending or not thread.can_compose
         composer.placeholder = (
-            "Write a reply…" if thread.reply_ready else "This conversation is read-only"
+            "Write a reply…" if thread.can_compose else "This conversation is read-only"
         )
         send_button.disabled = composer.disabled
         timeline.scroll_end(animate=False, immediate=True)
@@ -1194,15 +1402,17 @@ class BlueFerryApp(App[None]):
         if extras:
             summary = "  ·  ".join([summary, *extras])
         connection = self.query_one("#connection-summary", Static)
-        connection.update(summary)
+        connection.update(Text(_one_line(summary)))
         connection.set_classes(summary_class)
-        self.query_one("#release", Static).update(f"backend {status.backend_release}")
+        self.query_one("#release", Static).update(
+            Text(_one_line(f"backend {status.backend_release}"))
+        )
         self._set_pill("#map-status", "MESSAGES", status.map)
         self._set_pill("#pbap-status", "CONTACTS", status.pbap)
         self._set_pill("#ancs-status", "NOTIFICATIONS", status.ancs)
         storage_ok = status.storage_state in {"ready", "unlocked", "plaintext"}
         storage = self.query_one("#storage-status", Static)
-        storage.update(f"STORAGE  {status.storage_state.upper()}")
+        storage.update(Text(_one_line(f"STORAGE  {status.storage_state.upper()}")))
         storage.set_classes(f"status-pill {'ok' if storage_ok else 'warn'}")
         # NowPlayingChanged covers track and player changes. Fetch here only
         # when there is nothing to have signalled yet: the first status, the
@@ -1229,10 +1439,11 @@ class BlueFerryApp(App[None]):
         except NoMatches:
             return
         if self.state.error:
-            notice.update(f"!  {self.state.error}")
+            # Backend errors may quote phone or contact text: never markup.
+            notice.update(Text(_one_line(f"!  {self.state.error}")))
             notice.set_classes("error")
         elif self.state.notice:
-            notice.update(f"✓  {self.state.notice}")
+            notice.update(Text(_one_line(f"✓  {self.state.notice}")))
             notice.set_classes("success")
         elif self.state.status.extra.get("le_bond_suspect") is True:
             notice.update(
@@ -1249,12 +1460,12 @@ class BlueFerryApp(App[None]):
             and not self.state.status.ancs
         ):
             limited = self.state.status.ancs_limited_controller
-            notice.update(
+            notice.update(Text(_one_line(
                 ancs_unavailable_detail(
                     limited=limited,
                     vendor=self.state.status.controller_vendor,
                 )
-            )
+            )))
             notice.set_classes("success" if limited else "warn")
         else:
             notice.update("Ready  ·  Ctrl+P: Help")
@@ -1374,11 +1585,62 @@ class BlueFerryApp(App[None]):
             phone_audio="phone_audio_route" in status.extra,
         ))
 
-    def action_options(self) -> None:
-        focused = self.focused
-        if isinstance(focused, Input | TextArea) or isinstance(self.screen, OptionsScreen):
+    def action_options(self, category: str = "phone") -> None:
+        # The guard keeps typing "o" in search or the composer from opening
+        # Options; the command palette opens it whatever has the focus.
+        if isinstance(self.focused, Input | TextArea):
             return
-        self.push_screen(OptionsScreen(self.state.client))
+        self._push_options(category)
+
+    def _push_options(self, category: str) -> None:
+        if isinstance(self.screen, OptionsScreen):
+            return
+        self.push_screen(OptionsScreen(
+            self.state.client, category=category, restart=self._restart,
+            doctor=self._doctor, restart_state=self._restart_state,
+        ))
+
+    def action_diagnostics(self) -> None:
+        if not isinstance(self.screen, DoctorScreen):
+            self.push_screen(DoctorScreen(self._doctor))
+
+    def get_system_commands(self, screen: Screen) -> Iterable[SystemCommand]:
+        yield from super().get_system_commands(screen)
+        # The settings live in the Settings screen (o); the palette (Ctrl+P) jumps
+        # straight to a category, so no new single-letter keys are needed.
+        for category in categories():
+            yield SystemCommand(
+                _("Settings: {category}").format(category=category.title),
+                _("Open the {category} settings").format(category=category.title),
+                partial(self._open_options_from_palette, category.key),
+            )
+        yield SystemCommand(
+            _("iPhone Overview"),
+            _("The iPhone's connection, battery, signal, network and which features are off"),
+            self.action_phone_overview,
+        )
+        yield SystemCommand(
+            _("iPhone Notifications"),
+            _("Recent iPhone app notifications (shown only while open)"),
+            self.action_notifications,
+        )
+        yield SystemCommand(
+            _("Phone Calls"), _("Dial, answer, hold and hang up (c)"), self._open_calls,
+        )
+        yield SystemCommand(
+            _("Recent Calls"), _("The iPhone's recent calls (h)"), self._open_recent_calls,
+        )
+        yield SystemCommand(
+            _("Run Diagnostics"),
+            _("Check Bluetooth, BlueZ OBEX, the iPhone and notifications (blueferry doctor)"),
+            self.action_diagnostics,
+        )
+
+    def _open_options_from_palette(self, category: str) -> None:
+        if isinstance(self.screen, OptionsScreen):
+            self.screen.query_one("#options-tabs", TabbedContent).active = f"options-{category}"
+            return
+        self._push_options(category)
 
     def action_tethering(self) -> None:
         focused = self.focused
@@ -1390,16 +1652,57 @@ class BlueFerryApp(App[None]):
         self.push_screen(NewMessageScreen(), self._new_message_ready)
 
     def action_calls(self) -> None:
-        focused = self.focused
-        if isinstance(focused, Input | TextArea) or isinstance(self.screen, CallsScreen):
+        if isinstance(self.focused, Input | TextArea):
             return
+        self._open_calls()
+
+    def _open_calls(self, number: str = "") -> None:
+        if isinstance(self.screen, CallsScreen):
+            return
+        values = self.state.status.to_dict()
         if not self.state.status.calls_enabled:
-            self.notify(
-                "Phone calls are disabled; enable them with 'blueferry calls enable'",
-                severity="warning",
-            )
+            hint = phone_link_view.calls_hint(values, "disabled")
+            self.notify(terminal_text(hint), severity="warning", markup=False)
             return
-        self.push_screen(CallsScreen(self.state.client))
+        # A number (call back) goes straight to the confirmation, as in the
+        # Qt and GTK clients.
+        self.push_screen(CallsScreen(self.state.client, status=values, number=number))
+
+    def action_phone_overview(self) -> None:
+        if isinstance(self.screen, PhoneOverviewScreen):
+            return
+        screen = PhoneOverviewScreen(
+            self.state.status.to_dict(), self.now_playing, self._phone_name,
+            load_name=None if self._phone_name else self._phone_name_loader,
+            on_name=self._remember_phone_name,
+        )
+        self.push_screen(screen, self._overview_closed)
+
+    def _remember_phone_name(self, name: str) -> None:
+        """On the UI thread: keep the name for the next overview."""
+        self._phone_name = name
+
+    def _overview_closed(self, choice: str | None) -> None:
+        if choice == "notifications":
+            self.action_notifications()
+        elif choice == "recent_calls":
+            self._open_recent_calls()
+        elif choice == "calls":
+            self._open_calls()
+        elif choice == "options":
+            self._push_options("phone")
+
+    def action_notifications(self) -> None:
+        if isinstance(self.screen, NotificationsScreen):
+            return
+        self.push_screen(
+            NotificationsScreen(self.state.client, status=self.state.status.to_dict()),
+            self._notifications_closed,
+        )
+
+    def _notifications_closed(self, choice: str | None) -> None:
+        if choice == "options":
+            self._push_options("notifications")
 
     def action_click_rules(self) -> None:
         focused = self.focused
@@ -1534,6 +1837,9 @@ class BlueFerryApp(App[None]):
             return
         line.update(now_playing_text(view))
         line.display = view.visible
+        for screen in self.screen_stack:
+            if isinstance(screen, PhoneOverviewScreen):
+                screen.now_playing_changed(view)
 
     def action_media(self, command: str) -> None:
         if isinstance(self.focused, Input | TextArea):
@@ -1564,17 +1870,30 @@ class BlueFerryApp(App[None]):
             )
 
     def action_recent_calls(self) -> None:
-        if isinstance(self.focused, Input | TextArea) or isinstance(
-            self.screen, RecentCallsScreen,
-        ):
+        if isinstance(self.focused, Input | TextArea):
             return
-        if not phone_overview.call_history_enabled(self.state.status.to_dict()):
-            self.notify(
-                "Recent calls are off; enable them with 'blueferry call-history enable'",
-                severity="warning",
-            )
+        self._open_recent_calls()
+
+    def _open_recent_calls(self) -> None:
+        if isinstance(self.screen, RecentCallsScreen):
             return
-        self.push_screen(RecentCallsScreen(self.state.client))
+        values = self.state.status.to_dict()
+        if not phone_overview.call_history_enabled(values):
+            hint = phone_overview.call_history_hint(values)
+            self.notify(terminal_text(hint), severity="warning", markup=False)
+            return
+        self.push_screen(
+            RecentCallsScreen(self.state.client, status=values), self._recent_call_chosen,
+        )
+
+    def _recent_call_chosen(self, choice: RecentCallsResult) -> None:
+        if choice is None:
+            return
+        action, address = choice
+        if action == "call":
+            self._open_calls(address)
+        elif action == "message":
+            self.push_screen(NewMessageScreen(address), self._new_message_ready)
 
     def action_toggle_star(self) -> None:
         focused = self.focused
@@ -1634,6 +1953,10 @@ class BlueFerryApp(App[None]):
             self.notify(f"Messages are limited to {_MAX_INPUT} characters", severity="error")
             return
         plan = self.state.plan_reply(body)
+        if plan.disposition is ReplyDisposition.NEEDS_PARTICIPANTS:
+            # The draft stays in the composer whether or not they save.
+            self._open_roster_editor(thread, then_send=body)
+            return
         if plan.disposition is ReplyDisposition.CONFIRM_GROUP:
             self.push_screen(
                 GroupConfirmScreen(thread),
@@ -1663,7 +1986,7 @@ class BlueFerryApp(App[None]):
         self._sending = sending
         self.state.notice = notice
         thread = self.state.selected
-        disabled = sending or thread is None or not thread.reply_ready
+        disabled = sending or thread is None or not thread.can_compose
         self.query_one("#composer", TextArea).disabled = disabled
         self.query_one("#send-reply", Button).disabled = disabled
         self._update_notice()
@@ -1688,10 +2011,12 @@ class BlueFerryApp(App[None]):
 
     @work(thread=True, group="roster", exclusive=True, exit_on_error=False)
     def _save_group_participants_worker(
-        self, thread_key: str, recipients: list[str],
+        self, thread_key: str, recipients: list[str], then_send: str = "",
     ) -> None:
         succeeded = self.state.save_group_participants(thread_key, recipients)
-        self.call_from_thread(self._schedule_roster_finished, succeeded)
+        self.call_from_thread(
+            self._schedule_roster_finished, thread_key, succeeded, then_send,
+        )
 
     @work(thread=True, group="delete", exclusive=True, exit_on_error=False)
     def _delete_thread_worker(self, thread_key: str) -> None:
@@ -1713,30 +2038,43 @@ class BlueFerryApp(App[None]):
         self._update_notice()
         if not succeeded:
             self.notify(
-                self.state.error or "Could not delete conversation",
-                severity="error",
+                _one_line(self.state.error or "Could not delete conversation"),
+                severity="error", markup=False,
             )
 
-    def _schedule_roster_finished(self, succeeded: bool) -> None:
+    def _schedule_roster_finished(
+        self, thread_key: str, succeeded: bool, then_send: str = "",
+    ) -> None:
         self.run_worker(
-            self._roster_finished(succeeded),
+            self._roster_finished(thread_key, succeeded, then_send),
             name="render-roster-result",
             group="render",
             exclusive=True,
         )
 
-    async def _roster_finished(self, succeeded: bool) -> None:
+    async def _roster_finished(
+        self, thread_key: str, succeeded: bool, then_send: str = "",
+    ) -> None:
         await self._populate_threads()
         await self._render_conversation()
         self._update_notice()
+        thread = self.state.selected
         if not succeeded:
-            thread = self.state.selected
             if thread is not None:
                 self.notify(
-                    self.state.error or "Could not save group participants",
-                    severity="error",
+                    _one_line(self.state.error or "Could not save group participants"),
+                    severity="error", markup=False,
                 )
-                self._open_roster_editor(thread)
+                self._open_roster_editor(thread, then_send)
+            return
+        composer = self.query_one("#composer", TextArea)
+        if (
+            then_send and thread is not None and thread.reply_ready
+            # Only the group and draft that asked; the user may have moved on.
+            and thread.key == thread_key and composer.text.strip() == then_send
+        ):
+            # Continue the reply that asked for the members.
+            self.action_send_reply()
 
     def _schedule_send_finished(self, succeeded: bool, sent_body: str) -> None:
         self.run_worker(

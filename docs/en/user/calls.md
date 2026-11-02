@@ -33,8 +33,12 @@ flowchart LR
   stays closed until the call is put on hold or resumed. It goes away when
   the call ends. With `BLUEFERRY_SHOW_NOTIFICATION_CONTENT=false` it shows no
   caller; switching to **No notifications** closes open call popups at once.
-- The Qt client gets a **Phone Calls** dialog, the terminal client a calls
-  panel (`c`), and the CLI a `calls` command group:
+- The Qt and GTK clients show running calls as cards on their **Calls**
+  tab (answer, hold/resume, hang up and, while a call is active, keypad
+  tones: each dial pad key and each 0-9, `*`, `#` typed outside a text
+  field is sent at once and shown as "Sent: …"; a keypad-tone field with
+  **Send Tones** takes whole sequences such as a PIN), the terminal client a calls panel (`c`: answer, hold/resume, hang up, keypad tones, contact
+  suggestions), and the CLI a `calls` command group:
 
   ```bash
   blueferry calls                 # state and current calls

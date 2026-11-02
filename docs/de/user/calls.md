@@ -38,8 +38,14 @@ flowchart LR
   `BLUEFERRY_SHOW_NOTIFICATION_CONTENT=false` zeigt sie keinen Anrufer;
   ein Wechsel auf **No notifications** schließt offene Anruf-Mitteilungen
   sofort.
-- Der Qt-Client bekommt einen Dialog **Phone Calls**, der Terminal-Client
-  ein Anruf-Panel (`c`) und die CLI die Befehlsgruppe `calls`:
+- Der Qt- und der GTK-Client zeigen laufende Anrufe als Karten im Tab
+  **Calls** (annehmen, halten/fortsetzen, auflegen und, solange ein Anruf
+  aktiv ist, Tastentöne: jede Taste des Wählfelds und jede außerhalb eines
+  Textfelds getippte 0–9, `*`, `#` geht sofort hinaus und erscheint als
+  „Sent: …“; ein Feld für Tastentöne mit **Send Tones** nimmt ganze Folgen
+  wie eine PIN), der
+  Terminal-Client ein Anruf-Panel (`c`: annehmen, halten/fortsetzen, auflegen, Tastentöne,
+  Kontaktvorschläge) und die CLI die Befehlsgruppe `calls`:
 
   ```bash
   blueferry calls                 # Zustand und laufende Anrufe
