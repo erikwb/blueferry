@@ -1146,6 +1146,8 @@ class BearerSupervisor:
 
         if self._le_reset_wanted is not None:
             self.recover_le_transport(allow_disconnected=self._le_reset_wanted)
+            if self._disconnecting:
+                return True
         if self._le_reset_pending and self._le_enabled:
             if le is False:
                 self._complete_le_reset()
