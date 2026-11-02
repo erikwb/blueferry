@@ -1962,6 +1962,8 @@ class Daemon:
             "storage_policy": self.storage.status.policy,
             "storage_state": self.storage.status.state,
             "storage_detail": self.storage.status.detail,
+            # Clients offer ResetStorage only while saved data is unreadable.
+            "storage_reset": self.storage.reset_offered,
             **self._media_status(),
             **self.phone_audio_route.snapshot(),
             "notification_history_enabled": self.notification_log is not None,

@@ -256,6 +256,10 @@ def build_threads(events: list[dict], resolver=None) -> list[dict]:
                 "roster_warning_id": str(
                     event.get("group_roster_warning_id") or ""
                 ),
+                # None until a message says which members lack an address.
+                "missing_members": [
+                    str(value) for value in event["group_missing_members"]
+                ] if is_group and "group_missing_members" in event else None,
                 "messages": [],
                 "last_ts": "",
             }
@@ -280,6 +284,14 @@ def build_threads(events: list[dict], resolver=None) -> list[dict]:
                 thread["participants_required"]
                 or bool(event.get("group_participants_required", False))
             )
+            if "group_missing_members" in event:
+                # A member is still needed only if no message resolved them.
+                missing = [str(value) for value in event["group_missing_members"]]
+                folded = {member.casefold() for member in missing}
+                thread["missing_members"] = missing if thread["missing_members"] is None else [
+                    member for member in thread["missing_members"]
+                    if member.casefold() in folded
+                ]
             if event.get("group_origin"):
                 thread["group_origin"] = str(event["group_origin"])
             if event.get("group_roster_changed"):
@@ -349,6 +361,7 @@ def build_threads(events: list[dict], resolver=None) -> list[dict]:
             thread["recipients"] = [latest_incoming["address"]]
         if thread.get("participants_required"):
             thread["reply_ready"] = False
+        thread["missing_members"] = thread["missing_members"] or []
         thread["messages_truncated"] = len(thread["messages"]) > MAX_THREAD_MESSAGES
         if thread["messages_truncated"]:
             thread["messages"] = thread["messages"][-MAX_THREAD_MESSAGES:]
