@@ -2,9 +2,9 @@
 
 BlueFerry kann eine Liste der letzten App-Mitteilungen des iPhones (außer
 Nachrichten) für den Reiter **Notifications** des KDE- und des GTK-Clients
-und die Kommandozeile führen. Die Liste liegt nur im Speicher des Hintergrunddienstes;
-nur Mitteilungen, die du **anheftest**, werden gespeichert und überstehen so
-einen Neustart.
+und die Kommandozeile führen. Die Liste liegt nur im Speicher des
+Hintergrunddienstes; nur Mitteilungen, die du **anheftest**, werden gespeichert
+und überstehen so einen Neustart.
 
 Sie ist **standardmäßig aus**.
 
