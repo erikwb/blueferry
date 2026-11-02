@@ -71,6 +71,18 @@ def connection_text(status: Mapping[str, Any]) -> str:
     return _("Connected") if status.get("map") is True else _("Not connected")
 
 
+def dial_input(value: object) -> str:
+    """What the dial pad hands to the confirmation dialog: the text as typed,
+    pasted or picked, without the spaces around it.
+
+    Nothing is filtered out. Dropping letters, an extension or ``*``/``#``
+    could turn the input into a different number, so the pad keeps the text
+    and ``tel_links.dial_request`` decides; the dialog explains a refusal
+    (the same rule in the Qt and GTK clients).
+    """
+    return str(value or "").strip()
+
+
 def dialable(value: object) -> str:
     """What the dial field keeps of typed or pasted text.
 
@@ -223,6 +235,8 @@ def call_card(call: Mapping[str, Any], now: float) -> dict[str, Any]:
     ``subtitle`` is the call's state or, while it is active, its duration
     (``now`` is a Unix time). Answer is offered only while it rings; the
     other button holds or resumes; the last one hangs up or declines.
+    Keypad tones (``tones``, ``send_tones``) are offered only while the
+    call is ``active``.
     """
     ringing = call.get("ringing") is True
     state = str(call.get("state") or "")
@@ -243,6 +257,9 @@ def call_card(call: Mapping[str, Any], now: float) -> dict[str, Any]:
         "answer": _("Answer"),
         "hold": _("Resume") if held else _("Hold"),
         "hangup": _("Decline") if ringing else _("Hang Up"),
+        "active": state == "active" and not ringing,
+        "tones": _("Keypad tones (0-9 * #)"),
+        "send_tones": _("Send Tones"),
     }
 
 

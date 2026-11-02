@@ -11,13 +11,13 @@ from gi.repository import Adw, Gdk, GLib, Gtk, Pango
 from blueferry.conversation_state import (
     ConversationSnapshot,
     ConversationState,
+    ParticipantDraft,
     ReplyDisposition,
     ReplyPlan,
 )
 from blueferry.i18n import _
 from blueferry.message_links import is_safe_web_url, linkify_message
 from blueferry.models import BackendStatus, Thread, ThreadMessage
-from blueferry.recipients import participant_lines as _participant_lines
 from blueferry.tel_links import known_contact_name
 from blueferry.ui.avatars import AvatarCache
 from blueferry.ui.status_presenter import (
@@ -109,6 +109,175 @@ def _group_roster_banner_title(thread: Thread) -> str:
             "BlueFerry needs its participant list before you can reply."
         )
     return template.format(sender=sender, group=thread.name)
+
+
+# Groups whose participant list the user can supply: BlueFerry can't route
+# them from what the iPhone reports.
+_EDITABLE_GROUP_ORIGINS = ("named", "unnamed")
+
+
+def _group_members_copy(thread: Thread) -> str:
+    if thread.group_origin == "unnamed":
+        return _(
+            "BlueFerry couldn't match everyone in this group to one phone "
+            "number or email. Add everyone else in it so you can reply from here."
+        )
+    return " ".join((
+        _(
+            "BlueFerry can't tell who is in {group}. Add everyone else in it "
+            "so you can reply from here."
+        ).format(group=thread.name),
+        _("Groups with the same name share this list."),
+    ))
+
+
+class GroupMembersDialog(Adw.Dialog):
+    """Confirm who is in a group, suggesting contacts as the user types."""
+
+    def __init__(self, thread: Thread, state: ConversationState, find_contacts, on_save) -> None:
+        title = _("Who is in {group}?").format(group=thread.name)
+        super().__init__(title=title, content_width=440, follows_content_size=True)
+        self._draft = ParticipantDraft(thread)
+        self._state = state
+        self._find_contacts = find_contacts
+        self._on_save = on_save
+        content = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL,
+            spacing=8,
+            margin_top=18,
+            margin_bottom=18,
+            margin_start=18,
+            margin_end=18,
+        )
+        content.append(Gtk.Label(
+            label=_group_members_copy(thread), xalign=0, wrap=True, max_width_chars=50,
+        ))
+        self.members = Gtk.ListBox(
+            css_classes=["boxed-list"], selection_mode=Gtk.SelectionMode.NONE,
+        )
+        content.append(self.members)
+        self.hint = Gtk.Label(xalign=0, wrap=True, css_classes=["dim-label"])
+        content.append(self.hint)
+        self.entry = Gtk.SearchEntry(
+            placeholder_text=_("Add a contact, phone number, or email"),
+        )
+        self.entry.connect("search-changed", self._search_changed)
+        self.entry.connect("activate", self._add_typed)
+        content.append(self.entry)
+        self.problem = Gtk.Label(xalign=0, wrap=True, css_classes=["error"], visible=False)
+        content.append(self.problem)
+        self.suggestions = Gtk.ListBox(css_classes=["boxed-list"], visible=False)
+        self.suggestions.connect("row-activated", self._suggestion_chosen)
+        content.append(
+            Gtk.ScrolledWindow(
+                hscrollbar_policy=Gtk.PolicyType.NEVER,
+                max_content_height=220,
+                propagate_natural_height=True,
+                child=self.suggestions,
+            )
+        )
+        content.append(Gtk.Label(
+            label=_("This changes only BlueFerry, not the group on your iPhone."),
+            xalign=0, wrap=True, css_classes=["dim-label", "caption"],
+        ))
+
+        cancel = Gtk.Button(label=_("Cancel"))
+        cancel.connect("clicked", lambda _button: self.close())
+        self.save_button = Gtk.Button(label=_("Save"), css_classes=["suggested-action"])
+        self.save_button.connect("clicked", self._save)
+        header = Adw.HeaderBar(title_widget=Adw.WindowTitle(title=title))
+        header.pack_start(cancel)
+        header.pack_end(self.save_button)
+        toolbar = Adw.ToolbarView()
+        toolbar.add_top_bar(header)
+        toolbar.set_content(content)
+        self.set_child(toolbar)
+        # A late answer for a closed dialog must not reach the next search.
+        self.connect("closed", lambda _dialog: self._state.begin_contact_search(""))
+        self._state.begin_contact_search("")
+        self._render()
+
+    @property
+    def recipients(self) -> list[str]:
+        return self._draft.recipients
+
+    def _render(self) -> None:
+        self.members.remove_all()
+        for name, address in self._draft.entries:
+            row = Adw.ActionRow(
+                title=name or address, subtitle=address if name else "", use_markup=False,
+            )
+            remove = Gtk.Button(
+                icon_name="list-remove-symbolic",
+                css_classes=["flat"],
+                valign=Gtk.Align.CENTER,
+                tooltip_text=_("Remove"),
+            )
+            remove.update_property(
+                [Gtk.AccessibleProperty.LABEL],
+                [_("Remove {name}").format(name=name or address)],
+            )
+            remove.connect("clicked", self._remove, address)
+            row.add_suffix(remove)
+            self.members.append(row)
+        self.members.set_visible(bool(self._draft.entries))
+        self.hint.set_label(self._draft.hint)
+        self.hint.set_visible(bool(self._draft.hint))
+        self.save_button.set_sensitive(self._draft.can_save)
+        self._render_suggestions()
+
+    def _render_suggestions(self) -> None:
+        self.suggestions.remove_all()
+        rows = self._draft.suggestions(self._state.contact_results)
+        for name, address in rows:
+            row = Adw.ActionRow(title=name, subtitle=address, use_markup=False, activatable=True)
+            row.contact = (name, address)
+            self.suggestions.append(row)
+        self.suggestions.set_visible(bool(rows))
+
+    def _remove(self, _button, address: str) -> None:
+        self._draft.remove(address)
+        self._render()
+
+    def _search_changed(self, entry) -> None:
+        self.problem.set_visible(False)
+        request = self._state.begin_contact_search(entry.get_text())
+        self._render_suggestions()
+        if request is None:
+            return
+
+        def apply(matches) -> None:
+            if self._state.apply_contact_results(request, list(matches)):
+                self._render_suggestions()
+
+        self._find_contacts(request.query, apply, lambda _message: None)
+
+    def _added(self) -> None:
+        self.entry.set_text("")
+        self._state.begin_contact_search("")
+        self._render()
+        self.entry.grab_focus()
+
+    def _suggestion_chosen(self, _list, row) -> None:
+        name, address = getattr(row, "contact", ("", ""))
+        if address and self._draft.add(address, name):
+            self._added()
+
+    def _add_typed(self, entry) -> None:
+        text = entry.get_text().strip()
+        if not text:
+            return
+        if self._draft.add(text):
+            self._added()
+            return
+        self.problem.set_label(_("Enter a phone number or email address"))
+        self.problem.set_visible(True)
+
+    def _save(self, _button) -> None:
+        if not self._draft.can_save:
+            return
+        self._on_save(self._draft.recipients)
+        self.close()
 
 
 class ConversationsPage(Gtk.Box):
@@ -590,7 +759,7 @@ class ConversationsPage(Gtk.Box):
                     self._append_bubble(message, is_group=current.is_group)
                 self._scroll_to(None if switched or following else position)
             self._update_conversation_title(current)
-            can_reply = current.reply_ready
+            can_reply = current.can_compose
             self._entry.set_sensitive(can_reply)
             self._send_btn.set_sensitive(can_reply)
             self._update_group_roster_banner(current)
@@ -694,7 +863,7 @@ class ConversationsPage(Gtk.Box):
         thread = self._state.selected
         if thread is None:
             return
-        can_reply = thread.reply_ready
+        can_reply = thread.can_compose
         self._entry.set_sensitive(can_reply)
         self._send_btn.set_sensitive(can_reply)
         self._update_group_roster_banner(thread)
@@ -850,7 +1019,7 @@ class ConversationsPage(Gtk.Box):
         self._history_banner.set_revealed(bool(thread and thread.extra.get("messages_truncated")))
         required = bool(thread and thread.participants_required)
         self._group_roster_button.set_visible(
-            bool(thread and thread.group_origin == "named")
+            bool(thread and thread.group_origin in _EDITABLE_GROUP_ORIGINS)
         )
         self._group_roster_banner.set_revealed(required)
         if not required or thread is None:
@@ -888,66 +1057,25 @@ class ConversationsPage(Gtk.Box):
         dialog.present(self.get_root())
 
     def _open_group_roster_dialog(
-        self, _source, selected_thread: Thread | None = None,
+        self, _source, selected_thread: Thread | None = None, *, then_send: bool = False,
     ) -> None:
+        """Ask who is in a group; ``then_send`` continues the composer's reply."""
         thread = selected_thread or self._state.selected
-        if not thread or thread.group_origin != "named":
+        if not thread or thread.group_origin not in _EDITABLE_GROUP_ORIGINS:
             return
-        sender = thread.prompt_sender or _("Someone")
-        dialog = Adw.AlertDialog(
-            heading=_("Who is in {group}?").format(group=thread.name),
-            body=_(
-                "{sender} has sent a message to a group named {group}, which you're "
-                "a member of. BlueFerry can't determine the participants of "
-                "this group chat, but if you fill in the members, it can work.\n\n"
-                "Enter every other participant's phone number or Apple ID email, "
-                "one per line. Changing this list only updates BlueFerry's local "
-                "understanding of the group; it does not add or remove anyone in "
-                "Messages on your iPhone.\n\nBlueFerry identifies named groups by "
-                "name. If you have multiple groups named {group}, BlueFerry may "
-                "combine them and use the wrong participant list. The list can "
-                "also become outdated if the group is renamed or its membership "
-                "changes."
-            ).format(sender=sender, group=thread.name),
-        )
-        editor = Gtk.TextView(
-            accepts_tab=False,
-            monospace=True,
-            top_margin=8,
-            bottom_margin=8,
-            left_margin=8,
-            right_margin=8,
-            wrap_mode=Gtk.WrapMode.NONE,
-        )
-        editor.get_buffer().set_text("\n".join(thread.recipients))
-        dialog.set_extra_child(
-            Gtk.ScrolledWindow(
-                min_content_height=120,
-                max_content_height=220,
-                child=editor,
-            )
-        )
-        dialog.add_response("cancel", _("Cancel"))
-        dialog.add_response("save", _("Save Participants"))
-        dialog.set_close_response("cancel")
-        dialog.set_default_response("save")
-        dialog.set_response_appearance(
-            "save", Adw.ResponseAppearance.SUGGESTED
-        )
 
-        def response(_dialog, selected: str) -> None:
-            if selected != "save":
-                return
-            buffer = editor.get_buffer()
-            recipients = _participant_lines(
-                buffer.get_text(
-                    buffer.get_start_iter(), buffer.get_end_iter(), False
-                )
-            )
+        def save(recipients: list[str]) -> None:
+            draft = self._entry.get_text().strip() if then_send else ""
 
             def saved(updated: Thread) -> None:
+                # Only the group and draft that asked; the user may have moved on.
+                resume = bool(draft) and self._state.selected_key == thread.key and (
+                    self._entry.get_text().strip() == draft
+                )
                 self._state.group_participants_saved(updated)
                 self._reload_threads()
+                if resume and updated.reply_ready:
+                    self._on_send(None)
 
             self._client.set_group_participants_async(
                 thread.key,
@@ -958,8 +1086,11 @@ class ConversationsPage(Gtk.Box):
                 ),
             )
 
-        dialog.connect("response", response)
+        dialog = GroupMembersDialog(
+            thread, self._state, self._client.find_contacts_async, save,
+        )
         dialog.present(self.get_root())
+        dialog.entry.grab_focus()
 
     # ---- message bubbles ----------------------------------------------
 
@@ -1028,6 +1159,13 @@ class ConversationsPage(Gtk.Box):
         body = self._entry.get_text().strip()
         plan = self._state.plan_reply(body)
         if (
+            plan.disposition is ReplyDisposition.NEEDS_PARTICIPANTS
+            and plan.thread is not None
+        ):
+            # The draft stays in the composer whether or not they save.
+            self._open_group_roster_dialog(None, plan.thread, then_send=True)
+            return
+        if (
             plan.disposition is ReplyDisposition.CONFIRM_GROUP
             and plan.thread is not None
         ):
@@ -1079,13 +1217,13 @@ class ConversationsPage(Gtk.Box):
             # append so the same bubble cannot appear twice.
             self._entry.set_text("")
             self._state.reply_sent(plan, preserve_selection=True)
-            can_reply = thread.reply_ready
+            can_reply = thread.can_compose
             self._entry.set_sensitive(can_reply)
             self._send_btn.set_sensitive(can_reply)
             self._entry.grab_focus()
 
         def failed(text: str) -> None:
-            can_reply = thread.reply_ready
+            can_reply = thread.can_compose
             self._entry.set_sensitive(can_reply)
             self._send_btn.set_sensitive(can_reply)
             self._toast(_("Send failed: {error}").format(error=text))
