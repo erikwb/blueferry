@@ -184,6 +184,8 @@ def test_reconnect_saves_the_automatic_reset_choice(monkeypatch) -> None:
 
 def test_manual_reconnect_notice_lasts_until_the_status_shows_the_outcome():
     from blueferry.reconnect_view import (
+        CALL_ACTIVE_TEXT,
+        IN_PROGRESS_TEXT,
         PROFILE_RESET_TEXT,
         STARTED_TEXT,
         UNREACHABLE_TEXT,
@@ -202,7 +204,16 @@ def test_manual_reconnect_notice_lasts_until_the_status_shows_the_outcome():
     assert not manual.pending and manual.notice == ""
     assert manual.answered("profile-reset") == "" and manual.notice == PROFILE_RESET_TEXT
     assert manual.follow({**waiting, "phone_reconnect_state": "unreachable"}) == UNREACHABLE_TEXT
-    # A reply that ends the attempt at once is not pending.
+    # A reply that ends the attempt at once is not pending; its notice
+    # outlasts the status read the button itself triggers and goes once the
+    # reconnect state moves on.
+    connecting = {**waiting, "phone_reconnect_state": "connecting"}
     assert manual.answered("in-progress") == "" and not manual.pending
+    assert manual.follow(connecting) == "" and manual.notice == IN_PROGRESS_TEXT
+    assert manual.follow(connecting) == "" and manual.notice == IN_PROGRESS_TEXT
     assert manual.follow(waiting) == "" and manual.notice == ""
+    assert manual.answered("call-active") == "" and not manual.pending
+    assert manual.follow(waiting) == "" and manual.notice == CALL_ACTIVE_TEXT
+    assert manual.hint(reconnect_view(waiting)) == CALL_ACTIVE_TEXT
+    assert manual.follow(connecting) == "" and manual.notice == ""
     assert manual.answered("unreachable") == UNREACHABLE_TEXT and manual.notice == ""

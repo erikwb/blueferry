@@ -36,9 +36,9 @@ All paths are relative to `src/blueferry/` unless noted.
 | `events.py` | Normalized MAP event dataclasses (`SmsEvent`) and address/timestamp normalization. |
 | `threads.py` | Backend-owned conversation projection, thread keys, and reply-routing metadata. |
 | `grouping.py` | Correlates MAP iMessages with ANCS Messages notification metadata to recover group membership. |
-| `named_groups.py` | Named-group identity keys and saved reply routes. |
+| `named_groups.py` | Group identity keys (named groups by name, unnamed ones by member names) and saved reply routes. |
 | `confirmed_groups.py` | Persistent confirmed group rosters in the owner-only settings document. |
-| `group_routes.py` | Saved named-group reply rosters in the settings document, outside history retention. |
+| `group_routes.py` | Saved group reply rosters in the settings document, outside history retention. |
 | `starred_threads.py` | Persistent starred-conversation keys in the settings document. |
 | `notification_policy.py` | Persistent desktop notification preferences, including per-app click rules. |
 | `notification_log.py` | Opt-in, memory-only ring of recent non-Messages ANCS notifications for `ListNotifications` (content-gated, never on disk). |
@@ -47,7 +47,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `settings_store.py` | Small atomic store shared by daemon-owned preferences. |
 | `glib_timers.py` | `schedule_periodic`: a repeating GLib timer whose owner forgets the source id once GLib destroys the source (false return or exception). |
 | `read_receipts.py` | Delays MAP read acknowledgements so ANCS can still deliver group metadata. |
-| `recipients.py` | Recipient validation, participant-line parsing, and group confirmation tokens (shared by backend and Python clients). |
+| `recipients.py` | Recipient validation and group confirmation tokens (shared by backend and Python clients). |
 | `connectivity.py` | MAP/PBAP connectivity state machine and retry policy, independent of GLib and BlueZ. |
 | `profile_supervisor.py` | Owns MAP/PBAP open, close, retry, loss, and resume transitions. |
 | `background_worker.py` | Bounded local jobs completed on the owning GLib loop. |
@@ -66,7 +66,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `gio_dbus.py` | `GioBus`: a two-method seam (typed asynchronous `call`, `subscribe`) over a `Gio.DBusConnection`, with dbus-python-compatible error names; used by `phone_audio_route.py`. |
 | `phone_audio_view.py` | Toolkit-free wording of the PC/iPhone sound switch for every client. |
 | `features.py` | The `local.env` switches without a runtime setter of their own that clients may store in settings.json (`Messages1.GetFeatures/SetFeature`): notification content, mark read on dismiss, and notification history. |
-| `doctor_report.py` | Runs `blueferry doctor` in an owned, cancellable child process for the settings UIs and returns a plain-text report; its state map and summary (`view()`) are shared by the Qt and GTK settings. |
+| `doctor_report.py` | Runs `blueferry doctor` in an owned, cancellable child process for the settings UIs and returns a plain-text report; its state map and summary (`view()`) are shared by the Qt, GTK and terminal settings. |
 | `mpris.py` | Optional MPRIS2 player (`org.mpris.MediaPlayer2.blueferry_iphone`) over `media.py`, exported on its own private session-bus connection so the MPRIS name never addresses the BlueFerry object. |
 
 ### Bluetooth transports and supervision
@@ -165,7 +165,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `client_wire.py` | Validates and decodes `Messages1` JSON into models for every Python client. |
 | `models.py` | Typed client-side models (`BackendStatus`, `Thread`, …); `Thread` derives unread counts, approval tokens, and roster-warning keys. |
 | `conversation_state.py` | Toolkit-neutral conversation snapshot, contact search (with the plain rows of the dial and new-message suggestions), and reply planning. |
-| `client_tasks.py` | Seams for the shared client models below: a `TaskRunner` (work on a worker thread, results on the UI thread) and a restartable single-shot `Timer` (`ScheduledTimer` builds one from `GLib.timeout_add`/`source_remove`). Qt adapts them in `qt/tasks.py`; the GTK client adapts them with its worker pool and `GLib.idle_add`. |
+| `client_tasks.py` | Seams for the shared client models below: a `TaskRunner` (work on a worker thread, results on the UI thread) and a restartable single-shot `Timer` (`ScheduledTimer` builds one from `GLib.timeout_add`/`source_remove`). Qt adapts them in `qt/tasks.py`; the GTK client adapts them in `ui/tasks.py` (`WorkerRunner`, a private pool per model with `GLib.idle_add`) and `ui/util.glib_timer`; the terminal client in `tui_tasks.py`. |
 | `backend_lifecycle.py` | Starts the daemon and restarts one that predates installed files. |
 | `client_activation.py` | Picks and activates one desktop client (recency files, notification-open forwarding). |
 | `glib_client_activation.py` | GLib adapter for client activation (GTK and the Quickshell bridge). |
@@ -190,62 +190,76 @@ All paths are relative to `src/blueferry/` unless noted.
 | `cli_media.py` | `blueferry media` now-playing status, commands, and `enable`/`disable`. |
 | `cli_audio.py` | `blueferry audio [status\|pc\|phone]`. |
 | `cli_features.py` | `blueferry features [on\|off NAME]`. |
-| `features_view.py` | Toolkit-neutral state of the `GetFeatures`/`SetFeature` switches in Settings, shared by Qt and GTK: loaded or fallback for older daemons, the restart/environment notice after a change, and (`view()`) each switch row's state and note and whether a restart is pending. |
+| `features_view.py` | Toolkit-neutral state of the `GetFeatures`/`SetFeature` switches in Settings, shared by Qt, GTK and the terminal Settings screen: loaded or fallback for older daemons, the restart/environment notice after a change, and (`view()`) each switch row's state and note and whether a restart is pending. |
 | `plugin_api/` | Plugin contract: manifest parser and discovery, settings schema (`config.py`, with groups, a pre-check, `ShowIf` and the form's `[ConfigAction]` buttons), `TestConfig`/`ConfigLogin` replies (`config_flow.py`), surfaces (`card`, `share`, content-free `notify`) with checked `open_uri`, the standard log file, a validating `PluginClient`, `PluginService`/`PhotosService` bases (bounded worker pool, per-caller budget) and a test harness (`FakeHost`). Imports nothing else from `blueferry`. A symlink to `plugin-api/src/blueferry/plugin_api`, which `plugin-api/pyproject.toml` also builds as the distribution `blueferry-plugin-api` for plugins in their own repositories. |
 | `plugin_manager.py` | Installs plugins from https Git URLs: pinned ref, clone, confirmation, own venv, manifest and D-Bus service file; update, remove, enable/disable under a `flock`; validates `installs.json` on every read. |
 | `plugin_stopper.py` | After an update, removal or disabling, SIGTERMs the owner of the plugin's bus name if it runs as the user from the plugin's old venv (pidfd, never SIGKILL, never BlueFerry itself); blocking, worker thread or CLI only. |
 | `plugin_index.py` | Plugin store: fetches (https on every redirect hop), validates and caches curated index files. |
 | `plugin_prefs.py` | Reads which plugins are disabled without the plugin manager. |
 | `plugin_logs.py` | Finds a plugin's standard log file and reads its tail without following symlinks. |
-| `plugin_settings_view.py` | Toolkit-free plugin rows, store cards and settings forms, used by `plugin_settings_model.py` and the Qt views (`qt/qml/SettingsPlugins.qml`, `qt/qml/PluginConfigForm.qml`, `qt/qml/PluginStoreCard.qml`). |
-| `plugin_settings_model.py`, `qt/plugin_settings.py` | Toolkit-neutral plugin management shared by Qt and (soon) GTK: install/update/remove with confirmation, the enable/disable kill switch, settings form load/save/test, browser sign-in polling, settings actions, store and indexes, one step at a time on a `TaskRunner`. Late answers never reach a closed or different form. `qt/plugin_settings.py` only adapts it to a `QThreadPool`, a `QTimer` and the `changed` signal. |
+| `plugin_settings_view.py` | Toolkit-free plugin rows, store cards and settings forms, used by `plugin_settings_model.py`, the GTK page (`ui/plugin_settings.py`) and the Qt views (`qt/qml/SettingsPlugins.qml`, `qt/qml/PluginConfigForm.qml`, `qt/qml/PluginStoreCard.qml`). |
+| `plugin_settings_model.py`, `qt/plugin_settings.py`, `ui/plugin_settings.py` | Toolkit-neutral plugin management shared by Qt and GTK: install/update/remove with confirmation, the enable/disable kill switch, settings form load/save/test, browser sign-in polling, settings actions, store and indexes, one step at a time on a `TaskRunner`. Late answers never reach a closed or different form. `qt/plugin_settings.py` only adapts it to a `QThreadPool`, a `QTimer` and the `changed` signal; `ui/plugin_settings.py` draws it as the GTK Plugins page (see below). |
 | `plugin_surfaces.py`, `cli_surfaces.py`, `qt/plugin_surfaces.py`, `qt/qml/PluginCardSection.qml` | Host side of the `card` and `share` surfaces: card rows, actions, "Send to…" targets, card actions that take files; `blueferry cards`/`blueferry send` and the Qt "From Plugins" section (which hears `CardChanged` only from enabled card plugins). Plugin calls run on worker threads with timeouts. |
-| `plugin_surfaces_model.py` | Toolkit-neutral state of "From Plugins" and "Send to…", shared by Qt and (soon) GTK: coalesced card reloads, actions that re-resolve the plugin before opening a page, one send at a time, targets resolved on the worker; it names the bus names the client must watch for `CardChanged`. `qt/plugin_surfaces.py` adds the `QThreadPool`, `QTimer`, URL conversion and QtDBus watching. |
+| `plugin_surfaces_model.py` | Toolkit-neutral state of "From Plugins" and "Send to…", shared by Qt and GTK: coalesced card reloads, actions that re-resolve the plugin before opening a page, one send at a time, targets resolved on the worker; it names the bus names the client must watch for `CardChanged`. `qt/plugin_surfaces.py` adds the `QThreadPool`, `QTimer`, URL conversion and QtDBus watching; `ui/plugin_cards.py` and `ui/card_watch.py` are the GTK side. |
 | `file_drop_view.py` | The main window's drop zone (Qt and GTK), toolkit-neutral: keeps local `file://` URIs only, skips folders and non-regular files (`stat` on the worker), enforces the share API's 1 to 64 files, then sends to the only "Send to…" target, offers a picker for several (the session's last pick preselected) or explains that a `share` plugin such as LocalSend is needed. All wording lives here; the clients draw the overlay, picker and notices. |
 | `plugin_notify.py` | Daemon side of the `notify` capability: watches the content-free `Plugin1.NotifyChanged`, accepts it only from the owner of an enabled notify plugin's bus name running as the same user, fetches the popup with `GetPendingNotification` from that connection, rate-limits, and hands it to the libnotify sink; the popup button calls `InvokeAction` asynchronously. |
-| `photos_view.py`, `photos_model.py`, `cli_photos.py`, `qt/qml/PhotosTab.qml` | Client side of the `photos` capability: plugin lookup, loads for worker threads, plain-text labels and the tab's state map; `photos_model.py` is the toolkit-neutral Photos tab shared by Qt and (soon) GTK (a private worker queue and local busy state, coalesced reloads, generation guards across tab/plugin changes, and originals fetched only from the current plugin); `blueferry photos` and the Qt Photos tab. |
+| `photos_view.py`, `photos_model.py`, `cli_photos.py`, `qt/qml/PhotosTab.qml` | Client side of the `photos` capability: plugin lookup, loads for worker threads, plain-text labels and the tab's state map; `photos_model.py` is the toolkit-neutral Photos tab shared by Qt and GTK (a private worker queue and local busy state, coalesced reloads, generation guards across tab/plugin changes, and originals fetched only from the current plugin); `blueferry photos`, the Qt Photos tab and the GTK one (`ui/photos.py`). |
 | `cli_plugins.py` | `blueferry plugins …` and `blueferry plugins ALIAS …` (exec of the plugin's own CLI; refused for a disabled plugin). |
 | `desktop_open.py` | Opens a checked URI with the desktop's default handler for the CLIs. |
 | `companion_tools.py`, `cli_tools.py`, `qt/companion.py`, `qt/qml/CompanionToolsSection.qml` | Client-only launchers for UxPlay screen mirroring, LocalSend and the iPhone camera roll over USB (ifuse); `blueferry tools` and the Qt card's Tools section. Not part of the daemon or its D-Bus API. |
-| `companion_model.py` | Toolkit-neutral state of the card's Tools section, shared by Qt and (soon) GTK: probe and actions on a `TaskRunner`, one action at a time, the last message and the "trust this computer" hint. `qt/companion.py` adapts it to a `QThreadPool` and the `changed`/`reported` signals. |
+| `companion_model.py` | Toolkit-neutral state of the card's Tools section, shared by Qt and GTK: probe and actions on a `TaskRunner`, one action at a time, the last message and the "trust this computer" hint. `qt/companion.py` adapts it to a `QThreadPool` and the `changed`/`reported` signals; `ui/companion_tools.py` draws it in GTK. |
 | `cli_notification_actions.py` | `notification-actions` status, enable, and disable for the opt-in iPhone action buttons. |
 | `cli_calls.py` | Optional `blueferry calls` commands over `Calls1` and `blueferry phone-status` (battery, signal, network from `GetStatus`). |
 | `cli_tether.py` | `blueferry tether [status\|enable\|disable\|on\|off]`. |
 | `cli_otp.py` | `blueferry otp status`, `enable`, `disable` and `check` for one-time code auto-copy (`otp-status` and `otp-check` stay as aliases). |
 | `tui.py` | Textual terminal client. |
 | `tui_launcher.py` | Launches the TUI with the package-private Textual bundle when present. |
-| `tui_calls.py` | Optional Textual calls panel. |
-| `tui_options.py` | Textual "Options" screen (`o`): one checkbox per opt-in the daemon reports. |
+| `tui_calls.py` | Optional Textual calls panel (`c`): `call_card` wording, one action row (answer, hold/resume via `SwapCalls`, hang up/decline, Decline for a waiting call), keypad tones for the active call (0-9, `*`, `#` keys outside text fields and the tone field, in order through `phone_link_view.KeypadTones`), dial suggestions (`dial_suggestions`), confirmation before every call; work through `TextualTaskRunner`. |
+| `tui_notifications.py` | Textual "iPhone Notifications" screen over the shared `NotificationHistory` (`notifications_view` wording); read only while open, forgotten on close, `NotificationsChanged` coalesced. |
+| `tui_options.py` | Textual "Settings" screen (`o`, `OptionsScreen`): the Qt/GTK settings categories as tabs, saved preferences from `GetStatus`, `local.env` feature switches via `features_view` with "Restart Service", buttons for the per-key actions. |
+| `tui_doctor.py` | Textual diagnostics report: `blueferry doctor` on a worker, plain-text report with Copy. |
+| `tui_tasks.py` | Textual `TaskRunner`/`Timer` adapters for `client_tasks` (thread workers, results via `call_from_thread`, `set_timer`). |
 | `tui_notification_rules.py` | Textual editor for notification click rules. |
-| `tui_phone.py` | Opt-in Textual now-playing line and read-only recent-calls screen. |
+| `tui_phone.py` | Textual "iPhone Overview" (the phone card: name, connection, battery/signal/network, now playing, `feature_hints`), the opt-in now-playing line, and the recent-calls screen (`call_groups`, call back, message). |
 | `phone_overview.py` | Toolkit-free now-playing and recent-call rules shared by the GTK, TUI and Quickshell clients (mirrors the Qt QML rules). |
 | `ui/app.py` | GTK4/libadwaita application entry point. |
-| `ui/window.py` | Main GTK window; opens the settings dialog on a category. |
+| `ui/window.py` | Main GTK window: the phone card above an `AdwViewStack` with the Messages, Calls, Notifications and Photos tabs (switcher in the header, a bottom bar below 650 px), added with `add_tab`; only the visible tab of a shown window reads (`set_watched`), closing stops every read. **Plugins & Tools** on the card unfolds From Plugins and Tools below it (remembered in `ui_state.py`, unfolded by new card items); a changed set of enabled plugins (from the Plugins page) reloads the card and the photo plugin. Opens the settings dialog on a category and confirms every call (`dial_presenter.py`). |
 | `ui/conversations.py` | GTK conversations page: history, group confirmation, replies. |
-| `ui/status.py` | GTK settings (`SettingsDialog`, an `AdwPreferencesDialog`): one page per category of the Qt settings (Phone, Notifications, Calls & Audio, Network, Security, About) with setup, health, preferences and maintenance. |
+| `ui/status.py` | GTK settings (`SettingsDialog`, an `AdwPreferencesDialog`): one page per category of the Qt settings (Phone, Notifications, Calls & Audio, Network, Security, Plugins, About) with setup, health, preferences and maintenance. |
+| `ui/plugin_settings.py`, `ui/plugin_settings_presenter.py` | GTK Settings › Plugins on `plugin_settings_model.py`: installed plugins (kill switch, Show Log, update, remove), the store, install from an https URL confirmed in an `AdwAlertDialog` with the model's summary, the plugin lists; a plugin's settings form as a dialog subpage (sections, ShowIf, help links, Test connection, sign-in, the plugin's own buttons) that closes the model's form when left. The presenter holds the Qt form's rules (Save, folded sections, notes) without a display. Plugin text only reaches rows with `use_markup=False` and plain labels; the `…Plain` keys of `plugin_settings_view` carry the unescaped button texts. |
+| `ui/tasks.py` | `WorkerRunner`: the GTK `client_tasks.TaskRunner`, a private thread pool whose results return through `GLib.idle_add` and are dropped once stopped; `DaemonClient.task_runner(name)` hands out one per model and stops them with the client. |
 | `ui/settings_presenter.py` | Pure rules of the settings dialog: categories, Diagnostics rows, switch subtitles. |
 | `ui/feature_switches.py` | GTK rows for the `GetFeatures`/`SetFeature` switches (`features_view.py`) and the restart notice with **Restart Service** on every settings page; cancels its pending reloads when the dialog closes. |
 | `ui/notification_rules.py` | Settings > Notifications: the notification click rules editor (`GetNotificationOpenMap`/`SetNotificationOpenTarget`), reread only when the status revision changes. |
 | `ui/doctor.py` | Settings > Phone > Diagnostics: runs `blueferry doctor` (`doctor_report.py`) on the client's local worker and shows the report as plain text with Copy. |
 | `ui/status_presenter.py` | Pure presentation rules for the status page (including the optional phone battery/signal suffix). |
-| `ui/phone.py` | GTK iPhone dialog: battery/signal/network, opt-in now playing and recent calls; fetches only while open. |
-| `ui/phone_presenter.py` | Pure presentation rules for the iPhone dialog. |
+| `ui/plugin_cards.py`, `ui/card_watch.py` | GTK From Plugins on `plugin_surfaces_model.py`: card items with their buttons (the row runs the primary action), dimmed lines for failed plugins, Send to… (targets asked for when its menu opens), `sendTo` actions through `GtkFileDialog` and local files dropped on an item (`GtkDropTarget`). `card_watch.CardChangeWatcher` keeps one GDBus `CardChanged` subscription per bus name the model names, so only the enabled card plugins' owners trigger a reload. |
+| `ui/ui_state.py` | The GTK window's own preferences (whether Plugins & Tools is unfolded) in `gtk-ui.json` beside `settings.json`, via `SettingsStore` on a worker; never in the daemon's `settings.json`, which another process writes. |
+| `ui/companion_tools.py` | GTK Tools section on `companion_model.py`: UxPlay, LocalSend, iPhone photos with Eject and the pairing hint; polls only while shown in an active window. |
+| `ui/photos.py` | GTK Photos tab on `photos_model.py`: a `GtkFlowBox` of thumbnails decoded asynchronously (files over 8 MiB or 40 megapixels are skipped), All/Photos/Videos, loaded only while shown; a click downloads the original (header spinner) and opens it with `GtkFileLauncher`; downloaded originals can be dragged out. |
+| `ui/phone_card.py` | GTK phone card: name, connection, battery/signal/network or the hint naming the setting, opt-in now playing with its buttons, the Quick Settings popover; reads the status once for all tabs and nothing while the window is hidden. |
+| `ui/calls.py` | GTK Calls tab: running calls (`running_calls.py`), dial pad with contact suggestions and the opt-in recent calls (`phone_overview.call_groups`), read only while the tab is shown; a StatusChanged re-reads them only when the opt-in changes (CallHistoryChanged and Refresh from iPhone always do). |
+| `ui/running_calls.py` | GTK running calls on the Calls tab (`phone_link_view.call_card`): answer, hold/resume, hang up and the sound switch; `ListCalls` on `CallsChanged`, on a calls status change and after each action, while the window is shown; the duration ticks only on the visible tab. |
+| `ui/quick_switches.py` | The phone card's Quick Settings (sound on this computer, lock when I walk away) as `Adw.SwitchRow` controllers that follow the daemon status. |
+| `ui/notifications.py` | GTK Notifications tab on `notification_history.py`, with the empty/off page that opens the setting. |
+| `ui/phone_presenter.py` | Pure presentation rules for the phone card and the Calls tab (status chips, icons, now playing). |
+| `ui/reads.py` | `CoalescedRead`: one outstanding daemon read per kind, bursts collapse into one more, replies after a reset are dropped. |
 | `ui/saved_choice.py` | Keeps a settings switch on the user's choice while its save and the next status settle. |
-| `ui/client.py` | Asynchronous GTK backend calls and D-Bus invalidations; reads, mutations (including the service restart) and local work (`blueferry doctor`) each have their own worker. |
+| `ui/client.py` | Asynchronous GTK backend calls and D-Bus invalidations; reads, mutations (including the service restart) and local work (`blueferry doctor`) each have their own worker. Also the `client_tasks.TaskRunner` of the notification list (on the read worker) and `task_runner(name)`, a private pool per plugin model. |
 | `ui/avatars.py` | Bounded GTK photo cache and worker-side thumbnail decoding; late results from earlier contact generations are discarded. |
 | `ui/setup_runner.py` | GTK-independent worker for blocking setup operations. |
-| `ui/util.py` | Small UI helpers. |
+| `ui/util.py` | Small UI helpers, including `glib_timer` (the GTK `client_tasks.TimerFactory`) and `launch_uri` (opens a checked https or file URI with `GtkUriLauncher`). |
 | `qt/app.py` | PySide6/Kirigami entry point. |
 | `qt/controller.py` | Asynchronous `BridgeController` exposed to QML. |
-| `phone_overview.py`, `phone_link_view.py` | Toolkit-free rules behind the phone card and the Calls and Notifications tabs: opt-in hints that name the setting, day-grouped recent calls, notification rows; shared by Qt and (soon) GTK. |
-| `notification_history.py` | Toolkit-neutral state of the opt-in Notifications tab, shared by Qt and (soon) GTK: `sync_status` supplies backend/privacy/storage/profile state; `ListNotifications` runs only while access is allowed and the tab is shown, with coalesced reloads and late replies fenced off after access or tab changes. |
+| `phone_overview.py`, `phone_link_view.py` | Toolkit-free rules behind the phone card and the Calls and Notifications tabs: opt-in hints that name the setting, day-grouped recent calls, notification rows, the dial field and pad, the connection line; shared by Qt and GTK. |
+| `notification_history.py` | Toolkit-neutral state of the opt-in Notifications tab, shared by Qt and GTK: `sync_status` supplies backend/privacy/storage/profile state; `ListNotifications` runs only while access is allowed and the tab is shown, with coalesced reloads and late replies fenced off after access or tab changes. |
 | `qt/tray.py`, `qt/tray_presenter.py` | `blueferry-tray`: standalone StatusNotifierItem (unread badge, battery/signal tooltip); asynchronous QtDBus calls with auto-start disabled, so it never starts the daemon; owns `io.weirdware.BlueFerry.Client.Tray`, which `qt/app.py` watches to hide its own icon; pure presenters. |
 | `tray_autostart.py` | The tray's opt-in per-user XDG autostart entry. |
 | `qt/tasks.py` | Qt worker primitive, and `QtTaskRunner`/`QtTimer`, the Qt side of `client_tasks.py`. |
 | `qt/avatars.py` | Image provider that decodes opt-in contact photos with `QImageReader` after header and size checks. |
 | `qt/activation.py` | Qt adapter for client activation. |
 | `qt/qml/Main.qml` | Kirigami window: navigation and composition. |
-| `qt/qml/ConversationLogic.qml` | Thread lookup, roster-warning dedup, participant parsing (also used by Quickshell). |
+| `qt/qml/ConversationLogic.qml` | Thread lookup, roster-warning dedup, the members editor's list (also used by Quickshell). |
 | `qt/qml/SettingsPage.qml` | Settings with categories on the left (Phone, Notifications, Calls & Audio, Network, Security, About), a drill-down list in a narrow window, and the restart notice for feature switches. Keeps the Phone category alive to preserve pairing choices. |
 | `qt/qml/Settings*.qml` | One page per category; every control of the former single iPhone settings page lives in one of them. `SettingsPhone` also runs `blueferry doctor` (`doctor_report.py`, child process on its own pool; the report's state map and summary are shared with GTK) and shows the report as plain text. |
 | `qt/qml/SubtitleSwitch.qml`, `qt/qml/FeatureSwitch.qml` | A switch row with a wrapped explanation; `FeatureSwitch` binds one `GetFeatures`/`SetFeature` switch to its row in `features_view.view()`, which falls back to the `local.env` hint on older daemons. |
@@ -256,6 +270,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `qt/qml/ProximityLockSettings.qml` | Away-lock toggle, grace period, and warning; loaded only for daemons that report it. |
 | `qt/qml/TetherSection.qml` | "Enable Bluetooth tethering" checkbox, then the connect switch and automatic choice; loaded only when the daemon offers `Tether1`. |
 | `qt/qml/GroupConfirmationDialog.qml` | Group recipient confirmation before sending. |
+| `qt/qml/GroupParticipantsDialog.qml` | Confirm a group's members, with contact suggestions. |
 | `qt/qml/NewMessageDialog.qml` | New message composition. |
 | `qt/qml/PhoneCard.qml` | The phone card left of the tabs: name, connection, battery/signal, now playing and quick switches (sound, away lock); opt-ins that are off stay greyed out with a hint. Folds behind a header button in a narrow window. |
 | `qt/qml/CallsTab.qml` | Calls tab: running calls as cards (answer, hold, hang up), dial pad, and the day-grouped recent calls (`RecentCallsPage.qml`). |
@@ -272,7 +287,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `qt/qml/CallHistorySettings.qml` | Call-history opt-in checkboxes in the iPhone settings. |
 | `qt/qml/NowPlayingBar.qml` | Opt-in iPhone now-playing bar with transport buttons. |
 | `qt/qml/MediaControlSettings.qml` | Media-control opt-in checkbox and state; loaded only for daemons that report it. |
-| `quickshell_bridge.py` | Persistent stdin/stdout JSON bridge from Quickshell to the session D-Bus API. |
+| `quickshell_bridge.py` | Persistent stdin/stdout JSON bridge from Quickshell to the session D-Bus API. Settings replies are built on the shared `features_view`, `phone_link_view.notifications_view`, `reconnect_view` and `doctor_report` helpers. Lists (threads, contacts, feature switches, recent notifications) are plain JSON arrays; Qt 6.12 hands arrays in a `var` signal argument over as sequence wrappers that fail `Array.isArray` (#213), so `shell.qml` passes every reply and event through `plainValue()`, a JSON round trip; content-free D-Bus signals become events (`status-changed`, `now-playing-changed`, `notifications-changed`, …). |
 
 ### Quickshell client (`data/quickshell/`)
 
@@ -285,7 +300,10 @@ All paths are relative to `src/blueferry/` unless noted.
 | `SetupController.qml` | Pure setup state; emits requests with monotonic IDs. |
 | `SetupTransport.qml` | Creates one `SetupJob` per request and routes tagged output. |
 | `SetupJob.qml` | One `pairing-*` helper process with a deadline. |
-| `PhoneSettingsPage.qml` | Setup and preferences view. |
+| `PhoneSettingsPage.qml` | Setup and preferences view, in the shared categories (Phone, Notifications, Calls & Audio, Security, About). |
+| `FerryCategoryHeading.qml` | Category heading of the settings page. |
+| `FerryFeatureSwitch.qml` | One restart-required `local.env` switch from the bridge's features view (`switches`); names the variable for older daemons. |
+| `QuickshellNotificationList.qml` | Compact, read-only recent iPhone notifications; `shell.qml` reads them only while shown and forgets them when hidden. |
 | `Theme.qml` | Reads public Omarchy theme files. |
 | `ThemePalette.qml` | Pure color/geometry tokens with a system-palette fallback. |
 | `Ferry*.qml` | Styled controls (button, check box, combo box, label, text field, composer, section label, info row). |
@@ -428,6 +446,12 @@ dbus-python; the guard tolerates that.
   and the Quickshell bridge serialize them for QML so JavaScript does not
   recompute them.
 - Group sender labels are display-only and never affect identity or routing.
+- A group with `participants_required` keeps its reply box open
+  (`Thread.can_compose`). Sending to it plans as `NEEDS_PARTICIPANTS`: every
+  client then opens its members editor, saves through `SetGroupParticipants`
+  and, once the group is reply-ready, sends the draft through the normal path,
+  first-send confirmation included. Without a saved roster the backend still
+  refuses the send.
 
 ## Client architecture
 
@@ -484,10 +508,11 @@ layer:
 - `data/quickshell/OnboardingState.qml` re-implements stage derivation and
   pending iPhone setup tasks rather than using `onboarding.py`.
 - `qt/qml/ConversationLogic.qml`, used by both Qt and Quickshell,
-  re-implements thread lookup, roster-warning deduplication, and participant
-  parsing (written to match `recipients.participant_lines`). Quickshell uses no
-  `conversation_state` logic. Python/QML behavior tests cover parts of these
-  contracts, such as serialized tokens and participant parsing.
+  re-implements thread lookup, roster-warning deduplication, and the members
+  editor's list (written to match `conversation_state.ParticipantDraft`).
+  Quickshell uses no `conversation_state` logic. Python/QML behavior tests
+  cover parts of these contracts, such as serialized tokens and the members
+  editor.
 
 A change to these rules has to be made in both places.
 
@@ -695,6 +720,9 @@ A change to these rules has to be made in both places.
 - `Dial` accepts plain numbers only (`+` and digits); `*`/`#` service codes
   are rejected so a caller cannot reconfigure the phone (for example call
   forwarding). Keypad symbols remain available as DTMF on an active call.
+  `SendTones` requests go to oFono one at a time in arrival order (at most
+  32 waiting), so fast keypad clicks keep their order; the log names only
+  the number of tones, never the tones (they can be a PIN).
   Well-known emergency numbers are refused (they belong on the phone), and
   every client confirms a number before dialing. `Answer`/`HoldAndAnswer`
   have their own quota; hanging up is never blocked by it.
@@ -749,8 +777,10 @@ A change to these rules has to be made in both places.
 - **Identity:** normalized phone or email addresses are identities, and
   contact names are display metadata only.
 - **Group routing:** named-group ANCS notifications start as read-only
-  threads. Only the backend retains a user-supplied route, and every observed
-  sender must remain in it. A sender outside the route raises a roster-change
+  threads, as do unnamed groups whose members don't each resolve to one
+  address (a member with a number and an Apple ID, say). Both are marked
+  `participants_required`. Only the backend retains a user-supplied route, and
+  every observed sender must remain in it. A sender outside the route raises a roster-change
   warning and disables replies. Routes are local and never modify iPhone
   groups. They are preferences in `settings.json`, not history events, so
   retention and the bounded conversation window never discard a route that
@@ -758,7 +788,12 @@ A change to these rules has to be made in both places.
   conversation ID. Versioned keys preserve spelling (NFC, trimmed), and editing
   a roster does not change the key. Legacy name-folded keys remain aliases
   only when history shows a single spelling, and reading history never
-  rewrites the database.
+  rewrites the database. An unnamed group's route is saved under its
+  `group:participants:` key, built from the member names in the ANCS subtitle
+  and title, and is applied before address resolution, so later messages stay
+  in that thread. Renaming a member in Contacts or changing the group's
+  membership changes the key and orphans the route; the group then needs its
+  members again.
 - **Encryption at rest:** history, the contact cache, and the opt-in call
   history live in `0700` directories as `0600` SQLite files. Sensitive records, including event kind,
   timestamp, and content, are encrypted with AES-256-GCM under one random key
