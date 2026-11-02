@@ -40,7 +40,7 @@ _service_ids = itertools.count()
 
 
 class _Wallet:
-    def get_or_create(self, *, allow_prompt, cancellable=None):
+    def get_or_create(self, *, allow_prompt, cancellable=None, create=True):
         return b"K" * 32
 
     def delete(self, *, allow_prompt, cancellable=None):
