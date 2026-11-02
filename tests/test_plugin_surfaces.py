@@ -52,7 +52,8 @@ def test_a_crashing_or_garbled_plugin_becomes_a_dimmed_hint() -> None:
     assert "did not answer" in cards[1].hint and "invalid JSON" in cards[2].hint
     rows = surfaces.card_rows(cards)
     assert rows[0]["items"][0]["actions"] == [
-        {"id": "open", "label": "Open", "icon": "", "primary": True, "sendTo": ""}]
+        {"id": "open", "label": "Open", "labelPlain": "Open", "icon": "", "primary": True,
+         "sendTo": ""}]
     assert rows[1]["items"] == [] and rows[1]["ok"] is False
 
 

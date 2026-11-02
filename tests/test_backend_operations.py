@@ -69,6 +69,33 @@ def _stub_group(operations: BackendOperations, thread: dict) -> None:
     operations._conversations.threads = lambda: [thread]
 
 
+@pytest.mark.parametrize("operation", ["send", "send_to_thread", "list_recent"])
+def test_missing_map_rejects_work_without_assuming_a_permission_failure(operation):
+    queued = []
+    operations = _operations(submit_obex=lambda *args, **kwargs: queued.append(args))
+    operations.sessions.map = None
+    thread = _group()
+    _stub_group(operations, thread)
+
+    def unexpected(_value):
+        pytest.fail("unavailable MAP must reject the request before queuing work")
+
+    with pytest.raises(NotReadyError) as error:
+        if operation == "send":
+            operations.send("+15551111111", "hello", unexpected, unexpected)
+        elif operation == "send_to_thread":
+            operations.send_to_thread(
+                thread["key"], "hello", True, unexpected, unexpected,
+                expected_group_token=group_confirmation_token(thread["recipients"]),
+            )
+        else:
+            operations.list_recent("telecom/msg/INBOX", 10, unexpected, unexpected)
+
+    assert queued == []
+    assert "connection" in str(error.value).lower()
+    assert "Show Message Notifications" not in str(error.value)
+
+
 def test_group_reply_requires_confirmation_before_send(monkeypatch):
     operations = _operations()
     thread = _group()
@@ -766,6 +793,76 @@ def test_named_group_key_survives_roster_save_and_history_reload(
         expected_group_token=Thread.from_dict(reviewed).confirmation_token,
     )
     assert sent[-1] == (["+15551111111", "+15553333333"], "reviewed reply")
+
+
+def _append_unnamed_family_message(sender: str, title: str, subtitle: str, body: str, at: str):
+    append_event({
+        "kind": "sms_received", "handle": f"message-{at}", "sender_address": sender,
+        "contact_name": title, "body": body, "seen_at": f"2026-10-31T{at}+00:00",
+    })
+    append_event({
+        "kind": "ancs_notification", "notification_id": 7,
+        "app_id": "com.apple.MobileSMS", "title": title, "subtitle": subtitle,
+        "body": body, "seen_at": f"2026-10-31T{at}+00:00",
+    })
+
+
+def test_unnamed_group_roster_is_saved_and_survives_the_next_message(
+    monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setattr(config, "EVENTS_DB", tmp_path / "events.sqlite")
+    # The son is ambiguous: he has written from a number and an Apple ID.
+    for sender, at in (("+15552222222", "09:00:00"), ("son@icloud.com", "09:01:00")):
+        append_event({
+            "kind": "sms_received", "handle": f"direct-{at}", "sender_address": sender,
+            "contact_name": "Son", "body": f"hi {at}", "seen_at": f"2026-10-31T{at}+00:00",
+        })
+    _append_unnamed_family_message(
+        "+15551111111", "Wife", "To you & Son", "dinner at 7", "18:00:00",
+    )
+    operations = _operations(group_routes=GroupRoutesStore(tmp_path / "settings.json"))
+
+    group = next(thread for thread in operations.list_threads(10) if thread["is_group"])
+    assert group["participants_required"] is True
+    assert group["reply_ready"] is False
+    # Without a roster the backend still refuses to guess.
+    with pytest.raises(NotReadyError):
+        operations.send_to_thread(
+            group["key"], "hello", True, lambda _result: pytest.fail("sent"),
+            lambda error: pytest.fail(str(error)),
+            expected_group_token=Thread.from_dict(group).confirmation_token,
+        )
+
+    updated = operations.set_group_participants(
+        group["key"], ["+15551111111", "+15552222222"],
+    )
+    assert updated["key"] == group["key"]
+    assert updated["reply_ready"] is True
+    assert updated["participants_required"] is False
+
+    _append_unnamed_family_message(
+        "+15552222222", "Son", "To you & Wife", "on my way", "18:10:00",
+    )
+    operations.invalidate_conversations()
+    after = next(thread for thread in operations.list_threads(10) if thread["is_group"])
+    assert after["key"] == group["key"]
+    assert after["reply_ready"] is True
+    assert after["recipients"] == ["+15551111111", "+15552222222"]
+    assert len(after["messages"]) == 2
+
+    # Deleting the conversation also finds the messages the roster routed.
+    assert operations.delete_threads([group["key"]], True) == 1
+    assert not any(thread["is_group"] for thread in operations.list_threads(10))
+
+
+def test_participants_cannot_be_saved_for_a_routable_group(monkeypatch) -> None:
+    operations = _operations()
+    monkeypatch.setattr(operations._conversations, "find", lambda _key: _group())
+
+    with pytest.raises(InvalidArgumentsError, match="cannot route"):
+        operations.set_group_participants(
+            _group()["key"], ["+15551111111", "+15552222222"],
+        )
 
 
 def test_starred_thread_is_pinned_above_newer_conversations(
