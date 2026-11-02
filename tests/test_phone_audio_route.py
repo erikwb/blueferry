@@ -1099,11 +1099,50 @@ def test_delay_tracks_transports_added_and_removed():
     subject, _timers, _ = route(bus)
     subject.start()
     bus.receivers["InterfacesAdded"](FD, {"org.bluez.MediaTransport1": {
-        "Device": DEV, "UUID": A2DP_SINK_UUID, "State": "pending", "Delay": 12980,
+        "Device": DEV, "UUID": A2DP_SINK_UUID, "State": "active", "Delay": 12980,
     }})
     assert _delay(subject) == (1298, True)
     bus.receivers["InterfacesRemoved"](FD, ["org.bluez.MediaTransport1"])
     assert _delay(subject) == (None, None)
+
+
+@pytest.mark.parametrize("state", ["idle", "pending"])
+def test_delay_is_hidden_while_the_transport_is_not_active(state):
+    subject, _timers, _ = route(Bus(tree(transport=True, state=state, delay=3164)))
+    subject.start()
+    # The property exists, so reporting stays True; the stale value is not shown.
+    assert _delay(subject) == (None, True)
+
+
+def test_idle_transport_without_delay_still_reports_not_negotiated():
+    subject, _timers, _ = route(Bus(tree(transport=True, state="idle")))
+    subject.start()
+    assert _delay(subject) == (None, False)
+
+
+def test_delay_appears_and_disappears_with_the_transport_state():
+    bus = Bus(tree(transport=True, state="idle", delay=3164))
+    subject, _timers, changes = route(bus)
+    subject.start()
+    assert _delay(subject) == (None, True)
+    before = len(changes)
+    bus.receivers["TransportPropertiesChanged"](
+        FD, "org.bluez.MediaTransport1", {"State": "active"}, [])
+    assert _delay(subject) == (316, True)
+    assert len(changes) == before + 1
+    bus.receivers["TransportPropertiesChanged"](
+        FD, "org.bluez.MediaTransport1", {"State": "idle"}, [])
+    assert _delay(subject) == (None, True)
+    assert len(changes) == before + 2
+    # A Delay update while idle is kept, but nothing visible changes yet.
+    bus.receivers["TransportPropertiesChanged"](
+        FD, "org.bluez.MediaTransport1", {"Delay": 10980}, [])
+    assert _delay(subject) == (None, True)
+    assert len(changes) == before + 2
+    bus.receivers["TransportPropertiesChanged"](
+        FD, "org.bluez.MediaTransport1", {"State": "active"}, [])
+    assert _delay(subject) == (1098, True)
+    assert len(changes) == before + 3
 
 
 def test_delay_prefers_the_active_transport():

@@ -200,9 +200,11 @@ opt-in; clients show the switch only when `phone_audio_route` exists):
 - `phone_audio_delay_ms`: the delay BlueZ reports to the phone, in
   milliseconds (`MediaTransport1.Delay` is in 1/10 ms), or `null` without
   delay reporting. It follows `PropertiesChanged`; iOS shifts video by it.
-  Both keys are reported while the transport exists, also when it is idle;
-  the value is the last report. A `Delay` that BlueZ only invalidates keeps
-  the last value (`null` with reporting `true` if none was seen yet).
+  The delay is only reported while the transport's `State` is `active`; an
+  idle or pending transport gives `null` here while
+  `phone_audio_delay_reporting` stays as it is (`true` when `Delay` exists).
+  A `Delay` that BlueZ only invalidates keeps the last value (`null` with
+  reporting `true` if none was seen yet).
 
 ## Calls1 methods (optional phone calls)
 
