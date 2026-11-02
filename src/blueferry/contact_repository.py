@@ -21,6 +21,7 @@ from blueferry.limits import (
     MAX_CONTACT_NAME_CHARS,
     MAX_PHONEBOOK_CONTACTS,
 )
+from blueferry.sqlite_files import is_damaged, remove_database
 from blueferry.storage_security import CorruptStorageError, StorageSecurity
 
 log = logging.getLogger(__name__)
@@ -152,12 +153,18 @@ class ContactRepository:
         if _has_photo_table(connection):
             connection.execute("DELETE FROM contact_photos")
 
-    def clear(self) -> None:
-        with closing(_open_db()) as connection:
-            connection.execute("PRAGMA secure_delete = ON")
-            with connection:
-                self._delete_all(connection)
-            connection.execute("VACUUM")
+    def clear(self, *, discard_damaged: bool = False) -> None:
+        """Erase the cache; ``discard_damaged`` deletes a file SQLite can't read."""
+        try:
+            with closing(_open_db()) as connection:
+                connection.execute("PRAGMA secure_delete = ON")
+                with connection:
+                    self._delete_all(connection)
+                connection.execute("VACUUM")
+        except sqlite3.DatabaseError as error:
+            if not discard_damaged or not is_damaged(error):
+                raise
+            remove_database(config.CONTACTS_DB)
 
     def clear_photos(self) -> bool:
         """Erase retained photos only; return whether any existed.

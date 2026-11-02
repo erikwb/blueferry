@@ -202,7 +202,7 @@ class CallHistory(Protocol):
 
     def sync(self, success: Success, failure: Failure) -> None: ...
 
-    def clear(self) -> None: ...
+    def clear(self, *, discard_damaged: bool = False) -> None: ...
 
 
 class CallControl(Protocol):
@@ -860,14 +860,14 @@ class BackendOperations:
         self._clear_confirmed_groups()
         self.invalidate_conversations()
 
-    def _clear_call_history(self) -> None:
+    def _clear_call_history(self, *, discard_damaged: bool = False) -> None:
         # Erase the file even when the feature is off: it may hold calls from
         # a time when it was enabled. The next sync seeds silently again.
         history = self._current_call_history()
         if history is not None:
-            history.clear()
+            history.clear(discard_damaged=discard_damaged)
         else:
-            clear_call_history()
+            clear_call_history(discard_damaged=discard_damaged)
 
     def _current_call_history(self) -> CallHistory | None:
         provider = self.dependencies.call_history
@@ -1052,11 +1052,14 @@ class BackendOperations:
             self._erase_retained_data()
         return selected
 
-    def _erase_retained_data(self) -> None:
-        """Erase every store the storage policy protects; none needs the key."""
-        clear_events()
-        clear_contact_cache()
-        self._clear_call_history()
+    def _erase_retained_data(self, *, discard_damaged: bool = False) -> None:
+        """Erase every store the storage policy protects; none needs the key.
+
+        ``discard_damaged`` deletes databases SQLite cannot read, for a reset.
+        """
+        clear_events(discard_damaged=discard_damaged)
+        clear_contact_cache(discard_damaged=discard_damaged)
+        self._clear_call_history(discard_damaged=discard_damaged)
         if self.dependencies.starred_threads is not None:
             self.dependencies.starred_threads.clear()
         if self.dependencies.group_routes is not None:
@@ -1092,8 +1095,9 @@ class BackendOperations:
                 failure(error)
 
         # Erase before the key goes, as for a policy change: a crash leaves
-        # an empty archive, never records whose key has been deleted.
-        self._erase_retained_data()
+        # an empty archive, never records whose key has been deleted. Damaged
+        # databases go too, or they would block the way out.
+        self._erase_retained_data(discard_damaged=True)
         if self.dependencies.notification_log is not None:
             self.dependencies.notification_log.clear()
         storage.change_async(

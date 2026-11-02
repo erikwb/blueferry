@@ -538,10 +538,10 @@ def test_storage_policy_change_clears_data_before_switching(monkeypatch) -> None
             on_success(self.status)
 
     monkeypatch.setattr(
-        backend_operations, "clear_events", lambda: calls.append("events")
+        backend_operations, "clear_events", lambda **_kwargs: calls.append("events")
     )
     monkeypatch.setattr(
-        backend_operations, "clear_contact_cache", lambda: calls.append("contacts")
+        backend_operations, "clear_contact_cache", lambda **_kwargs: calls.append("contacts")
     )
     operations = BackendOperations(
         _Sessions(), BackendDependencies(storage=Storage())
@@ -564,12 +564,12 @@ def test_invalid_storage_policy_does_not_clear_data(monkeypatch) -> None:
         _Sessions(), BackendDependencies(storage=storage)
     )
     monkeypatch.setattr(
-        backend_operations, "clear_events", lambda: cleared.append("events")
+        backend_operations, "clear_events", lambda **_kwargs: cleared.append("events")
     )
     monkeypatch.setattr(
         backend_operations,
         "clear_contact_cache",
-        lambda: cleared.append("contacts"),
+        lambda **_kwargs: cleared.append("contacts"),
     )
 
     with pytest.raises(InvalidArgumentsError, match="local data policy"):

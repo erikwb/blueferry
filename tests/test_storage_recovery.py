@@ -16,12 +16,14 @@ from blueferry import history as history_mod
 from blueferry import storage_preparation as preparation_mod
 from blueferry.ancs.constants import MESSAGES_APP_ID
 from blueferry.backend_operations import BackendDependencies, BackendOperations
+from blueferry.call_history import MISSED, CallRecord
+from blueferry.call_history_repository import CallHistoryRepository, clear_call_history
 from blueferry.contact_repository import ContactRepository
 from blueferry.contact_sync import CONTACTS_REFRESH_SEC
-from blueferry.contacts import ContactsResolver
+from blueferry.contacts import ContactsResolver, clear_contact_cache
 from blueferry.errors import ConfirmationRequiredError
 from blueferry.events import SmsEvent
-from blueferry.history import append_event, read_events
+from blueferry.history import append_event, clear_events, read_events
 from blueferry.settings_store import SettingsStore
 from blueferry.sinks.sqlite import SqliteSink
 from blueferry.starred_threads import StarredThreadsStore
@@ -633,6 +635,47 @@ def test_reset_erases_unreadable_storage_and_starts_over(recovery):
     r.unlock()
     assert r.outcomes[-1]["storage_state"] == "ready"
     assert [event["handle"] for event in read_events(storage=r.storage)] == ["new"]
+
+
+@pytest.mark.parametrize("database, clear", [
+    ("EVENTS_DB", clear_events),
+    ("CONTACTS_DB", clear_contact_cache),
+    ("CALLS_DB", clear_call_history),
+])
+def test_reset_replaces_a_database_sqlite_cannot_open(recovery, database, clear):
+    r = recovery
+    r.wallet.locked = False
+    r.storage.refresh(allow_prompt=False)
+    now = datetime.now(timezone.utc)
+    append_event({"kind": "sms_received", "handle": "old", "body": "lost"}, storage=r.storage)
+    ContactRepository(r.storage).replace([("Alice", ["15551111111"], [])])
+    CallHistoryRepository(r.storage).replace([CallRecord(
+        direction=MISSED, occurred_at=now, raw_time=now.strftime("%Y%m%dT%H%M%SZ"),
+        address="+15551111111", phone="15551111111", name=None,
+    )], now=now)
+    path = getattr(config, database)
+    damaged = b"not a database" * 512
+    path.write_bytes(damaged)
+    sidecar = path.with_name(path.name + "-wal")
+    sidecar.write_bytes(b"stale log")
+
+    # Ordinary erasing never deletes a damaged file; only a reset does.
+    with pytest.raises(sqlite3.DatabaseError):
+        clear()
+    assert path.read_bytes() == damaged
+
+    r.operations.reset_storage_async(
+        r.queue.submit, r.outcomes.append, lambda error: pytest.fail(str(error)),
+        confirmed=True,
+    )
+    r.queue.finish()
+
+    assert r.outcomes[-1]["storage_state"] == "ready"
+    assert not sidecar.exists()
+    assert not path.exists() or path.read_bytes() != damaged
+    assert read_events(storage=r.storage) == []
+    assert ContactRepository(r.storage).load() == []
+    assert CallHistoryRepository(r.storage).load(now=now) == []
 
 
 def test_replacement_key_is_not_trusted_over_encrypted_preferences(recovery):
