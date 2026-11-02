@@ -37,7 +37,7 @@ _MEMBER_SEPARATOR = re.compile(r"\s*(?:,|&)\s*")
 
 
 class _MessageCandidates:
-    """Index repeated bodies by time; ambiguity needs at most two candidates."""
+    """Index repeated bodies by time; ambiguity usually needs two candidates."""
 
     def __init__(self, events: list[dict], indexes: list[int]) -> None:
         self.exact: dict[str, list[tuple[float, int]]] = {}
@@ -67,7 +67,10 @@ class _MessageCandidates:
             for entries in index_by_prefix.values():
                 entries.sort()
 
-    def matching(self, body: str, when: datetime, excluded: set[int]) -> list[int]:
+    def matching(
+        self, body: str, when: datetime, excluded: set[int],
+        limit: int | None = 2,
+    ) -> list[int]:
         instant = when.timestamp()
         matches: list[int] = []
         buckets = [self.exact.get(body, [])]
@@ -87,7 +90,7 @@ class _MessageCandidates:
                 index = entries[position][1]
                 if index not in excluded:
                     matches.append(index)
-                    if len(matches) == 2:
+                    if len(matches) == limit:
                         return matches
         return matches
 
@@ -162,43 +165,73 @@ def _group_identity(
     return "group:addresses:" + "|".join(canonical), display
 
 
-def _contact_address(resolver, name: str) -> str | None:
-    if canonical_address(name):
-        return name.strip()
-    if resolver is None:
-        return None
-    exact = {
-        address
-        for display, address in resolver.find_by_name(name)
-        if display.casefold() == name.casefold()
-    }
-    # Picking arbitrarily among a contact's multiple numbers could add the
-    # wrong person/address to a group.  Only auto-resolve an unambiguous one.
-    return next(iter(exact)) if len(exact) == 1 else None
+class _ContactNames:
+    """Look each member name up in contacts once per correlation."""
+
+    def __init__(self, resolver) -> None:
+        self._resolver = resolver
+        self._addresses: dict[str, list[str]] = {}
+
+    def addresses(self, name: str) -> list[str]:
+        folded = name.casefold()
+        if folded not in self._addresses:
+            self._addresses[folded] = [] if self._resolver is None else [
+                address
+                for display, address in self._resolver.find_by_name(name)
+                if display.casefold() == folded
+            ]
+        return self._addresses[folded]
+
+
+def _member_address(
+    member: str,
+    addresses_by_name: dict[str, set[str]],
+    contacts: _ContactNames,
+) -> str | None:
+    """Return the one address that history and contacts give ``member``."""
+    if canonical_address(member):
+        return member.strip()
+    by_identity: dict[str, str] = {}
+    for address in [
+        *sorted(addresses_by_name.get(member.casefold(), ())),
+        *contacts.addresses(member),
+    ]:
+        if identity := canonical_address(address):
+            by_identity.setdefault(identity, address)
+    # Picking arbitrarily among a contact's multiple numbers, or between two
+    # contacts of the same name, could add the wrong person/address to a
+    # group. History proving one of them does not rule out the other.
+    return next(iter(by_identity.values())) if len(by_identity) == 1 else None
 
 
 def _member_roster_token(
     member: str,
     addresses_by_name: dict[str, set[str]],
-    resolver,
+    contacts: _ContactNames,
 ) -> str:
     """Prefer a proven address while retaining unresolved display identity."""
-    direct = canonical_address(member)
-    if direct:
-        return direct
-    known = addresses_by_name.get(member.casefold(), set())
-    if len(known) == 1:
-        resolved = canonical_address(next(iter(known)))
-        if resolved:
-            return resolved
-    contact = _contact_address(resolver, member)
-    return canonical_address(contact) or f"name:{member.casefold()}"
+    address = _member_address(member, addresses_by_name, contacts)
+    return canonical_address(address) or f"name:{member.casefold()}"
+
+
+def _names_agree(notification: dict, sms: dict) -> bool:
+    """Whether a notification title can name this MAP message's sender."""
+    title = str(notification.get("title") or "").strip()
+    trusted = str(sms.get("contact_name") or "").strip()
+    return not (title and trusted and title.casefold() != trusted.casefold())
+
+
+def _notification_evidence(notification: dict) -> tuple[str, str]:
+    return (
+        str(notification.get("title") or "").strip(),
+        str(notification.get("subtitle") or "").strip(),
+    )
 
 
 def _reconcile_group_identities(
     events: list[dict],
     addresses_by_name: dict[str, set[str]],
-    resolver,
+    contacts: _ContactNames,
     routes: NamedGroupRoutes,
 ) -> None:
     """Collapse provisional and reply-ready views of the same group.
@@ -227,9 +260,12 @@ def _reconcile_group_identities(
         if len(members) < 2:
             continue
         roster = tuple(sorted(
-            _member_roster_token(member, addresses_by_name, resolver)
+            _member_roster_token(member, addresses_by_name, contacts)
             for member in members
         ))
+        if any(token.startswith("name:") for token in roster):
+            # An unresolved name may be a different person in each group.
+            continue
         clusters.setdefault(roster, []).append(event)
 
     for grouped in clusters.values():
@@ -274,8 +310,9 @@ def correlate_group_events(events: list[dict], resolver=None) -> list[dict]:
     Added SMS keys are ``group_key``, ``group_name``, ``group_members``,
     ``group_recipients``, and ``group_reply_ready``. A group without a safe
     route also gets ``group_participants_required``; a saved roster supplies
-    one. Minimal Messages ANCS records remain in the returned sequence as
-    correlation evidence.
+    one. A message that may belong to a group notification, but not
+    certainly, gets ``group_ambiguous`` instead. Minimal Messages ANCS records
+    remain in the returned sequence as correlation evidence.
     """
     # Correlation annotates only top-level keys; copying each record avoids the
     # cost of recursively cloning every message body and nested value.
@@ -291,6 +328,7 @@ def correlate_group_events(events: list[dict], resolver=None) -> list[dict]:
     for stored in out:
         named_routes.annotate_stored(stored)
     addresses_by_name: dict[str, set[str]] = {}
+    contacts = _ContactNames(resolver)
     message_candidates = _MessageCandidates(out, sms_indexes)
 
     # Learn trustworthy contact-name/address pairs from all MAP history first;
@@ -302,6 +340,27 @@ def correlate_group_events(events: list[dict], resolver=None) -> list[dict]:
         address = safe_event_address(event)
         if name and address:
             addresses_by_name.setdefault(name.casefold(), set()).add(address)
+
+    # Every Messages notification that could describe each MAP message, so a
+    # match must be unique from both sides. Copies of one notification agree.
+    evidence_by_sms: dict[int, set[tuple[str, str]]] = {}
+    for event in out:
+        if event.get("kind") != "ancs_notification":
+            continue
+        if event.get("app_id") != MESSAGES_APP_ID:
+            continue
+        ancs_body = str(event.get("body") or "")
+        ancs_time = _seen_at(event)
+        if not ancs_body or ancs_time is None:
+            continue
+        for index in message_candidates.matching(
+            ancs_body, ancs_time, set(), limit=None,
+        ):
+            if _names_agree(event, out[index]):
+                evidence_by_sms.setdefault(index, set()).add(
+                    _notification_evidence(event)
+                )
+    ambiguous: set[int] = set()
 
     for event in out:
         kind = event.get("kind")
@@ -317,11 +376,22 @@ def correlate_group_events(events: list[dict], resolver=None) -> list[dict]:
         if not ancs_body or ancs_time is None:
             continue
 
-        candidates = message_candidates.matching(ancs_body, ancs_time, matched)
+        candidates = message_candidates.matching(
+            ancs_body, ancs_time, set(), limit=None,
+        )
+        if candidates and set(candidates) <= matched:
+            # A copy of a notification whose message is already joined.
+            continue
         # A wrong group reply is worse than a missed correlation. Repeated
         # texts such as "ok" are common, so body + a broad time window is not
-        # enough evidence when more than one MAP message is eligible.
-        if len(candidates) != 1:
+        # enough evidence when more than one MAP message is eligible, or when
+        # the one MAP message could also be another notification's.
+        if len(candidates) != 1 or len(evidence_by_sms.get(candidates[0], ())) > 1:
+            # Either way one of them may have been sent to a group, so none
+            # is safe to answer as a 1:1 message.
+            ambiguous.update(
+                index for index in candidates if _names_agree(event, out[index])
+            )
             continue
 
         sms_index = candidates[0]
@@ -378,11 +448,7 @@ def correlate_group_events(events: list[dict], resolver=None) -> list[dict]:
                 if not sender_address:
                     missing.append(member)
             else:
-                known = addresses_by_name.get(member.casefold(), set())
-                if len(known) == 1:
-                    address = next(iter(known))
-                else:
-                    address = _contact_address(resolver, member)
+                address = _member_address(member, addresses_by_name, contacts)
                 if not address:
                     missing.append(member)
             if not address:
@@ -422,6 +488,9 @@ def correlate_group_events(events: list[dict], resolver=None) -> list[dict]:
             "group_missing_members": [] if reply_ready else missing,
         })
 
+    for index in ambiguous - matched:
+        out[index]["group_ambiguous"] = True
+
     # Link direct ANCS evidence only when its body/time match is unambiguous.
     for event in out:
         if event.get("kind") != "ancs_notification":
@@ -454,5 +523,5 @@ def correlate_group_events(events: list[dict], resolver=None) -> list[dict]:
         if isinstance(source_row_id, int):
             sms.setdefault(CORRELATED_ANCS_ROW_IDS_FIELD, []).append(source_row_id)
 
-    _reconcile_group_identities(out, addresses_by_name, resolver, named_routes)
+    _reconcile_group_identities(out, addresses_by_name, contacts, named_routes)
     return out
