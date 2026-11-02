@@ -68,6 +68,7 @@ from blueferry.obex.map_query import list_recent_messages
 from blueferry.obex.map_send import send_group_message, send_message
 from blueferry.protocol import MESSAGES_API_VERSION
 from blueferry.recipients import InvalidRecipient, group_confirmation_token, validate_recipient
+from blueferry.settings_store import UnreadableSettingsError
 from blueferry.storage_security import (
     STORAGE_POLICIES,
     CorruptStorageError,
@@ -692,6 +693,8 @@ class BackendOperations:
             result = store.set_starred(thread["key"], bool(starred))
             self._conversations.invalidate()
             return result
+        except UnreadableSettingsError:
+            raise
         except ValueError as error:
             raise InvalidArgumentsError(str(error)) from error
 
@@ -857,6 +860,8 @@ class BackendOperations:
                     for key in conversation_keys(existing)
                 },
             )
+        except UnreadableSettingsError:
+            raise
         except (OSError, RuntimeError, ValueError) as error:
             log.error("could not retain group participants: %s", error)
             raise NotReadyError(
@@ -1263,6 +1268,8 @@ class BackendOperations:
             raise NotReadyError("notification policy storage is unavailable")
         try:
             selected = self.dependencies.notification_policy.set(value)
+        except UnreadableSettingsError:
+            raise
         except ValueError as error:
             raise InvalidArgumentsError(str(error)) from error
         if self.dependencies.on_notification_policy_changed is not None:
@@ -1281,6 +1288,8 @@ class BackendOperations:
             selected = self.dependencies.notification_policy.set_contacts_only(
                 enabled
             )
+        except UnreadableSettingsError:
+            raise
         except ValueError as error:
             raise InvalidArgumentsError(str(error)) from error
         if self.dependencies.on_notification_policy_changed is not None:
@@ -1301,6 +1310,8 @@ class BackendOperations:
             selected = self.dependencies.notification_policy.set_ancs_actions(
                 enabled
             )
+        except UnreadableSettingsError:
+            raise
         except ValueError as error:
             raise InvalidArgumentsError(str(error)) from error
         if self.dependencies.on_notification_policy_changed is not None:
@@ -1326,6 +1337,8 @@ class BackendOperations:
             selected = self.dependencies.notification_policy.set_mirror_removals(
                 enabled
             )
+        except UnreadableSettingsError:
+            raise
         except ValueError as error:
             raise InvalidArgumentsError(str(error)) from error
         if self.dependencies.on_notification_policy_changed is not None:
@@ -1339,6 +1352,8 @@ class BackendOperations:
             raise NotReadyError("proximity lock is unavailable")
         try:
             return dict(configure(enabled, grace_sec))
+        except UnreadableSettingsError:
+            raise
         except ValueError as error:
             raise InvalidArgumentsError(str(error)) from error
         except OSError as error:
@@ -1363,6 +1378,8 @@ class BackendOperations:
             raise InvalidArgumentsError("bundle ID and target must be strings")
         try:
             mapping = policy.set_open_target(bundle_id, target)
+        except UnreadableSettingsError:
+            raise
         except ValueError as error:
             raise InvalidArgumentsError(str(error)) from error
         self._open_map_revision += 1
@@ -1391,6 +1408,8 @@ class BackendOperations:
             raise InvalidArgumentsError("invalid bundle ID")
         try:
             removed = policy.remove_open_target(bundle_id)
+        except UnreadableSettingsError:
+            raise
         except ValueError as error:
             raise InvalidArgumentsError(str(error)) from error
         if removed:
@@ -1471,6 +1490,8 @@ class BackendOperations:
             raise NotReadyError("call history is unavailable")
         try:
             return dict(configure(enabled, missed_call_notifications))
+        except UnreadableSettingsError:
+            raise
         except ValueError as error:
             raise InvalidArgumentsError(str(error)) from error
         except OSError as error:
@@ -1570,6 +1591,8 @@ class BackendOperations:
             return features.set(str(name), bool(enabled))
         except KeyError:
             raise InvalidArgumentsError("unknown feature") from None
+        except UnreadableSettingsError:
+            raise
         except (OSError, ValueError) as error:
             raise NotReadyError(f"could not store the setting: {type(error).__name__}") from None
 
@@ -1582,7 +1605,7 @@ class BackendOperations:
         audio.set_route(
             route, success,
             lambda error: failure(
-                error if isinstance(error, NotReadyError)
+                error if isinstance(error, (NotReadyError, UnreadableSettingsError))
                 else OperationFailedError("AudioRoute", error)
             ),
         )
@@ -1603,6 +1626,8 @@ class BackendOperations:
             raise NotReadyError("media control settings are unavailable")
         try:
             return dict(configure(enabled))
+        except UnreadableSettingsError:
+            raise
         except ValueError as error:
             raise InvalidArgumentsError(str(error)) from error
         except OSError as error:
@@ -1632,6 +1657,8 @@ class BackendOperations:
             raise NotReadyError("Bluetooth tethering is unavailable in this backend")
         try:
             return dict(configure(enabled, autoconnect))
+        except UnreadableSettingsError:
+            raise
         except ValueError as error:
             raise InvalidArgumentsError(str(error)) from error
         except OSError as error:
@@ -1656,6 +1683,8 @@ class BackendOperations:
             raise NotReadyError("the phone battery warning is unavailable")
         try:
             return bool(configure(bool(enabled)).get("phone_battery_warning"))
+        except UnreadableSettingsError:
+            raise
         except ValueError as error:
             raise InvalidArgumentsError(str(error)) from error
         except OSError as error:
@@ -1669,6 +1698,8 @@ class BackendOperations:
             raise NotReadyError("the automatic profile reset is unavailable")
         try:
             return bool(configure(bool(enabled)).get("profile_reset_auto"))
+        except UnreadableSettingsError:
+            raise
         except ValueError as error:
             raise InvalidArgumentsError(str(error)) from error
         except OSError as error:
@@ -1682,6 +1713,8 @@ class BackendOperations:
             raise NotReadyError("phone-call settings are unavailable")
         try:
             return dict(configure(bool(enabled)))
+        except UnreadableSettingsError:
+            raise
         except ValueError as error:
             raise InvalidArgumentsError(str(error)) from error
         except OSError as error:
@@ -1699,6 +1732,8 @@ class BackendOperations:
             raise NotReadyError("contact photo settings are unavailable")
         try:
             return dict(configure(bool(enabled)))
+        except UnreadableSettingsError:
+            raise
         except ValueError as error:
             raise InvalidArgumentsError(str(error)) from error
         except OSError as error:
@@ -1712,6 +1747,8 @@ class BackendOperations:
             raise NotReadyError("one-time code settings are unavailable")
         try:
             return dict(configure(bool(enabled)))
+        except UnreadableSettingsError:
+            raise
         except ValueError as error:
             raise InvalidArgumentsError(str(error)) from error
         except OSError as error:
