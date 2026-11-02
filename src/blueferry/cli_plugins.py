@@ -259,6 +259,10 @@ def _config(manager: PluginManager, plugin_id: str, assignments: Sequence[str],
                   f"{', '.join(f.key for f in plugin.config if f.secret)}", 2)
             return
         update[key] = _hooks["secret"](f"{field.label} (input hidden): ").strip()
+    # The plugin may have been disabled elsewhere during a prompt.
+    if plugin.id in manager.disabled():
+        _fail(_disabled_note(plugin.name, plugin.id), 2)
+        return
     if test:
         _test_config(client, update)
         return

@@ -463,6 +463,23 @@ def test_a_fifo_state_file_reads_as_empty_without_waiting_for_a_writer(setup, st
     assert disabled == (frozenset() if state == "settings" else {"io.example.demo"})
 
 
+def test_clients_read_a_fifo_plugin_settings_file_as_empty_without_waiting(tmp_path) -> None:
+    from blueferry.plugin_prefs import disabled_plugins
+
+    path = tmp_path / "plugins.json"
+    os.mkfifo(path, 0o600)
+    result = []
+    reader = threading.Thread(target=lambda: result.append(disabled_plugins(path)), daemon=True)
+    reader.start()
+    reader.join(timeout=5)
+    if reader.is_alive():
+        # Release the blocked open so the hang fails this test only.
+        os.close(os.open(path, os.O_WRONLY | os.O_NONBLOCK))
+        reader.join(timeout=5)
+        pytest.fail("reading a FIFO blocked until a writer appeared")
+    assert result == [frozenset()]
+
+
 def test_install_replaces_a_manually_installed_manifest(setup, monkeypatch) -> None:
     """The pre-store Immich setup wrote its own manifest; install takes it over."""
     manager, _runner = setup
