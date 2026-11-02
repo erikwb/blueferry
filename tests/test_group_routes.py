@@ -526,6 +526,19 @@ def test_a_star_saved_under_the_old_unnamed_key_stars_the_new_conversation(encry
     assert stars.keys() == [OLD_CREW]
 
 
+def test_a_new_conversation_already_starred_is_carried_once_too(encrypted):
+    _retain(_crew_message(1), storage=encrypted)
+    stars = StarredThreadsStore(storage=encrypted)
+    stars.set_starred(OLD_CREW, True)
+    stars.set_starred(CREW, True)
+    prepare_storage(encrypted)
+
+    _backend(encrypted).set_thread_starred(CREW, False)
+    prepare_storage(encrypted)
+
+    assert stars.keys() == [OLD_CREW]
+
+
 def test_a_roster_saved_under_the_old_unnamed_key_is_dropped(encrypted):
     sent = {
         **_crew_route(OLD_CREW), "kind": "sms_sent", "handle": "sent-1",

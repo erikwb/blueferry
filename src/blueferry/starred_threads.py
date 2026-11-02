@@ -48,14 +48,13 @@ class StarredThreadsStore:
         if not self._preference.writable or self._preference.setting(_CARRIED_KEY):
             return
         current = self.keys()
-        added = False
+        legacy = False
         for key in list(current):
             carried = unnamed_group_key_for_legacy(key)
-            if not carried or carried in current or len(current) >= MAX_STARRED_THREADS:
-                continue
-            current.append(carried)
-            added = True
-        if added:
+            legacy = legacy or carried is not None
+            if carried and carried not in current and len(current) < MAX_STARRED_THREADS:
+                current.append(carried)
+        if legacy:
             self._preference.write(current, **{_CARRIED_KEY: True})
 
     def keys(self) -> list[str]:
