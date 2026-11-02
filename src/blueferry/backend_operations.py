@@ -172,6 +172,10 @@ class GroupRoutes(Protocol):
         in_use: Iterable[str] | None = None,
     ) -> None: ...
 
+    def hold_roster_warning(
+        self, thread_keys: Iterable[str], warning_id: str, sender: str,
+    ) -> None: ...
+
     def discard(self, thread_keys: Iterable[str]) -> None: ...
 
     def clear(self) -> None: ...
@@ -605,8 +609,32 @@ class BackendOperations:
         if store is not None:
             store.clear()
 
+    def _hold_roster_warnings(self, threads: Sequence[dict]) -> None:
+        """Save each shown roster warning with its roster.
+
+        The warning exists only while the outsider's messages are in the
+        projection. Without this, their expiry would restore the old roster
+        and its old approval.
+        """
+        store = self.dependencies.group_routes
+        storage = self.dependencies.storage
+        if store is None or (storage is not None and not storage.status.can_write):
+            return
+        for thread in threads:
+            warning_id = str(thread.get("roster_warning_id") or "")
+            if not thread.get("roster_changed") or not warning_id:
+                continue
+            try:
+                store.hold_roster_warning(
+                    conversation_keys(thread), warning_id,
+                    str(thread.get("unexpected_sender") or ""),
+                )
+            except (OSError, ValueError, RuntimeError):
+                log.exception("could not retain a group roster warning")
+
     def _present_threads(self, threads: Sequence[dict]) -> list[dict]:
         presented = sort_threads(threads, starred_keys=self._starred_keys())
+        self._hold_roster_warnings(presented)
         rosters = {
             str(item["key"]): group_confirmation_token(
                 item.get("recipients") or [], item.get("roster_warning_id"),

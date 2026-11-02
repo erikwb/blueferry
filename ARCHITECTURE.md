@@ -780,7 +780,9 @@ A change to these rules has to be made in both places.
   address (a member with a number and an Apple ID, say). Both are marked
   `participants_required`. Only the backend retains a user-supplied route, and
   every observed sender must remain in it. A sender outside the route raises a roster-change
-  warning and disables replies. Routes are local and never modify iPhone
+  warning and disables replies. The warning is saved with the route, so it
+  stays after that sender's messages leave history, until the user saves the
+  members again. Routes are local and never modify iPhone
   groups. They are preferences in `settings.json`, not history events, so
   retention and the bounded conversation window never discard a route that
   is still in use. Two named groups with the same name share a key because ANCS has no

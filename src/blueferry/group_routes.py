@@ -12,7 +12,7 @@ from pathlib import Path
 
 from blueferry import config
 from blueferry.limits import MAX_GROUP_ROUTES, MAX_THREAD_KEY_CHARS
-from blueferry.named_groups import stored_named_group_key
+from blueferry.named_groups import route_version, stored_named_group_key
 from blueferry.private_preferences import PrivatePreference
 from blueferry.storage_security import StorageSecurity
 
@@ -43,7 +43,7 @@ def _route(value: object) -> dict | None:
     members = _strings(value.get("group_members") or [])
     if not key or len(key) > MAX_THREAD_KEY_CHARS or not name or not recipients:
         return None
-    return {
+    route = {
         "kind": "group_route",
         "group_key": key,
         "group_name": name,
@@ -51,6 +51,11 @@ def _route(value: object) -> dict | None:
         "group_recipients": recipients,
         "seen_at": _text(value.get("seen_at")),
     }
+    warning_id = _text(value.get("group_roster_warning_id"))
+    if warning_id:
+        route["group_roster_warning_id"] = warning_id
+        route["group_unexpected_sender"] = _text(value.get("group_unexpected_sender"))
+    return route
 
 
 def _belongs(route: dict, thread_keys: set[str]) -> bool:
@@ -152,6 +157,28 @@ class GroupRoutesStore:
         if added:
             self._preference.write(current)
         return added
+
+    def hold_roster_warning(
+        self, thread_keys: Iterable[str], warning_id: str, sender: str,
+    ) -> None:
+        """Keep a roster warning until the user saves the members again.
+
+        A warning names the save it was raised against, so one computed
+        before a newer save never blocks that save.
+        """
+        keys = {str(key) for key in thread_keys}
+        current = self._mapping()
+        for route in current.values():
+            if not _belongs(route, keys) or not warning_id.startswith(
+                route_version(route) + ":"
+            ):
+                continue
+            if route.get("group_roster_warning_id") == warning_id:
+                return
+            route["group_roster_warning_id"] = warning_id
+            route["group_unexpected_sender"] = _text(sender)
+            self._preference.write(current)
+            return
 
     def discard(self, thread_keys: Iterable[str]) -> None:
         remove = {str(key) for key in thread_keys}
