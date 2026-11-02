@@ -18,7 +18,8 @@ from tests.gtk_broadway import run_scenario
 
 
 @pytest.mark.parametrize(
-    "scenario", ["store-install", "installed", "form", "actions", "lists", "close"],
+    "scenario",
+    ["store-install", "installed", "form", "form-load-error", "actions", "lists", "close"],
 )
 def test_gtk_plugin_settings(tmp_path, scenario):
     run_scenario(tmp_path, str(Path(__file__).resolve()), scenario)
@@ -501,6 +502,31 @@ def _exercise_form():
     window.destroy()
 
 
+def _exercise_form_load_error():
+    _plugin, manager, client = _guided()
+
+    class Unreadable(client):
+        def get_config(self):
+            raise RuntimeError("The plugin is not running.")
+
+    dialog, window, work, _opened = _dialog(
+        manager=lambda: manager, index=lambda: None, client=Unreadable, poll_ms=5)
+    dialog.open(window, "plugins")
+    _settle()
+    work.run_tasks()
+    dialog.plugins.open_settings("io.example.cloud")
+    _settle()
+    form = dialog.plugins.form
+    work.run_tasks()
+    _settle()
+    # The failure replaces the loading line instead of leaving it up.
+    assert not form.loading.get_visible()
+    assert form.form_error.get_visible()
+    assert form.form_error.get_label() == \
+        "Could not load the plugin's settings: The plugin is not running."
+    window.destroy()
+
+
 def _exercise_actions():
     from blueferry.plugin_api.manifest import parse_manifest
     from tests.test_plugin_settings_model import ACTIONS, _ActionClient, _OneManager
@@ -641,6 +667,7 @@ if __name__ == "__main__":
         "store-install": _exercise_store_install,
         "installed": _exercise_installed,
         "form": _exercise_form,
+        "form-load-error": _exercise_form_load_error,
         "actions": _exercise_actions,
         "lists": _exercise_lists,
         "close": _exercise_close,

@@ -819,8 +819,13 @@ class PluginConfigPage(Adw.NavigationPage):
         config, check = self._config, self.check
         controls = present.form_controls(config, check, self.draft, self._busy)
         loaded = config.get("loaded") is True
-        self.loading.set_visible(not loaded)
+        load_error = str(config.get("loadError") or "")
+        self.loading.set_visible(not loaded and not load_error)
         form_error = str((config.get("errors") or {}).get("") or "")
+        if load_error:
+            form_error = _("Could not load the plugin's settings: {error}").format(
+                error=load_error,
+            )
         self.form_error.set_label(form_error)
         self.form_error.set_visible(bool(form_error))
 
