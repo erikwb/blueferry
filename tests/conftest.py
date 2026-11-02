@@ -181,6 +181,17 @@ os.environ.pop("QT_QPA_PLATFORMTHEME", None)
 os.environ.pop("QT_STYLE_OVERRIDE", None)
 
 
+def pytest_configure(config):
+    # pyproject's ``pythonpath`` pins the checkout's src/ on this process's
+    # sys.path only. Export it too, so Python child processes import the code
+    # under test rather than an installed BlueFerry.
+    paths = [str(path) for path in config.getini("pythonpath")]
+    if inherited := os.environ.get("PYTHONPATH"):
+        paths.append(inherited)
+    if paths:
+        os.environ["PYTHONPATH"] = os.pathsep.join(paths)
+
+
 def _forbid_live_bus(kind: str):
     def forbidden(*_args, **_kwargs):
         raise AssertionError(
