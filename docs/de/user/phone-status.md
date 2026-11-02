@@ -30,7 +30,8 @@ flowchart LR
 - **GTK**: Akku, Empfang und Netz auf der Telefon-Karte über den Reitern;
   der Tooltip zeigt alle Werte.
 - **Terminal-Client, Quickshell-Kopfzeile**: Akku und Empfang stehen in der
-  Verbindungszeile.
+  Verbindungszeile; die **iPhone Overview** des Terminal-Clients
+  (Befehlspalette) zeigt auch das Netz.
 - **CLI**:
 
   ```bash

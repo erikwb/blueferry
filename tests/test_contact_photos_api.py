@@ -257,7 +257,7 @@ def test_dispatcher_passes_the_photo_provider_only_when_enabled(monkeypatch) -> 
 # ---- daemon wiring ---------------------------------------------------------------
 
 class _Wallet:
-    def get_or_create(self, *, allow_prompt: bool, cancellable=None) -> bytes:
+    def get_or_create(self, *, allow_prompt: bool, cancellable=None, create=True) -> bytes:
         return b"K" * 32
 
     def delete(self, *, allow_prompt: bool, cancellable=None) -> bool:
