@@ -753,8 +753,15 @@ class Daemon:
             emit()
 
     def _notification_call_action(self, call_id: str, action: str) -> None:
-        """Answer or decline from an incoming-call desktop notification."""
-        operation = self.calls.answer if action == "answer" else self.calls.hangup
+        """Answer, decline or hang up from a call's desktop notification."""
+        operation = {
+            "answer": self.calls.answer,
+            "decline": self.calls.hangup,
+            "hangup": self.calls.hangup,
+        }.get(action)
+        if operation is None:
+            log.debug("ignoring unknown call notification action")
+            return
 
         def failed(error: Exception) -> None:
             # The controller already logged oFono's error name; never log the
@@ -1792,6 +1799,8 @@ class Daemon:
         ancs = self.ancs
         if ancs is not None:
             ancs.notification_actions_changed()
+        # "No notifications" also retires open call popups right away.
+        self.events.notification_policy_changed()
         self._emit_status()
 
     def _perform_ancs_action(

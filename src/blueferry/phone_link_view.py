@@ -219,21 +219,43 @@ def calls_hint(status: Mapping[str, Any], calls_state: str) -> str:
     return _("Waiting for the iPhone's hands-free connection.")
 
 
-def call_duration(first_seen: object, now: float) -> str:
-    """``m:ss`` since a call was first seen; ``now`` is a Unix time."""
+def format_duration(seconds: float) -> str:
+    """A call's duration: ``m:ss``, from one hour on ``h:mm:ss``."""
+    total = max(0, int(seconds))
+    hours, rest = divmod(total, 3600)
+    minutes, secs = divmod(rest, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}:{secs:02d}"
+    return f"{minutes}:{secs:02d}"
+
+
+def call_duration(started: object, now: float) -> str:
+    """The duration since ``started`` (ISO 8601); ``now`` is a Unix time.
+
+    ``""`` when ``started`` is missing or not a time.
+    """
     try:
-        started = datetime.fromisoformat(str(first_seen)).timestamp()
-    except (TypeError, ValueError):
+        moment = datetime.fromisoformat(str(started)).timestamp()
+    except (TypeError, ValueError, OverflowError, OSError):
         return ""
-    total = max(0, int(now - started))
-    return f"{total // 60}:{total % 60:02d}"
+    return format_duration(now - moment)
+
+
+def call_started(call: Mapping[str, Any]) -> object:
+    """When the running call's duration starts.
+
+    ``active_since`` is when the call was answered (or the other side picked
+    up); daemons without it only send ``first_seen``, when the call appeared.
+    """
+    return call.get("active_since") or call.get("first_seen")
 
 
 def call_card(call: Mapping[str, Any], now: float) -> dict[str, Any]:
     """A running call (``CallInfo.to_dict()``) as the Calls tab shows it.
 
     ``subtitle`` is the call's state or, while it is active, its duration
-    (``now`` is a Unix time). Answer is offered only while it rings; the
+    (``now`` is a Unix time; the clients tick it once a second, see
+    :func:`call_started`). Answer is offered only while it rings; the
     other button holds or resumes; the last one hangs up or declines.
     Keypad tones (``tones``, ``send_tones``) are offered only while the
     call is ``active``.
@@ -248,7 +270,7 @@ def call_card(call: Mapping[str, Any], now: float) -> dict[str, Any]:
     elif state in ("dialing", "alerting"):
         subtitle = _("Calling…")
     else:
-        subtitle = call_duration(call.get("first_seen"), now)
+        subtitle = call_duration(call_started(call), now)
     return {
         "title": str(call.get("display_peer") or ""),
         "subtitle": subtitle,

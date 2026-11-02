@@ -56,7 +56,12 @@ from blueferry.call_history import (
     caller_match_keys,
     caller_number_keys,
 )
-from blueferry.calls.model import CallEvent
+from blueferry.calls.model import (
+    MAX_TRACKED_CALLS,
+    RINGING_STATES,
+    CallEvent,
+    CallRecord,
+)
 from blueferry.client_activation import activation_argv, select_client
 from blueferry.events import SmsEvent
 from blueferry.limits import (
@@ -153,10 +158,62 @@ _ANCS_ACTION_FEEDBACK = {
     "failed": "The action could not be sent to the iPhone.",
 }
 
-# Incoming-call popups stay until the call stops ringing; the sink closes
-# them itself when the call is answered, declined, or disappears.
+# Call popups never expire: a ringing popup stays until the call stops
+# ringing, an ongoing one until the call ends; the sink closes them itself.
 _CALL_EXPIRE_MS = 0
-_CALL_ACTIONS = ("answer", "decline")
+_PHASE_RINGING = "ringing"
+_PHASE_ACTIVE = "active"
+_PHASE_HELD = "held"
+# Buttons a popup offers in each phase. A click is honored only while the
+# popup still shows that phase, so a late "decline" on a replaced ringing
+# popup cannot end the now-active call.
+_CALL_ACTIONS = {
+    _PHASE_RINGING: frozenset({"answer", "decline"}),
+    _PHASE_ACTIVE: frozenset({"hangup"}),
+    _PHASE_HELD: frozenset({"hangup"}),
+}
+
+
+class _ShownCall(NamedTuple):
+    phase: str
+    title: str
+    body: str
+
+
+def _call_phase(state: str) -> str | None:
+    if state in RINGING_STATES:
+        return _PHASE_RINGING
+    if state == "active":
+        return _PHASE_ACTIVE
+    if state == "held":
+        return _PHASE_HELD
+    return None
+
+
+def _call_text(record: CallRecord, phase: str, start: float | None) -> tuple[str, str]:
+    """Escaped title and body. Like message popups, hidden content keeps the
+    caller off screen."""
+    show = config.SHOW_NOTIFICATION_CONTENT
+    peer = record.display_peer
+    if phase == _PHASE_RINGING:
+        heading = "Call waiting" if record.state == "waiting" else "Incoming call"
+        if show:
+            if record.number and peer != record.number:
+                peer = f"{peer}\n{record.number}"
+            body = peer
+        else:
+            body = heading
+    else:
+        heading = f"Call with {peer}" if show else "Call in progress"
+        since = f"since {time.strftime('%H:%M', time.localtime(start or 0))}"
+        body = f"On hold · {since}" if phase == _PHASE_HELD else since
+    title = escape(terminal_text(f"\U0001f4de {heading}").replace("\n", " "))
+    return title, escape(terminal_text(body))
+
+
+def _trim_oldest(table: dict, limit: int) -> None:
+    while len(table) > limit:
+        del table[next(iter(table))]
 
 
 def _notification_hints(handle: str) -> dict[str, object]:
@@ -195,15 +252,20 @@ class LibnotifySink:
     ) -> None:
         self._defer_mark_read = defer_mark_read
         self._contact_photo = contact_photo
-        # (call_id, "answer" | "decline") from an incoming-call popup button.
+        # (call_id, "answer" | "decline" | "hangup") from a call popup button.
         self._on_call_action = on_call_action
         # PluginPopup -> None: a click on a plugin popup's button.
         self._on_plugin_action = on_plugin_action
         # desktop notification id -> PluginPopup with an action button.
         self._plugin_popups: dict[int, object] = {}
-        # notification_id <-> call_id for ringing-call popups.
+        # notification_id <-> call_id for call popups (ringing or ongoing).
         self._call_notifications: dict[int, str] = {}
         self._call_popups: dict[str, int] = {}
+        # call_id -> what its popup last showed, kept after the user closes
+        # it; call_id -> start (epoch) of an active call. Both end with the
+        # call and are bounded like the controller's call table.
+        self._call_shown: dict[str, _ShownCall] = {}
+        self._call_starts: dict[str, float] = {}
         self._notification_policy = notification_policy
         self._contacts_only_notifications = contacts_only_notifications
         self._on_open_message = on_open_message
@@ -319,6 +381,8 @@ class LibnotifySink:
         getattr(self, "_ancs_popups", {}).clear()
         getattr(self, "_call_notifications", {}).clear()
         getattr(self, "_call_popups", {}).clear()
+        getattr(self, "_call_shown", {}).clear()
+        getattr(self, "_call_starts", {}).clear()
         getattr(self, "_plugin_popups", {}).clear()
 
     def _policy(self) -> str:
@@ -941,55 +1005,156 @@ class LibnotifySink:
             self._call_popups = {}
         return self._call_notifications, self._call_popups
 
+    def _call_state(self) -> tuple[dict[str, _ShownCall], dict[str, float]]:
+        if not hasattr(self, "_call_shown"):
+            self._call_shown = {}
+            self._call_starts = {}
+        return self._call_shown, self._call_starts
+
     def handle_call(self, event: CallEvent) -> None:
-        """Show a ringing call with Answer/Decline; close it once it stops."""
+        """One popup per call: ringing (Answer/Decline), then ongoing (Hang up).
+
+        A popup the user or the server closed stays closed until the call's
+        phase changes (ringing, active, held); closing never acts on the call.
+        """
         record = event.call
-        notifications, popups = self._call_maps()
-        if event.kind == "call_ended" or not record.ringing:
-            nid = popups.pop(record.call_id, None)
-            if nid is None:
-                return
-            notifications.pop(nid, None)
-            self._close_async(nid)
+        call_id = record.call_id
+        shown, starts = self._call_state()
+        if event.kind == "call_ended":
+            self._forget_call(call_id)
             return
-        if record.call_id in popups or self._policy() == NO_NOTIFICATIONS:
+        phase = _call_phase(record.state)
+        if phase is None:
+            # Dialing, alerting, disconnected: nothing to show (yet).
+            self._close_call_popup(call_id)
+            shown.pop(call_id, None)
             return
-        heading = "Call waiting" if record.state == "waiting" else "Incoming call"
-        title = escape(terminal_text(f"\U0001f4de {heading}").replace("\n", " "))
-        if config.SHOW_NOTIFICATION_CONTENT:
-            peer = record.display_peer
-            if record.number and peer != record.number:
-                peer = f"{peer}\n{record.number}"
-            body = escape(terminal_text(peer))
-        else:
-            # Like message popups, hidden content keeps the caller off screen.
-            body = heading
+        start = None
+        if phase != _PHASE_RINGING:
+            # oFono's StartTime wins; otherwise the moment it was first seen
+            # active. Fixed once known, so the text never needs a timer.
+            start = record.start_time or starts.get(call_id) or time.time()
+            starts[call_id] = start
+            _trim_oldest(starts, MAX_TRACKED_CALLS)
         # contacts_only deliberately does not apply: a call from an unknown
-        # number still needs a chance to be answered or declined.
-        actions: list[str] = []
-        if getattr(self, "_on_call_action", None) is not None:
-            actions = ["answer", "Answer", "decline", "Decline"]
+        # number still needs a chance to be answered, declined or hung up.
+        if self._policy() == NO_NOTIFICATIONS:
+            # Switched off mid-call: no popup may keep buttons for a phase
+            # the call has left.
+            self._close_call_popup(call_id)
+            shown.pop(call_id, None)
+            return
+        title, body = _call_text(record, phase, start)
+        previous = shown.get(call_id)
+        nid = self._call_maps()[1].get(call_id)
+        if previous is not None and previous.phase == phase:
+            if nid is None or (previous.title, previous.body) == (title, body):
+                # Closed by the user (or the server): no reappearing without a
+                # real change. Or simply nothing visible changed.
+                return
+            replaces = nid
+        elif previous is not None and previous.phase == _PHASE_RINGING and nid is not None:
+            # The ringing popup is transient and critical; the ongoing one is
+            # neither, so it is closed and replaced by a fresh notification.
+            self._close_call_popup(call_id)
+            replaces = 0
+        else:
+            replaces = nid or 0
+        self._show_call(record, phase, title, body, replaces)
+
+    def _show_call(
+        self, record: CallRecord, phase: str, title: str, body: str, replaces: int,
+    ) -> None:
+        notifications, popups = self._call_maps()
+        shown, _starts = self._call_state()
+        has_callback = getattr(self, "_on_call_action", None) is not None
+        if phase == _PHASE_RINGING:
+            actions = ["answer", "Answer", "decline", "Decline"] if has_callback else []
+            hints = {
+                "urgency": dbus.Byte(2),
+                # The call itself is the record; do not keep stale
+                # "incoming call" entries in the notification history.
+                "transient": dbus.Boolean(True),
+            }
+        else:
+            actions = ["hangup", "Hang up"] if has_callback else []
+            hints = {
+                # Normal urgency: critical pins the banner on screen on GNOME
+                # and KDE and bypasses do-not-disturb (DMS). Persistence comes
+                # from the zero timeout (DMS keeps such a popup until closed)
+                # and from leaving out "transient", so GNOME, KDE and DMS keep
+                # it in their notification history; "resident" keeps it there
+                # after the Hang up button is used (GNOME) until the call
+                # really ends and BlueFerry closes it.
+                "urgency": dbus.Byte(1),
+                "resident": dbus.Boolean(True),
+            }
         try:
             nid = int(self._notif.Notify(
                 _APP_NAME,
-                dbus.UInt32(0),
+                dbus.UInt32(replaces),
                 "call-start",
                 title,
                 body,
                 dbus.Array(actions, signature="s"),
-                dbus.Dictionary({
-                    "urgency": dbus.Byte(2),
-                    # The call itself is the record; do not keep stale
-                    # "incoming call" entries in the notification history.
-                    "transient": dbus.Boolean(True),
-                }, signature="sv"),
+                dbus.Dictionary(hints, signature="sv"),
                 dbus.Int32(_CALL_EXPIRE_MS),
             ))
         except dbus.exceptions.DBusException as error:
             log.error("libnotify Notify (call) failed: %s", error.get_dbus_name())
             return
+        if replaces and replaces != nid:
+            notifications.pop(replaces, None)
         notifications[nid] = record.call_id
         popups[record.call_id] = nid
+        shown[record.call_id] = _ShownCall(phase, title, body)
+        while len(shown) > MAX_TRACKED_CALLS:
+            # A dropped entry takes its popup along: no button may outlive it.
+            dropped = next(iter(shown))
+            del shown[dropped]
+            self._close_call_popup(dropped)
+
+    def _close_call_popup(self, call_id: str) -> None:
+        notifications, popups = self._call_maps()
+        nid = popups.pop(call_id, None)
+        if nid is None:
+            return
+        notifications.pop(nid, None)
+        self._close_async(nid)
+
+    def _forget_call(self, call_id: str) -> None:
+        self._close_call_popup(call_id)
+        shown, starts = self._call_state()
+        shown.pop(call_id, None)
+        starts.pop(call_id, None)
+
+    def call_popups_reset(self) -> None:
+        """The notification policy changed: under "none", retire call popups.
+
+        Start times stay, so a popup shown after the policy is relaxed again
+        still names the right start.
+        """
+        if self._policy() != NO_NOTIFICATIONS:
+            return
+        shown, _starts = self._call_state()
+        for call_id in list(self._call_maps()[1]):
+            self._close_call_popup(call_id)
+        shown.clear()
+
+    def close_all_call_notifications(self) -> None:
+        """Retire every call popup while the notification server is still ours.
+
+        Used at shutdown, so no Hang up button outlives the daemon.
+        """
+        notifications, popups = self._call_maps()
+        stale = list(notifications)
+        notifications.clear()
+        popups.clear()
+        shown, starts = self._call_state()
+        shown.clear()
+        starts.clear()
+        for nid in stale:
+            self._close_async(nid)
 
     def handle_phone_battery_low(self, percent: int, *, exact: bool = False) -> None:
         """One desktop warning per discharge cycle (the daemon decides when)."""
@@ -1128,7 +1293,9 @@ class LibnotifySink:
         call_id = getattr(self, "_call_notifications", {}).get(nid_i)
         if call_id is not None:
             callback = getattr(self, "_on_call_action", None)
-            if str(action) in _CALL_ACTIONS and callback is not None:
+            shown = getattr(self, "_call_shown", {}).get(call_id)
+            allowed = _CALL_ACTIONS.get(shown.phase, frozenset()) if shown else frozenset()
+            if str(action) in allowed and callback is not None:
                 callback(call_id, str(action))
             return
         if str(action) == _PLUGIN_ACTION:
@@ -1242,9 +1409,13 @@ class LibnotifySink:
         getattr(self, "_ancs_actions", {}).pop(nid_i, None)
         getattr(self, "_ancs_retries", {}).pop(nid_i, None)
         getattr(self, "_ancs_popups", {}).pop(nid_i, None)
+        # Closing a call popup, for any reason, never answers or hangs up the
+        # call. What it showed is kept, so it does not pop up again until
+        # the call's phase changes.
         call_id = getattr(self, "_call_notifications", {}).pop(nid_i, None)
-        if call_id is not None:
-            getattr(self, "_call_popups", {}).pop(call_id, None)
+        popups = getattr(self, "_call_popups", {})
+        if call_id is not None and popups.get(call_id) == nid_i:
+            del popups[call_id]
         # Nor does closing a plugin popup run the plugin's action.
         getattr(self, "_plugin_popups", {}).pop(nid_i, None)
         message_path = self._pending.pop(nid_i, None)

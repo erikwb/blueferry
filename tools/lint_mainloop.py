@@ -180,7 +180,7 @@ KNOWN_DEBT: dict[tuple[str, str, str], str] = {
     ("blueferry.sinks.libnotify", "LibnotifySink._notify_missed_call", "sync-dbus"): _LIBNOTIFY,
     ("blueferry.sinks.libnotify", "LibnotifySink.handle", "sync-dbus"): _LIBNOTIFY,
     ("blueferry.sinks.libnotify", "LibnotifySink.handle_ancs", "sync-dbus"): _LIBNOTIFY,
-    ("blueferry.sinks.libnotify", "LibnotifySink.handle_call", "sync-dbus"): _LIBNOTIFY,
+    ("blueferry.sinks.libnotify", "LibnotifySink._show_call", "sync-dbus"): _LIBNOTIFY,
     ("blueferry.sinks.libnotify", "LibnotifySink.handle_phone_battery_low", "sync-dbus"):
         _LIBNOTIFY,
     ("blueferry.sinks.libnotify", "_notification_hints", "sync-dbus"):
