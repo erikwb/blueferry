@@ -406,11 +406,15 @@ def test_repeated_body_from_a_group_sender_cannot_be_answered_one_to_one() -> No
 
     assert alice["key"] == "address:phone:15551111111"
     assert alice["reply_ready"] is False
+    assert alice["group_ambiguous"] is True
+    assert alice["sender_reply_token"]
 
     later = _sms("+15551111111", "Alice", "call me", "2026-08-12T10:05:00+00:00")
     (alice,) = build_threads([*events, later])
 
     assert alice["reply_ready"] is True
+    assert alice["group_ambiguous"] is False
+    assert "sender_reply_token" not in alice
 
 
 def test_joined_message_does_not_make_a_second_notification_unique() -> None:

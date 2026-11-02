@@ -16,6 +16,13 @@
   iPhone itself remain unavailable (related to
   [#280](https://github.com/erikwb/blueferry/issues/280)).
 
+### Fixed
+
+- Pass BlueZ's `MaxCount` filter key to MAP `ListMessages` instead of
+  `MaxListCount`, which obexd ignored. The message query now asks the iPhone
+  for only the requested number of messages instead of up to 1024. The
+  one-time-code lookup keeps listing up to 1024 inbox entries.
+
 ## [0.9.1](https://github.com/erikwb/blueferry/releases/tag/v0.9.1) - 2026-10-30
 
 ### Fixed

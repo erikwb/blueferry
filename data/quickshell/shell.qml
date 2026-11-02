@@ -19,6 +19,10 @@ ShellRoot {
   property var participantEntries: []
   property string groupParticipantsDraft: ""
   property var rosterChangedThread: null
+  // A reply held while asking whether it goes to the sender only, and the
+  // conversation as shown when it asked.
+  property var senderConfirmThread: null
+  property string senderConfirmDraft: ""
   property string errorText: ""
   property bool phoneSettingsVisible: false
   property var backendStatus: ({})
@@ -275,12 +279,35 @@ ShellRoot {
       openGroupParticipants(thread, composer.text)
       return
     }
+    if (conversationLogic.needsSenderConfirmation(thread)) {
+      senderConfirmThread = thread
+      senderConfirmDraft = composer.text
+      senderConfirmPopup.open()
+      return
+    }
     sendBusy = true
     backendBridge.request("send_to_thread", {
       thread_key: thread.key,
       body: composer.text,
       confirm_group: thread.is_group,
       expected_group_token: groupSignature(thread)
+    })
+  }
+
+  // The answer covers only the messages shown when it asked; the backend
+  // refuses it once another message that may be from a group arrives.
+  function sendToSenderOnly() {
+    const thread = senderConfirmThread
+    const selected = selectedThread()
+    senderConfirmPopup.close()
+    if (!thread || !selected || selected.key !== thread.key
+        || composer.text !== senderConfirmDraft) return
+    sendBusy = true
+    backendBridge.request("send_to_thread", {
+      thread_key: thread.key,
+      body: senderConfirmDraft,
+      confirm_group: true,
+      expected_group_token: String(thread.sender_reply_token || "")
     })
   }
 
@@ -1809,6 +1836,67 @@ ShellRoot {
                   body: newMessageBody.text
                 })
               }
+            }
+          }
+        }
+      }
+
+      Popup {
+        id: senderConfirmPopup
+        objectName: "senderConfirmPopup"
+        parent: applicationSurface
+        x: Math.max(0, (applicationSurface.width - width) / 2)
+        y: Math.max(0, (applicationSurface.height - height) / 2)
+        width: Math.min(theme.scaled(500), applicationSurface.width - theme.scaled(24))
+        modal: true
+        focus: true
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        padding: theme.scaled(18)
+
+        background: Rectangle {
+          color: theme.windowSurface
+          border.color: theme.divider
+          radius: theme.panelRadius
+        }
+
+        Overlay.modal: Rectangle {
+          color: Qt.rgba(theme.windowSurface.r, theme.windowSurface.g,
+                         theme.windowSurface.b, 0.72)
+        }
+
+        contentItem: ColumnLayout {
+          spacing: theme.scaled(12)
+          FerryLabel {
+            ferryTheme: theme
+            Layout.fillWidth: true
+            wrapMode: Text.Wrap
+            text: root.senderConfirmThread
+              ? "Reply to " + root.senderConfirmThread.name + " only?" : ""
+            font.bold: true
+            font.pixelSize: theme.headingSize
+          }
+          FerryLabel {
+            ferryTheme: theme
+            Layout.fillWidth: true
+            wrapMode: Text.Wrap
+            text: root.senderConfirmThread
+              ? "The latest message may have been sent in a group. Your reply goes only to "
+                + (root.senderConfirmThread.recipients || []).join(", ") + "."
+              : ""
+          }
+          RowLayout {
+            Layout.alignment: Qt.AlignRight
+            FerryButton {
+              ferryTheme: theme
+              text: "Cancel"
+              onClicked: senderConfirmPopup.close()
+            }
+            FerryButton {
+              ferryTheme: theme
+              objectName: "senderConfirmSend"
+              text: "Reply only to sender"
+              highlighted: true
+              onClicked: root.sendToSenderOnly()
             }
           }
         }

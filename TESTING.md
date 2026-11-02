@@ -139,7 +139,9 @@ must not be hidden behind an automated test command.
 dbus-python decorators, including signatures and stable application errors.
 Private D-Bus tests deliberately hold fake wallet and conversation-projection
 work open while fetching status, and verify that history changes invalidate
-an in-flight projection. Wallet tests cover cancellation and late key results;
+an in-flight projection. They hold the rebuild after saving group members and
+the archive read of a deletion the same way; a message that arrives during
+that read is deleted with its conversation. Wallet tests cover cancellation and late key results;
 group tests bind confirmation to the displayed roster across client refreshes.
 Named-group upgrade tests separate previously colliding spellings and exercise
 legacy rosters, stars, read state, reply confirmation, and deletion against

@@ -698,11 +698,12 @@ class OptionsScreen(ModalScreen[None]):
                     "blueferry storage-policy-set encrypted|plaintext|none.").format(
             policy=_STORAGE.get(storage, storage or "…"), state=storage_state or "…",
         )
+        detail = str(values.get("storage_detail") or "").rstrip(".")
+        if detail and storage_state not in {"ready", "disabled"}:
+            # Why local data is unavailable, such as an unreadable settings file.
+            caption += f" {detail}."
         if values.get("storage_reset") is True:
-            # The explanation, and the way out when the saved data's key is lost.
-            detail = str(values.get("storage_detail") or "").rstrip(".")
-            if detail:
-                caption += f" {detail}."
+            # The way out when the saved data's key is lost.
             caption += " " + _(
                 "To erase local data and start over, run blueferry storage-reset."
             )

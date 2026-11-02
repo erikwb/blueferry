@@ -49,7 +49,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `glib_timers.py` | `schedule_periodic`: a repeating GLib timer whose owner forgets the source id once GLib destroys the source (false return or exception). |
 | `read_receipts.py` | Delays MAP read acknowledgements so ANCS can still deliver group metadata. |
 | `message_backfill.py` | After each MAP/MNS (re)connect, lists the inbox on the OBEX worker and stores missed incoming messages straight to history (no sinks), deduplicated against history and live MNS messages; inert unless message history is kept and unlocked. |
-| `recipients.py` | Recipient validation and group confirmation tokens (shared by backend and Python clients). |
+| `recipients.py` | Recipient validation, group confirmation and sender-only reply tokens (shared by backend and Python clients). |
 | `connectivity.py` | MAP/PBAP connectivity state machine and retry policy, independent of GLib and BlueZ. |
 | `profile_supervisor.py` | Owns MAP/PBAP open, close, retry, loss, and resume transitions. |
 | `background_worker.py` | Bounded local jobs completed on the owning GLib loop. |
@@ -272,6 +272,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `qt/qml/ProximityLockSettings.qml` | Away-lock toggle, grace period, and warning; loaded only for daemons that report it. |
 | `qt/qml/TetherSection.qml` | "Enable Bluetooth tethering" checkbox, then the connect switch and automatic choice; loaded only when the daemon offers `Tether1`. |
 | `qt/qml/GroupConfirmationDialog.qml` | Group recipient confirmation before sending. |
+| `qt/qml/SenderConfirmationDialog.qml` | Asks before replying only to the sender of a message that may be from a group. |
 | `qt/qml/GroupParticipantsDialog.qml` | Confirm a group's members, with contact suggestions. |
 | `qt/qml/NewMessageDialog.qml` | New message composition. |
 | `qt/qml/PhoneCard.qml` | The phone card left of the tabs: name, connection, battery/signal, now playing and quick switches (sound, away lock); opt-ins that are off stay greyed out with a hint. Folds behind a header button in a narrow window. |
@@ -454,6 +455,16 @@ dbus-python; the guard tolerates that.
   and, once the group is reply-ready, sends the draft through the normal path,
   first-send confirmation included. Without a saved roster the backend still
   refuses the send.
+- A direct thread whose latest incoming message may belong to a group
+  (`group_ambiguous`) is not reply-ready, but carries a `sender_reply_token`
+  while the reply would otherwise be allowed (`Thread.can_compose`). Sending
+  plans as `CONFIRM_SENDER`: every client asks whether to reply to the sender
+  only, then calls `SendToThreadChecked` with `confirm_group` and that token.
+  `recipients.sender_reply_token` hashes the reply address and every such
+  message in the thread, so a confirmation cannot cover a newer one; the
+  backend refuses a stale token and, without one, keeps the thread read-only.
+  A queued reply checks its token again when its turn comes, so one that
+  waited while a message arrived is refused, even if the doubt is gone.
 
 ## Client architecture
 
@@ -809,11 +820,25 @@ A change to these rules has to be made in both places.
 - **Fail closed:** passive startup only loads a key from an already unlocked
   collection and never prompts. If the key is missing or wrong, or plaintext
   is unframed, storage becomes unavailable without deleting records while live
-  delivery continues. Only an explicit client action may create or unlock the
-  key. History writes are transactional, and a monotonic revision invalidates
-  the projection. A storage reset deletes a database SQLite cannot read, with
-  its journal files; every other path leaves a damaged file in place. When one
-  stops storage preparation, the status offers that reset.
+  delivery continues. While `settings.json` exists but can't be read, the
+  storage policy is unknown, so storage stays locked and nothing is retained;
+  the retry tick reads it again. Policy changes and resets are refused with
+  a `Configuration` error before anything is erased, because erasing for an
+  assumed policy could lose data or keep plaintext the user believes is
+  encrypted. Only an explicit client action may create or unlock the key.
+  History writes are transactional, and a monotonic revision invalidates the
+  projection. A storage reset deletes a database SQLite cannot read, with its
+  journal files; every other path leaves a damaged file in place. When one
+  stops storage preparation, the status offers that reset, but not while
+  `settings.json` can't be read: changes, resets and preparation read it
+  first, so the unreadable file is what the status asks the user to fix.
+  The projection, its rebuild after saving group members, and the
+  full-archive read behind `DeleteThreads` run on the projection worker.
+  History is read in short pages and decoded between them, so a slow read
+  never holds the lock a new message needs. A deletion erases rows only if no
+  history or conversation change arrived during that read; otherwise it starts
+  again. After two such restarts, counting refreshes, it asks the caller to try
+  again.
 - **Contact photos** are opt-in (`contact_photos` in `settings.json`, set
   through `Messages1.SetContactPhotos` and seeded by
   `BLUEFERRY_CONTACT_PHOTOS`; switching applies without a restart). The daemon keeps

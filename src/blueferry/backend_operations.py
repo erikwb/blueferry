@@ -68,7 +68,12 @@ from blueferry.notification_open_map import open_map_entries
 from blueferry.obex.map_query import list_recent_messages
 from blueferry.obex.map_send import send_group_message, send_message
 from blueferry.protocol import MESSAGES_API_VERSION
-from blueferry.recipients import InvalidRecipient, group_confirmation_token, validate_recipient
+from blueferry.recipients import (
+    SENDER_REPLY_TOKEN_PREFIX,
+    InvalidRecipient,
+    group_confirmation_token,
+    validate_recipient,
+)
 from blueferry.settings_store import UnreadableSettingsError
 from blueferry.storage_security import (
     STORAGE_POLICIES,
@@ -320,6 +325,7 @@ class BackendOperations:
         self.dependencies = dependencies or BackendDependencies()
         self._confirmed_groups: dict[str, str] = {}
         self._roster_check_pending = False
+        self._deleting = False
         # Content-free GetStatus marker for click-rule edits. Clients reread
         # the rules only when it changes; a random start makes a restarted
         # daemon's value differ from what a client last saw.
@@ -356,6 +362,7 @@ class BackendOperations:
 
     def prepare_conversations(
         self, submit: Callable[..., object], ready: Callable[[], None], failure: Failure,
+        retry: Callable[[], bool] | None = None,
     ) -> None:
         def job_factory() -> Callable[[], list[dict]]:
             stars = self._starred_keys()
@@ -389,7 +396,7 @@ class BackendOperations:
                 return
             failure(error)
 
-        self._conversations.prepare_async(submit, job_factory, ready, failed)
+        self._conversations.prepare_async(submit, job_factory, ready, failed, retry)
 
     def _require_map(self) -> None:
         if self.sessions.map is None:
@@ -545,7 +552,20 @@ class BackendOperations:
         if thread is None:
             raise NotFoundError("thread no longer exists in local history")
         thread_key = str(thread["key"])
-        if not thread["reply_ready"] or not thread["recipients"]:
+        if (
+            not thread["is_group"] and confirm_group
+            and expected_group_token.startswith(SENDER_REPLY_TOKEN_PREFIX)
+        ):
+            # The latest message may have been sent to a group; the user
+            # confirmed a reply to the sender alone for exactly these messages
+            # and this address. Once those change, even to an unambiguous
+            # message, the user has to look again.
+            if expected_group_token != thread.get("sender_reply_token"):
+                raise ConfirmationRequiredError(
+                    "a newer message arrived; review the "
+                    "conversation before replying"
+                )
+        elif not thread["reply_ready"] or not thread["recipients"]:
             raise NotReadyError("thread has no unambiguous reply destination")
         self._require_map()
 
@@ -830,6 +850,33 @@ class BackendOperations:
     def set_group_participants(
         self, thread_key: str, recipients: Sequence[object]
     ) -> dict:
+        """Save a group's roster and return the rebuilt thread, inline."""
+        return self._group_thread(self._save_group_participants(thread_key, recipients))
+
+    def set_group_participants_async(
+        self, submit: Callable[..., object], thread_key: str,
+        recipients: Sequence[object], success: Success, failure: Failure,
+    ) -> None:
+        """Save a group's roster, then rebuild the projection on the worker."""
+        saved = self._save_group_participants(thread_key, recipients)
+
+        def ready() -> None:
+            try:
+                success(self._group_thread(saved))
+            except Exception as error:
+                failure(error)
+
+        self.prepare_conversations(submit, ready, failure)
+
+    def _group_thread(self, thread_key: str) -> dict:
+        updated = self._conversations.find(thread_key)
+        if updated is None:
+            raise NotFoundError("thread no longer exists in local history")
+        return self._present_threads([updated])[0]
+
+    def _save_group_participants(
+        self, thread_key: str, recipients: Sequence[object]
+    ) -> str:
         """Persist an explicit reply roster for a group BlueFerry can't route.
 
         Named groups are keyed by their name, unnamed ones by the member names
@@ -914,10 +961,7 @@ class BackendOperations:
             ) from error
         self._forget_confirmed_groups(conversation_keys(thread))
         self.invalidate_conversations()
-        updated = self._conversations.find(thread_key)
-        if updated is None:
-            raise NotFoundError("thread no longer exists in local history")
-        return self._present_threads([updated])[0]
+        return thread_key
 
     def invalidate_conversations(self) -> None:
         self._conversations.invalidate()
@@ -978,7 +1022,100 @@ class BackendOperations:
     def delete_threads(
         self, thread_keys: Sequence[object], confirmed: bool
     ) -> int:
-        """Erase complete local conversations resolved from opaque keys."""
+        """Erase complete local conversations resolved from opaque keys, inline."""
+        selected, preference_keys = self._plan_deletion(thread_keys, confirmed)
+        resolved = self._resolve_deletion(
+            selected, self.dependencies.storage,
+            self.dependencies.contacts, self._group_routes(),
+        )
+        return self._commit_deletion(selected, preference_keys, resolved)
+
+    def delete_threads_async(
+        self, submit: Callable[..., object], thread_keys: Sequence[object],
+        confirmed: bool, success: Success, failure: Failure,
+    ) -> None:
+        """Erase conversations after correlating the whole archive on the worker.
+
+        A result is committed only if no history, roster, star, contact or
+        storage change arrived meanwhile. Otherwise the deletion starts again
+        from a fresh projection, so stale row identifiers are never erased.
+        """
+        if self._deleting:
+            raise NotReadyError(
+                "conversations are already being deleted; try again shortly"
+            )
+
+        def failed(error: Exception) -> None:
+            self._deleting = False
+            failure(error)
+
+        def guarded(step: Callable[..., None]) -> Callable[..., None]:
+            def run(*args: Any) -> None:
+                try:
+                    step(*args)
+                except Exception as error:
+                    failed(error)
+            return run
+
+        def worker_failed(error: Exception) -> None:
+            if isinstance(error, CorruptStorageError):
+                storage = self.dependencies.storage
+                if storage is not None:
+                    storage.fail_closed(str(error))
+                error = NotReadyError(str(error))
+            failed(error)
+
+        # Stale archive reads and stale refreshes share one budget, so a
+        # steady stream of messages ends the deletion instead of starving it.
+        retries = 2
+
+        def retry() -> bool:
+            nonlocal retries
+            retries -= 1
+            return retries >= 0
+
+        def attempt() -> None:
+            selected, preference_keys = self._plan_deletion(thread_keys, confirmed)
+            version = self._conversation_version()
+
+            def resolved(result: tuple[set[int], set[str]] | Exception) -> None:
+                if self._conversation_version() != version:
+                    if not retry():
+                        raise NotReadyError(
+                            "conversations changed during deletion; try again"
+                        )
+                    self.prepare_conversations(
+                        submit, guarded(attempt), failed, retry,
+                    )
+                    return
+                if isinstance(result, Exception):
+                    return worker_failed(result)
+                removed = self._commit_deletion(selected, preference_keys, result)
+                self._deleting = False
+                success(removed)
+
+            submit(
+                self._deletion_job(selected),
+                on_success=guarded(resolved), on_error=guarded(resolved),
+            )
+
+        self._deleting = True
+        try:
+            attempt()
+        except Exception:
+            self._deleting = False
+            raise
+
+    def _conversation_version(self) -> tuple[int, tuple[int, ...]]:
+        return (
+            self._conversations.generation,
+            history_revision(storage=self.dependencies.storage),
+        )
+
+    def _plan_deletion(
+        self, thread_keys: Sequence[object], confirmed: bool
+    ) -> tuple[list[str], set[str]]:
+        """Validate a deletion against the prepared projection."""
         if not confirmed:
             raise ConfirmationRequiredError(
                 "conversation deletion requires explicit confirmation"
@@ -1012,6 +1149,36 @@ class BackendOperations:
         storage = self.dependencies.storage
         if storage is not None and not storage.status.can_write:
             raise NotReadyError(storage.status.detail)
+        return selected, preference_keys
+
+    def _deletion_job(
+        self, selected: list[str]
+    ) -> Callable[[], tuple[set[int], set[str]]]:
+        """Capture the deletion's inputs on GLib for a worker-side read."""
+        routes = self._group_routes()
+        contacts = self.dependencies.contacts
+        resolver = contacts.snapshot() if contacts is not None else None
+        storage = self.dependencies.storage
+        reader = storage.snapshot() if storage is not None else None
+
+        def resolve() -> tuple[set[int], set[str]]:
+            try:
+                resolved = self._resolve_deletion(selected, reader, resolver, routes)
+                if reader is not None and reader.status.state == "error":
+                    raise CorruptStorageError(reader.status.detail)
+                return resolved
+            finally:
+                if reader is not None:
+                    reader.close()
+
+        return resolve
+
+    @staticmethod
+    def _resolve_deletion(
+        selected: list[str], storage: StorageSecurity | None,
+        contacts: ContactIndex | None, routes: Sequence[dict],
+    ) -> tuple[set[int], set[str]]:
+        """Return the archive rows and group keys a deletion must erase."""
         try:
             # Anchor the visible projection before replaying the full archive.
             recent_rows = read_event_rows(
@@ -1024,11 +1191,11 @@ class BackendOperations:
                     CORRELATED_ANCS_ROW_IDS_FIELD: [],
                 }
                 for event_id, event in recent_rows
-            ] + self._group_routes(), self.dependencies.contacts)
+            ] + list(routes), contacts)
             anchor_keys: dict[int, str] = {}
             recent_evidence_ids: set[int] = set()
             for event in recent:
-                projected_key = thread_key(event, self.dependencies.contacts)
+                projected_key = thread_key(event, contacts)
                 if event.get("kind") not in MESSAGE_KINDS:
                     continue
                 if projected_key is None or projected_key not in selected:
@@ -1050,14 +1217,14 @@ class BackendOperations:
                     CORRELATED_ANCS_ROW_IDS_FIELD: [],
                 }
                 for event_id, event in all_rows
-            ] + self._group_routes(), self.dependencies.contacts)
+            ] + list(routes), contacts)
             resolved_keys = set(selected)
             for event in correlated:
                 event_id = int(event.get(HISTORY_ROW_ID_FIELD, -1))
                 anchored_key = anchor_keys.get(event_id)
                 if anchored_key is None:
                     continue
-                resolved_key = thread_key(event, self.dependencies.contacts)
+                resolved_key = thread_key(event, contacts)
                 if (
                     anchored_key.startswith("group:")
                     and resolved_key is not None
@@ -1070,7 +1237,7 @@ class BackendOperations:
                 if event.get("kind") in MESSAGE_KINDS
                 and (
                     int(event.get(HISTORY_ROW_ID_FIELD, -1)) in anchor_keys
-                    or thread_key(event, self.dependencies.contacts) in resolved_keys
+                    or thread_key(event, contacts) in resolved_keys
                 )
             ]
             event_ids = recent_evidence_ids | {
@@ -1104,13 +1271,25 @@ class BackendOperations:
                 ) or (
                     kind == "sms_seen"
                     and (
-                        thread_key(event, self.dependencies.contacts) in resolved_keys
+                        thread_key(event, contacts) in resolved_keys
                         or str(event.get("handle") or "") in selected_handles
                     )
                 )
                 if not belongs:
                     continue
                 event_ids.add(row_id)
+            return event_ids, resolved_keys
+        except (OSError, RuntimeError, ValueError, sqlite3.Error) as error:
+            log.error("could not delete conversations: %s", error)
+            raise NotReadyError("could not delete local conversations") from error
+
+    def _commit_deletion(
+        self, selected: list[str], preference_keys: set[str],
+        resolved: tuple[set[int], set[str]],
+    ) -> int:
+        event_ids, resolved_keys = resolved
+        storage = self.dependencies.storage
+        try:
             if not event_ids:
                 raise NotFoundError(
                     "selected conversations no longer exist in local history"
@@ -1149,6 +1328,9 @@ class BackendOperations:
             raise InvalidArgumentsError(
                 f"local data policy must be one of: {choices}"
             )
+        # Erasing for a policy that is only assumed could remove data the
+        # saved one keeps, or keep plaintext that should be encrypted.
+        self.dependencies.storage.require_known_policy()
         if selected != self.dependencies.storage.status.policy:
             # Never mix plaintext and ciphertext in one archive. Clear before
             # changing policy so a crash can leave stale settings or an empty
@@ -1189,6 +1371,8 @@ class BackendOperations:
             raise NotReadyError("local storage is unavailable")
         if storage.busy and not storage.cancel_passive_request():
             raise NotReadyError("a desktop wallet request is already pending")
+        # A reset starts over under the saved policy, so it must be readable.
+        storage.require_known_policy()
         completed = False
 
         def succeeded(status: StorageStatus) -> None:

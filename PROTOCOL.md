@@ -236,6 +236,15 @@ the tested phone they are indistinguishable on the wire:
 - `ListMessages` puts the message text in the `Subject` property. It also
   supplies sender, timestamp, folder, type, and read state without requiring a
   full bMessage download.
+- BlueZ's `ListMessages` filter keys are `MaxCount` (uint16, default 1024),
+  `Offset`, `SubjectLength`, `Fields`, `Types`, `PeriodBegin`, `PeriodEnd`,
+  `Read`, `Recipient`, `Sender` and `Priority` (BlueZ 5.87,
+  `doc/org.bluez.obex.MessageAccess.rst` and `parse_message_filters` in
+  `obexd/client/map.c`). obexd silently ignores unknown keys, so the MAP
+  specification's `MaxListCount` leaves the default of 1024 entries in
+  effect; a `MaxCount` of another D-Bus type is rejected. The one-time-code
+  lookup lists up to 1024 inbox entries because the order in which iOS
+  returns entries when `MaxCount` truncates the listing is unverified.
 - Changing `Message1.Read` is reflected on the phone. Conversely, opening a
   message on the phone produces a read-property update that can close the
   corresponding desktop popup.
@@ -265,10 +274,9 @@ the `PeriodBegin` filter, the order in which it returns entries when
 before iOS shortens it, and whether MAP handles stay stable across sessions.
 The backfill filters by time itself and does not rely on stable handles.
 
-BlueZ's `ListMessages` filter keys are `MaxCount`, `PeriodBegin` and so on;
-obexd silently ignores unknown keys (checked in BlueZ 5.87
-`obexd/client/map.c`). A `MaxListCount` key, as passed by the older listing
-code, leaves obexd's default of 1024 entries in effect.
+The backfill passes BlueZ's `MaxCount` and `PeriodBegin` filter keys (listed
+above); `PeriodBegin` is a string in BlueZ's `YYYYMMDDTHHMMSS` format, which
+obexd forwards unchanged.
 
 ## MAP send behavior
 
@@ -341,8 +349,8 @@ The iPhone phonebook is available through BlueZ's
 - Select the main phonebook with `Select("int", "pb")`; this is not MAP's
   `SetFolder` API.
 - Pull it with `PullAll(path, {"MaxCount": ..., "Format": "vcard30", "Offset": 1})`.
-  `MaxListCount` is a MAP option and causes a PBAP transfer to fail or yield a
-  zero-byte file.
+  `MaxListCount` is the MAP specification's parameter name, not a BlueZ filter
+  key, and causes a PBAP transfer to fail or yield a zero-byte file.
 - PBAP reserves `telecom/pb/0.vcf` for the owner card and returns the bulk
   phonebook in ascending index order (PBAP 1.2.3, sections 3.1.5.2 and 4.2).
   `Offset=1` excludes this entry before parsing or photo budgeting. This

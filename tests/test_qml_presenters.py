@@ -829,6 +829,7 @@ def settings_window(qml_engine):
             signal messageSendSucceeded(string recipient, string body)
             signal threadSendSucceeded(string key, string body)
             signal groupConfirmationRequested(string key, string body, string recipients)
+            signal senderConfirmationRequested(string key, string body, string name, string address)
             signal groupParticipantsRequested(string key, string body)
             signal dialLinkRequested(string number, string problem)
             signal dialInputRequested(string text)
@@ -2012,6 +2013,7 @@ class _MessageDialogBridge(QObject):
 
     messageSendSucceeded = Signal(str, str)
     groupConfirmationRequested = Signal(str, str, str)
+    senderConfirmationRequested = Signal(str, str, str, str)
 
     @Property(bool, constant=True)
     def busy(self):
@@ -2149,6 +2151,36 @@ def test_group_confirmation_component_shows_literal_recipients(qml_engine):
     assert dialog.property("threadKey") == "group:test"
     assert dialog.property("draft") == "draft"
     assert dialog.property("subtitle") == "<span>&lt;alice&gt;<br>bob@example.com</span>"
+    dialog.deleteLater()
+
+
+def test_sender_confirmation_component_names_the_sender_literally(qml_engine):
+    class Bridge(_MessageDialogBridge):
+        def __init__(self):
+            super().__init__()
+            self.sent = []
+
+        @Slot(str, str, bool)
+        def sendThread(self, key, body, confirm):
+            self.sent.append((key, body, confirm))
+
+    bridge = Bridge()
+    component = _component(qml_engine, "src/blueferry/qt/qml/SenderConfirmationDialog.qml")
+    dialog = component.createWithInitialProperties({"bridge": bridge})
+    assert dialog is not None
+    bridge.senderConfirmationRequested.emit(
+        "address:phone:15551111111", "draft", "<Alice>", "+15551111111",
+    )
+    assert dialog.property("threadKey") == "address:phone:15551111111"
+    assert dialog.property("draft") == "draft"
+    assert dialog.property("subtitle") == (
+        "<span>The latest message from &lt;Alice&gt; may have been sent in a group. "
+        "Your reply goes only to +15551111111.</span>"
+    )
+    assert bridge.sent == []
+    qml_engine.globalObject().setProperty("senderDialog", qml_engine.newQObject(dialog))
+    _evaluate(qml_engine, "senderDialog.customFooterActions[0].trigger()")
+    assert bridge.sent == [("address:phone:15551111111", "draft", True)]
     dialog.deleteLater()
 
 
@@ -3697,11 +3729,35 @@ Item {
           "reply reused the previous roster approval");
         backendBridge.response("send_to_thread", 5, "transfer");
 
+        // A message that may be from a group: Send asks whether the reply
+        // goes to the sender only, bound to the messages shown.
+        const maybeGroup = {
+          key: "alice", name: "Alice", is_group: false, recipients: ["alice@example.com"],
+          messages: [], reply_ready: false, group_ambiguous: true,
+          sender_reply_token: "sender:one", confirmation_token: "sender:one"
+        };
+        root.threads = [maybeGroup];
+        root.selectedThreadKey = maybeGroup.key;
+        composer.text = "just you";
+        check(sendMessageButton.enabled, "a message that may be from a group blocked the reply box");
+        sendMessageButton.clicked();
+        check(senderConfirmPopup.visible && sends().length === 3, "Send did not ask about the sender");
+        senderConfirmPopup.close();
+        check(sends().length === 3 && composer.text === "just you", "Cancel sent or lost the draft");
+        sendMessageButton.clicked();
+        root.sendToSenderOnly();
+        check(!senderConfirmPopup.visible && sends().length === 4
+          && sends()[3].args.confirm_group === true && sends()[3].args.body === "just you"
+          && sends()[3].args.expected_group_token === "sender:one",
+          "reply to the sender only was not bound to the messages shown");
+        backendBridge.response("send_to_thread", 6, "transfer");
+        root.selectedThreadKey = pending.key;
+
         root.threads = [Object.assign({}, saved, {is_group: false, recipients: ["alice@example.com"]})];
         composer.text = "direct reply";
         check(sendMessageButton.enabled, "direct reply disabled");
         sendMessageButton.clicked();
-        check(sends()[3].args.confirm_group === false && sends()[3].args.expected_group_token === "",
+        check(sends()[4].args.confirm_group === false && sends()[4].args.expected_group_token === "",
           "direct reply sent as group");
 
         const interruptedRead = latestRead();

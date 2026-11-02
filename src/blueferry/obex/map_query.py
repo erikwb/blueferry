@@ -27,7 +27,17 @@ log = logging.getLogger(__name__)
 
 QUERY_DEADLINE_SECONDS = 60
 OTP_QUERY_DEADLINE_SECONDS = 20
-OTP_QUERY_LIMIT = 20
+# BlueZ's ListMessages filter key is ``MaxCount`` (uint16, obexd default
+# 1024); obexd silently ignores unknown keys and rejects a MaxCount of any
+# other D-Bus type (doc/org.bluez.obex.MessageAccess.rst, ``ListMessages``;
+# obexd/client/map.c, ``parse_message_filters``).
+MAP_MAX_COUNT_FILTER = "MaxCount"
+# The pushed message is the newest in the inbox, but the order in which iOS
+# returns entries when MaxCount truncates the listing is unverified. The
+# lookup has always run with obexd's default of 1024 entries, because the
+# old ``MaxListCount`` key was ignored; keep that so truncation cannot hide
+# the pushed message.
+OTP_QUERY_LIMIT = 1024
 
 
 def lookup_otp_metadata(session_path: str, message_path: str) -> OtpMetadata | None:
@@ -35,7 +45,7 @@ def lookup_otp_metadata(session_path: str, message_path: str) -> OtpMetadata | N
 
     MNS notifications often omit Timestamp. Listing the inbox populates it,
     but the newest entry might be another message. Fail closed unless the
-    exact object path appears in a small, bounded listing of this session.
+    exact object path appears in a bounded listing of this session.
     """
     parent, _, handle = message_path.rpartition("/")
     if parent != session_path or not handle.startswith("message"):
@@ -44,7 +54,7 @@ def lookup_otp_metadata(session_path: str, message_path: str) -> OtpMetadata | N
     map_iface = obex(session_path, "org.bluez.obex.MessageAccess1")
     _navigate_to_folder(map_iface, "telecom/msg/INBOX", deadline=deadline)
     messages = map_iface.ListMessages(
-        "", {"MaxListCount": dbus.UInt16(OTP_QUERY_LIMIT)},
+        "", _list_filters(OTP_QUERY_LIMIT),
         timeout=_remaining(deadline, 10),
     )
     # ListMessages returns a{oa{sv}} with the same Message1 properties that
@@ -58,6 +68,13 @@ def lookup_otp_metadata(session_path: str, message_path: str) -> OtpMetadata | N
         parse_map_timestamp(timestamp) if isinstance(timestamp, str) else None,
         # Missing or malformed flags cannot establish that the code is unread.
         bool(read) if isinstance(read, (bool, dbus.Boolean)) else True,
+    )
+
+
+def _list_filters(max_count: int) -> dbus.Dictionary:
+    """ListMessages filters with BlueZ's key and type for the entry limit."""
+    return dbus.Dictionary(
+        {MAP_MAX_COUNT_FILTER: dbus.UInt16(max_count)}, signature="sv",
     )
 
 
@@ -106,7 +123,7 @@ def list_recent_messages(
 
     # ListMessages returns object paths; we fetch each one's Message1 props
     paths = list(map_iface.ListMessages(
-        "", {"MaxListCount": dbus.UInt16(limit)},
+        "", _list_filters(limit),
         timeout=_remaining(deadline, 30),
     ))[:limit]
     log.info("ListMessages(%s, limit=%d) → %d paths", folder, limit, len(paths))
@@ -171,9 +188,7 @@ def list_inbox_since(
     deadline = time.monotonic() + QUERY_DEADLINE_SECONDS
     map_iface = obex(session_path, "org.bluez.obex.MessageAccess1")
     _navigate_to_folder(map_iface, INBOX_FOLDER, deadline=deadline)
-    filters = dbus.Dictionary(
-        {"MaxCount": dbus.UInt16(bounded)}, signature="sv",
-    )
+    filters = _list_filters(bounded)
     if since is not None:
         filters["PeriodBegin"] = dbus.String(
             since.astimezone().strftime(_PERIOD_FORMAT)
