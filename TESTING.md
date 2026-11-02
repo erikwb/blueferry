@@ -14,7 +14,8 @@ installed desktop, Bluetooth, OBEX, notification, or BlueFerry services.
 
 ```sh
 # Safe unit/contract suite; private-D-Bus test skips. The checkout's `src/`
-# path is also pinned in pyproject.toml so an installed copy cannot win.
+# path is also pinned in pyproject.toml, and conftest exports it to Python
+# child processes, so an installed copy cannot win.
 python -m pytest
 
 # Full hermetic suite, including the public D-Bus round trip.
