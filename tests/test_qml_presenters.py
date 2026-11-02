@@ -761,10 +761,40 @@ def settings_window(qml_engine):
             property var threads: []
             property var devices: []
             property var contactResults: []
+            property var dialSuggestions: []
             property var nowPlaying: ({})
             property var featureHints: ({})
             property var phoneAudio: ({})
             property string phoneName: "Test iPhone"
+            property string phoneConnection: "Not connected"
+            // phone_link_view.DIAL_KEYS and simplified stand-ins for the
+            // controller's phone_link_view slots (tested in test_phone_overview).
+            property var dialKeys: [["1", ""], ["2", "ABC"], ["3", "DEF"], ["4", "GHI"],
+                ["5", "JKL"], ["6", "MNO"], ["7", "PQRS"], ["8", "TUV"], ["9", "WXYZ"],
+                ["*", ""], ["0", "+"], ["#", ""]]
+            function dialable(value) { return String(value || "").replace(/[^0-9+*#]/g, "").slice(0, 32); }
+            function callsHint(status, state) {
+                if (status.calls_enabled !== true) return featureHints.calls || "Phone calls are off.";
+                return state === "ready" ? "" : "Waiting for the iPhone's hands-free connection.";
+            }
+            function callCard(call, now) {
+                const held = call.state === "held";
+                return {
+                    title: call.display_peer || "", ringing: call.ringing === true, held: held,
+                    subtitle: call.ringing === true ? "Incoming call\\u2026" : held ? "On hold" : "",
+                    answer: "Answer", hold: held ? "Resume" : "Hold",
+                    hangup: call.ringing === true ? "Decline" : "Hang Up",
+                    active: call.state === "active" && call.ringing !== true,
+                    tones: "Keypad tones (0-9 * #)", send_tones: "Send Tones",
+                };
+            }
+            function notificationsView(info, hint) {
+                return {
+                    title: hint !== "" ? "Notification List Is Off" : "No Notifications Yet",
+                    explanation: hint !== "" ? hint : (info.error || ""),
+                    contentHint: info.enabled === true && info.content !== true ? "Only app names" : "",
+                };
+            }
             property var notifications: []
             property var notificationsInfo: ({})
             property var callHistoryRows: ({})
@@ -799,6 +829,7 @@ def settings_window(qml_engine):
             signal messageSendSucceeded(string recipient, string body)
             signal threadSendSucceeded(string key, string body)
             signal groupConfirmationRequested(string key, string body, string recipients)
+            signal groupParticipantsRequested(string key, string body)
             signal dialLinkRequested(string number, string problem)
             signal dialInputRequested(string text)
             property var contactNames: ({})
@@ -815,6 +846,7 @@ def settings_window(qml_engine):
             }
             function answerPairingConfirmation(approved) { record("answerPairingConfirmation", [approved]); }
             function setStoragePolicy(policy) { record("setStoragePolicy", [policy]); }
+            function resetStorage() { record("resetStorage", []); }
             function setProximityLock(enabled, grace) { record("setProximityLock", [enabled, grace]); }
             function setCallHistory(enabled, popups) { record("setCallHistory", [enabled, popups]); }
             property var notificationOpenMap: []
@@ -832,9 +864,24 @@ def settings_window(qml_engine):
             function setTetherConnected(connected) { record("setTetherConnected", [connected]); }
             function setPhoneAudioRoute(route) { record("setPhoneAudioRoute", [route]); }
             function swapCalls() { record("swapCalls", []); }
+            property string callTonesDraft: ""
+            property string activeCallId: ""
+            property string callTonesSent: ""
+            function pressCallTone(key) {
+                if (activeCallId === "") return false;
+                record("pressCallTone", [key]); return true;
+            }
+            function setCallTonesDraft(text) { callTonesDraft = text; }
+            function sendCallTones(callId, tones) {
+                record("sendCallTones", [callId, tones]); callTonesDraft = "";
+            }
             function watchNotifications(watched) { record("watchNotifications", [watched]); }
             function refreshNotifications() { record("refreshNotifications", []); }
             function setThreadStarred(key, starred) { record("setThreadStarred", [key, starred]); }
+            function sendThread(key, body, confirm) { record("sendThread", [key, body, confirm]); }
+            function setGroupParticipants(key, recipients, draft) {
+                record("setGroupParticipants", [key, recipients, draft]);
+            }
             function markThreadRead(key) { record("markThreadRead", [key]); }
             function watchPhotos(watched) { record("watchPhotos", [watched]); }
             function refreshPhotos() { record("refreshPhotos", []); }
@@ -1091,6 +1138,36 @@ def test_qt_storage_label_reports_unavailability_after_failed_reads(settings_win
         bridge.setProperty("status", state.status.to_dict())
         labels.append(status_label.property("text"))
     assert labels == [label, "Unavailable", label]
+
+
+def test_qt_offers_storage_reset_only_while_saved_data_cannot_be_opened(
+    qml_engine, settings_window,
+):
+    from PySide6.QtCore import QMetaObject
+
+    window, bridge = settings_window
+    bridge.setProperty("setupLoaded", True)  # Shows the settings page.
+    QGuiApplication.processEvents()
+    button = _settings_object(window, "storageResetButton")
+    for status, offered in (
+        ({"storage_policy": "encrypted", "storage_state": "locked", "storage_reset": False}, False),
+        ({"storage_policy": "encrypted", "storage_state": "locked"}, False),  # Older daemon.
+        ({"storage_policy": "encrypted", "storage_state": "locked", "storage_reset": True}, True),
+        ({"storage_policy": "plaintext", "storage_state": "error", "storage_reset": True}, True),
+    ):
+        bridge.setProperty("status", {"daemon": True, **status})
+        QGuiApplication.processEvents()
+        assert button.property("visible") is offered, status
+
+    QMetaObject.invokeMethod(button, "clicked")
+    QGuiApplication.processEvents()
+    dialog = _settings_object(window, "storageResetDialog")
+    assert dialog.property("visible")
+    methods = "testBridge.calls.map(c => c.method)"
+    assert "resetStorage" not in _evaluate(qml_engine, methods)  # Confirmation first.
+    qml_engine.globalObject().setProperty("storageResetDialog", qml_engine.newQObject(dialog))
+    _evaluate(qml_engine, "storageResetDialog.customFooterActions[0].trigger()")
+    assert _evaluate(qml_engine, methods)[-1] == "resetStorage"
 
 
 def test_qt_warns_about_a_suspect_le_bond_only_when_the_backend_reports_it(
@@ -1990,6 +2067,103 @@ def test_new_message_dialog_retains_edited_draft_after_earlier_send(qml_engine):
     dialog.deleteLater()
 
 
+def _unconfirmed_group_dict() -> dict:
+    """Issue #300 as the clients receive it: the son's address is ambiguous."""
+    from blueferry.models import Thread
+
+    return Thread.from_dict({
+        "key": "group:participants:son|wife", "name": "Son, Wife", "is_group": True,
+        "group_origin": "unnamed", "reply_ready": False, "participants_required": True,
+        "recipients": ["+15551111111"], "observed_recipients": ["+15551111111"],
+        "missing_members": ["Son"],
+        "messages": [{"handle": "1", "body": "dinner at 7", "timestamp": "2026-10-31T18:00:00Z",
+                      "outgoing": False, "read": True, "sender": "Wife",
+                      "address": "+15551111111"}],
+    }).to_dict()
+
+
+def test_qt_reply_to_unconfirmed_group_asks_for_members_with_contact_search(
+    qml_engine, settings_window,
+):
+    window, bridge = settings_window
+    thread = _unconfirmed_group_dict()
+    bridge.setProperty("threads", [thread])
+    window.setProperty("selectedThreadKey", thread["key"])
+    QGuiApplication.processEvents()
+    composer = window.findChild(QObject, "messageComposer")
+    send = window.findChild(QObject, "sendButton")
+    composer.setProperty("text", "on my way")
+    QGuiApplication.processEvents()
+    assert composer.property("enabled") is True
+    assert send.property("enabled") is True
+
+    dialog = window.findChild(QObject, "groupParticipantsDialog")
+    qml_engine.globalObject().setProperty("membersDialog", qml_engine.newQObject(dialog))
+    for attempt in range(2):
+        QMetaObject.invokeMethod(send, "clicked")
+        assert _evaluate(qml_engine, "testBridge.calls")[-1] == {
+            "method": "sendThread", "args": [thread["key"], "on my way", False],
+        }
+        # The controller answers NEEDS_PARTICIPANTS on every attempt.
+        bridge.groupParticipantsRequested.emit(thread["key"], "on my way")
+        QTest.qWait(50)
+        assert dialog.property("visible") is True
+        assert dialog.property("draft") == "on my way"
+        assert _evaluate(qml_engine, "membersDialog.entries") == [
+            {"name": "Wife", "address": "+15551111111"},
+        ]
+        assert _evaluate(qml_engine, "membersDialog.missing") == ["Son"]
+        if attempt == 0:
+            # Cancel sends nothing and keeps the draft.
+            QMetaObject.invokeMethod(dialog, "close")
+            _wait_closed(dialog)
+            assert "setGroupParticipants" not in _bridge_methods(qml_engine)
+            assert composer.property("text") == "on my way"
+            assert dialog.property("draft") == ""
+
+    # Typing searches contacts; each address is its own choice.
+    search = dialog.findChild(QObject, "participantSearch")
+    search.forceActiveFocus()
+    for char in "Son":
+        QTest.keyClick(window, char)
+    QTest.qWait(250)
+    assert {"method": "findContacts", "args": ["Son"]} in _evaluate(qml_engine, "testBridge.calls")
+    bridge.setProperty("contactResults", [
+        {"name": "Son", "address": "+15552222222"},
+        {"name": "Son", "address": "son@icloud.com"},
+        {"name": "Wife", "address": "+1 555 111 1111"},
+    ])
+    QGuiApplication.processEvents()
+    suggestions = dialog.findChild(QObject, "participantSuggestions")
+    suggestions.setProperty("width", 300)
+    QMetaObject.invokeMethod(suggestions, "forceLayout")
+    QGuiApplication.processEvents()
+    rows = {
+        str(item.property("subtitle")): item
+        for item in suggestions.property("contentItem").childItems()
+        if item.metaObject().indexOfSignal("clicked()") >= 0
+    }
+    assert set(rows) == {"+15552222222", "son@icloud.com"}
+    QMetaObject.invokeMethod(rows["+15552222222"], "clicked")
+    QGuiApplication.processEvents()
+    assert _evaluate(qml_engine, "membersDialog.missing") == []
+    assert search.property("text") == ""
+    # Results for an earlier query are not offered while the next one is pending.
+    QTest.keyClick(window, "B")
+    QGuiApplication.processEvents()
+    assert _evaluate(qml_engine, "membersDialog.suggestions") == []
+    QTest.keyClick(window, Qt.Key_Return)
+    assert len(_evaluate(qml_engine, "membersDialog.entries")) == 2
+    search.setProperty("text", "")
+
+    _evaluate(qml_engine, "membersDialog.customFooterActions[0].trigger()")
+    assert _evaluate(qml_engine, "testBridge.calls").count({
+        "method": "setGroupParticipants",
+        "args": [thread["key"], ["+15551111111", "+15552222222"], "on my way"],
+    }) == 1
+    _wait_closed(dialog)
+
+
 def test_group_confirmation_component_shows_literal_recipients(qml_engine):
     bridge = _MessageDialogBridge()
     component = _component(qml_engine, "src/blueferry/qt/qml/GroupConfirmationDialog.qml")
@@ -2038,23 +2212,54 @@ def test_quickshell_search_coalesces_queries_and_ignores_superseded_replies(qml_
     }
 
 
-@pytest.mark.parametrize("text", [
-    "  alice@example.com\n\n+15551111111\nalice@example.com  ",
-    "alice\rbob\r\nalice\u2028carol\u0085dave\v\ffrank",
-    "", " \n\t ",
-])
-def test_roster_parsing_matches_between_python_and_qml(qml_engine, text):
+def test_qml_participant_editor_matches_python_draft(qml_engine):
     import json
 
-    from blueferry.recipients import participant_lines
+    from blueferry.conversation_state import ParticipantDraft
+    from blueferry.models import Thread
 
     component = _component(qml_engine, "src/blueferry/qt/qml/ConversationLogic.qml")
     logic = component.create()
     assert logic is not None
     qml_engine.globalObject().setProperty("logic", qml_engine.newQObject(logic))
-    result = qml_engine.evaluate("JSON.stringify(logic.participantLines(" + json.dumps(text) + "))")
-    assert not result.isError(), result.toString()
-    assert json.loads(result.toString()) == participant_lines(text)
+    thread = _unconfirmed_group_dict()
+    draft = ParticipantDraft(Thread.from_dict(thread))
+    results = [
+        {"name": "Son", "address": "+15552222222"},
+        {"name": "Wife", "address": "+1 (555) 111-1111"},
+    ]
+    result = json.loads(_evaluate(qml_engine, '''(function() {
+        const thread = ''' + json.dumps(thread) + ''';
+        const results = ''' + json.dumps(results) + ''';
+        let entries = logic.participantDraft(thread);
+        const start = {entries: entries, missing: logic.missingMembers(thread, entries),
+            suggestions: logic.participantSuggestions(results, entries),
+            compose: logic.canCompose(thread),
+            readOnly: logic.canCompose(Object.assign({}, thread, {participants_required: false}))};
+        const invalid = logic.addParticipant(entries, "Son", "");
+        entries = logic.addParticipant(entries, " +15552222222 ", "Son");
+        const again = logic.addParticipant(entries, "+1 555 222 2222", "");
+        const added = {entries: entries, missing: logic.missingMembers(thread, entries),
+            invalid: invalid, duplicate: again.length};
+        entries = logic.removeParticipant(entries, "+15552222222");
+        return JSON.stringify({start: start, added: added,
+            removed: logic.missingMembers(thread, entries)});
+    })()'''))
+
+    assert result["start"] == {
+        "entries": [{"name": name, "address": address} for name, address in draft.entries],
+        "missing": draft.missing,
+        "suggestions": [{"name": name, "address": address}
+                        for name, address in draft.suggestions(
+                            [(row["name"], row["address"]) for row in results])],
+        "compose": True, "readOnly": False,
+    }
+    assert draft.add("+15552222222", "Son")
+    assert result["added"] == {
+        "entries": [{"name": name, "address": address} for name, address in draft.entries],
+        "missing": draft.missing, "invalid": None, "duplicate": 2,
+    }
+    assert result["removed"] == ["Son"]
     logic.deleteLater()
 
 
@@ -3405,7 +3610,16 @@ Item {
         root.threads = [pending];
         root.selectedThreadKey = pending.key;
         composer.text = "hello";
-        check(!sendMessageButton.enabled, "unconfigured group allowed a reply");
+        // Send asks for the members, every time, and Cancel sends nothing.
+        for (let attempt = 0; attempt < 2; ++attempt) {
+          check(sendMessageButton.enabled, "unconfirmed group blocked the reply box");
+          sendMessageButton.clicked();
+          check(groupParticipantsPopup.visible && root.groupParticipantsDraft === "hello",
+            "Send did not ask for the group's members");
+          groupParticipantsPopup.close();
+        }
+        check(sends().length === 0 && composer.text === "hello" && root.groupParticipantsDraft === "",
+          "cancelled members dialog sent or lost the draft");
         root.reload();
         const initialRead = latestRead();
 
@@ -3468,18 +3682,41 @@ Item {
 
         const changed = Object.assign({}, reviewed, {
           reply_ready: false, participants_required: true, roster_changed: true,
-          confirmation_token: "changed\nalice@example.com\ncarol@example.com"
+          confirmation_token: "changed\nalice@example.com\ncarol@example.com",
+          participant_draft: [{name: "", address: "alice@example.com"},
+                              {name: "", address: "carol@example.com"}]
         });
         root.threads = [changed];
         composer.text = "after roster change";
-        check(!sendMessageButton.enabled, "roster needing review allowed a reply");
+        sendMessageButton.clicked();
+        check(sends().length === 2 && groupParticipantsPopup.visible,
+          "roster needing review did not ask for the members");
+        check(root.participantEntries.map(entry => entry.address).join() === changed.recipients.join(),
+          "members dialog did not start from the known addresses");
+        // Contact matches already in the list are not offered again.
+        root.contactResults = [{name: "Carol", address: "carol@example.com"},
+                               {name: "Dan", address: "dan@example.com"}];
+        participantSearch.text = "a";
+        check(groupParticipantsPopup.suggestions.length === 0,
+          "results for an earlier query were offered");
+        groupParticipantsPopup.searchedText = "a";  // The debounced search answered.
+        check(groupParticipantsPopup.suggestions.length === 1
+          && groupParticipantsPopup.suggestions[0].address === "dan@example.com",
+          "suggestions were not filtered");
+        check(root.addParticipant("dan@example.com", "Dan") && !root.addParticipant("Dan", ""),
+          "adding a contact or rejecting a name failed");
+        check(groupParticipantsPopup.missing.length === 0, "unexpected missing members");
+        saveParticipantsButton.clicked();
+        const saveCall = backendBridge.calls.filter(call => call.method === "set_group_participants")[0];
+        check(saveCall.args.recipients.join() === "alice@example.com,carol@example.com,dan@example.com",
+          "Save did not send the listed members");
         const resolved = Object.assign({}, changed, {
           reply_ready: true, participants_required: false, roster_changed: false
         });
-        root.groupParticipantsBusy = true;
         backendBridge.response("set_group_participants", 4, resolved);
-        check(sendMessageButton.enabled, "reviewed roster required another confirmation");
-        sendMessageButton.clicked();
+        // The held draft then goes out through the normal Send path.
+        check(sends().length === 3 && sends()[2].args.body === "after roster change",
+          "saved members did not send the held draft");
         check(sends()[2].args.expected_group_token === resolved.confirmation_token,
           "reply reused the previous roster approval");
         backendBridge.response("send_to_thread", 5, "transfer");
@@ -3535,10 +3772,14 @@ class _CallsBridge(QObject):
     def callHistoryRows(self):
         missed = {"direction": "missed", "caller": "<b>Eve</b>", "known": True,
                   "address": "+15551230002", "day": "Today", "clock": "2:36 PM",
-                  "missed": True, "count": 3, "ids": ["m-1", "m-2", "m-3"]}
+                  "missed": True, "count": 3, "title": "<b>Eve</b> (3)",
+                  "detail": "Missed · +15551230002", "direction_label": "Missed",
+                  "ids": ["m-1", "m-2", "m-3"]}
         outgoing = {"direction": "outgoing", "caller": "+15551230001", "known": False,
                     "address": "+15551230001", "day": "Today", "clock": "1:02 PM",
-                    "missed": False, "count": 1, "ids": ["out-1"]}
+                    "missed": False, "count": 1, "title": "+15551230001",
+                    "detail": "Outgoing", "direction_label": "Outgoing",
+                    "ids": ["out-1"]}
         return {"all": [missed, outgoing], "missed": [missed]}
 
     @Property("QVariantMap", constant=True)
@@ -3574,6 +3815,44 @@ class _CallsBridge(QObject):
         self.syncs += 1
 
 
+def test_tab_wording_slots_of_the_real_controller_follow_the_status(qml_engine):
+    """The tabs pass the status into callsHint()/notificationsView()/callCard()
+    so the bindings re-evaluate; the QML stand-ins elsewhere cannot show it."""
+    from blueferry.qt.controller import BridgeController
+
+    controller = BridgeController(
+        backend=object(), setup=object(), subscribe=False, autostart=False,
+    )
+    component = QQmlComponent(qml_engine)
+    component.setData(b'''
+        import QtQuick
+        QtObject {
+            required property var bridge
+            property real now: 0
+            readonly property string callsHint: bridge.callsHint(
+                bridge.status || ({}), bridge.callsState || "")
+            readonly property var view: bridge.notificationsView(
+                bridge.notificationsInfo || ({}), (bridge.featureHints || {}).notifications || "")
+            readonly property var card: bridge.callCard({
+                "state": "active", "display_peer": "Kim",
+                "first_seen": "2026-10-26T10:00:00+00:00"}, now)
+        }
+    ''', QUrl())
+    item = component.createWithInitialProperties({"bridge": controller})
+    assert item is not None, [error.toString() for error in component.errors()]
+    assert "Enable phone calls" in item.property("callsHint")
+    assert item.property("view")["title"] == "Notification List Is Off"
+    controller._status = {"calls_enabled": True, "notification_history_enabled": True}
+    controller.statusChanged.emit()
+    assert item.property("callsHint") == "Waiting for the iPhone's hands-free connection."
+    assert item.property("view")["title"] == "No Notifications Yet"
+    from datetime import datetime
+    started = datetime.fromisoformat("2026-10-26T10:00:00+00:00").timestamp()
+    item.setProperty("now", (started + 75) * 1000)
+    assert item.property("card")["subtitle"] == "1:15"
+    item.deleteLater()
+
+
 def test_recent_calls_page_loads_once_and_filters_missed_calls(qml_engine):
     from PySide6.QtQml import QQmlExpression
 
@@ -3593,6 +3872,7 @@ def test_recent_calls_page_loads_once_and_filters_missed_calls(qml_engine):
     page.setProperty("missedOnly", True)
     assert evaluate("visibleCalls().map(call => call.direction).join()") == "missed"
     assert bridge.syncs == 0
+    assert evaluate("visibleCalls()[0].direction_label") == "Missed"
     # Remote names and numbers are rendered as plain text, never as markup.
     source = (ROOT / "src/blueferry/qt/qml/RecentCallsPage.qml").read_text()
     assert source.count("Controls.Label {") == source.count("textFormat: Text.PlainText")
@@ -4793,7 +5073,8 @@ def test_short_calls_windows_scroll_the_dialer_and_keep_history_visible(
     bridge.setProperty("callHistoryRows", {"all": [
         {"key": "one", "day": "Today", "clock": "10:00", "caller": "Test",
          "address": "+15551234567", "known": True, "direction": "incoming",
-         "missed": False, "count": 1},
+         "missed": False, "count": 1, "title": "Test",
+         "detail": "Incoming · +15551234567", "direction_label": "Incoming"},
     ]})
     _evaluate(qml_engine, "testWindow.currentTab = testWindow.callsTab")
     QTest.qWait(100)
@@ -4873,10 +5154,10 @@ def test_dial_suggestions_show_and_dial_contact_numbers_unchanged(qml_engine, se
     bridge.setProperty("callsState", "ready")
     QGuiApplication.processEvents()
     _settings_object(window, "dialPadField").setProperty("text", "Kim")
-    bridge.setProperty("contactResults", [
+    # phone_link_view.dial_suggestions has already left out email addresses.
+    bridge.setProperty("dialSuggestions", [
         {"name": "Pat US", "address": "+15550100123"},
         {"name": "Kim AU", "address": "0491570156"},
-        {"name": "Mail", "address": "kim@example.org"},
     ])
     QGuiApplication.processEvents()
     suggestions = _settings_object(window, "dialSuggestions")
@@ -5037,6 +5318,7 @@ def test_phone_card_greys_out_opt_ins_and_switches_audio_explicitly(qml_engine, 
     card = _settings_object(window, "phoneCard")
     assert card.property("visible") is True
     assert _settings_object(window, "phoneCardName").property("text") == "Test iPhone"
+    assert _settings_object(window, "phoneCardConnection").property("text") == "Not connected"
     _evaluate(qml_engine, """testBridge.featureHints = {
         media: "Set BLUEFERRY_MEDIA_CONTROL_ENABLED=true", phoneStatus: "Battery <b>needs</b> calls"
     }""")
@@ -5116,6 +5398,112 @@ def test_running_calls_show_as_cards_with_answer_hold_and_hang_up(qml_engine, se
     bridge.setProperty("phoneCalls", [])
     QGuiApplication.processEvents()
     assert _visual_find(window.contentItem(), "activeCallCard", qml_engine) is None
+
+
+def test_keypad_tones_go_to_the_active_call_and_survive_a_refresh(qml_engine, settings_window):
+    window, bridge = settings_window
+    _evaluate(qml_engine, "testWindow.currentTab = testWindow.callsTab")
+    bridge.setProperty("status", {"calls_enabled": True})
+    bridge.setProperty("callsState", "ready")
+    ringing = {"call_id": "voicecall01", "state": "incoming", "ringing": True,
+               "display_peer": "Alice", "number": "+41790000001", "first_seen": ""}
+    bridge.setProperty("phoneCalls", [ringing])
+    QGuiApplication.processEvents()
+    card = _visual_find(window.contentItem(), "activeCallCard", qml_engine)
+    assert _visual_find(card, "callTonesRow").property("visible") is False
+    active = {**ringing, "state": "active", "ringing": False}
+    bridge.setProperty("phoneCalls", [active])
+    QGuiApplication.processEvents()
+    card = _visual_find(window.contentItem(), "activeCallCard", qml_engine)
+    assert _visual_find(card, "callTonesRow").property("visible") is True
+    field = _visual_find(card, "callTonesField")
+    send = _visual_find(card, "callTonesSend")
+    assert field.property("placeholderText") == "Keypad tones (0-9 * #)"
+    assert field.property("maximumLength") == 32
+    assert send.property("text") == "Send Tones" and send.property("enabled") is False
+    # Typed text: the validator keeps 0-9 * # only.
+    field.forceActiveFocus()
+    for char in "1a2*#b":
+        QTest.keyClick(window, char)
+    QGuiApplication.processEvents()
+    assert field.property("text") == "12*#"
+    assert bridge.property("callTonesDraft") == "12*#"
+    assert send.property("enabled") is True
+    bridge.setProperty("busy", True)
+    QGuiApplication.processEvents()
+    assert send.property("enabled") is True, "tones queue up; busy does not block them"
+    bridge.setProperty("busy", False)
+    # A refreshed list rebuilds the card; the draft comes back.
+    bridge.setProperty("phoneCalls", [dict(active)])
+    QGuiApplication.processEvents()
+    card = _visual_find(window.contentItem(), "activeCallCard", qml_engine)
+    field = _visual_find(card, "callTonesField")
+    assert field.property("text") == "12*#"
+    QMetaObject.invokeMethod(_visual_find(card, "callTonesSend"), "clicked")
+    QGuiApplication.processEvents()
+    assert _evaluate(qml_engine, "testBridge.calls")[-1] == {
+        "method": "sendCallTones", "args": ["voicecall01", "12*#"],
+    }
+    assert field.property("text") == ""
+    bridge.setProperty("phoneCalls", [])
+    QGuiApplication.processEvents()
+
+
+def _recorded_calls(engine):
+    calls = _evaluate(engine, "testBridge.calls")
+    return calls.toVariant() if hasattr(calls, "toVariant") else calls
+
+
+def test_keypad_and_keyboard_send_tones_during_an_active_call(qml_engine, settings_window):
+    window, bridge = settings_window
+    _evaluate(qml_engine, "testWindow.currentTab = testWindow.callsTab")
+    bridge.setProperty("status", {"calls_enabled": True})
+    bridge.setProperty("callsState", "ready")
+    QGuiApplication.processEvents()
+    field = _visual_find(window.contentItem(), "dialPadField", qml_engine)
+    one = _visual_find(window.contentItem(), "dialKey1", qml_engine)
+    # No call: the pad dials, and digit keys are not taken.
+    QMetaObject.invokeMethod(one, "clicked")
+    QGuiApplication.processEvents()
+    assert field.property("text") == "1"
+    field.setProperty("text", "")
+    field.forceActiveFocus()
+    active = {"call_id": "voicecall01", "state": "active", "ringing": False,
+              "display_peer": "Alice", "number": "+41790000001", "first_seen": ""}
+    bridge.setProperty("phoneCalls", [active])
+    bridge.setProperty("activeCallId", "voicecall01")
+    QGuiApplication.processEvents()
+    assert field.property("activeFocus") is False, "the empty number field kept the focus"
+    QMetaObject.invokeMethod(one, "clicked")
+    QMetaObject.invokeMethod(_visual_find(window.contentItem(), "dialKey#", qml_engine), "clicked")
+    zero = _visual_find(window.contentItem(), "dialKey0", qml_engine)
+    # Qt emits no clicked after a handled long press (see CallsTab.qml).
+    QMetaObject.invokeMethod(zero, "pressAndHold")
+    QGuiApplication.processEvents()
+    assert field.property("text") == ""
+    tones = [c["args"][0] for c in _recorded_calls(qml_engine) if c["method"] == "pressCallTone"]
+    assert tones == ["1", "#", "0"]
+    # The keyboard, number pad included, outside text fields.
+    window.contentItem().forceActiveFocus()
+    QTest.keyClick(window, Qt.Key_5)
+    QTest.keyClick(window, Qt.Key_7, Qt.KeypadModifier)
+    QGuiApplication.processEvents()
+    tones = [c["args"][0] for c in _recorded_calls(qml_engine) if c["method"] == "pressCallTone"]
+    assert tones[-2:] == ["5", "7"]
+    card = _visual_find(window.contentItem(), "activeCallCard", qml_engine)
+    _visual_find(card, "callTonesField").forceActiveFocus()
+    QTest.keyClick(window, Qt.Key_9)
+    QGuiApplication.processEvents()
+    assert _visual_find(card, "callTonesField").property("text") == "9", "the field keeps its keys"
+    assert "9" not in [c["args"][0] for c in _recorded_calls(qml_engine)
+                       if c["method"] == "pressCallTone"]
+    bridge.setProperty("callTonesSent", "Sent: 1 # 0")
+    QGuiApplication.processEvents()
+    sent = _visual_find(card, "callTonesSent")
+    assert sent.property("visible") is True and sent.property("text") == "Sent: 1 # 0"
+    bridge.setProperty("phoneCalls", [])
+    bridge.setProperty("activeCallId", "")
+    QGuiApplication.processEvents()
 
 
 def test_settings_page_keeps_the_former_menu_entries(qml_engine, settings_window):
@@ -5712,6 +6100,446 @@ def test_quickshell_discards_late_media_after_status_loss(qml_engine) -> None:
         return JSON.stringify(calls);
     })()'''
     assert _evaluate(qml_engine, script) == '["now_playing"]'
+
+
+# ---- Quickshell settings parity (QS-1) ----------------------------------------
+
+
+def _quickshell_click(control) -> None:
+    assert QMetaObject.invokeMethod(control, "toggle")
+    assert QMetaObject.invokeMethod(control, "clicked")
+    QGuiApplication.processEvents()
+
+
+def _quickshell_press(button) -> None:
+    assert QMetaObject.invokeMethod(button, "clicked")
+    QGuiApplication.processEvents()
+
+
+def _scene_y(item) -> float:
+    return item.mapToScene(QPointF(0, 0)).y()
+
+
+def _quickshell_items(root, name: str) -> list:
+    """Visual descendants named ``name``; Repeater rows are not QObject children."""
+    found = []
+
+    def walk(item):
+        for child in item.childItems():
+            if child.objectName() == name:
+                found.append(child)
+            walk(child)
+
+    walk(root)
+    return found
+
+
+def _plain_text_format(engine, item) -> bool:
+    engine.globalObject().setProperty("probedLabel", engine.newQObject(item))
+    return _evaluate(engine, "Number(probedLabel.textFormat)") == 0  # Text.PlainText
+
+
+def _quickshell_features(**items):
+    from blueferry.quickshell_bridge import features_reply
+
+    state = features_view.loaded(features_view.initial(), {
+        name: {"value": value, "running": running, "source": source,
+               "variable": "BLUEFERRY_" + name.upper(), "restart_required": value != running}
+        for name, (value, running, source) in items.items()
+    })
+    return features_reply(state)
+
+
+def test_quickshell_settings_follow_the_other_clients_categories(qml_engine, quickshell_setup):
+    from blueferry.tui_options import categories
+
+    base = {"daemon": True, "notification_policy": "all"}
+    page, _calls, close = _quickshell_settings_page(qml_engine, quickshell_setup, base)
+    headings = [page.findChild(QObject, key + "Category") for key in
+                ("phone", "notifications", "calls", "security", "about")]
+    assert all(heading is not None for heading in headings)
+    # Same titles and order as the Qt, GTK and terminal clients.
+    assert [heading.property("text") for heading in headings] == [
+        category.title for category in categories()
+    ]
+    positions = [_scene_y(heading) for heading in headings]
+    assert positions == sorted(positions)
+    # Rows sit under their category.
+    phone_rows = page.findChild(QObject, "runDoctorButton")
+    away = page.findChild(QObject, "proximityLockCheckBox")
+    assert positions[0] < _scene_y(phone_rows) < positions[1]
+    assert page.findChild(QObject, "autoProfileResetCheckBox") is not None
+    otp = page.findChild(QObject, "storagePolicySelector")
+    assert positions[3] < _scene_y(otp) < positions[4]
+    assert away is not None
+    close()
+
+
+def test_quickshell_feature_switches_save_and_offer_the_restart(qml_engine, quickshell_setup):
+    base = {"daemon": True, "notification_policy": "all"}
+    page, calls, close = _quickshell_settings_page(qml_engine, quickshell_setup, base)
+    restart = page.findChild(QObject, "restartNotice")
+    assert restart.property("visible") is False
+    features = _quickshell_features(
+        show_notification_content=(True, True, "default"),
+        mark_read_on_dismiss=(False, False, "default"),
+        notification_history=(True, False, "settings"),
+    )
+    page.setProperty("features", features)
+    QGuiApplication.processEvents()
+    content = page.findChild(QObject, "feature_show_notification_content")
+    history = page.findChild(QObject, "feature_notification_history")
+    assert content.property("checked") is True and content.property("enabled") is True
+    assert history.property("checked") is True
+    assert page.findChild(QObject, "featureNote_notification_history").property("text").endswith(
+        "Applies after the service restarts."
+    )
+    assert restart.property("visible") is True
+    _quickshell_press(page.findChild(QObject, "restartServiceButton"))
+    _quickshell_click(page.findChild(QObject, "feature_mark_read_on_dismiss"))
+    assert calls == [
+        ("restart_backend", {}),
+        ("set_feature", {"name": "mark_read_on_dismiss", "enabled": True}),
+    ]
+    # While it is saved the box keeps the choice and every switch waits.
+    page.setProperty("featurePending", {"mark_read_on_dismiss": True})
+    page.setProperty("busy", {"features": True})
+    QGuiApplication.processEvents()
+    mark_read = page.findChild(QObject, "feature_mark_read_on_dismiss")
+    assert mark_read.property("checked") is True
+    assert content.property("enabled") is False
+    page.setProperty("featurePending", {})
+    page.setProperty("busy", {})
+    QGuiApplication.processEvents()
+    assert mark_read.property("checked") is False  # the reloaded view decides
+    close()
+
+
+def test_quickshell_feature_switches_name_the_variable_for_an_older_daemon(
+    qml_engine, quickshell_setup,
+):
+    from blueferry.quickshell_bridge import features_reply
+
+    page, _calls, close = _quickshell_settings_page(
+        qml_engine, quickshell_setup, {"daemon": True},
+    )
+    page.setProperty("features", features_reply(
+        features_view.unavailable(features_view.initial(), "UnknownMethod"),
+    ))
+    QGuiApplication.processEvents()
+    for name, variable in (
+        ("show_notification_content", "BLUEFERRY_SHOW_NOTIFICATION_CONTENT"),
+        ("mark_read_on_dismiss", "BLUEFERRY_MARK_READ_ON_DISMISS"),
+        ("notification_history", "BLUEFERRY_NOTIFICATION_HISTORY"),
+    ):
+        assert page.findChild(QObject, "feature_" + name).property("enabled") is False
+        assert variable in page.findChild(QObject, "featureNote_" + name).property("text")
+    close()
+
+
+def test_quickshell_shows_why_the_switches_fall_back(qml_engine, quickshell_setup):
+    from blueferry.quickshell_bridge import features_reply
+
+    page, _calls, close = _quickshell_settings_page(
+        qml_engine, quickshell_setup, {"daemon": True},
+    )
+    label = page.findChild(QObject, "featuresError")
+    page.setProperty("features", _quickshell_features(
+        mark_read_on_dismiss=(False, False, "default"),
+    ))
+    QGuiApplication.processEvents()
+    assert label.property("visible") is False
+    page.setProperty("features", features_reply(
+        features_view.unavailable(features_view.initial(), "<b>BlueFerry</b> is not running"),
+    ))
+    QGuiApplication.processEvents()
+    # An older daemon without GetFeatures: the rows' notes explain it.
+    assert label.property("visible") is False
+    page.setProperty("status", {"daemon": False})
+    QGuiApplication.processEvents()
+    assert label.property("visible") is True
+    assert label.property("text") == (
+        "Could not read the service's switches: <b>BlueFerry</b> is not running"
+    )
+    assert _plain_text_format(qml_engine, label)
+    close()
+
+
+def test_quickshell_lists_switches_it_has_no_wording_for(qml_engine, quickshell_setup):
+    page, calls, close = _quickshell_settings_page(
+        qml_engine, quickshell_setup, {"daemon": True},
+    )
+    page.setProperty("features", _quickshell_features(
+        notification_history=(False, False, "default"),
+        future_switch=(False, False, "default"),
+    ))
+    QGuiApplication.processEvents()
+    shown = [box for box in _quickshell_items(page, "feature_future_switch")
+             if box.property("visible")]
+    assert len(shown) == 1 and shown[0].property("text") == "BLUEFERRY_FUTURE_SWITCH"
+    # The known one is placed in its group, not repeated.
+    known = [box for box in _quickshell_items(page, "feature_notification_history")
+             if box.property("visible")]
+    assert len(known) == 1
+    _quickshell_click(shown[0])
+    assert calls == [("set_feature", {"name": "future_switch", "enabled": True})]
+    close()
+
+
+def test_quickshell_battery_warning_and_notification_sync_are_opt_in(
+    qml_engine, quickshell_setup,
+):
+    base = {"daemon": True, "notification_policy": "all", "phone_battery_warning": False}
+    page, calls, close = _quickshell_settings_page(qml_engine, quickshell_setup, base)
+    battery = page.findChild(QObject, "phoneBatteryWarningCheckBox")
+    mirror = page.findChild(QObject, "mirrorRemovalsCheckBox")
+    # BackendStatus always fills phone_battery_warning; only the threshold
+    # says the daemon offers it.
+    assert battery.property("visible") is False and mirror.property("visible") is False
+    page.setProperty("status", {
+        **base, "phone_battery_warning_percent": 15, "mirror_iphone_removals": True,
+    })
+    QGuiApplication.processEvents()
+    assert battery.property("visible") is True and battery.property("checked") is False
+    assert page.findChild(QObject, "phoneBatteryWarningNote").property("text") == (
+        "One desktop notification per discharge, at 15 % or less."
+    )
+    assert mirror.property("visible") is True and mirror.property("checked") is True
+    _quickshell_click(battery)
+    _quickshell_click(mirror)
+    assert calls == [
+        ("set_phone_battery_warning", {"enabled": True}),
+        ("set_mirror_notification_removals", {"enabled": False}),
+    ]
+    page.setProperty("busy", {"batteryWarning": True, "mirrorRemovals": True})
+    QGuiApplication.processEvents()
+    assert battery.property("enabled") is False and mirror.property("enabled") is False
+    close()
+
+
+def test_quickshell_reconnect_and_contact_sync_rows(qml_engine, quickshell_setup):
+    page, calls, close = _quickshell_settings_page(
+        qml_engine, quickshell_setup, {"daemon": True},
+    )
+    row = page.findChild(QObject, "reconnectRow")
+    assert row.property("visible") is False  # older daemons: no row
+    page.setProperty("status", {"daemon": True, "reconnect_view": {
+        "available": True, "offered": True, "attention": True,
+        "hint": "<b>iPhone</b> not reachable.", "error": "",
+    }})
+    QGuiApplication.processEvents()
+    assert row.property("visible") is True
+    hint = page.findChild(QObject, "reconnectHint")
+    assert hint.property("text") == "<b>iPhone</b> not reachable."
+    assert _plain_text_format(qml_engine, hint)
+    button = page.findChild(QObject, "reconnectButton")
+    _quickshell_press(button)
+    _quickshell_press(page.findChild(QObject, "syncContactsButton"))
+    assert calls == [("reconnect_phone", {}), ("sync_contacts", {})]
+    page.setProperty("busy", {"reconnect": True, "syncContacts": True})
+    page.setProperty("contactsSyncNotice", "Synced 3 contact destinations")
+    QGuiApplication.processEvents()
+    assert button.property("enabled") is False
+    assert page.findChild(QObject, "syncContactsButton").property("enabled") is False
+    assert page.findChild(QObject, "syncContactsNotice").property("visible") is True
+    page.setProperty("status", {"daemon": True, "reconnect_view": {
+        "available": True, "offered": False, "hint": "The iPhone is connected.",
+    }})
+    QGuiApplication.processEvents()
+    assert button.property("visible") is False
+    close()
+
+
+def test_quickshell_diagnostics_show_the_shared_summary(qml_engine, quickshell_setup):
+    page, calls, close = _quickshell_settings_page(
+        qml_engine, quickshell_setup, {"daemon": True},
+    )
+    button = page.findChild(QObject, "runDoctorButton")
+    assert page.findChild(QObject, "doctorReport").property("visible") is False
+    _quickshell_press(button)
+    assert calls == [("doctor", {})]
+    page.setProperty("doctor", {"running": True})
+    QGuiApplication.processEvents()
+    assert button.property("enabled") is False
+    page.setProperty("doctor", doctor_report.view(doctor_report.finished_state(
+        doctor_report.idle_state(), doctor_report.DoctorReport(False, False, "<i>FAIL</i>"),
+    )))
+    QGuiApplication.processEvents()
+    assert page.findChild(QObject, "doctorSummary").property("text") == "One or more checks failed."
+    report = page.findChild(QObject, "doctorReport")
+    assert report.property("visible") is True and report.property("text") == "<i>FAIL</i>"
+    close()
+
+
+def test_quickshell_notification_list_is_shown_on_request_and_forgotten_when_hidden(
+    qml_engine, quickshell_setup,
+):
+    from blueferry.quickshell_bridge import notifications_reply
+
+    page, _calls, close = _quickshell_settings_page(
+        qml_engine, quickshell_setup, {"daemon": True},
+    )
+    listing = page.findChild(QObject, "notificationList")
+    assert listing.property("visible") is False
+    assert page.property("notificationsExpanded") is False
+    _quickshell_press(page.findChild(QObject, "notificationListButton"))
+    assert page.property("notificationsExpanded") is True
+    page.setProperty("notificationList", notifications_reply({
+        "enabled": True, "content": True,
+        "notifications": [{"app_name": "<b>Mail</b>", "title": "Hi", "body": "<a href='x'>y</a>"}],
+    }, ""))
+    QGuiApplication.processEvents()
+    assert listing.property("visible") is True
+    [app] = _quickshell_items(page, "notificationApp0")
+    [body] = _quickshell_items(page, "notificationBody0")
+    assert app.property("text") == "<b>Mail</b>"
+    assert body.property("text") == "<a href='x'>y</a>"
+    assert _plain_text_format(qml_engine, app) and _plain_text_format(qml_engine, body)
+    assert page.findChild(QObject, "notificationListTitle").property("visible") is False
+    # Hiding the page collapses the list, so the shell stops reading it.
+    page.setProperty("visible", False)
+    QGuiApplication.processEvents()
+    assert page.property("notificationsExpanded") is False
+    page.setProperty("visible", True)
+    page.setProperty("notificationList", notifications_reply({}, "Turn it on in Settings."))
+    page.setProperty("notificationsExpanded", True)
+    QGuiApplication.processEvents()
+    assert page.findChild(QObject, "notificationListTitle").property("text") == (
+        "Notification List Is Off"
+    )
+    assert page.findChild(QObject, "notificationListExplanation").property("text") == (
+        "Turn it on in Settings."
+    )
+    close()
+
+
+@pytest.mark.private_dbus
+def test_quickshell_reads_settings_and_notifications_only_on_events(
+    tmp_path, quickshell_environment,
+):
+    """The real shell: features on opening Settings, the private list only
+    while shown, rereads on NotificationsChanged, nothing on a timer."""
+    import shutil
+    import subprocess
+
+    executable = shutil.which("quickshell")
+    if executable is None:
+        pytest.skip("Quickshell is not installed")
+    for source in (ROOT / "data/quickshell").glob("*.qml"):
+        shutil.copyfile(source, tmp_path / source.name)
+    shutil.copyfile(
+        ROOT / "src/blueferry/qt/qml/ConversationLogic.qml",
+        tmp_path / "ConversationLogic.qml",
+    )
+    (tmp_path / "Theme.qml").write_text("import QtQuick\nThemePalette {}\n")
+    (tmp_path / "SetupTransport.qml").write_text('''import QtQuick
+Item {
+  signal lineReceived(int id, string kind, string line)
+  signal finished(int id, string kind, int code, string output, string diagnostic)
+  function execute(id, kind, command, interactive) {}
+  function cancel(id) {}
+  function write(id, text) {}
+}
+''')
+    (tmp_path / "BackendBridge.qml").write_text('''import QtQuick
+Item {
+  property bool desktopClient: false
+  property int nextId: 1
+  property var log: []
+  signal response(string method, int requestId, var result)
+  signal failure(string method, int requestId, string message)
+  signal eventReceived(string name, var data)
+  function request(method, args) { log.push(method); return nextId++; }
+  function requestLatest(method, args) { log.push("latest:" + method); }
+  function cancelLatest(method) { log.push("cancel:" + method); }
+  function take(prefix) {
+    const found = log.filter(entry => entry.indexOf(prefix) === 0).length;
+    log = log.filter(entry => entry.indexOf(prefix) !== 0);
+    return found;
+  }
+}
+''')
+    config = tmp_path / "shell.qml"
+    source = config.read_text()
+    probe = r'''
+  Timer {
+    interval: 200; running: true
+    onTriggered: {
+      function check(value, message) { if (!value) throw new Error(message); }
+      try {
+        setupController.configured = true
+        root.presentWindow()
+        backendBridge.log = []
+        root.phoneSettingsVisible = true
+        check(backendBridge.take("latest:features") === 1, "features not read on opening")
+        setupController.configurationUpdated(true)
+        check(backendBridge.take("latest:features") === 0, "features polled on refresh")
+        root.markStatusUnavailable("gone")
+        backendBridge.response("status", 20, {daemon: true})
+        check(backendBridge.take("latest:features") === 1, "returning service not reread")
+        backendBridge.response("status", 21, {daemon: true})
+        check(backendBridge.take("latest:features") === 0, "running service reread")
+        check(backendBridge.take("latest:notifications") === 0, "list read before shown")
+        backendBridge.eventReceived("notifications-changed", null)
+        check(backendBridge.take("latest:notifications") === 0, "hidden list reread")
+        phoneSettingsPage.notificationsExpanded = true
+        check(backendBridge.take("latest:notifications") === 1, "shown list not read")
+        backendBridge.response("notifications", 1, {rows: [{app: "Mail"}]})
+        check(root.notificationList.rows.length === 1, "list reply ignored")
+        backendBridge.eventReceived("notifications-changed", null)
+        check(backendBridge.take("latest:notifications") === 1, "event did not reread")
+        backendBridge.response("status", 2, {daemon: true, notification_history_enabled: false})
+        backendBridge.take("latest:")
+        backendBridge.response("status", 3, {daemon: true, notification_history_enabled: true})
+        check(backendBridge.take("latest:notifications") === 1, "switching on did not reread")
+        backendBridge.response("status", 4, {daemon: true, notification_history_enabled: true})
+        check(backendBridge.take("latest:notifications") === 0, "unchanged status reread")
+        root.phoneSettingsVisible = false
+        check(backendBridge.take("cancel:notifications") === 1, "hidden list not cancelled")
+        check(root.notificationList.rows === undefined, "hidden list not forgotten")
+        check(phoneSettingsPage.notificationsExpanded === false, "list stays expanded")
+        backendBridge.response("notifications", 5, {rows: [{app: "Late"}]})
+        check(root.notificationList.rows === undefined, "late reply shown while hidden")
+
+        // A switch: kept while saved, replaced by the reloaded view.
+        root.phoneSettingsVisible = true
+        phoneSettingsPage.operationRequested("set_feature", {name: "mark_read_on_dismiss", enabled: true})
+        check(root.featurePending.mark_read_on_dismiss === true, "choice not kept")
+        backendBridge.response("set_feature", 6, {switches: [], restart_pending: true, notice: "n"})
+        check(Object.keys(root.featurePending).length === 0, "pending choice stuck")
+        check(root.features.restart_pending === true, "reloaded view ignored")
+        backendBridge.take("")
+        phoneSettingsPage.operationRequested("restart_backend", {})
+        check(root.restartBusy, "restart not busy")
+        backendBridge.response("restart_backend", 7, null)
+        check(!root.restartBusy && root.features.notice === "", "restart notice kept")
+
+        // Reconnect: the bridge's outcome text goes to the error line.
+        phoneSettingsPage.operationRequested("reconnect_phone", {})
+        backendBridge.response("reconnect_phone", 8, {result: "unreachable", error: "gone", notice: ""})
+        check(root.errorText === "gone" && !root.reconnectBusy, "reconnect error lost")
+        phoneSettingsPage.operationRequested("sync_contacts", {})
+        backendBridge.response("sync_contacts", 9, {count: 2, text: "Synced 2"})
+        check(root.contactsSyncNotice === "Synced 2", "sync notice lost")
+        phoneSettingsPage.operationRequested("doctor", {})
+        phoneSettingsPage.operationRequested("doctor", {})
+        check(backendBridge.take("doctor") === 1, "diagnostics ran twice")
+        console.log("BLUEFERRY_QS1_OK")
+      } catch (error) {
+        console.error(error);
+      }
+      Qt.quit();
+    }
+  }
+'''
+    config.write_text(source[:source.rfind("}")] + probe + "}\n")
+    result = subprocess.run(
+        [executable, "--path", str(config)], env=quickshell_environment,
+        capture_output=True, text=True, timeout=10, check=False,
+    )
+    log = result.stdout + result.stderr
+    assert result.returncode == 0 and "BLUEFERRY_QS1_OK" in log, log
+    assert "ReferenceError" not in log and "TypeError" not in log, log
 
 
 def test_quickshell_empty_activation_only_presents_the_window(qml_engine) -> None:

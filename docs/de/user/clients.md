@@ -13,6 +13,36 @@ Desktops.
 
 ![GTK-Client](../../images/gtk.png)
 
+Das Fenster ist eine Telefon-Übersicht. Eine Karte über den Reitern zeigt
+Name und Verbindung des iPhones, Akku, Empfang und Netz sowie, was gerade
+läuft (mit zurück, Wiedergabe/Pause und weiter). Ihr Knopf **Quick
+Settings** enthält die Schalter für [den Ton](phone-audio.md) und die
+[Abwesenheitssperre](proximity-lock.md). Ist etwas ausgeschaltet, nennt die
+Karte die Einstellung, die es einschaltet. Die Reiter wechselt man
+in der Kopfzeile, in einem schmalen Fenster unten:
+
+- **Messages**: Unterhaltungen und der Chat.
+- **Calls**: laufende [Anrufe](calls.md) mit annehmen, halten/fortsetzen,
+  auflegen, Tastentönen (0-9, `*`, `#`) für den aktiven Anruf sowie dem
+  Ton-Schalter, ein Wählfeld, das auch deine
+  Kontakte nach Namen durchsucht, und die [Anrufliste](call-history.md) nach Tagen
+  gruppiert, mit All und Missed, Rückruf- und Nachrichtenknöpfen und
+  **Refresh from iPhone**. Jeder Anruf fragt vorher nach.
+- **Notifications**: die [letzten iPhone-Mitteilungen](notification-history.md)
+  anderer Apps. Ist die Liste aus, sagt der Reiter warum und öffnet die
+  Einstellung.
+- **Photos**: die neuesten Fotos und Videos eines [Foto-Plugins](plugins.md),
+  mit All, Photos und Videos; ein Klick lädt das Original und öffnet es,
+  ein geöffnetes lässt sich in andere Apps ziehen.
+
+**Plugins & Tools** auf der Karte klappt auf, was der KDE-Client unter
+seinen Schaltern zeigt: **From Plugins** (was [Plugins](plugins.md)
+anbieten, mit ihren Knöpfen, und **Send to…**; auf ein Geräte-Element
+gezogene Dateien gehen an dieses Gerät) und **Tools** (Bildschirm spiegeln,
+LocalSend, die Fotos des iPhones über USB). Der Bereich bleibt, wie du ihn
+verlassen hast, und klappt von selbst auf, wenn ein Plugin etwas Neues
+bringt, etwa eine laufende Übertragung.
+
 **Settings** (Hauptmenü, `Strg+,`) hat dieselben Kategorien wie der
 KDE-Client, je eine Seite; die Umschaltleiste sitzt in der Kopfzeile, in
 einem schmalen Fenster unten, und der Suchknopf findet jede Einstellung:
@@ -24,13 +54,12 @@ einem schmalen Fenster unten, und der Suchknopf findet jede Einstellung:
 | Calls & Audio | Anrufe, Anrufliste, Akku-Warnung, [iPhone-Ton am Computer](phone-audio.md), Mediensteuerung |
 | Network | Optionales [Bluetooth-Tethering](bluetooth-tethering.md) |
 | Security | Einmalcodes, Abwesenheitssperre, lokale Daten und ihre Verschlüsselung, Verlauf löschen |
+| Plugins | Installierte [Plugins](plugins.md) mit Schalter, **Show Log**, **Check for Update** und **Remove**; der Store, eine eigene Git-URL und die Plugin-Listen. Jede Installation fragt vorher nach. Die **Settings** eines Plugins öffnen sich als eigene Seite |
 | About | Version, Hintergrunddienst, About BlueFerry, Tastenkürzel, **Restart Service**, Beenden |
 
 Die Schalter, die einen Neustart brauchen (unten), funktionieren wie im
 KDE-Client: Solange eine Änderung auf den Neustart wartet, beginnt jede
-Seite mit einem Hinweis und **Restart Service**. Die Plugin-Einstellungen
-hat der GTK-Client noch nicht; dafür gibt es den KDE-Client oder
-`blueferry plugins`.
+Seite mit einem Hinweis und **Restart Service**.
 
 ## KDE Plasma (Kirigami)
 
@@ -53,7 +82,7 @@ Einstellung, die sie einschaltet. Rechts liegen die Reiter:
   Firma, Funktion und Foto, mit **Call** und **Message** (öffnet die
   Unterhaltung mit dieser Nummer oder eine neue Nachricht).
 - **Calls**: [Anrufe](calls.md) mit Wählfeld und laufenden Anrufen als
-  Karten (annehmen, halten, auflegen) und die [Anrufliste](call-history.md)
+  Karten (annehmen, halten, auflegen, Tastentöne für den aktiven Anruf) und die [Anrufliste](call-history.md)
   nach Tagen gruppiert, mit All und Missed.
 - **Notifications**: die [letzten iPhone-Mitteilungen](notification-history.md)
   anderer Apps.
@@ -146,6 +175,50 @@ Aktiviere es unter **Setup → Plugins** und füge es deiner Leiste hinzu.
 Kopplung, Nachrichten und Einstellungen erledigt weiterhin der vollständige
 Quickshell-Client.
 
+### Einstellungen
+
+**iPhone settings** hat dieselben Kategorien wie die Einstellungen des Qt-,
+GTK- und Terminal-Clients, untereinander angeordnet. Eine Einstellung
+erscheint nur, wenn der laufende Hintergrunddienst sie anbietet.
+
+| Kategorie | Was du dort findest |
+|---|---|
+| Phone | Kopplung, Verbindungszustand mit **Reconnect**, automatisches Zurücksetzen einer hängenden Verbindung, **Run Diagnostics**, Kontaktabgleich (**Sync Contacts**), Kontaktfotos |
+| Notifications | Welche Ereignisse Popups erzeugen, nur Kontakte, Mitteilungsinhalt, Aktionsknöpfe, Mitteilungen mit dem iPhone abgleichen, beim Wegklicken als gelesen markieren, letzte Mitteilungen behalten und die Liste dieser Mitteilungen |
+| Calls & Audio | Telefonanrufe, Anrufliste und Popups für verpasste Anrufe, Akku-Warnung, iPhone-Ton auf diesem Computer, Mediensteuerung und MPRIS |
+| Security | Einmalcodes, Abwesenheitssperre, die lokale Speicherung |
+| About | Der Hintergrunddienst, seine Version und **Restart Service** |
+
+Schalter, die einen Neustart brauchen, zeigen oben auf der Seite den
+Neustart-Hinweis mit **Restart Service**. Ein älterer Dienst, der sie noch
+nicht kennt, zeigt jeden Schalter ausgegraut mit der Variablen, die du
+stattdessen in `local.env` setzt.
+
+**Show Recent Notifications** listet die letzten 30 Mitteilungen, die
+**Keep recent iPhone notifications** behält: App, Uhrzeit und, falls
+erlaubt, Titel und Text. Die Liste wird nur gelesen, solange sie sichtbar
+ist, folgt neuen Mitteilungen und wird vergessen, sobald du sie
+ausblendest oder die Seite verlässt. Ist sie aus, leer oder nicht
+verfügbar, sagt sie, warum.
+
+### Was das Panel weglässt
+
+Quickshell ist ein kompaktes Panel, deshalb bleiben einige Teile bei den
+anderen Clients:
+
+| Weggelassen | Warum | Stattdessen |
+|---|---|---|
+| Plugin-Verwaltung und Plugin-Einstellungen | Jedes Plugin bringt sein eigenes Einstellungsformular mit Geheimnissen, Knöpfen und Protokoll mit, dazu kommt der Store mit installierbaren Plugins; das ist zu viel und zu unterschiedlich für ein kompaktes Panel | Qt- oder GTK-Einstellungen, `blueferry plugins` |
+| **Send to…** und der Tab **Photos** (Plugin-Funktionen) | Send to braucht eine Dateiauswahl oder Drag & Drop, die das Panel nicht hat; beides kommt von Plugins, die das Panel nicht verwaltet | Qt-Client (Photos), Qt- oder GTK-Client (Send to), `blueferry send`, `blueferry photos` |
+| Begleitwerkzeuge | Desktop-Helfer richtet man einmal ein; das ist keine Aufgabe für ein Panel | Qt- oder GTK-Einstellungen, `blueferry tools` |
+| Nachrichtenverlauf löschen | Bietet auch der Terminal-Client nicht an | `blueferry history-clear` |
+| Click Rules, letzte Anrufe, das Anruf-Panel | Noch nicht im Quickshell-Client | Qt-, GTK- oder Terminal-Client |
+
+Das Panel lädt keinen Übersetzungskatalog, seine eigenen Beschriftungen
+sind deshalb englisch. Texte aus dem gemeinsamen BlueFerry-Code, etwa der
+Hinweis zum Wiederverbinden, der Neustart-Hinweis oder der Platzhalter der
+Mitteilungsliste, folgen deiner Sprache.
+
 ## Terminal (TUI)
 
 Der Terminal-Client ist auf jeder Distribution Teil von `blueferry-backend`.
@@ -162,6 +235,67 @@ Themes und ein Layout, das sich schmalen Terminals anpasst.
 
 ![Terminal-Client](../../images/terminal.png)
 
+### Einstellungen
+
+`o` öffnet **Settings** mit denselben Kategorien wie die Einstellungen von Qt
+und GTK, als Reiter. Eine Einstellung erscheint nur, wenn der laufende
+Hintergrunddienst sie anbietet.
+
+| Kategorie | Inhalt |
+|---|---|
+| Phone | Zustand des Hintergrunddienstes, **Reconnect** (auch `b`), automatisches Zurücksetzen einer hängenden Verbindung (auch `B`), **Run Diagnostics**, Kontaktabgleich, Kontaktfotos |
+| Notifications | Welche Ereignisse Popups erzeugen, nur Kontakte, **Click Rules** (auch `l`), Mitteilungsinhalt, Aktionsknöpfe, Mitteilungen mit dem iPhone abgleichen, beim Wegklicken als gelesen markieren, letzte iPhone-Mitteilungen behalten |
+| Calls & Audio | Telefonate, Anrufliste und Popups für verpasste Anrufe, Akkuwarnung, iPhone-Ton auf diesem Computer (auch `a`), Mediensteuerung und MPRIS |
+| Security | Einmalcodes, Sperre bei Abwesenheit, die Speichereinstellung (nur angezeigt; ändern mit `blueferry storage-policy-set`) |
+| About | Version, der Hintergrunddienst mit **Restart Service**, die Tastenbelegung |
+
+Die Schalter, die einen Neustart brauchen (siehe oben), zeigen den Hinweis
+oben in Settings mit **Restart Service**. Ein Dienst, der sie noch nicht kennt,
+zeigt jeden Schalter ausgegraut mit der `local.env`-Variable, die stattdessen
+zu setzen ist.
+
+**Run Diagnostics** führt `blueferry doctor` aus und zeigt den Bericht.
+**Copy Report** legt ihn über das Terminal (OSC 52) in die Zwischenablage;
+reicht das Terminal das nicht weiter, markiere den Text mit der Maus.
+
+Die Befehlspalette (`Strg+P`) kennt außerdem **Settings: Phone** … **Settings:
+About** und **Run Diagnostics**. Die Kopplung bleibt bei `blueferry
+pair-setup` oder einem grafischen Client; Plugin-Einstellungen hat der
+Terminal-Client noch nicht.
+
+### iPhone, Anrufe und Mitteilungen
+
+**iPhone Overview** in der Befehlspalette ist die Telefon-Karte des
+Terminals: der Name des iPhones, die Verbindung, Akku, Empfang und Netz, was
+gerade läuft, und für jede ausgeschaltete optionale Funktion der Schalter,
+der sie einschaltet, samt seiner Kategorie in Settings. Die Knöpfe öffnen die
+Mitteilungsliste, die letzten Anrufe, das Anruf-Panel und Settings.
+
+**iPhone Notifications** (in der Palette und in der Übersicht) listet die
+letzten Mitteilungen von iPhone-Apps, die **Keep recent iPhone
+notifications** behält: App, Zeit und, wenn erlaubt, Titel und Text. Die
+Liste wird nur gelesen, solange sie offen ist, folgt neuen Mitteilungen und
+wird beim Schließen vergessen. Ist sie ausgeschaltet, leer oder nicht
+verfügbar, sagt sie warum; **Open Notification Settings** führt zu
+Settings › Notifications.
+
+Das Anruf-Panel (`c` oder **Phone Calls** in der Palette) beschreibt jeden
+Anruf wie Qt und GTK (eingehend, gehalten, die Dauer). Seine eine Knopfreihe
+wirkt auf den naheliegenden Anruf: **Answer** nimmt den klingelnden an,
+**Hold** bzw. **Resume** hält den verbundenen oder holt ihn zurück, **Hang
+Up** (oder **Decline**) beendet zuerst den aktiven; ein Anruf, der wartet,
+während ein anderer verbunden ist, bekommt ein eigenes **Decline**. Während eines aktiven
+Anrufs gehen die Tasten 0–9, `*` und `#` sofort als Tastentöne hinaus, etwa
+an ein Telefonmenü, ausser ein Textfeld hat den Fokus; das Panel zeigt sie
+als „Sent: …“. Das Tastentonfeld sendet eine ganze Folge wie eine PIN. Wer im Nummernfeld einen Namen tippt, bekommt die
+Telefonnummern passender Kontakte vorgeschlagen. Jeder Anruf wird zuerst
+bestätigt.
+
+**Recent calls** (`h`) sind nach Tagen gruppiert; `m` zeigt nur verpasste
+Anrufe, `s` (oder **Refresh from iPhone**) liest die Liste des iPhones neu
+ein. Enter oder **Call Back** ruft die gewählte Nummer nach der
+Bestätigung an, **Send a Message** beginnt eine neue Nachricht an sie.
+
 ## Kommandozeile
 
 Der Befehl `blueferry` hilft bei der Diagnose und in Skripten:
@@ -175,6 +309,7 @@ blueferry sms-send Alice 'komme später'
 blueferry contacts-sync              # Kontakte neu vom iPhone holen
 blueferry storage-policy-set encrypted   # oder plaintext, none
 blueferry storage-unlock             # Schlüsselbund zum Entsperren auffordern
+blueferry storage-reset              # alle lokalen Daten löschen, Schlüssel ersetzen
 blueferry history-clear              # lokalen Nachrichtenverlauf löschen
 blueferry pairing-issue              # GitHub-Issue mit dem letzten Kopplungsbericht öffnen
 blueferry version

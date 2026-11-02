@@ -358,12 +358,69 @@ def test_named_group_participants_are_forwarded_to_backend(monkeypatch):
     monkeypatch.setattr(controller, "refresh", lambda: None)
 
     controller.setGroupParticipants(
-        "group:named:test", [" +15551111111 ", "beau@example.com"]
+        "group:named:test", [" +15551111111 ", "beau@example.com"], ""
     )
 
     assert backend.group_participants == (
         "group:named:test", ["+15551111111", "beau@example.com"]
     )
+
+
+_UNCONFIRMED = {
+    "key": "group:participants:son|wife", "name": "Son, Wife", "is_group": True,
+    "group_origin": "unnamed", "reply_ready": False, "participants_required": True,
+    "recipients": ["+15551111111"], "missing_members": ["Son"],
+}
+
+
+@pytest.mark.parametrize("saved_ready", [True, False])
+def test_reply_to_unconfirmed_group_asks_for_members_then_sends_the_draft(
+    monkeypatch, saved_ready,
+):
+    backend = _Backend()
+    unconfirmed = Thread.from_dict(_UNCONFIRMED)
+    saved = replace(
+        unconfirmed, reply_ready=saved_ready, participants_required=not saved_ready,
+        recipients=("+15551111111", "+15552222222"),
+    )
+    backend.set_group_participants = lambda key, recipients: (
+        setattr(backend, "group_participants", (key, recipients)) or saved
+    )
+    controller = BridgeController(backend=backend, setup=object(), subscribe=False, autostart=False)
+    _apply_threads(controller, [unconfirmed])
+    sent = []
+    backend.send_to_thread = lambda *args, **kwargs: sent.append(args) or "/transfer"
+    asked = []
+    confirmations = []
+    monkeypatch.setattr(
+        controller, "_run",
+        lambda operation, on_done=None, *_args, **_kwargs: on_done(operation()),
+    )
+    monkeypatch.setattr(controller, "refresh", lambda: None)
+    controller.groupParticipantsRequested.connect(lambda *args: asked.append(args))
+    controller.groupConfirmationRequested.connect(lambda *args: confirmations.append(args))
+
+    # Every attempt asks again, and nothing is sent until members are saved.
+    controller.sendThread(unconfirmed.key, "on my way", False)
+    controller.sendThread(unconfirmed.key, "on my way", False)
+    assert asked == [(unconfirmed.key, "on my way")] * 2
+    assert sent == [] and confirmations == []
+
+    controller.setGroupParticipants(
+        unconfirmed.key, ["+15551111111", "+15552222222"], "on my way",
+    )
+
+    assert backend.group_participants == (
+        unconfirmed.key, ["+15551111111", "+15552222222"],
+    )
+    assert controller.threads[0]["recipients"] == ["+15551111111", "+15552222222"]
+    # The held draft then takes the normal path: first-send confirmation.
+    assert confirmations == ([(
+        unconfirmed.key, "on my way", "+15551111111\n+15552222222",
+    )] if saved_ready else [])
+    # Members that still don't make the group reply-ready never loop back.
+    assert len(asked) == 2
+    assert sent == []
 
 
 def test_selected_threads_are_forwarded_to_backend(monkeypatch):
@@ -1422,7 +1479,74 @@ def test_failed_or_disabled_calls_refresh_follows_the_status_state():
     controller.refreshCalls()
     assert controller.callsState == "disabled"
     assert changes == ["ready", "unavailable", "disabled"]
-    assert not hasattr(controller, "sendCallTones")
+
+
+def test_keypad_tones_are_cleaned_sent_to_the_call_and_clear_the_draft():
+    from blueferry.models import CallsSnapshot
+
+    class TonesBackend:
+        def __init__(self):
+            self.requests = []
+
+        def send_call_tones(self, call_id, tones):
+            self.requests.append((call_id, tones))
+
+    backend = TonesBackend()
+    controller = BridgeController(backend=backend, setup=object(), subscribe=False, autostart=False)
+    drafts, lists = [], []
+    controller.callTonesDraftChanged.connect(lambda: drafts.append(controller.callTonesDraft))
+    controller.phoneCallsChanged.connect(lambda: lists.append(True))
+    snapshot = {"state": "ready", "calls": [{"call_id": "voicecall01", "state": "active"}]}
+    controller._apply_calls(CallsSnapshot.from_dict(snapshot))
+    controller._apply_calls(CallsSnapshot.from_dict(snapshot))
+    assert lists == [True], "an unchanged list keeps the cards (and the tone field)"
+
+    controller.setCallTonesDraft("1a2*#b ")
+    assert controller.callTonesDraft == "12*#"
+    controller.setCallTonesDraft("12*#")
+    assert drafts == ["12*#"]
+    controller.sendCallTones("", "1")
+    controller.sendCallTones("voicecall01", "ab ")
+    controller._pool.waitForDone(1000)
+    assert backend.requests == [] and controller.callTonesDraft == "12*#"
+    controller.sendCallTones("voicecall01", "1a2*#b " + "1" * 40)
+    controller._pool.waitForDone(1000)
+    assert backend.requests == [("voicecall01", "12*#" + "1" * 28)]
+    assert controller.callTonesDraft == "" and drafts == ["12*#", ""]
+
+
+def test_keypad_clicks_go_to_the_active_call_in_order(monkeypatch):
+    from blueferry.models import CallsSnapshot
+
+    class TonesBackend:
+        def __init__(self):
+            self.requests = []
+
+    backend = TonesBackend()
+    controller = BridgeController(backend=backend, setup=object(), subscribe=False, autostart=False)
+    pending = []
+    monkeypatch.setattr(
+        controller, "_run",
+        lambda operation, on_done=None, on_failed=None, **_kw: pending.append(
+            (operation, on_done, on_failed)),
+    )
+    sent = []
+    controller.callTonesSentChanged.connect(lambda: sent.append(controller.callTonesSent))
+    assert controller.pressCallTone("1") is False  # no call: the pad dials
+    controller._apply_calls(CallsSnapshot.from_dict({"state": "ready", "calls": [
+        {"call_id": "voicecall02", "state": "held"},
+        {"call_id": "voicecall01", "state": "active"},
+    ]}))
+    assert controller.activeCallId == "voicecall01"
+    for key in "12#":
+        assert controller.pressCallTone(key) is True
+    assert len(pending) == 1  # one request at a time
+    pending.pop(0)[1](None)
+    assert len(pending) == 1 and controller.callTonesSent == "Sent: 1"
+    pending.pop(0)[1](None)
+    assert controller.callTonesSent == "Sent: 1 2 #"
+    controller._calls_unavailable()
+    assert controller.callTonesSent == "" and controller.activeCallId == ""
 
 
 def test_contact_photo_opt_in_is_forwarded_and_drops_cached_avatars(monkeypatch):
@@ -2013,6 +2137,21 @@ def test_phone_name_comes_from_the_configured_device():
     controller._configuration = ConfigurationState.from_dict({"configured": True, "mac": "AA"})
     controller._devices = [{"mac": "BB", "name": "Other"}, {"mac": "AA", "name": "Josh's iPhone"}]
     assert controller.phoneName == "Josh's iPhone"
+
+
+def test_phone_card_and_tab_wording_come_from_phone_link_view():
+    controller = BridgeController(backend=object(), setup=object(), subscribe=False, autostart=False)
+    assert controller.phoneConnection == "BlueFerry service is not running"
+    assert controller.dialKeys[10] == ["0", "+"]
+    assert controller.dialable("+41 (79) 1-2") == "+417912"
+    assert controller.callsHint({"calls_enabled": True}, "ready") == ""
+    assert "oFono" in controller.callsHint({"calls_enabled": True}, "unavailable")
+    view = controller.notificationsView({"enabled": True, "content": False}, "")
+    assert view["title"] == "No Notifications Yet" and view["contentHint"]
+    controller._contact_results = [
+        {"name": "Kim", "address": "0491570156"}, {"name": "Kim", "address": "kim@example.org"},
+    ]
+    assert controller.dialSuggestions == [{"name": "Kim", "address": "0491570156"}]
 
 
 def _inline_controller(monkeypatch, backend):
