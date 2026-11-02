@@ -815,8 +815,11 @@ A change to these rules has to be made in both places.
   stops storage preparation, the status offers that reset.
   The projection, its rebuild after saving group members, and the
   full-archive read behind `DeleteThreads` run on the projection worker.
-  A deletion erases rows only if no history or conversation change arrived
-  during that read; otherwise it starts again.
+  History is read in short pages and decoded between them, so a slow read
+  never holds the lock a new message needs. A deletion erases rows only if no
+  history or conversation change arrived during that read; otherwise it starts
+  again. After two such restarts, counting refreshes, it asks the caller to try
+  again.
 - **Contact photos** are opt-in (`contact_photos` in `settings.json`, set
   through `Messages1.SetContactPhotos` and seeded by
   `BLUEFERRY_CONTACT_PHOTOS`; switching applies without a restart). The daemon keeps

@@ -1418,3 +1418,77 @@ def test_thread_snapshot_reads_confirmed_rosters_once(tmp_path, monkeypatch):
     by_key = {thread["key"]: thread["group_confirmed"] for thread in result}
     assert all(by_key[f"group:{i}"] for i in range(19))
     assert by_key["group:19"] is False
+
+
+def test_deletion_gives_up_once_when_messages_keep_arriving(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "EVENTS_DB", tmp_path / "events.sqlite")
+    alice = {"kind": "sms_received", "sender_address": "+15551111111", "body": "a"}
+    append_event({**alice, "handle": "0"})
+    operations = _operations()
+    [key] = [thread["key"] for thread in operations.list_threads(10)]
+    jobs = []
+
+    def submit(operation, *, on_success, on_error):
+        jobs.append((operation, on_success))
+
+    replies, failures = [], []
+    operations.delete_threads_async(submit, [key], True, replies.append, failures.append)
+    # A message arrives while every archive read and projection refresh runs.
+    for handle in range(1, 20):
+        if not jobs:
+            break
+        operation, on_success = jobs.pop(0)
+        result = operation()
+        append_event({**alice, "handle": str(handle)})
+        on_success(result)
+    assert not jobs
+    assert replies == []
+    assert len(failures) == 1 and isinstance(failures[0], NotReadyError)
+
+    def run(operation, *, on_success, on_error):
+        on_success(operation())
+
+    operations.prepare_conversations(run, lambda: None, pytest.fail)
+    operations.delete_threads_async(run, [key], True, replies.append, pytest.fail)
+    assert replies == [1]
+
+
+def test_deletion_ignores_a_storage_error_from_an_archive_that_was_replaced(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setattr(config, "EVENTS_DB", tmp_path / "events.sqlite")
+    alice = {"kind": "sms_received", "sender_address": "+15551111111", "body": "a"}
+    append_event({**alice, "handle": "0"})
+    closed = []
+    storage = SimpleNamespace(
+        status=SimpleNamespace(can_read=True, can_write=True, state="ready"),
+        decrypt=lambda payload, purpose: payload, fail_closed=closed.append,
+        close=lambda: None,
+    )
+    storage.snapshot = lambda **_kwargs: storage
+    operations = _operations(storage=storage)
+    [key] = [thread["key"] for thread in operations.list_threads(10)]
+    real_job = operations._deletion_job
+    calls = []
+
+    def deletion_job(selected):
+        calls.append(selected)
+        if len(calls) > 1:
+            return real_job(selected)
+
+        def replaced_mid_read():
+            append_event({**alice, "handle": "1"})
+            raise backend_operations.CorruptStorageError("old archive")
+        return replaced_mid_read
+
+    def run(operation, *, on_success, on_error):
+        try:
+            on_success(operation())
+        except Exception as error:
+            on_error(error)
+
+    monkeypatch.setattr(operations, "_deletion_job", deletion_job)
+    replies = []
+    operations.delete_threads_async(run, [key], True, replies.append, pytest.fail)
+    assert closed == []
+    assert replies == [1]

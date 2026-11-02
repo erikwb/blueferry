@@ -356,6 +356,7 @@ class BackendOperations:
 
     def prepare_conversations(
         self, submit: Callable[..., object], ready: Callable[[], None], failure: Failure,
+        retry: Callable[[], bool] | None = None,
     ) -> None:
         def job_factory() -> Callable[[], list[dict]]:
             stars = self._starred_keys()
@@ -389,7 +390,7 @@ class BackendOperations:
                 return
             failure(error)
 
-        self._conversations.prepare_async(submit, job_factory, ready, failed)
+        self._conversations.prepare_async(submit, job_factory, ready, failed, retry)
 
     def _require_map(self) -> None:
         if self.sessions.map is None:
@@ -1045,32 +1046,43 @@ class BackendOperations:
                 error = NotReadyError(str(error))
             failed(error)
 
-        def attempt(remaining: int) -> None:
+        # Stale archive reads and stale refreshes share one budget, so a
+        # steady stream of messages ends the deletion instead of starving it.
+        retries = 2
+
+        def retry() -> bool:
+            nonlocal retries
+            retries -= 1
+            return retries >= 0
+
+        def attempt() -> None:
             selected, preference_keys = self._plan_deletion(thread_keys, confirmed)
             version = self._conversation_version()
 
-            def resolved(result: tuple[set[int], set[str]]) -> None:
+            def resolved(result: tuple[set[int], set[str]] | Exception) -> None:
                 if self._conversation_version() != version:
-                    if remaining <= 1:
+                    if not retry():
                         raise NotReadyError(
                             "conversations changed during deletion; try again"
                         )
                     self.prepare_conversations(
-                        submit, guarded(lambda: attempt(remaining - 1)), failed,
+                        submit, guarded(attempt), failed, retry,
                     )
                     return
+                if isinstance(result, Exception):
+                    return worker_failed(result)
                 removed = self._commit_deletion(selected, preference_keys, result)
                 self._deleting = False
                 success(removed)
 
             submit(
                 self._deletion_job(selected),
-                on_success=guarded(resolved), on_error=worker_failed,
+                on_success=guarded(resolved), on_error=guarded(resolved),
             )
 
         self._deleting = True
         try:
-            attempt(3)
+            attempt()
         except Exception:
             self._deleting = False
             raise

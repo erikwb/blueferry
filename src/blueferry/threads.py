@@ -44,7 +44,9 @@ class ConversationIndex:
         self._threads: list[dict] | None = None
         self._generation = 0
         self._loading = False
-        self._waiting: list[tuple[Callable[[], None], Callable[[Exception], None]]] = []
+        self._waiting: list[tuple[
+            Callable[[], None], Callable[[Exception], None], Callable[[], bool] | None,
+        ]] = []
 
     @staticmethod
     def _file_signature(source: Path) -> tuple[int, int]:
@@ -64,8 +66,12 @@ class ConversationIndex:
         self._signature = None
         self._threads = None
 
-    def prepare_async(self, submit, job_factory, on_ready, on_error) -> None:
-        """Coalesce reads and publish only a still-current projection on GLib."""
+    def prepare_async(self, submit, job_factory, on_ready, on_error, retry=None) -> None:
+        """Coalesce reads and publish only a still-current projection on GLib.
+
+        A stale read is retried for every waiter, unless its ``retry`` returns
+        False; that waiter then fails instead of waiting for history to settle.
+        """
         signature = self._revision()
         if self._threads is not None and signature == self._signature:
             on_ready()
@@ -73,7 +79,7 @@ class ConversationIndex:
         if len(self._waiting) >= 64:
             on_error(NotReadyError("conversation refresh is busy; try again shortly"))
             return
-        self._waiting.append((on_ready, on_error))
+        self._waiting.append((on_ready, on_error, retry))
         if self._loading:
             return
         self._loading = True
@@ -82,7 +88,7 @@ class ConversationIndex:
         def reject(error: Exception) -> None:
             self._loading = False
             waiting, self._waiting = self._waiting, []
-            for _ready, failure in waiting:
+            for _ready, failure, _retry in waiting:
                 failure(error)
 
         def failed(error: Exception) -> None:
@@ -109,9 +115,11 @@ class ConversationIndex:
             waiting, self._waiting = self._waiting, []
             # Each callback may mutate history or contact state. Recheck the
             # cache before delivering the next request, never rebuild inline.
-            for ready, failure in waiting:
+            for ready, failure, retry in waiting:
                 try:
-                    self.prepare_async(submit, job_factory, ready, failure)
+                    if not current and retry is not None and not retry():
+                        raise NotReadyError("conversations kept changing; try again")
+                    self.prepare_async(submit, job_factory, ready, failure, retry)
                 except Exception as error:
                     failure(error)
 
