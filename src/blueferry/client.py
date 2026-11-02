@@ -678,6 +678,17 @@ class BackendClient:
         except (dbus.exceptions.DBusException, ValueError) as error:
             raise BackendError(str(error)) from error
 
+    def reset_storage(self) -> dict:
+        """Erase all retained local data and start over under a new key."""
+        try:
+            return decode_mapping(
+                self._iface(MESSAGES_IFACE).ResetStorage(
+                    dbus.Boolean(True), timeout=STORAGE_CALL_TIMEOUT_SEC
+                )
+            )
+        except (dbus.exceptions.DBusException, ValueError) as error:
+            raise BackendError(str(error)) from error
+
     # ---- optional phone calls (Calls1) -----------------------------------
 
     def _calls_iface(self) -> dbus.Interface:

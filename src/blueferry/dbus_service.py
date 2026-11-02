@@ -562,6 +562,25 @@ class MessagesService(dbus.service.Object):
     def UnlockStorage(self, reply_handler, error_handler, sender=None) -> None:
         self._storage_call(sender, "unlock", None, reply_handler, error_handler)
 
+    @dbus.service.method(
+        IFACE, in_signature="b", out_signature="s", sender_keyword="sender",
+        async_callbacks=("reply_handler", "error_handler"),
+    )
+    def ResetStorage(
+        self, confirmed: bool, reply_handler, error_handler, sender=None,
+    ) -> None:
+        def changed(status) -> None:
+            self.emit_history_changed()
+            reply_handler(self._json_response(status))
+
+        self._async(lambda: self._authorized(sender, "destructive", lambda: (
+            self.operations.reset_storage_async(
+                self._wallet_worker.submit, changed,
+                lambda error: error_handler(self._dbus_error(error)),
+                confirmed=bool(confirmed),
+            )
+        )), error_handler)
+
     def retry_storage_unlock(self, *, initialize: bool = False) -> None:
         """Daemon-only passive recovery, using the same worker as UI unlocks."""
         # A timed-out lookup may still be unwinding its native call. Reserve
