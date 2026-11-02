@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sqlite3
+import threading
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -10,6 +11,7 @@ import pytest
 from gi.repository import GLib
 
 from blueferry import config
+from blueferry import contact_repository as repository_mod
 from blueferry import contacts as contacts_mod
 from blueferry import daemon as daemon_mod
 from blueferry import history as history_mod
@@ -680,6 +682,55 @@ def test_reset_replaces_a_database_sqlite_cannot_open(recovery, database, clear)
     assert read_events(storage=r.storage) == []
     assert ContactRepository(r.storage).load() == []
     assert CallHistoryRepository(r.storage).load(now=now) == []
+
+
+def test_reset_waits_for_a_contact_sync_that_has_the_cache_open(monkeypatch):
+    ContactRepository().replace([("Old", ["15550000000"], [])])
+    reset_thread = threading.current_thread()
+    opened = threading.Event()
+    reset_waiting = threading.Event()
+    real_open, real_lock = repository_mod._open_db, repository_mod._STORE_LOCK
+
+    class WatchedLock:
+        def __enter__(self):
+            if threading.current_thread() is reset_thread:
+                reset_waiting.set()
+            real_lock.acquire()
+
+        def __exit__(self, *exc_info):
+            real_lock.release()
+
+    def open_db():
+        connection = real_open()
+        if threading.current_thread() is not reset_thread:
+            # Connected but not yet writing: the window the reset must respect.
+            opened.set()
+            reset_waiting.wait(timeout=10)
+        return connection
+
+    monkeypatch.setattr(repository_mod, "_STORE_LOCK", WatchedLock())
+    monkeypatch.setattr(repository_mod, "_open_db", open_db)
+    errors: list[BaseException] = []
+
+    def sync():
+        try:
+            ContactRepository().replace([("Alice", ["15551111111"], [])])
+        except BaseException as error:
+            errors.append(error)
+
+    worker = threading.Thread(target=sync)
+    worker.start()
+    assert opened.wait(timeout=10)
+    clear_contact_cache(discard_damaged=True)
+    reset_waiting.set()
+    worker.join(timeout=10)
+
+    assert not worker.is_alive()
+    assert errors == []
+    # The reset ran after the sync's write, so nothing it wrote survives.
+    assert ContactRepository().load(strict=True) == []
+    path = config.CONTACTS_DB
+    assert not path.with_name(path.name + "-journal").exists()
 
 
 def test_replacement_key_is_not_trusted_over_encrypted_preferences(recovery):
