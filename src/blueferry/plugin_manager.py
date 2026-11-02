@@ -40,7 +40,6 @@ import os
 import re
 import shlex
 import shutil
-import stat
 import subprocess  # nosec B404
 import sys
 import tempfile
@@ -65,6 +64,7 @@ from blueferry.plugin_api.manifest import (
     valid_plugin_id,
 )
 from blueferry.plugin_prefs import config_path, disabled_from
+from blueferry.plugin_prefs import read_json as _read_json
 from blueferry.plugin_stopper import UNMANAGED, BusPluginStopper, PluginStopper, StopOutcome
 
 GIT_TIMEOUT_SEC = 120.0
@@ -752,21 +752,6 @@ def _rewrite(text: str, exec_argv: Sequence[str], cli_argv: Sequence[str]) -> st
                 raw = "Cli=" + shlex.join(cli_argv)
         lines.append(raw)
     return "\n".join(lines) + "\n"
-
-
-def _read_json(path: Path) -> dict:
-    # O_NONBLOCK keeps a FIFO from blocking the open; the fstat below rejects
-    # it, and the flag has no effect on reads from a regular file. Symlinks
-    # are still followed, as plugin_prefs.read_settings follows them.
-    try:
-        descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
-        with os.fdopen(descriptor, "rb") as stream:
-            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
-                return {}
-            value = json.loads(stream.read(1024 * 1024).decode("utf-8"))
-    except (OSError, ValueError):
-        return {}
-    return value if isinstance(value, dict) else {}
 
 
 def _write_text(path: Path, text: str, mode: int = 0o644) -> None:

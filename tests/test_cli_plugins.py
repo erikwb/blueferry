@@ -204,6 +204,36 @@ def test_config_reads_and_writes_through_the_plugin(hooks, managed, monkeypatch)
     assert result.exit_code == 2
 
 
+def test_config_saves_nothing_for_a_plugin_disabled_during_a_prompt(hooks, managed,
+                                                                    monkeypatch) -> None:
+    state, _executed = hooks
+    manager, _runner, _answers = managed
+    plugin = manifest(extra="[Config api_key]\nLabel=API key\nType=secret\n")
+    state["discovery"] = Discovery((plugin,))
+    calls: list[str] = []
+
+    class Client:
+        def __init__(self, _manifest) -> None:
+            pass
+
+        def set_config(self, values):
+            calls.append("set")
+
+        def get_config(self):
+            calls.append("get")
+            return {}
+
+    def secret(_prompt: str) -> str:
+        manager.set_enabled(plugin.id, False)  # in another terminal, meanwhile
+        return "k3y"
+
+    monkeypatch.setitem(cli_plugins._hooks, "client", Client)
+    monkeypatch.setitem(cli_plugins._hooks, "secret", secret)
+    result = CliRunner().invoke(app, ["plugins", "config", plugin.id, "--secret", "api_key"])
+    assert result.exit_code == 2 and "enable it first" in result.output
+    assert calls == []
+
+
 def test_config_test_and_browser_sign_in(hooks, monkeypatch) -> None:
     from blueferry.plugin_api.config_flow import ConfigTestResult, LoginStep
 
