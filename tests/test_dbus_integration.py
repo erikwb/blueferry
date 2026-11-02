@@ -10,6 +10,7 @@ import time
 from dataclasses import replace
 
 import dbus
+import dbus.lowlevel
 import dbus.mainloop
 import dbus.service
 import pytest
@@ -1107,3 +1108,63 @@ def test_mirror_removals_setter_round_trips_and_reports_status(public_service) -
     assert outcome == {"before": False, "on": True, "status": True, "off": False}
     assert policy.mirror_removals is False
     assert len(changes) == 2
+
+
+def test_raw_call_with_the_wrong_argument_types_is_rejected(public_service) -> None:
+    name, _pending, _policy, _changes, service = public_service
+    cleared = []
+    service.operations.clear_history = cleared.append
+    outcome = {}
+
+    def call(value, signature):
+        message = dbus.lowlevel.MethodCallMessage(
+            name, OBJECT_PATH, MESSAGES_IFACE, "ClearHistory"
+        )
+        message.append(value, signature=signature)
+        return connection.send_message_with_reply_and_block(message, 5)
+
+    def change() -> None:
+        try:
+            try:
+                call("false", "s")
+            except dbus.exceptions.DBusException as error:
+                outcome["string"] = error.get_dbus_name()
+            outcome["boolean"] = call(False, "b").get_args_list()
+        finally:
+            connection.close()
+
+    connection = dbus.SessionBus(private=True, mainloop=dbus.mainloop.NULL_MAIN_LOOP)
+    client_thread = threading.Thread(target=change)
+    client_thread.start()
+    _dispatch_until(lambda: not client_thread.is_alive())
+    client_thread.join(timeout=1)
+
+    assert outcome == {
+        "string": "org.freedesktop.DBus.Error.InvalidArgs",
+        "boolean": [],
+    }
+    assert cleared == [False]
+
+
+def test_raw_call_to_a_python_attribute_gets_the_usual_error(public_service) -> None:
+    name, _pending, _policy, _changes, _service = public_service
+    outcome = {}
+
+    def call() -> None:
+        try:
+            message = dbus.lowlevel.MethodCallMessage(
+                name, OBJECT_PATH, MESSAGES_IFACE, "caller_guard"
+            )
+            connection.send_message_with_reply_and_block(message, 5)
+        except dbus.exceptions.DBusException as error:
+            outcome["error"] = error.get_dbus_name()
+        finally:
+            connection.close()
+
+    connection = dbus.SessionBus(private=True, mainloop=dbus.mainloop.NULL_MAIN_LOOP)
+    client_thread = threading.Thread(target=call)
+    client_thread.start()
+    _dispatch_until(lambda: not client_thread.is_alive())
+    client_thread.join(timeout=1)
+
+    assert outcome == {"error": "org.freedesktop.DBus.Python.AttributeError"}
