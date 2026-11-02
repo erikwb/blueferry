@@ -5,8 +5,9 @@
 ### Added
 
 - Report the A/V sync delay of the iPhone's audio stream in `GetStatus`
-  (`phone_audio_delay_ms`, `phone_audio_delay_reporting`), show it next to the
-  iPhone sound status, and check AVDTP delay reporting in `blueferry doctor`.
+  (`phone_audio_delay_ms`, `phone_audio_delay_reporting`; the delay only while
+  the stream is active), show it next to the iPhone sound status, and check
+  AVDTP delay reporting in `blueferry doctor`.
 
 ## [0.9.1](https://github.com/erikwb/blueferry/releases/tag/v0.9.1) - 2026-10-30
 

@@ -27,9 +27,12 @@ bluetoothd exports the transport's ``Delay`` property (1/10 ms) and forwards
 what the audio server reports to the phone, which shifts video by it. A
 transport without ``Delay`` never negotiated delay reporting (older adapter or
 BlueZ); video can then run ahead of the sound. Both keys are ``None`` while no
-stream is open; an idle transport keeps its last value, and so does a
-``Delay`` that is only invalidated. They follow ``PropertiesChanged``;
-nothing polls.
+stream is open. The delay itself is only reported while the transport's
+``State`` is ``active``: an idle or pending transport reports
+``phone_audio_delay_ms`` as ``None`` (its last value would be stale), while
+``phone_audio_delay_reporting`` still says whether the property exists. A
+``Delay`` that is only invalidated keeps the last value. Both follow
+``PropertiesChanged`` for ``State`` and ``Delay``; nothing polls.
 
 Requires the desktop audio server to offer the A2DP sink role. BlueFerry no
 longer overrides the desktop's Bluetooth audio roles.
@@ -192,7 +195,11 @@ class PhoneAudioRoute:
         }
 
     def _delay_status(self) -> dict[str, object]:
-        """The A/V sync delay of the open stream; ``None`` without one."""
+        """The A/V sync delay of the open stream; ``None`` without one.
+
+        The delay itself only while audio flows (``State`` ``active``); an
+        idle transport still says whether delay reporting was negotiated.
+        """
         if not self._transports:
             return {"phone_audio_delay_ms": None, "phone_audio_delay_reporting": None}
         # Prefer the stream that carries audio; normally there is only one.
@@ -203,7 +210,7 @@ class PhoneAudioRoute:
         delay = self._delays.get(path)
         if delay is None:
             return {"phone_audio_delay_ms": None, "phone_audio_delay_reporting": False}
-        if delay == DELAY_UNKNOWN:
+        if delay == DELAY_UNKNOWN or self._transports[path] != TRANSPORT_ACTIVE:
             return {"phone_audio_delay_ms": None, "phone_audio_delay_reporting": True}
         return {
             "phone_audio_delay_ms": (delay + 5) // 10,
