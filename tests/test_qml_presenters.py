@@ -955,6 +955,10 @@ def settings_window(qml_engine):
             function loadMoreContacts() { record("loadMoreContacts", []); }
             function openContact(contactId) { record("openContact", [contactId]); }
             function closeContact() { record("closeContact", []); }
+            property int contactPhotoRevision: 0
+            property var contactPhotos: ({})
+            function contactRowPhoto(contactId) { return contactPhotos[contactId] || ""; }
+            function requestContactPhotos(ids) { record("requestContactPhotos", [ids]); }
             function setSearchQuery(query) { record("setSearchQuery", [query]); }
             function clearSearch() { record("clearSearch", []); }
         }
@@ -6633,6 +6637,38 @@ def test_contacts_tab_reads_only_while_shown_and_opens_cards(qml_engine, setting
     source = (ROOT / "src/blueferry/qt/qml/ContactsTab.qml").read_text()
     assert source.count("Controls.Label {") == source.count(
         "textFormat: Text.PlainText") - source.count("Kirigami.Heading {")
+
+
+def test_contact_list_asks_for_the_photos_of_rows_on_screen(qml_engine, settings_window):
+    window, bridge = settings_window
+    bridge.setProperty("contactsSupported", True)
+    bridge.setProperty("status", {"contact_card_count": 2})
+    _evaluate(qml_engine, "testWindow.currentTab = testWindow.contactsTab")
+    QGuiApplication.processEvents()
+    view = _contacts_view()
+    view["rows"][0]["has_photo"] = True
+    bridge.setProperty("contacts", view)
+    QGuiApplication.processEvents()
+    assert _delegate_value(qml_engine, window, "contactList", "contactRowAvatar",
+                           "item.source") == "", "initials until a photo arrives"
+    _settings_object(window, "contactPhotoTimer").metaObject().invokeMethod(
+        _settings_object(window, "contactPhotoTimer"), "triggered")
+    QGuiApplication.processEvents()
+    # Only rows with a photo are asked for.
+    assert _evaluate(qml_engine, "testBridge.calls")[-1] == {
+        "method": "requestContactPhotos", "args": [["c1"]]}
+    import base64
+
+    from tests.photo_fixtures import png
+
+    url = "data:image/png;base64," + base64.b64encode(png(4, 4)).decode("ascii")
+    _evaluate(qml_engine, f"""testBridge.contactPhotos = {{c1: "{url}"}};
+        testBridge.contactPhotoRevision = 1""")
+    QGuiApplication.processEvents()
+    assert _delegate_value(qml_engine, window, "contactList", "contactRowAvatar",
+                           "item.source.toString()") == url
+    _evaluate(qml_engine, "testWindow.currentTab = testWindow.callsTab")
+    QGuiApplication.processEvents()
 
 
 def test_contact_card_call_asks_through_the_phone_link_dialog(qml_engine, settings_window):
