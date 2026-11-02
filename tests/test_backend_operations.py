@@ -288,6 +288,37 @@ def test_sender_only_confirmation_does_not_cover_other_messages():
     assert queued == []
 
 
+def test_sender_only_confirmation_does_not_follow_the_sender_to_another_address():
+    queued = []
+    operations = _operations(submit_obex=lambda *args, **kwargs: queued.append(args))
+    # Alice's phone and email are one conversation.
+    alice = SimpleNamespace(
+        thread_addresses=lambda _address: ("phone:15551111111",),
+        resolve=lambda _address: "Alice",
+        find_by_name=lambda _name: [],
+    )
+    events = _maybe_group_events("+15551111111", "Alice", "10:00")
+    operations._conversations.threads = lambda: build_threads(events, alice)
+    (thread,) = operations.list_threads(10)
+    confirmed = thread["sender_reply_token"]
+
+    # Before the user confirms, Alice writes from her email, plainly to them.
+    email = {"kind": "sms_received", "handle": "Alice-email", "contact_name": "Alice",
+             "sender_address": "alice@example.com", "body": "hi",
+             "seen_at": "2026-08-12T11:00:00+00:00"}
+    operations._conversations.threads = lambda: build_threads([*events, email], alice)
+    (thread,) = operations.list_threads(10)
+    assert thread["recipients"] == ["alice@example.com"]
+    with pytest.raises(ConfirmationRequiredError):
+        operations.send_to_thread(
+            thread["key"], "private draft", True,
+            lambda _: pytest.fail("unexpected send"),
+            lambda _: pytest.fail("unexpected queued operation"),
+            expected_group_token=confirmed,
+        )
+    assert queued == []
+
+
 def test_named_group_remembers_confirmation_until_roster_changes(monkeypatch):
     operations = _operations()
     thread = {**_group(), "group_origin": "named"}
