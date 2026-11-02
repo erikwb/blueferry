@@ -18,7 +18,8 @@ and ``Messages1.GetContact(id)``, a JSON document plus photo bytes::
 Ids are valid while a card is unchanged within one daemon run; GetContact
 answers NotFound for a stale id, and the client reloads the list. A list
 row never carries photo bytes: a client fetches the photo with GetContact
-when it opens a card (and may use GetContactPhoto for list avatars).
+when it opens a card and the photos of the rows on screen with
+GetContactCardPhotos (see contacts_model.ContactBook.request_photos).
 
 Every string returned here is plain text taken verbatim from the iPhone or
 from this module; each client escapes it for its own renderer.

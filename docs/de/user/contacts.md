@@ -41,8 +41,13 @@ Kontaktansicht in den Clients:
 ## Fotos
 
 Das Foto einer Karte erscheint nur mit eingeschalteten
-[Kontaktfotos](contact-photos.md). Die Liste selbst überträgt nie Fotos;
-`contacts show` holt nur das Foto der geöffneten Karte.
+[Kontaktfotos](contact-photos.md). `contacts list` überträgt nie Fotos;
+`contacts show` holt nur das Foto der geöffneten Karte. Die Kontaktlisten
+des KDE- und des GTK-Clients laden die kleinen Fotos der sichtbaren Zeilen
+und zeigen Initialen, bis ein Foto da ist, und bei Karten ohne Foto. Diese
+Fotos bleiben nur im Arbeitsspeicher des Clients und werden verworfen,
+sobald du den Tab „Kontakte“ verlässt. Der Terminal-Client zeigt
+Initialen.
 
 ## Speicherung und Datenschutz
 
