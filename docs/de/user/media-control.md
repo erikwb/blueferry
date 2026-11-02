@@ -81,7 +81,7 @@ und `volume-down` funktionieren weiterhin.
 Im Kirigami-Client erscheint über den Unterhaltungen eine kleine Leiste mit
 Titel, Interpret und den Tasten Zurück/Wiedergabe-Pause/Weiter, solange etwas
 läuft. Der Quickshell-Client zeigt dieselbe Leiste unter seiner Kopfzeile,
-der GTK-Client im Dialog **iPhone** (Hauptmenü, `Strg+I`) und der
+der GTK-Client auf der Telefon-Karte über seinen Reitern und der
 Terminal-Client in einer Zeile unter den Statusanzeigen; dort steuern `p`,
 `[` und `]` Wiedergabe/Pause, Zurück und Weiter. Ist die Option aus, zeigt
 keiner davon etwas an und kein Client fragt das Backend.

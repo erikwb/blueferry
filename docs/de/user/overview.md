@@ -78,15 +78,27 @@ gleich heißen, bleiben getrennt.
 ## Gruppenchats
 
 Bluetooth verrät BlueFerry weder die ID noch die vollständige Mitgliederliste
-einer Gruppe. Wenn die Teilnehmer unklar sind, deaktiviert BlueFerry deshalb
-das Antworten:
+einer Gruppe. Wenn BlueFerry die Teilnehmer nicht sicher kennt, fragt es dich
+deshalb:
 
 - Bei einer benannten Gruppe lernt BlueFerry die Mitglieder nur von den
-  Personen, die hineinschreiben. Es bittet dich einmal, die vollständige
-  Empfängerliste zu bestätigen.
+  Personen, die hineinschreiben.
+- Bei einer unbenannten Gruppe nennt das iPhone die Mitglieder. BlueFerry
+  ergänzt die Adressen, die es zuordnen kann. Hat jemand mehrere
+  Telefonnummern oder E-Mail-Adressen, etwa eine Nummer und eine Apple-ID,
+  wählst du selbst.
+- Wenn du an eine solche Gruppe sendest, bittet BlueFerry dich zuerst, die
+  Mitglieder zu bestätigen. Beim Tippen schlägt es Kontakte vor und nimmt auch
+  eine Telefonnummer oder E-Mail-Adresse an. Deine Nachricht bleibt im
+  Antwortfeld, bis die Liste gespeichert ist.
 - Die gespeicherte Liste bleibt, bis du die Unterhaltung löschst, den Verlauf
   leerst oder den Speichermodus änderst. Die Gruppe auf dem iPhone bleibt
   unverändert.
+- Schreibt jemand, der nicht auf der gespeicherten Liste steht, antwortet
+  BlueFerry erst wieder, wenn du die Liste geprüft hast.
+- BlueFerry erkennt eine unbenannte Gruppe an den Namen ihrer Mitglieder.
+  Benennst du jemanden in den Kontakten um oder ändert sich die Gruppe, wird
+  sie zu einer neuen Unterhaltung, und BlueFerry fragt erneut.
 - Eine Nachricht landet nur dann in ihrer Gruppe, wenn BlueFerry auch die
   zugehörige iPhone-Mitteilung erhält. Sonst erscheint sie in der
   Einzelunterhaltung mit dem Absender.
