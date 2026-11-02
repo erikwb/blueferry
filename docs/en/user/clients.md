@@ -148,6 +148,10 @@ font, with compact controls and thin frames. Sent message bubbles stay blue
 across themes. Outside Omarchy, it uses the desktop palette. It's packaged
 for Arch-based distributions.
 
+With [phone calls](calls.md) on, a compact card under the header shows each
+running call: the caller, its state or how long it has run, **Answer** while
+it rings, and **Hang Up** or **Decline**.
+
 ![Quickshell client](../../images/quickshell.png)
 
 On Omarchy Quattro, the
@@ -196,9 +200,9 @@ Quickshell is a compact panel, so some parts stay with the other clients:
 | **Send to…** and the **Photos** tab (plugin features) | Send to needs a file picker or file drop, which the panel does not have; both come from plugins, which the panel does not manage | Qt client (Photos), Qt or GTK client (Send to), `blueferry send`, `blueferry photos` |
 | Companion tools | Setting up desktop helpers is a one-time job, not a panel task | Qt or GTK settings, `blueferry tools` |
 | Clearing the message history | Not offered by the terminal client either | `blueferry history-clear` |
-| Click Rules, recent calls, the calls panel (and with it switching a running call to another speaker or microphone) | Not in the Quickshell client yet | Qt, GTK or terminal client, `blueferry calls audio … --this-call` |
-| Muting this computer during a call | Needs the calls panel, which the panel does not have | Qt, GTK or terminal client, `blueferry calls mute on` / `off` |
-| Declining a ringing call with a message | Needs the calls panel; the saved replies are edited in the panel's settings | Qt, GTK or terminal client, the reply button on the ringing call's popup (comes with the ringing popup of #230), `blueferry calls decline-with-message` |
+| Click Rules, recent calls, holding a call, keypad tones and switching a running call to another speaker or microphone | Not in the Quickshell client yet; its call card only answers and hangs up | Qt, GTK or terminal client, `blueferry calls audio … --this-call` |
+| Muting this computer during a call | The panel's call card only answers and hangs up | Qt, GTK or terminal client, `blueferry calls mute on` / `off` |
+| Declining a ringing call with a message | The panel's call card only answers and declines; the saved replies are edited in the panel's settings | Qt, GTK or terminal client, the reply button on the ringing call's popup (comes with the ringing popup of #230), `blueferry calls decline-with-message` |
 
 The panel loads no translation catalog, so its own labels are English.
 Texts that come from the shared BlueFerry code, such as the reconnect hint,

@@ -151,6 +151,11 @@ dünnen Rahmen. Gesendete Nachrichten bleiben in jedem Theme blau. Außerhalb
 von Omarchy nutzt der Client die Desktop-Palette. Pakete gibt es für
 Arch-basierte Distributionen.
 
+Sind [Anrufe](calls.md) eingeschaltet, zeigt eine kompakte Karte unter der
+Kopfzeile jeden laufenden Anruf: den Anrufer, seinen Zustand oder wie lange
+er schon dauert, **Answer** solange es klingelt und **Hang Up** oder
+**Decline**.
+
 ![Quickshell-Client](../../images/quickshell.png)
 
 Unter Omarchy Quattro zeigt das Leisten-Widget
@@ -203,9 +208,9 @@ anderen Clients:
 | **Send to…** und der Tab **Photos** (Plugin-Funktionen) | Send to braucht eine Dateiauswahl oder Drag & Drop, die das Panel nicht hat; beides kommt von Plugins, die das Panel nicht verwaltet | Qt-Client (Photos), Qt- oder GTK-Client (Send to), `blueferry send`, `blueferry photos` |
 | Begleitwerkzeuge | Desktop-Helfer richtet man einmal ein; das ist keine Aufgabe für ein Panel | Qt- oder GTK-Einstellungen, `blueferry tools` |
 | Nachrichtenverlauf löschen | Bietet auch der Terminal-Client nicht an | `blueferry history-clear` |
-| Click Rules, letzte Anrufe, das Anruf-Panel (und damit das Umschalten eines laufenden Anrufs auf einen anderen Lautsprecher oder ein anderes Mikrofon) | Noch nicht im Quickshell-Client | Qt-, GTK- oder Terminal-Client, `blueferry calls audio … --this-call` |
-| Diesen Computer während eines Anrufs stummschalten | Braucht das Anruf-Panel, das das Panel nicht hat | Qt-, GTK- oder Terminal-Client, `blueferry calls mute on` / `off` |
-| Einen klingelnden Anruf mit einer Nachricht ablehnen | Braucht das Anruf-Panel; die gespeicherten Antworten bearbeitest du in den Einstellungen des Panels | Qt-, GTK- oder Terminal-Client, der Antwortknopf im Popup des klingelnden Anrufs (kommt mit dem Klingel-Popup aus #230), `blueferry calls decline-with-message` |
+| Click Rules, letzte Anrufe, Halten, Tastentöne und das Umschalten eines laufenden Anrufs auf einen anderen Lautsprecher oder ein anderes Mikrofon | Noch nicht im Quickshell-Client; seine Anrufkarte nimmt nur an und legt auf | Qt-, GTK- oder Terminal-Client, `blueferry calls audio … --this-call` |
+| Diesen Computer während eines Anrufs stummschalten | Die Anrufkarte des Panels nimmt nur an und legt auf | Qt-, GTK- oder Terminal-Client, `blueferry calls mute on` / `off` |
+| Einen klingelnden Anruf mit einer Nachricht ablehnen | Die Anrufkarte des Panels nimmt nur an und lehnt ab; die gespeicherten Antworten bearbeitest du in den Einstellungen des Panels | Qt-, GTK- oder Terminal-Client, der Antwortknopf im Popup des klingelnden Anrufs (kommt mit dem Klingel-Popup aus #230), `blueferry calls decline-with-message` |
 
 Das Panel lädt keinen Übersetzungskatalog, seine eigenen Beschriftungen
 sind deshalb englisch. Texte aus dem gemeinsamen BlueFerry-Code, etwa der
