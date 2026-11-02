@@ -61,7 +61,7 @@ from blueferry.limits import (
     MAX_THREAD_KEY_CHARS,
     MAX_THREAD_QUERY_LIMIT,
 )
-from blueferry.named_groups import UNNAMED_GROUP_PREFIX, stored_named_group_key
+from blueferry.named_groups import is_unnamed_group_key, stored_named_group_key
 from blueferry.notification_open import MAX_ACTIVATION_TOKEN_CHARS, MAX_CLICK_ID_CHARS
 from blueferry.notification_open_map import open_map_entries
 from blueferry.obex.map_query import list_recent_messages
@@ -894,7 +894,7 @@ class BackendOperations:
         thread_key = str(thread["key"])
         if not thread.get("is_group") or (
             thread.get("group_origin") != "named"
-            and not thread_key.startswith(UNNAMED_GROUP_PREFIX)
+            and not is_unnamed_group_key(thread_key)
         ):
             raise InvalidArgumentsError(
                 "participants can only be supplied for a named group or an "

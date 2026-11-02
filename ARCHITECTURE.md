@@ -807,8 +807,12 @@ A change to these rules has to be made in both places.
   subtitle and title that keeps repeated names, and is applied before address
   resolution, so later messages stay in that thread. Renaming a member in
   Contacts or changing the group's membership changes the key and orphans the
-  route; the group then needs its members again. A route saved under the
-  older unversioned key, which dropped repeated names, does not carry over.
+  route; the group then needs its members again. A route or confirmation
+  saved under the older unversioned key, which dropped repeated names, does
+  not carry over: it never applies, storage preparation removes it from
+  `settings.json`, and a conversation still under that key is read-only.
+  Preparation once also stars the v2 key of a group starred under the old
+  key, keeping the old star; a star never chooses recipients.
 - **Encryption at rest:** history, the contact cache, and the opt-in call
   history live in `0700` directories as `0600` SQLite files. Sensitive records, including event kind,
   timestamp, and content, are encrypted with AES-256-GCM under one random key
