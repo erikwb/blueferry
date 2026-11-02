@@ -67,7 +67,12 @@ from blueferry.notification_open_map import open_map_entries
 from blueferry.obex.map_query import list_recent_messages
 from blueferry.obex.map_send import send_group_message, send_message
 from blueferry.protocol import MESSAGES_API_VERSION
-from blueferry.recipients import InvalidRecipient, group_confirmation_token, validate_recipient
+from blueferry.recipients import (
+    SENDER_REPLY_TOKEN_PREFIX,
+    InvalidRecipient,
+    group_confirmation_token,
+    validate_recipient,
+)
 from blueferry.settings_store import UnreadableSettingsError
 from blueferry.storage_security import (
     STORAGE_POLICIES,
@@ -546,7 +551,20 @@ class BackendOperations:
         if thread is None:
             raise NotFoundError("thread no longer exists in local history")
         thread_key = str(thread["key"])
-        if not thread["reply_ready"] or not thread["recipients"]:
+        if (
+            not thread["is_group"] and confirm_group
+            and expected_group_token.startswith(SENDER_REPLY_TOKEN_PREFIX)
+        ):
+            # The latest message may have been sent to a group; the user
+            # confirmed a reply to the sender alone for exactly these messages
+            # and this address. Once those change, even to an unambiguous
+            # message, the user has to look again.
+            if expected_group_token != thread.get("sender_reply_token"):
+                raise ConfirmationRequiredError(
+                    "a newer message arrived; review the "
+                    "conversation before replying"
+                )
+        elif not thread["reply_ready"] or not thread["recipients"]:
             raise NotReadyError("thread has no unambiguous reply destination")
         self._require_map()
 

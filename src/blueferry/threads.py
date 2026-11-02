@@ -16,6 +16,7 @@ from blueferry.events import (
 from blueferry.grouping import correlate_group_events
 from blueferry.history import history_revision
 from blueferry.limits import MAX_DBUS_JSON_BYTES, MAX_THREAD_MESSAGES
+from blueferry.recipients import sender_reply_token
 
 MESSAGE_KINDS = {"sms_received", "sms_sent"}
 CacheKey: TypeAlias = tuple[int, ...]
@@ -275,6 +276,7 @@ def build_threads(events: list[dict], resolver=None) -> list[dict]:
                 "missing_members": [
                     str(value) for value in event["group_missing_members"]
                 ] if is_group and "group_missing_members" in event else None,
+                "group_ambiguous": False,
                 "messages": [],
                 "last_ts": "",
             }
@@ -379,6 +381,13 @@ def build_threads(events: list[dict], resolver=None) -> list[dict]:
             if id(latest_incoming) in maybe_group:
                 # A reply here would reach the sender alone while the
                 # conversation may be a group.
+                thread["group_ambiguous"] = True
+                if thread["reply_ready"] and latest_incoming["address"]:
+                    # The user may still say it was a 1:1 message.
+                    thread["sender_reply_token"] = sender_reply_token(
+                        latest_incoming["address"],
+                        [message for message in messages if id(message) in maybe_group],
+                    )
                 thread["reply_ready"] = False
         if thread.get("participants_required"):
             thread["reply_ready"] = False

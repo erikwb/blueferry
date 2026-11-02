@@ -498,6 +498,30 @@ class GroupConfirmScreen(ModalScreen[bool]):
         self.dismiss(False)
 
 
+class SenderConfirmScreen(GroupConfirmScreen):
+    """Asks whether a reply to a message that may be from a group goes to
+    its sender only."""
+
+    def compose(self) -> ComposeResult:
+        name = _one_line(self.thread.name)
+        address = _one_line(", ".join(self.thread.recipients))
+        with Vertical(id="confirm-dialog", classes="dialog"):
+            # Names come from the phone; never parse them as markup.
+            yield Static(Text(f"Reply to {name} only?"), classes="dialog-title")
+            yield Static(
+                Text(
+                    "The latest message may have been sent in a group. "
+                    f"Your reply goes only to {address}."
+                ),
+                classes="dialog-copy",
+            )
+            with Horizontal(classes="dialog-actions"):
+                yield Button("Cancel", id="confirm-cancel")
+                yield Button(
+                    Text(f"Reply only to {name}"), variant="primary", id="confirm-send",
+                )
+
+
 class DeleteConversationScreen(ModalScreen[bool]):
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "cancel", "Cancel", show=False)
@@ -1965,15 +1989,25 @@ class BlueFerryApp(App[None]):
                 ),
             )
             return
+        if plan.disposition is ReplyDisposition.CONFIRM_SENDER:
+            self.push_screen(
+                SenderConfirmScreen(thread),
+                lambda confirmed: self._group_reply_ready(
+                    confirmed, thread.key, body, plan.expected_group_token,
+                    cancelled="Reply cancelled",
+                ),
+            )
+            return
         self._begin_reply(thread.key, body, False, plan.expected_group_token)
 
     def _group_reply_ready(
         self, confirmed: bool, thread_key: str, body: str, expected_group_token: str,
+        *, cancelled: str = "Group reply cancelled",
     ) -> None:
         if confirmed:
             self._begin_reply(thread_key, body, True, expected_group_token)
         else:
-            self.state.notice = "Group reply cancelled"
+            self.state.notice = cancelled
             self._update_notice()
 
     def _begin_reply(
