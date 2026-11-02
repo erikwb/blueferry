@@ -481,7 +481,9 @@ def isolate_dbus(monkeypatch, request):
             pytest.skip("requires an explicitly isolated dbus-run-session")
         # Freezing what exists before the test keeps the collection below to
         # this test's own objects; scanning everything collection loaded each
-        # time added about 15 seconds to CI.
+        # time added about 15 seconds to CI. A cycle that also holds an object
+        # from before the test (say, a wider-scoped fixture's connection)
+        # escapes this collection, so keep D-Bus objects function-scoped.
         gc.freeze()
         try:
             yield
