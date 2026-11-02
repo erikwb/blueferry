@@ -24,6 +24,7 @@ Rectangle {
   property var doctor: ({})
   property var notificationList: ({})
   property string contactsSyncNotice: ""
+  property string storageResetNotice: ""
   // The list is private: shell.qml reads it only while this is set, and
   // hiding the page collapses it, so it is forgotten.
   property bool notificationsExpanded: false
@@ -38,6 +39,7 @@ Rectangle {
     && onboarding.stage === "iphone-settings" && onboarding.pendingIphoneSetupTasks().length > 0
   signal closeRequested
   signal pairingIssueRequested
+  signal storageResetRequested
   signal operationRequested(string method, var args)
   signal errorRequested(string message)
   signal reloadRequested
@@ -988,6 +990,36 @@ Rectangle {
           id: confirmStorageChange
           ferryTheme: root.theme
           text: "I understand that changing storage mode clears local messages and contacts"
+        }
+        // The way out when the saved data can't be opened. Like the other
+        // clients, only while the daemon offers it; older daemons don't.
+        FerryLabel {
+          objectName: "storageResetDetail"
+          ferryTheme: root.theme
+          Layout.fillWidth: true
+          visible: root.status.storage_reset === true && text !== ""
+          wrapMode: Text.Wrap
+          color: root.theme.warning
+          text: String(root.status.storage_detail || "")
+        }
+        RowLayout {
+          Layout.fillWidth: true
+          FerryButton {
+            objectName: "storageResetButton"
+            ferryTheme: root.theme
+            visible: root.status.storage_reset === true
+            text: root.busy.storageReset ? "Resetting…" : "Reset Local Storage…"
+            enabled: root.status.daemon === true && !root.busy.storage
+            onClicked: root.storageResetRequested()
+          }
+          FerryLabel {
+            objectName: "storageResetNotice"
+            ferryTheme: root.theme
+            Layout.fillWidth: true
+            wrapMode: Text.Wrap
+            visible: text !== ""
+            text: root.storageResetNotice
+          }
         }
         FerryCategoryHeading {
           objectName: "aboutCategory"

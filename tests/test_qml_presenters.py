@@ -3129,6 +3129,223 @@ def test_quickshell_offers_the_one_time_code_opt_in_only_when_reported(
     theme.deleteLater()
 
 
+def test_quickshell_offers_storage_reset_only_while_saved_data_cannot_be_opened(
+    qml_engine, quickshell_setup,
+):
+    detail = "The BlueFerry storage key is no longer in the desktop keyring."
+    page, calls, close = _quickshell_settings_page(qml_engine, quickshell_setup, {
+        "daemon": True, "contacts_only_notifications": False,
+    })
+    button = page.findChild(QObject, "storageResetButton")
+    explanation = page.findChild(QObject, "storageResetDetail")
+    notice = page.findChild(QObject, "storageResetNotice")
+    assert button is not None and explanation is not None and notice is not None
+    requested = []
+    page.storageResetRequested.connect(lambda: requested.append(True))
+    for status, offered in (
+        ({"storage_policy": "encrypted", "storage_state": "locked", "storage_reset": False}, False),
+        ({"storage_policy": "encrypted", "storage_state": "locked"}, False),  # Older daemon.
+        ({"storage_policy": "encrypted", "storage_state": "locked", "storage_reset": True}, True),
+        ({"storage_policy": "plaintext", "storage_state": "error", "storage_reset": True}, True),
+    ):
+        page.setProperty("status", {
+            "daemon": True, "contacts_only_notifications": False,
+            "storage_detail": detail, **status,
+        })
+        QGuiApplication.processEvents()
+        assert button.property("visible") is offered, status
+        assert explanation.property("visible") is offered, status
+    assert explanation.property("text") == detail
+    assert _plain_text_format(qml_engine, explanation)
+    assert button.property("enabled") is True
+
+    # The button only asks; shell.qml confirms before anything is sent.
+    assert QMetaObject.invokeMethod(button, "clicked")
+    assert requested == [True]
+    assert calls == []
+
+    page.setProperty("busy", {"storage": True, "storageReset": True})
+    QGuiApplication.processEvents()
+    assert button.property("enabled") is False
+    assert button.property("text") == "Resetting…"
+    page.setProperty("busy", {})
+    page.setProperty("status", {"storage_reset": True, "contacts_only_notifications": False})
+    QGuiApplication.processEvents()
+    assert button.property("enabled") is False  # No reachable daemon.
+
+    assert notice.property("visible") is False
+    page.setProperty("storageResetNotice", "Local storage reset")
+    page.setProperty("status", {"daemon": True, "storage_reset": False,
+                                "contacts_only_notifications": False})
+    QGuiApplication.processEvents()
+    assert button.property("visible") is False
+    assert notice.property("visible") is True
+    assert notice.property("text") == "Local storage reset"
+    close()
+
+
+@pytest.mark.private_dbus
+def test_quickshell_storage_reset_asks_first_and_reports_the_outcome(
+    tmp_path, quickshell_environment,
+):
+    """The real shell: the reset goes out only from the confirmation popup,
+    only while the daemon offers it, and its result stays beside the button."""
+    import shutil
+    import subprocess
+
+    executable = shutil.which("quickshell")
+    if executable is None:
+        pytest.skip("Quickshell is not installed")
+    for source in (ROOT / "data/quickshell").glob("*.qml"):
+        shutil.copyfile(source, tmp_path / source.name)
+    shutil.copyfile(
+        ROOT / "src/blueferry/qt/qml/ConversationLogic.qml",
+        tmp_path / "ConversationLogic.qml",
+    )
+    (tmp_path / "Theme.qml").write_text("import QtQuick\nThemePalette {}\n")
+    # No process can be started by either injected transport.
+    (tmp_path / "SetupTransport.qml").write_text('''import QtQuick
+Item {
+  signal lineReceived(int id, string kind, string line)
+  signal finished(int id, string kind, int code, string output, string diagnostic)
+  function execute(id, kind, command, interactive) {}
+  function cancel(id) {}
+  function write(id, text) {}
+}
+''')
+    (tmp_path / "BackendBridge.qml").write_text('''import QtQuick
+Item {
+  property bool desktopClient: false
+  property var calls: []
+  property int nextId: 1
+  signal response(string method, int requestId, var result)
+  signal failure(string method, int requestId, string message)
+  signal eventReceived(string name, var data)
+  function request(method, args) {
+    const id = nextId++;
+    calls.push({id: id, method: method, args: args});
+    return id;
+  }
+  function requestLatest(method, args) {}
+  function cancelLatest(method) {}
+}
+''')
+    config = tmp_path / "shell.qml"
+    source = config.read_text()
+    probe = r'''
+  Timer {
+    interval: 200; running: true
+    onTriggered: {
+      function check(value, message) { if (!value) throw new Error(message); }
+      function find(item, name) {
+        if (item.objectName === name) return item;
+        for (let index = 0; index < item.children.length; ++index) {
+          const found = find(item.children[index], name);
+          if (found) return found;
+        }
+        return null;
+      }
+      function sent(method) { return backendBridge.calls.filter(call => call.method === method); }
+      function status(id, extra) {
+        backendBridge.response("status", id, Object.assign({
+          daemon: true, storage_policy: "encrypted", storage_state: "locked",
+          storage_detail: "The BlueFerry storage key is no longer in the desktop keyring."
+        }, extra));
+      }
+      try {
+        setupController.configured = true;
+        root.presentWindow();
+        root.phoneSettingsVisible = true;
+        const button = find(phoneSettingsPage, "storageResetButton");
+        const notice = find(phoneSettingsPage, "storageResetNotice");
+        check(button !== null && notice !== null, "reset row missing");
+
+        // Not offered: no button, and neither a stray request nor a direct
+        // call opens the popup or resets.
+        status(1, {storage_reset: false});
+        check(!button.visible, "reset shown without the daemon's offer");
+        phoneSettingsPage.storageResetRequested();
+        check(!storageResetPopup.visible, "popup opened without the offer");
+        root.resetStorage();
+        check(sent("reset_storage").length === 0, "reset sent without the offer");
+        status(2, {});
+        check(!button.visible, "older daemon shows the reset");
+
+        status(3, {storage_reset: true});
+        check(button.visible && button.enabled, "offered reset not usable");
+        button.clicked();
+        check(storageResetPopup.visible, "Reset did not ask first");
+        check(sent("reset_storage").length === 0, "reset sent before confirmation");
+        storageResetCancelButton.clicked();
+        check(!storageResetPopup.visible && sent("reset_storage").length === 0, "Cancel reset");
+        button.clicked();
+        storageResetPopup.close();
+        check(sent("reset_storage").length === 0, "dismissing the popup reset");
+
+        // The popup goes away with the offer, and its button no longer works.
+        button.clicked();
+        status(4, {storage_reset: false, storage_state: "ready"});
+        check(!storageResetPopup.visible, "popup outlived the offer");
+        check(!storageResetConfirmButton.enabled, "stale confirmation enabled");
+        storageResetConfirmButton.clicked();
+        check(sent("reset_storage").length === 0, "stale confirmation reset");
+        status(5, {storage_reset: true});
+        button.clicked();
+        root.markStatusUnavailable("BlueFerry backend is unavailable");
+        check(!storageResetPopup.visible, "popup outlived the daemon");
+
+        status(6, {storage_reset: true});
+        const unlocks = sent("unlock_storage").length;
+        button.clicked();
+        storageResetConfirmButton.clicked();
+        const resets = sent("reset_storage");
+        check(resets.length === 1 && resets[0].args.confirmed === true, "confirmed reset not sent");
+        check(!storageResetPopup.visible, "popup stayed open");
+        check(root.storageResetBusy && !button.enabled && button.text === "Resetting…",
+          "reset in flight not shown");
+        button.clicked();
+        storageResetConfirmButton.clicked();
+        storageResetPopup.close();
+        check(sent("reset_storage").length === 1, "second reset while busy");
+        backendBridge.response("reset_storage", resets[0].id,
+          {storage_policy: "encrypted", storage_state: "ready", storage_detail: "Ready"});
+        check(!root.storageResetBusy && root.storageState === "ready", "reset reply ignored");
+        check(notice.visible && notice.text === "Local storage reset", "success not shown");
+        status(7, {storage_reset: false, storage_state: "ready"});
+        check(!button.visible && notice.visible, "success notice lost with the offer");
+        check(sent("unlock_storage").length === unlocks, "reset followed by an unlock");
+
+        status(8, {storage_reset: true});
+        button.clicked();
+        storageResetConfirmButton.clicked();
+        check(notice.text === "", "old outcome shown during a new reset");
+        backendBridge.failure("reset_storage", sent("reset_storage")[1].id,
+          "a desktop wallet request is already pending");
+        check(!root.storageResetBusy, "failed reset stayed busy");
+        check(notice.text === "Could not reset local storage: a desktop wallet request is already pending",
+          "failure not shown");
+        button.clicked();
+        storageResetConfirmButton.clicked();
+        backendBridge.failure("", 0, "bridge restarted");
+        check(!root.storageResetBusy && button.enabled, "bridge restart left the reset busy");
+        console.log("BLUEFERRY_STORAGE_RESET_OK");
+      } catch (error) {
+        console.error(error);
+      }
+      Qt.quit();
+    }
+  }
+'''
+    config.write_text(source[:source.rfind("}")] + probe + "}\n")
+    result = subprocess.run(
+        [executable, "--path", str(config)], env=quickshell_environment,
+        capture_output=True, text=True, timeout=10, check=False,
+    )
+    log = result.stdout + result.stderr
+    assert result.returncode == 0 and "BLUEFERRY_STORAGE_RESET_OK" in log, log
+    assert "WARN scene:" not in log and "ReferenceError" not in log and "TypeError" not in log, log
+
+
 @pytest.mark.private_dbus
 def test_quickshell_keeps_the_restart_command_when_the_daemon_is_unavailable(
     tmp_path, quickshell_environment,
