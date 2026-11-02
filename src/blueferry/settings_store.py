@@ -36,11 +36,12 @@ class SettingsStore:
     def read(self) -> dict[str, Any]:
         """Return the saved document, or ``{}`` when absent or unreadable."""
         try:
-            return self._load()
+            return self.load()
         except UnreadableSettingsError:
             return {}
 
-    def _load(self) -> dict[str, Any]:
+    def load(self) -> dict[str, Any]:
+        """Return the saved document, ``{}`` when absent; raise when unreadable."""
         try:
             value = json.loads(read_private_text(
                 self.path, maximum_bytes=MAX_SETTINGS_FILE_BYTES
@@ -72,7 +73,7 @@ class SettingsStore:
         # A file that exists but cannot be read is left alone: rewriting it
         # from nothing would erase every other preference.
         with _UPDATE_LOCK:
-            payload = self._load()
+            payload = self.load()
             payload.update(values)
             encoded = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
             atomic_write_private_text(

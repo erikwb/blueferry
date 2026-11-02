@@ -1325,6 +1325,9 @@ class BackendOperations:
             raise InvalidArgumentsError(
                 f"local data policy must be one of: {choices}"
             )
+        # Erasing for a policy that is only assumed could remove data the
+        # saved one keeps, or keep plaintext that should be encrypted.
+        self.dependencies.storage.require_known_policy()
         if selected != self.dependencies.storage.status.policy:
             # Never mix plaintext and ciphertext in one archive. Clear before
             # changing policy so a crash can leave stale settings or an empty
@@ -1365,6 +1368,8 @@ class BackendOperations:
             raise NotReadyError("local storage is unavailable")
         if storage.busy and not storage.cancel_passive_request():
             raise NotReadyError("a desktop wallet request is already pending")
+        # A reset starts over under the saved policy, so it must be readable.
+        storage.require_known_policy()
         completed = False
 
         def succeeded(status: StorageStatus) -> None:

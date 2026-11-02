@@ -760,6 +760,9 @@ def test_storage_policy_change_clears_data_before_switching(monkeypatch) -> None
         status = SimpleNamespace(policy="encrypted", can_read=True)
         busy = False
 
+        def require_known_policy(self):
+            calls.append("known")
+
         def change_async(self, submit, *, policy, on_success, on_error):
             calls.append(("set", policy))
             self.status = SimpleNamespace(
@@ -786,7 +789,7 @@ def test_storage_policy_change_clears_data_before_switching(monkeypatch) -> None
         lambda error: pytest.fail(str(error)), policy="plaintext",
     )
 
-    assert calls == ["events", "contacts", ("set", "plaintext")]
+    assert calls == ["known", "events", "contacts", ("set", "plaintext")]
     assert result[0]["storage_policy"] == "plaintext"
 
 
