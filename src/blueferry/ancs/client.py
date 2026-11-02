@@ -228,7 +228,7 @@ class AncsClient:
         on_status: Callable[[], None] | None = None,
         include_non_message_notifications: Callable[[], bool] | None = None,
         include_app_notification: Callable[[str], bool] | None = None,
-        on_transport_failure: Callable[[], None] | None = None,
+        on_transport_failure: Callable[[], object] | None = None,
         *,
         on_call_activity: Callable[[str], None] | None = None,
         previously_authorized: bool = False,

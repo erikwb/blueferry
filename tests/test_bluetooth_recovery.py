@@ -60,6 +60,7 @@ class Harness:
         }})
         self.worker = Worker()
         self.calls = []
+        self.reset_accepted = True
         self.idles = []
         self.create()
 
@@ -75,7 +76,7 @@ class Harness:
             observe=lambda: self.observed,
             probe=lambda: self.calls.append("probe"),
             probe_health=lambda: self.calls.append("probe-health"),
-            reset_le=lambda: self.calls.append("reset-le"),
+            reset_le=self.reset_le,
             pause=lambda: self.calls.append("pause"),
             resume=lambda: self.calls.append("resume"),
             settings=self.settings,
@@ -86,6 +87,10 @@ class Harness:
             cancel=lambda *_: None,
         )
         self.recovery.start()
+
+    def reset_le(self):
+        self.calls.append("reset-le")
+        return self.reset_accepted
 
     def cycle(self, expected, cancelled):
         assert self.settings.read()[mod.SETTINGS_KEY]["spent"] is True
@@ -1315,6 +1320,22 @@ def test_phone_only_recovery_does_not_need_adapter_cycle_permission(h, reason):
     h.tick(mod.OUTAGE_SECONDS * 2)
     assert h.calls == ["reset-le"]
     assert not h.worker.jobs
+
+
+def test_a_refused_phone_reset_is_asked_again_before_power_cycling(h):
+    h.reset_accepted = False
+    h.ready_to_probe()
+    refused = h.calls.count("reset-le")
+    assert refused > 1
+    assert not h.worker.jobs
+    h.reset_accepted = True
+    h.tick()
+    assert h.calls.count("reset-le") == refused + 1
+    h.tick(mod.RESET_SETTLE_SECONDS - 1)
+    assert not h.worker.jobs
+    h.tick(1)
+    assert len(h.worker.jobs) == 1
+    assert h.calls.count("reset-le") == refused + 1
 
 
 def test_cycle_still_requires_fresh_safe_window_after_scanning(h):

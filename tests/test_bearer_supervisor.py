@@ -2217,6 +2217,41 @@ def test_flapping_cannot_refund_the_shared_dial_and_reset_budget():
     assert len(calls) == 5
 
 
+def test_a_reset_refused_by_the_budget_runs_once_it_allows():
+    state = {"bredr": True, "le": True}
+    now = 0.0
+    disconnects = []
+    supervisor = BearerSupervisor(
+        "/device", read_connected=state.get, clock=lambda: now,
+        connect=lambda _kind, success, _error: success(),
+        disconnect=lambda kind, success, _error: (disconnects.append(kind), success()),
+        schedule=lambda _delay, _callback: 7, cancel=lambda _timer: None,
+    )
+    supervisor.start()
+    supervisor.recover_le_transport()
+    assert disconnects == ["le"]
+    now = 10.0
+    supervisor.poke()
+    # ANCS asks once more on the replacement link, inside the cooldown.
+    supervisor.recover_le_transport()
+    supervisor.poke()
+    assert disconnects == ["le"]
+    now = 30.0
+    supervisor.poke()
+    assert disconnects == ["le", "le"]
+
+    # A refused request belongs to its link and does not outlive it.
+    now = 40.0
+    supervisor.poke()
+    supervisor.recover_le_transport()
+    state["le"] = False
+    supervisor.poke()
+    state["le"] = True
+    now = 1000.0
+    supervisor.poke()
+    assert disconnects == ["le", "le"]
+
+
 def test_transport_reset_waits_for_pending_connect_to_finish():
     state = {"bredr": True, "le": False}
     now = 0.0
