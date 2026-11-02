@@ -22,14 +22,26 @@ Karte die Einstellung, die es einschaltet. Die Reiter wechselt man
 in der Kopfzeile, in einem schmalen Fenster unten:
 
 - **Messages**: Unterhaltungen und der Chat.
-- **Calls**: laufende [Anrufe](calls.md) mit annehmen, halten/fortsetzen
-  und auflegen sowie dem Ton-Schalter, ein Wählfeld, das auch deine
+- **Calls**: laufende [Anrufe](calls.md) mit annehmen, halten/fortsetzen,
+  auflegen, Tastentönen (0-9, `*`, `#`) für den aktiven Anruf sowie dem
+  Ton-Schalter, ein Wählfeld, das auch deine
   Kontakte nach Namen durchsucht, und die [Anrufliste](call-history.md) nach Tagen
   gruppiert, mit All und Missed, Rückruf- und Nachrichtenknöpfen und
   **Refresh from iPhone**. Jeder Anruf fragt vorher nach.
 - **Notifications**: die [letzten iPhone-Mitteilungen](notification-history.md)
   anderer Apps. Ist die Liste aus, sagt der Reiter warum und öffnet die
   Einstellung.
+- **Photos**: die neuesten Fotos und Videos eines [Foto-Plugins](plugins.md),
+  mit All, Photos und Videos; ein Klick lädt das Original und öffnet es,
+  ein geöffnetes lässt sich in andere Apps ziehen.
+
+**Plugins & Tools** auf der Karte klappt auf, was der KDE-Client unter
+seinen Schaltern zeigt: **From Plugins** (was [Plugins](plugins.md)
+anbieten, mit ihren Knöpfen, und **Send to…**; auf ein Geräte-Element
+gezogene Dateien gehen an dieses Gerät) und **Tools** (Bildschirm spiegeln,
+LocalSend, die Fotos des iPhones über USB). Der Bereich bleibt, wie du ihn
+verlassen hast, und klappt von selbst auf, wenn ein Plugin etwas Neues
+bringt, etwa eine laufende Übertragung.
 
 **Settings** (Hauptmenü, `Strg+,`) hat dieselben Kategorien wie der
 KDE-Client, je eine Seite; die Umschaltleiste sitzt in der Kopfzeile, in
@@ -42,14 +54,12 @@ einem schmalen Fenster unten, und der Suchknopf findet jede Einstellung:
 | Calls & Audio | Anrufe, Anrufliste, Akku-Warnung, [iPhone-Ton am Computer](phone-audio.md), Mediensteuerung |
 | Network | Optionales [Bluetooth-Tethering](bluetooth-tethering.md) |
 | Security | Einmalcodes, Abwesenheitssperre, lokale Daten und ihre Verschlüsselung, Verlauf löschen |
+| Plugins | Installierte [Plugins](plugins.md) mit Schalter, **Show Log**, **Check for Update** und **Remove**; der Store, eine eigene Git-URL und die Plugin-Listen. Jede Installation fragt vorher nach. Die **Settings** eines Plugins öffnen sich als eigene Seite |
 | About | Version, Hintergrunddienst, About BlueFerry, Tastenkürzel, **Restart Service**, Beenden |
 
 Die Schalter, die einen Neustart brauchen (unten), funktionieren wie im
 KDE-Client: Solange eine Änderung auf den Neustart wartet, beginnt jede
-Seite mit einem Hinweis und **Restart Service**. Die Plugin-Einstellungen
-und den Reiter Photos hat der GTK-Client noch nicht; dafür gibt es den
-KDE-Client oder auf der Kommandozeile `blueferry plugins` und
-`blueferry photos`.
+Seite mit einem Hinweis und **Restart Service**.
 
 ## KDE Plasma (Kirigami)
 
@@ -68,7 +78,7 @@ Einstellung, die sie einschaltet. Rechts gibt es drei Reiter:
 - **Messages**: Unterhaltungen mit den Filtern All, Unread und Starred und
   der Chat.
 - **Calls**: [Anrufe](calls.md) mit Wählfeld und laufenden Anrufen als
-  Karten (annehmen, halten, auflegen) und die [Anrufliste](call-history.md)
+  Karten (annehmen, halten, auflegen, Tastentöne für den aktiven Anruf) und die [Anrufliste](call-history.md)
   nach Tagen gruppiert, mit All und Missed.
 - **Notifications**: die [letzten iPhone-Mitteilungen](notification-history.md)
   anderer Apps.
@@ -155,6 +165,50 @@ omarchy plugin add https://github.com/erikwb/omarchy-blueferry.git
 Aktiviere es unter **Setup → Plugins** und füge es deiner Leiste hinzu.
 Kopplung, Nachrichten und Einstellungen erledigt weiterhin der vollständige
 Quickshell-Client.
+
+### Einstellungen
+
+**iPhone settings** hat dieselben Kategorien wie die Einstellungen des Qt-,
+GTK- und Terminal-Clients, untereinander angeordnet. Eine Einstellung
+erscheint nur, wenn der laufende Hintergrunddienst sie anbietet.
+
+| Kategorie | Was du dort findest |
+|---|---|
+| Phone | Kopplung, Verbindungszustand mit **Reconnect**, automatisches Zurücksetzen einer hängenden Verbindung, **Run Diagnostics**, Kontaktabgleich (**Sync Contacts**), Kontaktfotos |
+| Notifications | Welche Ereignisse Popups erzeugen, nur Kontakte, Mitteilungsinhalt, Aktionsknöpfe, Mitteilungen mit dem iPhone abgleichen, beim Wegklicken als gelesen markieren, letzte Mitteilungen behalten und die Liste dieser Mitteilungen |
+| Calls & Audio | Telefonanrufe, Anrufliste und Popups für verpasste Anrufe, Akku-Warnung, iPhone-Ton auf diesem Computer, Mediensteuerung und MPRIS |
+| Security | Einmalcodes, Abwesenheitssperre, die lokale Speicherung |
+| About | Der Hintergrunddienst, seine Version und **Restart Service** |
+
+Schalter, die einen Neustart brauchen, zeigen oben auf der Seite den
+Neustart-Hinweis mit **Restart Service**. Ein älterer Dienst, der sie noch
+nicht kennt, zeigt jeden Schalter ausgegraut mit der Variablen, die du
+stattdessen in `local.env` setzt.
+
+**Show Recent Notifications** listet die letzten 30 Mitteilungen, die
+**Keep recent iPhone notifications** behält: App, Uhrzeit und, falls
+erlaubt, Titel und Text. Die Liste wird nur gelesen, solange sie sichtbar
+ist, folgt neuen Mitteilungen und wird vergessen, sobald du sie
+ausblendest oder die Seite verlässt. Ist sie aus, leer oder nicht
+verfügbar, sagt sie, warum.
+
+### Was das Panel weglässt
+
+Quickshell ist ein kompaktes Panel, deshalb bleiben einige Teile bei den
+anderen Clients:
+
+| Weggelassen | Warum | Stattdessen |
+|---|---|---|
+| Plugin-Verwaltung und Plugin-Einstellungen | Jedes Plugin bringt sein eigenes Einstellungsformular mit Geheimnissen, Knöpfen und Protokoll mit, dazu kommt der Store mit installierbaren Plugins; das ist zu viel und zu unterschiedlich für ein kompaktes Panel | Qt- oder GTK-Einstellungen, `blueferry plugins` |
+| **Send to…** und der Tab **Photos** (Plugin-Funktionen) | Send to braucht eine Dateiauswahl oder Drag & Drop, die das Panel nicht hat; beides kommt von Plugins, die das Panel nicht verwaltet | Qt-Client (Photos), Qt- oder GTK-Client (Send to), `blueferry send`, `blueferry photos` |
+| Begleitwerkzeuge | Desktop-Helfer richtet man einmal ein; das ist keine Aufgabe für ein Panel | Qt- oder GTK-Einstellungen, `blueferry tools` |
+| Nachrichtenverlauf löschen | Bietet auch der Terminal-Client nicht an | `blueferry history-clear` |
+| Click Rules, letzte Anrufe, das Anruf-Panel | Noch nicht im Quickshell-Client | Qt-, GTK- oder Terminal-Client |
+
+Das Panel lädt keinen Übersetzungskatalog, seine eigenen Beschriftungen
+sind deshalb englisch. Texte aus dem gemeinsamen BlueFerry-Code, etwa der
+Hinweis zum Wiederverbinden, der Neustart-Hinweis oder der Platzhalter der
+Mitteilungsliste, folgen deiner Sprache.
 
 ## Terminal (TUI)
 
@@ -281,6 +335,7 @@ blueferry sms-send Alice 'komme später'
 blueferry contacts-sync              # Kontakte neu vom iPhone holen
 blueferry storage-policy-set encrypted   # oder plaintext, none
 blueferry storage-unlock             # Schlüsselbund zum Entsperren auffordern
+blueferry storage-reset              # alle lokalen Daten löschen, Schlüssel ersetzen
 blueferry history-clear              # lokalen Nachrichtenverlauf löschen
 blueferry pairing-issue              # GitHub-Issue mit dem letzten Kopplungsbericht öffnen
 blueferry version

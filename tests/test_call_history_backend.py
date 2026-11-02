@@ -45,7 +45,7 @@ def _call(direction, minutes_ago, number="15551230001", name=None) -> CallRecord
 
 
 class _Wallet:
-    def get_or_create(self, *, allow_prompt, cancellable=None):
+    def get_or_create(self, *, allow_prompt, cancellable=None, create=True):
         return b"K" * 32
 
     def delete(self, *, allow_prompt, cancellable=None):

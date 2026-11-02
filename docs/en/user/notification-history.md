@@ -2,8 +2,8 @@
 
 BlueFerry can keep a list of the iPhone's recent app notifications (other
 than Messages) for the **Notifications** tab of the KDE and GTK clients
-and the command line. The list lives only in the background service's memory; only the
-notifications you **pin** are saved, so they survive a restart.
+and the command line. The list lives only in the background service's memory;
+only the notifications you **pin** are saved, so they survive a restart.
 
 It is **off by default**.
 

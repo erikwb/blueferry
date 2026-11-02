@@ -121,8 +121,9 @@ def card_rows(cards: Iterable[PluginCard]) -> list[dict[str, object]]:
     ``sendTo`` on an action and ``dropTarget`` on an item are share target
     ids (ApiVersion 1.4); empty when the action only runs InvokeAction.
     Action labels go on buttons and tooltips, which detect rich text, so
-    they come escaped (:func:`blueferry.text_safety.control_text`); titles
-    and subtitles are for plain-text labels.
+    they come escaped (:func:`blueferry.text_safety.control_text`);
+    ``labelPlain`` is the raw label for toolkits whose buttons never read
+    markup (GTK). Titles and subtitles are for plain-text labels.
     """
     return [
         {
@@ -134,7 +135,8 @@ def card_rows(cards: Iterable[PluginCard]) -> list[dict[str, object]]:
                     "dropTarget": drop_target(card, item),
                     "actions": [
                         {"id": action.id, "label": control_text(action.label),
-                         "icon": action.icon or "", "primary": action.kind == "primary",
+                         "labelPlain": action.label, "icon": action.icon or "",
+                         "primary": action.kind == "primary",
                          "sendTo": send_target(card, action)}
                         for action in item.actions
                     ],
