@@ -163,6 +163,25 @@ def test_roster_warning_is_kept_without_a_listing(isolated_state, monkeypatch):
     ) != approved
 
 
+def test_a_failed_roster_check_does_not_stop_later_ones(isolated_state, monkeypatch):
+    backend = _backend()
+    _retain(_group_message(1))
+    backend.set_group_participants(KEY, [ALICE, BOB])
+    _retain(_group_message(2, CAROL))
+    run = lambda job, on_success, on_error: on_success(job())  # noqa: E731
+
+    def busy(**_kwargs):
+        raise OSError("database is locked")
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(backend_operations, "history_revision", busy)
+        backend.hold_roster_warnings(run)
+    backend.hold_roster_warnings(run)
+
+    [route] = GroupRoutesStore(config.SETTINGS_JSON).routes()
+    assert route["group_roster_warning_id"]
+
+
 class _Wallet:
     def get_or_create(self, *, allow_prompt, cancellable=None, create=True):
         return b"K" * 32

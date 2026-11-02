@@ -651,7 +651,10 @@ class BackendOperations:
             self._roster_check_pending = False
             log.warning("could not check saved group rosters: %s", error)
 
-        self.prepare_conversations(submit, ready, failed)
+        try:
+            self.prepare_conversations(submit, ready, failed)
+        except Exception as error:
+            failed(error)
 
     def _present_threads(self, threads: Sequence[dict]) -> list[dict]:
         presented = sort_threads(threads, starred_keys=self._starred_keys())
