@@ -390,6 +390,23 @@ Kirigami.ApplicationWindow {
     }
 
     Kirigami.PromptDialog {
+        id: storageResetDialog
+        objectName: "storageResetDialog"
+        title: qsTr("Reset Local Storage?")
+        subtitle: qsTr("This permanently deletes local message history, cached contacts, call history and conversation preferences, and replaces BlueFerry's keyring key. Nothing is deleted from the iPhone.")
+        dialogType: Kirigami.PromptDialog.Warning
+        standardButtons: Kirigami.Dialog.Cancel
+        customFooterActions: [Kirigami.Action {
+            text: qsTr("Erase and Start Over")
+            icon.name: "edit-delete"
+            onTriggered: {
+                root.bridge.resetStorage()
+                storageResetDialog.close()
+            }
+        }]
+    }
+
+    Kirigami.PromptDialog {
         id: deleteThreadsDialog
         property string threadKey: ""
         title: qsTr("Delete Conversation?")
@@ -1088,6 +1105,7 @@ Kirigami.ApplicationWindow {
             bridge: root.bridge
             onCloseRequested: root.closePhoneSettings()
             onClearHistoryRequested: clearDialog.open()
+            onStorageResetRequested: storageResetDialog.open()
             onShortcutsRequested: shortcutsDialog.open()
             onAboutRequested: {
                 root.closePhoneSettings()

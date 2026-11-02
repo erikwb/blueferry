@@ -300,6 +300,7 @@ blueferry sms-send Alice 'komme später'
 blueferry contacts-sync              # Kontakte neu vom iPhone holen
 blueferry storage-policy-set encrypted   # oder plaintext, none
 blueferry storage-unlock             # Schlüsselbund zum Entsperren auffordern
+blueferry storage-reset              # alle lokalen Daten löschen, Schlüssel ersetzen
 blueferry history-clear              # lokalen Nachrichtenverlauf löschen
 blueferry pairing-issue              # GitHub-Issue mit dem letzten Kopplungsbericht öffnen
 blueferry version

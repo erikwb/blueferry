@@ -193,6 +193,36 @@ läuft, und wartet zwischen zwei Versuchen mindestens eine Stunde. Die
 Entscheidungen stehen im Journal des Backends. Einzelheiten im
 [README](https://github.com/erikwb/blueferry#troubleshooting) (Englisch).
 
+## Gespeicherter Verlauf lässt sich nach einem Neustart nicht öffnen
+
+Verschlüsselter Verlauf braucht den BlueFerry-Speicherschlüssel aus dem
+Schlüsselbund des Desktops. Meldet der Client, der Schlüssel sei „no longer in
+the desktop keyring“, dort liege „a different BlueFerry key“ oder der lokale
+Verlauf „could not be authenticated“, lässt BlueFerry die gespeicherten Daten
+unangetastet und benutzt sie nicht mehr. Neue Nachrichten kommen trotzdem an.
+
+1. Öffne den Schlüsselbund, der den Schlüssel enthält (KDE-Wallet-Verwaltung
+   oder GNOME Passwörter und Verschlüsselung), und suche nach **BlueFerry
+   local storage key**. Liegt er in einer anderen als der Standard-Wallet,
+   öffne diese und führe dann `blueferry storage-unlock` aus (oder wähle im
+   Qt-Client **Unlock Local Data**).
+2. Gibt es zwei BlueFerry-Schlüssel, lösche den neueren und entsperre erneut.
+3. Ist der Schlüssel verloren, lassen sich die gespeicherten Daten nicht
+   wiederherstellen. Wähle in den Einstellungen für lokale Daten **Reset
+   Local Storage** oder führe aus:
+
+   ```bash
+   blueferry storage-reset
+   ```
+
+   Das löscht lokalen Verlauf, Kontakt-Cache, Anrufliste und gespeicherte
+   Einstellungen zu Unterhaltungen, ersetzt den Schlüssel und beginnt neu.
+   Die Kontakte werden erneut vom iPhone geholt. Auf dem iPhone wird nichts
+   gelöscht.
+
+Damit das nicht wieder passiert, sollte die Standard-Wallet dauerhaft sein und
+beim Anmelden geöffnet werden.
+
 ## Gruppennachrichten sehen wie Einzelnachrichten aus
 
 BlueFerry ordnet eine Nachricht nur dann ihrer Gruppe zu, wenn es auch die

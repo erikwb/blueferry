@@ -1926,6 +1926,13 @@ class BridgeController(QObject):
 
         self._run(self._backend.unlock_storage, self._storage_updated)
 
+    @Slot()
+    def resetStorage(self) -> None:
+        # The reset obtains its own key, so skip the automatic unlock.
+        self._storage_unlock_attempted = True
+
+        self._run(self._backend.reset_storage, self._storage_updated)
+
     def _storage_updated(self, value: object) -> None:
         if isinstance(value, dict):
             self._status.update(value)

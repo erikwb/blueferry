@@ -24,12 +24,16 @@ from blueferry.history import (
 from blueferry.limits import MAX_CONTACT_ADDRESSES_PER_CARD
 from blueferry.settings_store import SettingsStore
 from blueferry.storage_security import (
+    KEY_MISSING_DETAIL,
     CorruptStorageError,
     SecretServiceKeyProvider,
+    StorageKeyMissingError,
     StorageSecurity,
     StorageUnavailableError,
     is_encrypted_value,
 )
+
+_LOGIN = "/org/freedesktop/secrets/collection/login"
 
 
 def _secret_module(*, get_service):
@@ -48,7 +52,7 @@ class _KeyProvider:
         self.key = key
         self.calls: list[bool] = []
 
-    def get_or_create(self, *, allow_prompt: bool, cancellable=None) -> bytes:
+    def get_or_create(self, *, allow_prompt: bool, cancellable=None, create=True) -> bytes:
         self.calls.append(allow_prompt)
         return self.key
 
@@ -58,7 +62,7 @@ class _KeyProvider:
 
 
 class _LockedProvider:
-    def get_or_create(self, *, allow_prompt: bool, cancellable=None) -> bytes:
+    def get_or_create(self, *, allow_prompt: bool, cancellable=None, create=True) -> bytes:
         raise StorageUnavailableError("wallet locked")
 
     def delete(self, *, allow_prompt: bool, cancellable=None) -> bool:
@@ -144,7 +148,7 @@ def test_locked_matching_key_is_never_replaced(monkeypatch) -> None:
 
 def test_secret_service_creates_and_reloads_exactly_one_key(monkeypatch) -> None:
     retained = []
-    collection = SimpleNamespace(get_locked=lambda: False)
+    collection = SimpleNamespace(get_locked=lambda: False, get_object_path=lambda: _LOGIN)
 
     def item_for(value):
         return SimpleNamespace(
@@ -180,7 +184,9 @@ def test_secret_service_rechecks_after_collection_unlock(monkeypatch) -> None:
         get_locked=lambda: False,
         get_secret=lambda: SimpleNamespace(get_text=lambda: encoded),
     )
-    collection = SimpleNamespace(get_locked=lambda: not unlocked)
+    collection = SimpleNamespace(
+        get_locked=lambda: not unlocked, get_object_path=lambda: _LOGIN,
+    )
 
     def search(*_args):
         nonlocal search_count
@@ -207,6 +213,62 @@ def test_secret_service_rechecks_after_collection_unlock(monkeypatch) -> None:
 
     assert provider.get_or_create(allow_prompt=True) == b"R" * 32
     assert stored == []
+
+
+def _empty_keyring(monkeypatch, collection_path=_LOGIN):
+    """A keyring without BlueFerry's item; returns the unlock and store calls."""
+    calls = []
+    collection = SimpleNamespace(
+        get_locked=lambda: "unlock" not in calls, get_object_path=lambda: collection_path,
+    )
+    service = SimpleNamespace(
+        search_sync=lambda *_args: [],
+        unlock_sync=lambda *_args: calls.append("unlock"),
+        store_sync=lambda *args: calls.append(("store", args[2])),
+    )
+    secret = _secret_module(get_service=lambda *_args: service)
+    secret.Collection = SimpleNamespace(for_alias_sync=lambda *_args: collection)
+    secret.CollectionFlags = SimpleNamespace(NONE=0)
+    secret.COLLECTION_DEFAULT = "default"
+    secret.Value = SimpleNamespace(new=lambda text, *_args: text)
+    provider = SecretServiceKeyProvider()
+    monkeypatch.setattr(provider, "_secret_module", lambda: secret)
+    return provider, calls
+
+
+@pytest.mark.parametrize("allow_prompt", [False, True])
+def test_secret_service_never_replaces_a_key_that_retained_data_needs(
+    monkeypatch, allow_prompt,
+) -> None:
+    provider, calls = _empty_keyring(monkeypatch)
+
+    with pytest.raises(StorageKeyMissingError) as raised:
+        provider.get_or_create(allow_prompt=allow_prompt, create=False)
+
+    assert str(raised.value) == KEY_MISSING_DETAIL
+    # A prompt still opens the default wallet in case the key is inside it.
+    assert calls == (["unlock"] if allow_prompt else [])
+
+
+def test_secret_service_does_not_keep_the_key_in_the_session_collection(monkeypatch) -> None:
+    provider, calls = _empty_keyring(
+        monkeypatch, "/org/freedesktop/secrets/collection/session",
+    )
+
+    with pytest.raises(StorageUnavailableError, match="temporary"):
+        provider.get_or_create(allow_prompt=True)
+
+    assert calls == []
+
+
+def test_secret_service_stores_into_the_collection_it_checked(monkeypatch) -> None:
+    provider, calls = _empty_keyring(monkeypatch)
+
+    with pytest.raises(StorageUnavailableError):
+        provider.get_or_create(allow_prompt=True)  # The fake retains nothing.
+
+    assert calls == ["unlock", ("store", _LOGIN)]
+
 
 def _storage(tmp_path, provider=None) -> StorageSecurity:
     return StorageSecurity(
@@ -392,6 +454,23 @@ def test_wrong_key_fails_closed_without_deleting_ciphertext(tmp_path) -> None:
 
     assert replacement.status.state == "error"
     assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize(("checked", "advice"), [
+    (False, "open the wallet that holds the original key"),
+    (True, "Reset local storage to discard the unreadable data"),
+])
+def test_authentication_failure_says_how_to_recover_once(tmp_path, checked, advice) -> None:
+    storage = _storage(tmp_path)
+    storage._accept_key(b"K" * 32, checked=checked)
+
+    storage.fail_closed("Encrypted local history could not be authenticated")
+    detail = storage.status.detail
+    storage.fail_closed(detail)  # As a failed preparation reports it again.
+
+    assert storage.status.detail == detail
+    assert detail.startswith("Encrypted local history could not be authenticated. ")
+    assert advice in detail and detail.casefold().count("reset local storage") == 1
 
 
 def test_pruning_rolls_back_earlier_deletions_when_a_retained_row_is_corrupt(tmp_path):
@@ -604,6 +683,43 @@ def test_settings_updates_preserve_unrelated_preferences(tmp_path) -> None:
         "desktop_notifications": "messages",
         "local_data": "none",
     }
+
+
+def test_key_check_is_written_after_preparation_and_dropped_with_the_policy(
+    tmp_path, monkeypatch,
+) -> None:
+    from gi.repository import GLib
+
+    monkeypatch.setattr(GLib, "timeout_add_seconds", lambda *_args: 1)
+    monkeypatch.setattr(GLib, "source_remove", lambda _source: True)
+    settings = SettingsStore(tmp_path / "settings.json")
+    provider = _KeyProvider()
+    storage = StorageSecurity(settings=settings, key_provider=provider, initialize=False)
+
+    def prepare(**options) -> None:
+        pending = []
+        storage.change_async(
+            lambda operation, **handlers: pending.append((operation, handlers)),
+            on_success=lambda _status: None, on_error=lambda error: pytest.fail(str(error)),
+            prepare=lambda _candidate: None, **options,
+        )
+        operation, handlers = pending.pop()
+        handlers["on_success"](operation())
+
+    prepare()
+    assert storage.status.can_write
+    sealed = settings.read()["storage_key_check"]
+    assert is_encrypted_value(sealed)
+
+    provider.key = b"L" * 32
+    assert storage.refresh(allow_prompt=False).state == "locked"
+    assert settings.read()["storage_key_check"] == sealed  # Never overwritten.
+
+    prepare(policy="plaintext")
+    assert settings.read()["storage_key_check"] is None
+    prepare(policy="encrypted")
+    assert storage.status.can_write  # The new key is now the one on record.
+    assert settings.read()["storage_key_check"] != sealed
 
 
 def test_revision_tracks_key_and_policy_changes_only(tmp_path) -> None:

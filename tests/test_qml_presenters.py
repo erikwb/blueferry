@@ -845,6 +845,7 @@ def settings_window(qml_engine):
             }
             function answerPairingConfirmation(approved) { record("answerPairingConfirmation", [approved]); }
             function setStoragePolicy(policy) { record("setStoragePolicy", [policy]); }
+            function resetStorage() { record("resetStorage", []); }
             function setProximityLock(enabled, grace) { record("setProximityLock", [enabled, grace]); }
             function setCallHistory(enabled, popups) { record("setCallHistory", [enabled, popups]); }
             property var notificationOpenMap: []
@@ -1119,6 +1120,36 @@ def test_qt_storage_label_reports_unavailability_after_failed_reads(settings_win
         bridge.setProperty("status", state.status.to_dict())
         labels.append(status_label.property("text"))
     assert labels == [label, "Unavailable", label]
+
+
+def test_qt_offers_storage_reset_only_while_saved_data_cannot_be_opened(
+    qml_engine, settings_window,
+):
+    from PySide6.QtCore import QMetaObject
+
+    window, bridge = settings_window
+    bridge.setProperty("setupLoaded", True)  # Shows the settings page.
+    QGuiApplication.processEvents()
+    button = _settings_object(window, "storageResetButton")
+    for status, offered in (
+        ({"storage_policy": "encrypted", "storage_state": "ready", "storage_reset": True}, False),
+        ({"storage_policy": "encrypted", "storage_state": "locked"}, False),  # Older daemon.
+        ({"storage_policy": "encrypted", "storage_state": "locked", "storage_reset": True}, True),
+        ({"storage_policy": "plaintext", "storage_state": "error", "storage_reset": True}, True),
+    ):
+        bridge.setProperty("status", {"daemon": True, **status})
+        QGuiApplication.processEvents()
+        assert button.property("visible") is offered, status
+
+    QMetaObject.invokeMethod(button, "clicked")
+    QGuiApplication.processEvents()
+    dialog = _settings_object(window, "storageResetDialog")
+    assert dialog.property("visible")
+    methods = "testBridge.calls.map(c => c.method)"
+    assert "resetStorage" not in _evaluate(qml_engine, methods)  # Confirmation first.
+    qml_engine.globalObject().setProperty("storageResetDialog", qml_engine.newQObject(dialog))
+    _evaluate(qml_engine, "storageResetDialog.customFooterActions[0].trigger()")
+    assert _evaluate(qml_engine, methods)[-1] == "resetStorage"
 
 
 def test_qt_warns_about_a_suspect_le_bond_only_when_the_backend_reports_it(

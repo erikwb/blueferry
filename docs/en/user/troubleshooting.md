@@ -183,6 +183,34 @@ and it waits at least an hour between attempts. The decisions are logged in
 the backend journal. Details are in the
 [README](https://github.com/erikwb/blueferry#troubleshooting).
 
+## Saved history can't be opened after a restart
+
+Encrypted history needs the BlueFerry storage key from the desktop wallet.
+If the client says the key "is no longer in the desktop keyring", "a
+different BlueFerry key" is there, or that local history "could not be
+authenticated", BlueFerry keeps the saved data untouched and stops using it.
+Live messages still arrive.
+
+1. Open the wallet that holds the key (KDE Wallet Manager or GNOME Passwords
+   and Keys) and look for **BlueFerry local storage key**. If it is in a
+   wallet other than the default one, open that wallet, then run
+   `blueferry storage-unlock` (or choose **Unlock Local Data** in the Qt
+   client).
+2. If there are two BlueFerry keys, delete the newer one and unlock again.
+3. If the key is gone, the saved data can't be recovered. Choose **Reset
+   Local Storage** in the client's local data settings, or run:
+
+   ```bash
+   blueferry storage-reset
+   ```
+
+   This erases local history, cached contacts, call history, and saved
+   conversation preferences, replaces the key, and starts over. Contacts are
+   fetched from the iPhone again. Nothing on the iPhone is deleted.
+
+To keep this from happening again, make sure the default wallet is a
+persistent one that opens when you log in.
+
 ## Group messages look like direct messages
 
 BlueFerry files a message under its group only when it also receives the

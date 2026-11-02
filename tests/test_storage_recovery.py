@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
@@ -18,22 +19,45 @@ from blueferry.backend_operations import BackendDependencies, BackendOperations
 from blueferry.contact_repository import ContactRepository
 from blueferry.contact_sync import CONTACTS_REFRESH_SEC
 from blueferry.contacts import ContactsResolver
+from blueferry.errors import ConfirmationRequiredError
 from blueferry.events import SmsEvent
 from blueferry.history import append_event, read_events
 from blueferry.settings_store import SettingsStore
 from blueferry.sinks.sqlite import SqliteSink
 from blueferry.starred_threads import StarredThreadsStore
-from blueferry.storage_security import StorageSecurity, StorageStatus, StorageUnavailableError
+from blueferry.storage_security import (
+    KEY_CHECK_SETTING,
+    KEY_MISMATCH_DETAIL,
+    KEY_MISSING_DETAIL,
+    StorageKeyMissingError,
+    StorageSecurity,
+    StorageStatus,
+    StorageUnavailableError,
+)
 
 
 class _Wallet:
-    locked = True
-    key = b"K" * 32
+    """``key`` None is a keyring without BlueFerry's item, e.g. another wallet."""
 
-    def get_or_create(self, *, allow_prompt, cancellable=None):
+    locked = True
+    key: bytes | None = b"K" * 32
+    created = 0
+    deleted = 0
+
+    def get_or_create(self, *, allow_prompt, cancellable=None, create=True):
         if self.locked and not allow_prompt:
             raise StorageUnavailableError("the desktop keyring is locked")
+        if self.key is None:
+            if not create:
+                raise StorageKeyMissingError(KEY_MISSING_DETAIL)
+            self.created += 1
+            self.key = bytes([self.created]) * 32
         return self.key
+
+    def delete(self, *, allow_prompt, cancellable=None):
+        self.deleted += 1
+        existed, self.key = self.key is not None, None
+        return existed
 
 
 class _Queue:
@@ -111,7 +135,7 @@ def test_late_keyring_restores_contacts_history_and_message_retention(tmp_path, 
             self.locked = False
             self.calls = []
 
-        def get_or_create(self, *, allow_prompt, cancellable=None):
+        def get_or_create(self, *, allow_prompt, cancellable=None, create=True):
             self.calls.append(allow_prompt)
             if self.locked:
                 raise StorageUnavailableError("the desktop keyring is locked")
@@ -506,3 +530,109 @@ def test_disabling_retention_succeeds_when_wallet_key_deletion_is_unavailable(re
     assert "remove the old BlueFerry key" in r.outcomes[-1]["storage_detail"]
     assert SettingsStore(r.storage.settings_path).read()["local_data"] == "none"
     assert read_events() == []
+
+
+def _seal_history(r) -> bytes:
+    """Prepare once with the wallet's key, which records the key check."""
+    r.wallet.locked = False
+    r.unlock(interactive=True)
+    assert r.outcomes[-1]["storage_state"] == "ready"
+    assert SettingsStore(r.storage.settings_path).read()[KEY_CHECK_SETTING]
+    append_event({"kind": "sms_received", "handle": "original", "body": "keep"}, storage=r.storage)
+    return config.EVENTS_DB.read_bytes()
+
+
+@pytest.mark.parametrize("interactive", [False, True])
+def test_lost_keyring_key_is_reported_instead_of_silently_replaced(recovery, interactive):
+    r = recovery
+    before = _seal_history(r)
+    original, r.wallet.key = r.wallet.key, None  # e.g. its wallet is not the one open
+    r.storage.require_preparation()  # A restart.
+
+    r.unlock(interactive=interactive)
+
+    assert r.wallet.created == 0
+    assert r.storage.status == StorageStatus("encrypted", "locked", KEY_MISSING_DETAIL)
+    assert r.outcomes[-1]["storage_detail"] == KEY_MISSING_DETAIL
+    assert config.EVENTS_DB.read_bytes() == before
+    # Unlike corruption, this keeps the passive retry watching for the key.
+    r.wallet.key = original
+    r.unlock()
+    assert r.outcomes[-1]["storage_state"] == "ready"
+    assert read_events(storage=r.storage)[0]["handle"] == "original"
+
+
+def test_replaced_keyring_key_is_recognised_without_touching_saved_data(recovery):
+    r = recovery
+    before = _seal_history(r)
+    original, r.wallet.key = r.wallet.key, b"L" * 32
+    r.storage.require_preparation()
+
+    r.unlock(interactive=True)
+
+    assert r.storage.status == StorageStatus("encrypted", "locked", KEY_MISMATCH_DETAIL)
+    assert config.EVENTS_DB.read_bytes() == before
+    r.wallet.key = original
+    r.unlock(interactive=True)
+    assert r.outcomes[-1]["storage_state"] == "ready"
+    assert read_events(storage=r.storage)[0]["handle"] == "original"
+
+
+def _event_rows() -> int:
+    with closing(sqlite3.connect(config.EVENTS_DB)) as database:
+        return database.execute("SELECT COUNT(*) FROM events").fetchone()[0]
+
+
+def test_reset_erases_unreadable_storage_and_starts_over(recovery):
+    r = recovery
+    path = r.storage.settings_path
+    thread = "address:phone:15551111111"
+    # Sealed by an earlier release, which kept no key check.
+    r.wallet.locked = False
+    r.storage.refresh(allow_prompt=False)
+    append_event({"kind": "sms_received", "handle": "old", "body": "lost"}, storage=r.storage)
+    ContactRepository(r.storage).replace([("Alice", ["15551111111"], [])])
+    StarredThreadsStore(path, storage=r.storage).set_starred(thread, True)
+    # That release replaced a missing key on the next unlock (#298).
+    r.wallet.key = None
+    r.storage.require_preparation()
+    r.unlock(interactive=True)
+    assert r.storage.status.state == "error"
+    assert "open the wallet that holds the original key" in r.storage.status.detail
+    assert "reset local storage" in r.storage.status.detail
+    operations = BackendOperations(r.daemon.sessions, BackendDependencies(
+        storage=r.storage, contacts=r.daemon.contacts,
+        starred_threads=r.daemon.starred_threads, group_routes=r.daemon.group_routes,
+        confirmed_groups=r.daemon.confirmed_groups,
+        prepare_storage=preparation_mod.prepare_storage,
+        on_storage_prepared=r.daemon._apply_storage_preparation,
+        on_storage_changed=r.daemon._on_storage_changed,
+    ))
+
+    def reset(*, confirmed):
+        operations.reset_storage_async(
+            r.queue.submit, r.outcomes.append, lambda error: pytest.fail(str(error)),
+            confirmed=confirmed,
+        )
+
+    with pytest.raises(ConfirmationRequiredError):
+        reset(confirmed=False)
+    assert _event_rows() == 1 and not r.queue.jobs
+
+    reset(confirmed=True)
+    assert _event_rows() == 0  # Erased before the old keys go.
+    r.queue.finish()
+
+    assert r.outcomes[-1]["storage_state"] == "ready"
+    assert r.published[-1].state == "ready"
+    assert r.wallet.deleted == 1 and r.wallet.created == 2
+    assert read_events(storage=r.storage) == []
+    assert r.daemon.contacts.resolve("+15551111111") is None
+    assert StarredThreadsStore(path, storage=r.storage).keys() == []
+    assert SettingsStore(path).read()[KEY_CHECK_SETTING]
+    # New data is sealed under the new key, which a later start verifies.
+    append_event({"kind": "sms_received", "handle": "new", "body": "kept"}, storage=r.storage)
+    r.storage.require_preparation()
+    r.unlock()
+    assert r.outcomes[-1]["storage_state"] == "ready"
+    assert [event["handle"] for event in read_events(storage=r.storage)] == ["new"]
