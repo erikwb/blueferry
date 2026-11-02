@@ -19,14 +19,25 @@ setting turns it on. The tabs are switched in the header bar, or at the
 bottom in a narrow window:
 
 - **Messages**: conversations and the chat.
-- **Calls**: running [phone calls](calls.md) with answer, hold/resume and
-  hang up and the sound switch, a dial pad that also searches your
+- **Calls**: running [phone calls](calls.md) with answer, hold/resume,
+  hang up, keypad tones (0-9, `*`, `#`) for the active call and the sound
+  switch, a dial pad that also searches your
   contacts by name, and the [call history](call-history.md) grouped by day,
   with All and Missed, call back and message buttons, and **Refresh from
   iPhone**. Every call asks for confirmation first.
 - **Notifications**: the [recent iPhone notifications](notification-history.md)
   of other apps. When the list is off, the tab says why and opens the
   setting.
+- **Photos**: the newest photos and videos of a [photo plugin](plugins.md),
+  with All, Photos and Videos; a click downloads the original and opens it,
+  and an opened one can be dragged into other apps.
+
+**Plugins & Tools** on the card unfolds what the KDE client shows below
+its switches: **From Plugins** (the items [plugins](plugins.md) offer, with
+their buttons, and **Send to…**; files dropped on a device item are sent to
+it) and **Tools** (screen mirroring, LocalSend, the iPhone's photos over
+USB). It stays as you left it and unfolds by itself when a plugin brings
+something new, such as a running transfer.
 
 **Settings** (main menu, `Ctrl+,`) has the same categories as the KDE
 client, one page each; the switcher sits in the header bar, or at the
@@ -39,13 +50,12 @@ bottom in a narrow window, and the search button finds any setting:
 | Calls & Audio | Phone calls, call history, battery warning, [iPhone sound on this computer](phone-audio.md), media control |
 | Network | Opt-in [Bluetooth tethering](bluetooth-tethering.md) |
 | Security | One-time codes, away lock, local storage and its encryption, Clear History |
+| Plugins | Installed [plugins](plugins.md) with their switch, **Show Log**, **Check for Update** and **Remove**; the store, your own Git URL and the plugin lists. Every install asks first. A plugin's **Settings** open as a page of their own |
 | About | Version, the background service, About BlueFerry, keyboard shortcuts, **Restart Service**, Quit |
 
 The switches that need a restart (below) work as in the KDE client: while a
 change waits for the restart, every page starts with a notice and
-**Restart Service**. The GTK client doesn't have the plugin settings and
-the Photos tab yet; use the KDE client, or `blueferry plugins` and
-`blueferry photos` on the command line, for those.
+**Restart Service**.
 
 ## KDE Plasma (Kirigami)
 
@@ -64,7 +74,7 @@ tabs:
 - **Messages**: conversations with All, Unread and Starred filters, and the
   chat.
 - **Calls**: [phone calls](calls.md) with a dial pad and running calls as
-  cards (answer, hold, hang up), and the [call history](call-history.md)
+  cards (answer, hold, hang up, keypad tones for the active call), and the [call history](call-history.md)
   grouped by day, with All and Missed. Dialing asks you to confirm the number;
   names and numbers with extensions are never converted into another number.
 - **Notifications**: the [recent iPhone notifications](notification-history.md)
@@ -277,6 +287,7 @@ blueferry sms-send Alice 'running late'
 blueferry contacts-sync              # pull contacts from the iPhone again
 blueferry storage-policy-set encrypted   # or plaintext, none
 blueferry storage-unlock             # ask the keyring to unlock stored data
+blueferry storage-reset              # erase all local data and replace the key
 blueferry history-clear              # delete local message history
 blueferry pairing-issue              # open a GitHub issue with the last pairing report
 blueferry version

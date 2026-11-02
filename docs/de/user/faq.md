@@ -25,10 +25,9 @@ und Musik bewusst auf dem iPhone.
 ## Warum kann ich in einer Gruppe nicht antworten?
 
 Bluetooth verrät BlueFerry weder die ID noch die vollständige
-Mitgliederliste einer Gruppe. Bei einer benannten Gruppe lernt BlueFerry die
-Mitglieder von den Personen, die hineinschreiben, und bittet dich einmal, die
-vollständige Liste zu bestätigen. Sind die Mitglieder unklar oder schreibt
-jemand Neues, bleibt das Antworten gesperrt, bis du erneut bestätigst. Siehe
+Mitgliederliste einer Gruppe. Kennt BlueFerry die Mitglieder einer Gruppe
+nicht sicher, bittet es dich beim ersten Senden, sie zu bestätigen, und
+schlägt dabei Kontakte vor. Schreibt jemand Neues, fragt es erneut. Siehe
 [Gruppenchats](overview.md#gruppenchats).
 
 ## Können zwei Rechner dasselbe iPhone nutzen?

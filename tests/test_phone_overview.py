@@ -66,6 +66,15 @@ def test_phone_name_and_connection_line() -> None:
     assert text({"daemon": True}) == "Not connected"
 
 
+def test_dial_pad_hands_the_typed_text_to_the_confirmation_unfiltered() -> None:
+    # Letters, an extension or service codes stay, so the dialog refuses them
+    # instead of the pad calling a shortened number.
+    assert phone_link_view.dial_input("  +1 555 123 4567 ext 89 ") == "+1 555 123 4567 ext 89"
+    assert phone_link_view.dial_input("**21*15551234567#") == "**21*15551234567#"
+    assert phone_link_view.dial_input(None) == ""
+    assert phone_link_view.dial_input("   ") == ""
+
+
 def test_dial_field_keeps_only_dialable_characters() -> None:
     assert phone_link_view.dialable("+41 (79) 1-2<b>*#") == "+417912*#"
     assert phone_link_view.dialable(None) == ""
@@ -110,8 +119,18 @@ def test_call_card_words_each_state_and_ticks_the_duration() -> None:
     active = card({"state": "active", "first_seen": start}, now)
     assert active["subtitle"] == "2:05" and active["hold"] == "Hold"
     assert active["hangup"] == "Hang Up" and active["answer"] == "Answer"
+    assert active["active"] and not held["active"] and not ringing["active"]
+    assert active["tones"] == "Keypad tones (0-9 * #)" and active["send_tones"] == "Send Tones"
     assert card({"state": "active", "first_seen": "garbage"}, now)["subtitle"] == ""
     assert phone_link_view.call_duration(start, now - 300) == "0:00"
+
+
+def test_dial_tones_keeps_the_keypad_symbols_up_to_the_daemon_limit() -> None:
+    from blueferry.calls.model import MAX_DTMF_TONES
+
+    assert phone_link_view.dial_tones("1a2*#b ") == "12*#"
+    assert phone_link_view.dial_tones("+41 79") == "4179"
+    assert phone_link_view.dial_tones("#" * 99) == "#" * MAX_DTMF_TONES
 
 
 def test_notifications_view_names_the_opt_in_the_error_or_the_empty_list() -> None:

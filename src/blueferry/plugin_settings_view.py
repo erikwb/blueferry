@@ -4,7 +4,10 @@ The Qt settings page builds its lists from these helpers: installed plugins
 with status, store cards from the plugin indexes, the confirmation rows of
 an install, and settings forms from a manifest's ``[Config …]`` schema.
 Functions marked *blocking* talk to plugins, git or the network and belong
-on a worker thread. Everything returned is plain text.
+on a worker thread. Everything returned is plain text. Keys a Qt control
+shows (buttons, tooltips, link labels) come escaped for its rich-text
+detection (:func:`blueferry.text_safety.control_text`); the GTK client,
+whose controls never read markup, uses the raw ``…Plain`` twin instead.
 """
 from __future__ import annotations
 
@@ -176,6 +179,7 @@ def form_fields(manifest: PluginManifest, values: Mapping[str, object]) -> list[
             "helpUrlText": control_text(field.help_url),
             # ApiVersion 1.6: the link's own text; "" = "More information".
             "helpUrlLabel": control_text(field.help_url_label),
+            "helpUrlLabelPlain": field.help_url_label,
             "group": field.group,
             "showIfKey": show_key,
             "showIfValue": show_value,
@@ -207,6 +211,7 @@ def form_actions(manifest: PluginManifest) -> dict[str, Any]:
             "id": action.id,
             # A button detects rich text: escaped like every plugin text on one.
             "label": control_text(action.label),
+            "labelPlain": action.label,
             "icon": action.icon,
             "help": action.help,
             "primary": action.primary,
