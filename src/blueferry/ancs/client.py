@@ -1364,6 +1364,7 @@ class AncsClient:
             if request.action is not None:
                 self._finish_active_request()
                 self._action_failed(request.action, error)
+                self._observe_permission_error(error)
                 if _connection_was_lost(error):
                     self._mark_transport_failed()
                     return

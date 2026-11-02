@@ -2435,6 +2435,28 @@ def test_action_write_errors_map_to_results(monkeypatch, error, result) -> None:
         assert entry is not None and entry.in_flight is False
 
 
+@pytest.mark.parametrize("name", ["NotAuthorized", "NotPermitted"])
+def test_action_rejected_for_revoked_access_clears_access_and_retries(
+    monkeypatch, name,
+) -> None:
+    status = []
+    client, cp, emitted = _action_client(monkeypatch)
+    client.on_status = lambda: status.append(client.connected)
+    _deliver_call(client)
+    results = []
+    client.perform_notification_action(42, True, _token(emitted), results.append)
+
+    cp.fail(_dbus_error("Not authorized", f"org.bluez.Error.{name}"))
+
+    assert results == [client_module.ACTION_FAILED]
+    assert client.permission_denied is True
+    assert client.connected is False
+    assert status == [False]
+    assert client._test_timers[-1] == (
+        client_module.AUTHORIZATION_RETRY_SECONDS, client._retry_authorization,
+    )
+
+
 def test_lost_connection_during_action_invalidates_transport(monkeypatch) -> None:
     status = []
     client, cp, emitted = _action_client(monkeypatch)
