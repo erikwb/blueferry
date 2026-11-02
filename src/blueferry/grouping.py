@@ -107,14 +107,13 @@ def _seen_at(event: dict) -> datetime | None:
         return None
 
 
-def _unique_names(names: list[str]) -> list[str]:
-    by_folded: dict[str, str] = {}
-    for raw in names:
-        name = raw.strip()
-        if not name or name.casefold() in {"you", "me"}:
-            continue
-        by_folded.setdefault(name.casefold(), name)
-    return [by_folded[key] for key in sorted(by_folded)]
+def _member_names(names: list[str]) -> list[str]:
+    """Keep repeated names: two members iOS shows as "Bob" are two people."""
+    stripped = (raw.strip() for raw in names)
+    return sorted(
+        (name for name in stripped if name and name.casefold() not in {"you", "me"}),
+        key=str.casefold,
+    )
 
 
 def group_members_from_ancs(event: dict) -> list[str] | None:
@@ -131,7 +130,7 @@ def group_members_from_ancs(event: dict) -> list[str] | None:
     if not title or not _TO_PREFIX.match(subtitle) or "&" not in subtitle:
         return None
     remainder = _TO_PREFIX.sub("", subtitle, count=1)
-    return _unique_names([title, *_MEMBER_SEPARATOR.split(remainder)])
+    return _member_names([title, *_MEMBER_SEPARATOR.split(remainder)])
 
 
 def named_group_from_ancs(event: dict) -> str | None:
@@ -222,7 +221,7 @@ def _reconcile_group_identities(
         # key, so that later messages still find the roster.
         if routes.has_route(str(event.get("group_key") or "")):
             continue
-        members = _unique_names([
+        members = _member_names([
             str(value) for value in event.get("group_members", [])
         ])
         if len(members) < 2:
@@ -288,6 +287,8 @@ def correlate_group_events(events: list[dict], resolver=None) -> list[dict]:
     matched: set[int] = set()
     named_routes = NamedGroupRoutes(out, (
         name for event in out if (name := named_group_from_ancs(event))
+    ), (
+        members for event in out if (members := group_members_from_ancs(event))
     ))
     for stored in out:
         named_routes.annotate_stored(stored)
@@ -399,6 +400,8 @@ def correlate_group_events(events: list[dict], resolver=None) -> list[dict]:
         reply_ready = (
             not unresolved
             and len(recipients) >= 2
+            # Two members with one name must not resolve to one address.
+            and len(recipients) == len(members)
             and sender_identity is not None
             and sender_identity in recipient_identities
         )
@@ -408,6 +411,7 @@ def correlate_group_events(events: list[dict], resolver=None) -> list[dict]:
 
         sms.update({
             "group_key": key,
+            "group_aliases": named_routes.unnamed_aliases(key),
             "group_name": name,
             "group_members": members,
             "group_recipients": recipients,
