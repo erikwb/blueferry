@@ -54,6 +54,10 @@ class PrivatePreference:
                 self.write(value)
             else:
                 self.clear()
+        else:
+            # Authenticate now, so preparation never trusts a key that
+            # cannot open these records.
+            self.read()
 
     def write(self, value: object) -> None:
         if self._storage is not None:

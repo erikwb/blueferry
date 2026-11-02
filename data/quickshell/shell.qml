@@ -14,6 +14,10 @@ ShellRoot {
   property string pendingThreadKey: ""
   property string pendingMessageHandle: ""
   property var groupParticipantsThread: null
+  // The confirm-members editor's {name, address} rows, and the reply it holds
+  // back until the members are saved ("" when only editing them).
+  property var participantEntries: []
+  property string groupParticipantsDraft: ""
   property var rosterChangedThread: null
   property string errorText: ""
   property bool phoneSettingsVisible: false
@@ -287,8 +291,35 @@ ShellRoot {
     return conversationLogic.groupSignature(thread)
   }
 
-  function participantLines(value) {
-    return conversationLogic.participantLines(value)
+  function openGroupParticipants(thread, draft) {
+    groupParticipantsThread = thread
+    groupParticipantsDraft = draft
+    groupParticipantsPopup.open()
+  }
+
+  function addParticipant(value, name) {
+    const next = conversationLogic.addParticipant(participantEntries, value, name)
+    if (next === null) return false
+    participantEntries = next
+    participantSearch.text = ""
+    searchContacts("")
+    return true
+  }
+
+  // Saved members serve as the group approval, so Send confirms the group.
+  function sendComposer() {
+    var thread = conversationPane.thread
+    if (thread.is_group && thread.participants_required === true) {
+      openGroupParticipants(thread, composer.text)
+      return
+    }
+    sendBusy = true
+    backendBridge.request("send_to_thread", {
+      thread_key: thread.key,
+      body: composer.text,
+      confirm_group: thread.is_group,
+      expected_group_token: groupSignature(thread)
+    })
   }
 
   function warnAboutRosterChanges() {
@@ -487,8 +518,15 @@ ShellRoot {
         root.threadsRequestId = 0
         root.threads = root.threads.map(thread => thread.key === result.key ? result : thread)
         root.groupParticipantsBusy = false
+        const draft = root.groupParticipantsDraft
         groupParticipantsPopup.close()
         root.reload()
+        // The reply that asked for these members goes out now, if it is
+        // still the draft of the conversation on screen.
+        const selected = root.selectedThread()
+        if (draft !== "" && result.reply_ready === true && selected
+            && selected.key === result.key && composer.text === draft)
+          root.sendComposer()
       } else if (method === "mark_thread_read") {
         // HistoryChanged reloads the thread list.
       } else if (method === "set_thread_starred") {
@@ -1300,13 +1338,11 @@ ShellRoot {
                 FerryButton {
                   ferryTheme: theme
                   visible: conversationPane.thread
-                    && conversationPane.thread.group_origin === "named"
+                    && (conversationPane.thread.group_origin === "named"
+                        || conversationPane.thread.group_origin === "unnamed")
                   text: "Members"
                   bare: true
-                  onClicked: {
-                    root.groupParticipantsThread = conversationPane.thread
-                    groupParticipantsPopup.open()
-                  }
+                  onClicked: root.openGroupParticipants(conversationPane.thread, "")
                 }
                 FerryLabel {
                   ferryTheme: theme
@@ -1460,10 +1496,7 @@ ShellRoot {
                     ferryTheme: theme
                     text: "Add participants"
                     highlighted: true
-                    onClicked: {
-                      root.groupParticipantsThread = conversationPane.thread
-                      groupParticipantsPopup.open()
-                    }
+                    onClicked: root.openGroupParticipants(conversationPane.thread, "")
                   }
                 }
               }
@@ -1485,7 +1518,8 @@ ShellRoot {
                     Layout.fillWidth: true
                     placeholderText: "Write a message…"
                     flat: true
-                    enabled: conversationPane.thread && conversationPane.thread.reply_ready
+                    // Send asks for unconfirmed group members first.
+                    enabled: conversationLogic.canCompose(conversationPane.thread)
                     onAccepted: {
                       if (sendMessageButton.enabled) sendMessageButton.clicked()
                     }
@@ -1498,16 +1532,7 @@ ShellRoot {
                     highlighted: true
                     enabled: composer.enabled && composer.text.trim() !== "" &&
                              !root.groupParticipantsBusy && !root.sendBusy
-                    onClicked: {
-                      var thread = conversationPane.thread
-                      root.sendBusy = true
-                      backendBridge.request("send_to_thread", {
-                        thread_key: thread.key,
-                        body: composer.text,
-                        confirm_group: thread.is_group,
-                        expected_group_token: root.groupSignature(thread)
-                      })
-                    }
+                    onClicked: root.sendComposer()
                   }
                 }
               }
@@ -2206,9 +2231,9 @@ ShellRoot {
               text: "Review participants"
               highlighted: true
               onClicked: {
-                root.groupParticipantsThread = root.rosterChangedThread
+                const thread = root.rosterChangedThread
                 rosterChangedPopup.close()
-                groupParticipantsPopup.open()
+                root.openGroupParticipants(thread, "")
               }
             }
           }
@@ -2225,11 +2250,32 @@ ShellRoot {
         focus: true
         closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
         padding: theme.scaled(18)
+        readonly property var thread: root.groupParticipantsThread
+        readonly property var missing: conversationLogic.missingMembers(
+          groupParticipantsPopup.thread, root.participantEntries)
+        // The query the current contact results answer. Results for an earlier
+        // query are never offered while the debounced search is pending.
+        property string searchedText: ""
+        readonly property var suggestions: participantSearch.text.trim() === ""
+          || participantSearch.text !== groupParticipantsPopup.searchedText
+          ? [] : conversationLogic.participantSuggestions(root.contactResults, root.participantEntries)
 
         onOpened: {
-          groupParticipantsEditor.text = root.groupParticipantsThread
-            ? (root.groupParticipantsThread.recipients || []).join("\n") : ""
-          groupParticipantsEditor.forceActiveFocus()
+          root.participantEntries = conversationLogic.participantDraft(root.groupParticipantsThread)
+          participantSearch.text = ""
+          root.searchContacts("")
+          participantSearch.forceActiveFocus()
+        }
+        // Cancel leaves the draft in the composer and sends nothing.
+        onClosed: root.groupParticipantsDraft = ""
+
+        Timer {
+          id: participantSearchTimer
+          interval: 180
+          onTriggered: {
+            groupParticipantsPopup.searchedText = participantSearch.text
+            root.searchContacts(participantSearch.text)
+          }
         }
 
         background: Rectangle {
@@ -2248,8 +2294,8 @@ ShellRoot {
 
           FerryLabel {
             ferryTheme: theme
-            text: root.groupParticipantsThread
-              ? "Who is in " + root.groupParticipantsThread.name + "?" : "Group participants"
+            text: groupParticipantsPopup.thread
+              ? "Who is in " + groupParticipantsPopup.thread.name + "?" : "Group participants"
             font.bold: true
             font.pixelSize: theme.headingSize
           }
@@ -2257,62 +2303,124 @@ ShellRoot {
             ferryTheme: theme
             Layout.fillWidth: true
             wrapMode: Text.Wrap
-            text: root.groupParticipantsThread
-              ? (root.groupParticipantsThread.prompt_sender || "Someone")
-                + " has sent a message to a group named "
-                + root.groupParticipantsThread.name
-                + ", which you're a member of. BlueFerry can't determine the participants of this group chat, but if you fill in the members, it can work."
-              : ""
+            text: !groupParticipantsPopup.thread ? ""
+              : groupParticipantsPopup.thread.group_origin === "unnamed"
+                ? "BlueFerry couldn't match everyone in this group to one phone number or email. Add everyone else in it so you can reply from here."
+                : "BlueFerry can't tell who is in " + groupParticipantsPopup.thread.name
+                  + ". Add everyone else in it so you can reply from here."
           }
           FerryLabel {
             ferryTheme: theme
             Layout.fillWidth: true
             wrapMode: Text.Wrap
             color: theme.muted
-            text: "Enter every other participant's phone number or Apple ID email, one per line."
+            text: "This changes only BlueFerry, not the group on your iPhone."
+          }
+          Repeater {
+            model: root.participantEntries
+            delegate: RowLayout {
+              id: participantRow
+              required property var modelData
+              Layout.fillWidth: true
+              spacing: theme.scaled(8)
+              Column {
+                Layout.fillWidth: true
+                Text {
+                  width: parent.width
+                  text: participantRow.modelData.name || participantRow.modelData.address
+                  textFormat: Text.PlainText
+                  elide: Text.ElideRight
+                  color: theme.windowText
+                  font.family: theme.fontFamily
+                  font.pixelSize: theme.baseFontSize
+                }
+                Text {
+                  width: parent.width
+                  visible: participantRow.modelData.name !== ""
+                  text: participantRow.modelData.address
+                  textFormat: Text.PlainText
+                  elide: Text.ElideRight
+                  color: theme.muted
+                  font.family: theme.fontFamily
+                  font.pixelSize: theme.captionSize
+                }
+              }
+              FerryButton {
+                ferryTheme: theme
+                text: "Remove"
+                bare: true
+                Accessible.name: "Remove " + (participantRow.modelData.name
+                  || participantRow.modelData.address)
+                onClicked: root.participantEntries = conversationLogic.removeParticipant(
+                  root.participantEntries, participantRow.modelData.address)
+              }
+            }
           }
           FerryLabel {
             ferryTheme: theme
+            objectName: "missingMembersHint"
             Layout.fillWidth: true
             wrapMode: Text.Wrap
-            color: theme.windowText
-            text: "Changing this list only updates BlueFerry's local understanding of the group. It does not add or remove anyone in Messages on your iPhone."
+            visible: groupParticipantsPopup.missing.length > 0
+            color: theme.warning
+            text: "Still needed: " + groupParticipantsPopup.missing.join(", ")
           }
-          Rectangle {
+          FerryTextField {
+            ferryTheme: theme
+            id: participantSearch
             Layout.fillWidth: true
-            Layout.preferredHeight: theme.scaled(150)
-            color: theme.control
-            border.color: groupParticipantsEditor.activeFocus
-              ? theme.accent : theme.divider
-            radius: theme.controlRadius
-            ScrollView {
-              anchors.fill: parent
-              anchors.margins: theme.scaled(2)
-              TextArea {
-                id: groupParticipantsEditor
-                color: theme.windowText
-                selectionColor: theme.accent
-                selectedTextColor: theme.highlightedText
-                font.family: theme.fontFamily
-                font.pixelSize: theme.baseFontSize
-                placeholderText: "One participant per line"
-                placeholderTextColor: theme.muted
-                wrapMode: TextEdit.NoWrap
-                background: null
-                Accessible.name: "Group participants"
+            placeholderText: "Add a contact, phone number, or email"
+            Accessible.name: "Add participant"
+            onTextEdited: participantSearchTimer.restart()
+            // A typed address first; otherwise the best contact match.
+            onAccepted: {
+              const suggestions = groupParticipantsPopup.suggestions
+              if (!root.addParticipant(text, "") && suggestions.length > 0)
+                root.addParticipant(suggestions[0].address, suggestions[0].name)
+            }
+          }
+          ListView {
+            id: participantSuggestions
+            Layout.fillWidth: true
+            Layout.preferredHeight: count > 0
+              ? Math.min(contentHeight, theme.scaled(160)) : 0
+            visible: count > 0
+            clip: true
+            model: groupParticipantsPopup.suggestions
+            delegate: ItemDelegate {
+              id: participantSuggestion
+              required property var modelData
+              width: participantSuggestions.width
+              implicitHeight: participantSuggestionText.implicitHeight + theme.scaled(12)
+              contentItem: Column {
+                id: participantSuggestionText
+                Text {
+                  text: participantSuggestion.modelData.name
+                  textFormat: Text.PlainText
+                  color: theme.windowText
+                  font.family: theme.fontFamily
+                  font.pixelSize: theme.baseFontSize
+                }
+                Text {
+                  text: participantSuggestion.modelData.address
+                  textFormat: Text.PlainText
+                  color: theme.muted
+                  font.family: theme.fontFamily
+                  font.pixelSize: theme.captionSize
+                }
               }
+              onClicked: root.addParticipant(
+                participantSuggestion.modelData.address, participantSuggestion.modelData.name)
             }
           }
           FerryLabel {
             ferryTheme: theme
             Layout.fillWidth: true
             wrapMode: Text.Wrap
+            visible: groupParticipantsPopup.thread !== null
+              && groupParticipantsPopup.thread.group_origin !== "unnamed"
             color: theme.warning
-            text: root.groupParticipantsThread
-              ? "BlueFerry identifies named groups by name. If you have multiple groups named "
-                + root.groupParticipantsThread.name
-                + ", BlueFerry may combine them and use the wrong participant list. This list can also become outdated if the group is renamed or its membership changes."
-              : ""
+            text: "Groups with the same name share this list."
           }
           RowLayout {
             Layout.alignment: Qt.AlignRight
@@ -2323,16 +2431,18 @@ ShellRoot {
             }
             FerryButton {
               ferryTheme: theme
+              id: saveParticipantsButton
               text: root.groupParticipantsBusy ? "Saving…" : "Save participants"
               highlighted: true
-              enabled: root.participantLines(groupParticipantsEditor.text).length >= 2
+              enabled: groupParticipantsPopup.thread !== null
+                && root.participantEntries.length >= 2
+                && root.participantEntries.length <= conversationLogic.maxParticipants
                 && !root.groupParticipantsBusy
               onClicked: {
-                var recipients = root.participantLines(groupParticipantsEditor.text)
                 root.groupParticipantsBusy = true
                 backendBridge.request("set_group_participants", {
                   thread_key: root.groupParticipantsThread.key,
-                  recipients: recipients
+                  recipients: root.participantEntries.map(entry => entry.address)
                 })
               }
             }

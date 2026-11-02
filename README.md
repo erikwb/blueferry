@@ -590,9 +590,10 @@ non-Messages iPhone app notifications in the daemon's memory so the
 Notifications tab of the Qt and GTK clients, the terminal client's **iPhone
 Notifications**, **Show Recent Notifications** in the Quickshell settings
 (the newest 30) and
-`blueferry notifications recent` can list them. The list itself is not written to disk:
-BlueFerry's history deliberately retains only Messages records, so apart from
-pinned notifications the list starts empty after every backend restart. Titles and bodies are kept only with
+`blueferry notifications recent` can list them. The list itself is not written
+to disk: BlueFerry's history deliberately retains only Messages records, so
+apart from pinned notifications the list starts empty after every backend
+restart. Titles and bodies are kept only with
 `BLUEFERRY_SHOW_NOTIFICATION_CONTENT=true`, otherwise just the app and the
 time. Apps other than Messages only reach BlueFerry with the "All iPhone
 Notifications" policy. While encrypted storage is locked the list is refused.
@@ -853,7 +854,8 @@ itself is PipeWire's job; BlueFerry only controls the call.
 
 ## Companion tools (optional)
 
-The Qt phone card (section **Tools**) and `blueferry tools` can start three
+The phone card of the GTK and Qt clients (section **Tools**; in GTK under
+**Plugins & Tools**) and `blueferry tools` can start three
 programs that BlueFerry does not ship. Each entry only works when its tool
 is installed; otherwise it stays greyed out with what to install. These are
 local client actions; the daemon is not involved.
@@ -890,13 +892,13 @@ installed by default.
 
 - **Install** with `blueferry plugins install URL` (any https Git URL) or
   pick one from the curated store (`blueferry plugins available`), or from
-  **Settings › Plugins** in the Qt client. Every install and update
+  **Settings › Plugins** in the GTK or Qt client. Every install and update
   shows the source, the pinned ref and commit, the capabilities and the
   command the plugin's manifest runs (`Exec`), and asks first. Each plugin
   gets its own virtual environment under `~/.local/share/blueferry/plugins`;
   pip fetches its dependencies from the network. Everything runs as you;
   nothing asks for root.
-- **Settings** of a plugin come from its schema: a form in the Qt client with
+- **Settings** of a plugin come from its schema: a form in the GTK and Qt clients with
   help links, **Test connection**, where offered a browser sign-in and the
   plugin's own buttons (such as "Set up iPhone"), or
   `blueferry plugins config ID --set KEY=VALUE --secret KEY` (`--test`,
@@ -908,7 +910,7 @@ installed by default.
   example the next calendar entry or a running transfer, with their
   actions; `blueferry send FILE --to TARGET` hands files to a plugin target
   such as "iPhone (LocalSend)".
-- **From Plugins** in the Qt phone card shows the same items with buttons;
+- **From Plugins** in the GTK and Qt phone card shows the same items with buttons;
   a plugin that fails shows a dimmed line. **Send to…** at the end of that
   section hands files to a plugin target, and an item can also take files
   directly (file dialog or drop).
@@ -919,7 +921,7 @@ installed by default.
 - **Photos**: with a plugin that has the `photos` capability, such as
   [blueferry-plugin-immich](https://github.com/joshii-h/blueferry-plugin-immich)
   for a self-hosted Immich server, `blueferry photos recent` lists the newest
-  photos and videos and the Qt client's **Photos** tab shows them.
+  photos and videos and the **Photos** tab of the GTK and Qt clients shows them.
 - **Logs**: plugins write `~/.local/state/blueferry/plugins/<id>.log`
   (owner-only, rotated, secrets masked); `blueferry plugins log ID` or **Show Log** in the settings.
 

@@ -106,6 +106,110 @@ def test_unnamed_group_without_trusted_map_sender_name_is_read_only() -> None:
     assert group_sms["group_reply_ready"] is False
 
 
+def _family(*extra: dict) -> list[dict]:
+    """Issue #300: the son has a number and an Apple ID, so he is ambiguous."""
+    return [
+        _sms("+15552222222", "Son", "from his number", "2026-10-31T09:00:00+00:00"),
+        _sms("son@icloud.com", "Son", "from his Apple ID", "2026-10-31T09:01:00+00:00"),
+        _sms("+15551111111", "Wife", "dinner at 7", "2026-10-31T18:00:00+00:00"),
+        _ancs("Wife", "To you & Son", "dinner at 7", "2026-10-31T18:00:02+00:00"),
+        *extra,
+    ]
+
+
+def _family_route(recipients: list[str]) -> dict:
+    return {
+        "kind": "group_route",
+        "group_key": "group:participants:son|wife",
+        "group_name": "Son, Wife",
+        "group_members": ["Wife", "Son"],
+        "group_recipients": recipients,
+        "seen_at": "2026-10-31T18:05:00+00:00",
+    }
+
+
+def _family_group(events: list[dict]) -> dict:
+    return next(thread for thread in build_threads(events) if thread["is_group"])
+
+
+def test_unresolved_unnamed_group_requires_participants() -> None:
+    group = _family_group(_family())
+
+    assert group["key"] == "group:participants:son|wife"
+    assert group["group_origin"] == "unnamed"
+    assert group["participants_required"] is True
+    assert group["reply_ready"] is False
+    # The sender's address is known; only the son still needs one.
+    assert group["recipients"] == ["+15551111111"]
+    assert group["observed_recipients"] == ["+15551111111"]
+    assert group["missing_members"] == ["Son"]
+
+
+def test_resolved_unnamed_group_needs_no_participants() -> None:
+    events = [event for event in _family() if event.get("body") != "from his Apple ID"]
+
+    group = _family_group(events)
+
+    assert group["reply_ready"] is True
+    assert group["participants_required"] is False
+    assert group["missing_members"] == []
+
+
+def test_saved_roster_makes_an_unnamed_group_reply_ready() -> None:
+    route = _family_route(["+15551111111", "+15552222222"])
+    later = [
+        _sms("+15552222222", "Son", "on my way", "2026-10-31T18:10:00+00:00"),
+        _ancs("Son", "To you & Wife", "on my way", "2026-10-31T18:10:02+00:00"),
+    ]
+
+    group = _family_group([*_family(*later), route])
+
+    assert group["key"] == "group:participants:son|wife"
+    assert group["reply_ready"] is True
+    assert group["participants_required"] is False
+    assert group["recipients"] == ["+15551111111", "+15552222222"]
+    # The son's later message stays in the same conversation.
+    assert [message["body"] for message in group["messages"]] == [
+        "dinner at 7", "on my way",
+    ]
+
+
+def test_saved_unnamed_roster_replaces_historical_outgoing_recipients() -> None:
+    sent = {
+        "kind": "sms_sent",
+        "handle": "sent-1",
+        "body": "ok",
+        "timestamp": "2026-10-31T18:06:00+00:00",
+        "group_key": "group:participants:son|wife",
+        "group_name": "Son, Wife",
+        "group_members": ["Wife", "Son"],
+        "group_recipients": ["+15551111111", "son@icloud.com"],
+        "group_reply_ready": True,
+    }
+
+    group = _family_group([*_family(sent), _family_route(["+15551111111", "+15552222222"])])
+
+    assert group["recipients"] == ["+15551111111", "+15552222222"]
+    assert len(group["messages"]) == 2
+
+
+def test_outsider_in_a_saved_unnamed_group_flags_the_roster() -> None:
+    route = _family_route(["+15551111111", "+15552222222"])
+    outsider = [
+        _sms("son@icloud.com", "Son", "new phone", "2026-10-31T18:10:00+00:00"),
+        _ancs("Son", "To you & Wife", "new phone", "2026-10-31T18:10:02+00:00"),
+    ]
+
+    group = _family_group([*_family(*outsider), route])
+
+    assert group["key"] == "group:participants:son|wife"
+    assert group["roster_changed"] is True
+    assert group["unexpected_sender"] == "Son"
+    assert group["participants_required"] is True
+    assert group["reply_ready"] is False
+    assert "son@icloud.com" in group["observed_recipients"]
+
+
 def test_ancs_title_cannot_replace_an_unverified_map_sender() -> None:
     events = [
         _sms("+15551111111", "Alice", "earlier",

@@ -3,7 +3,7 @@ and keypad tones (DTMF) for the active call.
 
 GTK counterpart of the call cards in the Qt client's ``CallsTab.qml``. The
 calls come from ``Calls1.ListCalls``, read again on ``CallsChanged``, when
-the status reports another ``(calls_enabled, calls_state)`` and after each
+the phone, daemon availability or call readiness changes and after each
 action. They are not private history, so, as in Qt, they are read
 whichever tab is visible; unlike Qt, which reads regardless of
 visibility, the GTK client deliberately reads only while the window is
@@ -54,6 +54,8 @@ class RunningCalls(Gtk.ListBox):
         self._shown = False
         self._watched = False
         self._busy = False
+        self._generation = 0
+        self._rows_generation = 0
         self._ticking = False
         self.calls: list[dict] = []
         self._state: str | None = None
@@ -72,7 +74,7 @@ class RunningCalls(Gtk.ListBox):
         self.tones_sent = Adw.ActionRow(use_markup=False, css_classes=["dim-label"])
         self._read = CoalescedRead(
             client.calls_async, self._loaded, self._failed,
-            active=lambda: self._shown and self._status.get("calls_enabled") is True,
+            active=self._available,
         )
         self._ticker = (timer or glib_timer)(self._tick)
         self._avatars = AvatarCache(client.contact_photo_async, self._refresh_avatars)
@@ -92,17 +94,16 @@ class RunningCalls(Gtk.ListBox):
     def apply_status(self, status: dict) -> None:
         self._status = status
         self.sound.apply(status)
-        self._avatars.update_status(status)
-        key = (status.get("calls_enabled"), status.get("calls_state"))
+        key = tuple(status.get(field) for field in (
+            "daemon", "calls_enabled", "calls_state", "phone_profile_id",
+        ))
         if key == self._status_key:
+            self._avatars.update_status(status)
             return
         self._status_key = key
-        self._state = None
-        self._read.reset()
-        if status.get("calls_enabled") is True:
-            self._read.refresh()
-        else:
-            self._set_calls([])
+        self._forget_calls()
+        self._avatars.update_status(status)
+        self._read.refresh()
 
     def set_shown(self, shown: bool) -> None:
         """Read while the window is shown."""
@@ -110,9 +111,10 @@ class RunningCalls(Gtk.ListBox):
             return
         self._shown = shown
         if shown:
+            self._avatars.update_status(self._status)
             self._read.refresh()
         else:
-            self._read.reset()
+            self._forget_calls()
         self._sync_ticker()
 
     def set_watched(self, watched: bool) -> None:
@@ -121,6 +123,18 @@ class RunningCalls(Gtk.ListBox):
         self._sync_ticker()
 
     # ---- loading --------------------------------------------------------
+
+    def _available(self) -> bool:
+        return (self._shown and self._status.get("daemon") is True
+                and self._status.get("calls_enabled") is True)
+
+    def _forget_calls(self) -> None:
+        self._generation += 1
+        self._busy = False
+        self._state = None
+        self._read.reset()
+        self._set_calls([])
+        self._avatars.update_status({})
 
     def _loaded(self, snapshot: object) -> None:
         if not isinstance(snapshot, CallsSnapshot):
@@ -135,6 +149,7 @@ class RunningCalls(Gtk.ListBox):
         self._set_calls([])
 
     def _set_calls(self, calls: list[dict]) -> None:
+        self._rows_generation += 1
         self.calls = calls
         self._render()
         self._on_state()
@@ -175,17 +190,22 @@ class RunningCalls(Gtk.ListBox):
         self.tones_sent.set_visible(bool(text))
 
     def _act(self, request) -> None:
-        if self._busy:
+        if self._busy or not self._available() or self.state != "ready" or not self.calls:
             return
+        generation = self._generation
         self._busy = True
         self._render_sensitivity()
 
         def finished() -> None:
+            if generation != self._generation:
+                return
             self._busy = False
             self._render_sensitivity()
             self._read.refresh()
 
         def failed(message: str) -> None:
+            if generation != self._generation:
+                return
             self._toast(message)
             finished()
 
@@ -280,25 +300,32 @@ class RunningCalls(Gtk.ListBox):
         self._tones_draft = cleaned
         self._render_sensitivity()
 
-    @staticmethod
-    def _button(icon: str, label: str, style: str, action) -> Gtk.Button:
+    def _button(self, icon: str, label: str, style: str, action) -> Gtk.Button:
         button = Gtk.Button(
             icon_name=icon, tooltip_text=label, valign=Gtk.Align.CENTER,
             css_classes=["circular", style],
         )
         button.update_property([Gtk.AccessibleProperty.LABEL], [label])
-        button.connect("clicked", lambda _b: action())
+        generation = self._rows_generation
+
+        def clicked(_button) -> None:
+            if generation == self._rows_generation:
+                action()
+
+        button.connect("clicked", clicked)
         return button
 
     def _render_sensitivity(self) -> None:
         for _row, _call, _avatar, buttons in self.rows:
             for button in buttons:
-                button.set_sensitive(not self._busy)
+                button.set_sensitive(not self._busy and self._available() and self.state == "ready")
         if self.tones_button is not None:
             # Tones queue up on their own; other actions do not block them.
             self.tones_button.set_sensitive(bool(self._tones_draft))
 
     def _refresh_avatars(self) -> None:
+        if not self._shown:
+            return
         for _row, call, avatar, _buttons in self.rows:
             avatar.set_custom_image(self._avatars.get(str(call.get("number") or "")))
 
