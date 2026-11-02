@@ -570,9 +570,10 @@ non-Messages iPhone app notifications in the daemon's memory so the
 Notifications tab of the Qt and GTK clients, the terminal client's **iPhone
 Notifications**, **Show Recent Notifications** in the Quickshell settings
 (the newest 30) and
-`blueferry notifications recent` can list them. The list itself is not written to disk:
-BlueFerry's history deliberately retains only Messages records, so apart from
-pinned notifications the list starts empty after every backend restart. Titles and bodies are kept only with
+`blueferry notifications recent` can list them. The list itself is not written
+to disk: BlueFerry's history deliberately retains only Messages records, so
+apart from pinned notifications the list starts empty after every backend
+restart. Titles and bodies are kept only with
 `BLUEFERRY_SHOW_NOTIFICATION_CONTENT=true`, otherwise just the app and the
 time. Apps other than Messages only reach BlueFerry with the "All iPhone
 Notifications" policy. While encrypted storage is locked the list is refused.
