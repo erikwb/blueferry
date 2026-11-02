@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import unicodedata
 from collections.abc import Iterable
 
@@ -26,9 +27,13 @@ def unnamed_group_key(members: Iterable[str]) -> str:
     ANCS names the other members but carries no conversation ID, so this is
     the only identity that both survives a member writing from a different
     address and is known before every address is. Renaming a member in
-    Contacts or changing who is in the group changes the key.
+    Contacts or changing who is in the group changes the key. The names are
+    hashed as a list, so a repeated name, or one containing a separator, still
+    gives a different roster a different key.
     """
-    return UNNAMED_GROUP_PREFIX + "|".join(sorted(member.casefold() for member in members))
+    names = json.dumps(sorted(member.casefold() for member in members))
+    digest = hashlib.sha256(names.encode("utf-8")).hexdigest()
+    return f"{UNNAMED_GROUP_PREFIX}v2:{digest}"
 
 
 def legacy_named_group_key(name: str) -> str:
