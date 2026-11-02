@@ -10,13 +10,16 @@ from blueferry.backend_operations import BackendDependencies, BackendOperations
 from blueferry.confirmed_groups import ConfirmedGroupsStore
 from blueferry.contact_repository import ContactRepository
 from blueferry.contacts import ContactsResolver
+from blueferry.dbus_service import MessagesService
 from blueferry.errors import (
+    ConfigurationError,
     ConfirmationRequiredError,
     InvalidArgumentsError,
     NotFoundError,
     NotReadyError,
     OperationFailedError,
 )
+from blueferry.features import FeatureSettings
 from blueferry.group_routes import GroupRoutesStore
 from blueferry.grouping import named_group_key
 from blueferry.history import append_event, read_events
@@ -27,6 +30,8 @@ from blueferry.limits import (
     MAX_THREAD_BODY_CHARS,
 )
 from blueferry.models import Thread
+from blueferry.notification_policy import NotificationPolicyStore
+from blueferry.protocol import ERROR_PREFIX
 from blueferry.recipients import group_confirmation_token
 from blueferry.starred_threads import StarredThreadsStore
 from blueferry.threads import build_threads
@@ -518,6 +523,32 @@ def test_invalid_notification_policy_has_public_invalid_args_error() -> None:
         operations.set_notification_policy("bad")
 
     assert getattr(caught.value, "dbus_suffix", None) == "InvalidArgs"
+
+
+@pytest.mark.parametrize("save", [
+    lambda operations: operations.set_contacts_only_notifications(True),
+    lambda operations: operations.set_feature(config.FEATURE_SWITCHES[0][0], True),
+], ids=["notification-policy", "feature"])
+def test_refused_settings_save_reaches_dbus_as_configuration_error(tmp_path, save) -> None:
+    path = tmp_path / "settings.json"
+    path.write_text("{not json", encoding="utf-8")
+    path.chmod(0o600)
+    operations = _operations(
+        notification_policy=NotificationPolicyStore(path),
+        features=FeatureSettings(
+            path, running=dict, explicit=frozenset(), local_env=dict,
+        ),
+    )
+
+    with pytest.raises(ConfigurationError) as caught:
+        save(operations)
+
+    error = MessagesService._dbus_error(caught.value)
+    assert error.get_dbus_name() == f"{ERROR_PREFIX}.Configuration"
+    assert error.get_dbus_message().startswith(
+        "settings.json could not be read, so the change was not saved"
+    )
+    assert path.read_text(encoding="utf-8") == "{not json"
 
 
 def test_storage_policy_change_clears_data_before_switching(monkeypatch) -> None:
