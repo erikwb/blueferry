@@ -26,8 +26,12 @@ flowchart LR
   link is connected, and brings it online (iOS does not do this by itself).
 - Shows a desktop popup for an incoming call with **Answer** and
   **Decline**. It closes itself when the call stops ringing.
-- The Qt client gets a **Phone Calls** dialog, the terminal client a calls
-  panel (`c`), and the CLI a `calls` command group:
+- The Qt and GTK clients show running calls as cards on their **Calls**
+  tab (answer, hold/resume, hang up and, while a call is active, keypad
+  tones: each dial pad key and each 0-9, `*`, `#` typed outside a text
+  field is sent at once and shown as "Sent: …"; a keypad-tone field with
+  **Send Tones** takes whole sequences such as a PIN), the terminal client a calls panel (`c`: answer, hold/resume, hang up, keypad tones, contact
+  suggestions), and the CLI a `calls` command group:
 
   ```bash
   blueferry calls                 # state and current calls

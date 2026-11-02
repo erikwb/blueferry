@@ -138,6 +138,9 @@ def result_text(result: str) -> str:
     }.get(result, UNREACHABLE_TEXT)
 
 
+_NO_STATE = object()
+
+
 class ManualReconnect:
     """The line a client shows after the user pressed Reconnect.
 
@@ -150,9 +153,14 @@ class ManualReconnect:
     def __init__(self) -> None:
         self.pending = False
         self.notice = ""
+        # A reply that ends the attempt at once (a call is active, one is
+        # already running, BlueZ hangs) keeps its notice until the reconnect
+        # state moves on from the one the next status shows.
+        self._held_state: object = _NO_STATE
 
     def answered(self, result: object) -> str:
         result = str(result)
+        self._held_state = _NO_STATE
         if result == "unreachable":
             self.pending = False
             self.notice = ""
@@ -164,7 +172,12 @@ class ManualReconnect:
     def follow(self, status: Mapping[str, Any] | None) -> str:
         """Turn the status outcome of a manual attempt into a clear message."""
         if not self.pending:
-            self.notice = ""
+            if self.notice:
+                state = None if status is None else status.get("phone_reconnect_state")
+                if self._held_state is _NO_STATE:
+                    self._held_state = state
+                elif state != self._held_state:
+                    self.notice = ""
             return ""
         state = None if status is None else status.get("phone_reconnect_state")
         if state in ("connected", "unreachable", "waiting"):
