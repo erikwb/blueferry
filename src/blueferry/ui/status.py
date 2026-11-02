@@ -1,7 +1,9 @@
 """The GTK settings dialog: one preferences page per category.
 
 The categories mirror the Qt client's settings page (Phone, Notifications,
-Calls & Audio, Network, Security, About); see :mod:`blueferry.ui.settings_presenter`.
+Calls & Audio, Network, Security, Plugins, About); see
+:mod:`blueferry.ui.settings_presenter`. The Plugins page lives in
+:mod:`blueferry.ui.plugin_settings`.
 """
 
 from __future__ import annotations
@@ -35,6 +37,7 @@ from blueferry.tether_status import TetherStatus
 from blueferry.ui.doctor import DoctorSection
 from blueferry.ui.feature_switches import FeatureSwitches
 from blueferry.ui.notification_rules import NotificationRules
+from blueferry.ui.plugin_settings import ModelFactory, PluginSettingsPage, default_model
 from blueferry.ui.saved_choice import SavedChoice
 from blueferry.ui.settings_presenter import categories, service_state
 from blueferry.ui.setup_runner import SetupRunner
@@ -47,7 +50,10 @@ from blueferry.ui.status_presenter import (
 
 
 class SettingsDialog(Adw.PreferencesDialog):
-    def __init__(self, client, toast=None, *, doctor_runner=None, timer=None) -> None:
+    def __init__(
+        self, client, toast=None, *, doctor_runner=None, timer=None,
+        plugin_settings: ModelFactory | None = None,
+    ) -> None:
         super().__init__(
             title=_("Settings"), search_enabled=True, content_width=680, content_height=640,
         )
@@ -735,7 +741,12 @@ class SettingsDialog(Adw.PreferencesDialog):
         ):
             for group in groups:
                 self.pages[key].add(group)
-        self.connect("closed", lambda _dialog: self.features.stop())
+        self.plugins = PluginSettingsPage(
+            self, self.pages["plugins"], plugin_settings or default_model(client),
+        )
+        self.connect("notify::visible-page-name", lambda *_args: self._plugins_shown())
+        self.connect("map", lambda _dialog: self._plugins_shown())
+        self.connect("closed", self._closed)
 
         client.connect("availability-changed", lambda *_: self._refresh_all())
         client.connect("status-invalidated", self._status_invalidated)
@@ -756,6 +767,15 @@ class SettingsDialog(Adw.PreferencesDialog):
         row.add_suffix(switch)
         row.set_activatable_widget(switch)
         return row, switch
+
+    def _plugins_shown(self) -> None:
+        # Like the Qt page: the plugins are read whenever the category opens.
+        if self.get_mapped() and self.get_visible_page_name() == "plugins":
+            self.plugins.shown()
+
+    def _closed(self, _dialog) -> None:
+        self.features.stop()
+        self.plugins.stop()
 
     def show_toast(self, text: str) -> None:
         self.add_toast(Adw.Toast(title=text, use_markup=False))

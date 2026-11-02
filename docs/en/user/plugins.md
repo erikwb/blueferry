@@ -30,7 +30,7 @@ blueferry tools eject
 
 ## Installing a plugin
 
-Open **Settings › Plugins** in the KDE client. The store lists curated
+Open **Settings › Plugins** in the GTK or KDE client. The store lists curated
 plugins; **Install** shows the source, the version, the features it provides
 (its capabilities) and the command it runs (the manifest's `Exec`), and
 asks first. You can also paste any https Git URL. From a terminal:

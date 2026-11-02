@@ -40,13 +40,14 @@ bottom in a narrow window, and the search button finds any setting:
 | Calls & Audio | Phone calls, call history, battery warning, [iPhone sound on this computer](phone-audio.md), media control |
 | Network | Opt-in [Bluetooth tethering](bluetooth-tethering.md) |
 | Security | One-time codes, away lock, local storage and its encryption, Clear History |
+| Plugins | Installed [plugins](plugins.md) with their switch, **Show Log**, **Check for Update** and **Remove**; the store, your own Git URL and the plugin lists. Every install asks first. A plugin's **Settings** open as a page of their own |
 | About | Version, the background service, About BlueFerry, keyboard shortcuts, **Restart Service**, Quit |
 
 The switches that need a restart (below) work as in the KDE client: while a
 change waits for the restart, every page starts with a notice and
-**Restart Service**. The GTK client doesn't have the plugin settings and
-the Photos tab yet; use the KDE client, or `blueferry plugins` and
-`blueferry photos` on the command line, for those.
+**Restart Service**. The GTK client doesn't have the Photos tab and the
+plugin section of the card yet; use the KDE client, or `blueferry photos`
+and `blueferry cards` on the command line, for those.
 
 ## KDE Plasma (Kirigami)
 

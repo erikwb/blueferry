@@ -43,14 +43,15 @@ einem schmalen Fenster unten, und der Suchknopf findet jede Einstellung:
 | Calls & Audio | Anrufe, Anrufliste, Akku-Warnung, [iPhone-Ton am Computer](phone-audio.md), Mediensteuerung |
 | Network | Optionales [Bluetooth-Tethering](bluetooth-tethering.md) |
 | Security | Einmalcodes, Abwesenheitssperre, lokale Daten und ihre Verschlüsselung, Verlauf löschen |
+| Plugins | Installierte [Plugins](plugins.md) mit Schalter, **Show Log**, **Check for Update** und **Remove**; der Store, eine eigene Git-URL und die Plugin-Listen. Jede Installation fragt vorher nach. Die **Settings** eines Plugins öffnen sich als eigene Seite |
 | About | Version, Hintergrunddienst, About BlueFerry, Tastenkürzel, **Restart Service**, Beenden |
 
 Die Schalter, die einen Neustart brauchen (unten), funktionieren wie im
 KDE-Client: Solange eine Änderung auf den Neustart wartet, beginnt jede
-Seite mit einem Hinweis und **Restart Service**. Die Plugin-Einstellungen
-und den Reiter Photos hat der GTK-Client noch nicht; dafür gibt es den
-KDE-Client oder auf der Kommandozeile `blueferry plugins` und
-`blueferry photos`.
+Seite mit einem Hinweis und **Restart Service**. Den Reiter Photos und den
+Plugin-Abschnitt der Karte hat der GTK-Client noch nicht; dafür gibt es den
+KDE-Client oder auf der Kommandozeile `blueferry photos` und
+`blueferry cards`.
 
 ## KDE Plasma (Kirigami)
 

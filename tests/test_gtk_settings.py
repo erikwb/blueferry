@@ -89,6 +89,11 @@ class FakeClient:
     def run_doctor_async(self, on_ok, on_err, runner=None):
         self.calls.append(("doctor", on_ok, on_err))
 
+    def task_runner(self, _name, _workers=1):
+        from tests.client_fakes import ManualRunner
+
+        return ManualRunner()
+
     def take(self, name):
         names = [call[0] for call in self.calls]
         assert name in names, (name, names)
@@ -163,7 +168,7 @@ def _exercise_categories():
     dialog, window, client = _settings()
     assert list(dialog.pages) == [category.key for category in categories()]
     assert [page.get_title() for page in dialog.pages.values()] == [
-        "Phone", "Notifications", "Calls & Audio", "Network", "Security", "About"]
+        "Phone", "Notifications", "Calls & Audio", "Network", "Security", "Plugins", "About"]
     for key, groups in {
         "phone": ["Connection Health", "Diagnostics", "Contacts"],
         "notifications": ["Desktop Notifications", "Content and Actions", "History"],

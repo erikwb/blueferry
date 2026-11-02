@@ -1,8 +1,7 @@
 """Pure presentation rules for the GTK settings dialog (no display needed).
 
 The categories follow the Qt client's settings page (``qt/qml/SettingsPage.qml``)
-in the same order, each one an ``Adw.PreferencesPage``. Plugins get their
-page with the GTK plugin settings; until then the category is left out.
+in the same order, each one an ``Adw.PreferencesPage``.
 """
 
 from __future__ import annotations
@@ -28,6 +27,7 @@ def categories() -> tuple[Category, ...]:
         Category("calls", _("Calls & Audio"), "call-start-symbolic"),
         Category("network", _("Network"), "network-wireless-symbolic"),
         Category("security", _("Security"), "security-high-symbolic"),
+        Category("plugins", _("Plugins"), "application-x-addon-symbolic"),
         Category("about", _("About"), "help-about-symbolic"),
     )
 

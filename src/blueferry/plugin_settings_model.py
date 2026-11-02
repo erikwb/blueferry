@@ -5,7 +5,9 @@ client. Git, pip, the plugin indexes and calls into plugins all block, so
 they run on the client's :class:`~blueferry.client_tasks.TaskRunner`, one
 step at a time (the runner should use a single worker thread). Clients see
 one plain ``state`` map (see :meth:`PluginSettingsModel.state`) and are told
-about every change through ``on_change``. An install is always two steps:
+about every change through ``on_change``. ``failedStep`` names the step whose
+work raised (``"enable"``, ``"install"``, …) until the next step starts; a
+warning such as "the plugin is still running" is not a failure. An install is always two steps:
 ``prepare_install`` fills ``state.pending`` with the source, ref,
 capabilities and command, and only ``confirm_install`` runs pip.
 
@@ -82,7 +84,7 @@ class PluginSettingsModel:
         self._prepared: PreparedInstall | None = None
         self._store_entries: dict[str, dict] = {}
         self._state: dict[str, Any] = {
-            "loaded": False, "busy": "", "message": "", "messageOk": True,
+            "loaded": False, "busy": "", "failedStep": "", "message": "", "messageOk": True,
             "plugins": [], "ignored": [], "pending": {}, "config": {},
             "store": {"loaded": False, "items": [], "problems": []},
             "indexes": [], "defaultIndex": DEFAULT_INDEX_URL,
@@ -113,7 +115,7 @@ class PluginSettingsModel:
         if self._state["busy"]:
             self._queue.append((busy, operation, done, keep_message, on_error))
             return
-        self._update(busy=busy, **({} if keep_message else {"message": ""}))
+        self._update(busy=busy, failedStep="", **({} if keep_message else {"message": ""}))
 
         def finished(value: object) -> None:
             self._update(busy="")
@@ -122,10 +124,10 @@ class PluginSettingsModel:
         def failed(message: str) -> None:
             text = message or _("The plugin operation failed")
             if on_error is not None:
-                self._update(busy="")
+                self._update(busy="", failedStep=busy)
                 on_error(text)
                 return
-            self._update(busy="", message=text, messageOk=False)
+            self._update(busy="", failedStep=busy, message=text, messageOk=False)
 
         def next_step() -> None:
             if self._queue and not self._state["busy"]:

@@ -55,8 +55,12 @@ def _exercise_gtk_controls():
         patch.object(status.SettingsDialog, "_load_setup_state", lambda self: None),
         patch.object(status.Adw, "AlertDialog", Dialog),
     ):
+        from tests.client_fakes import ManualRunner
+
         page = status.SettingsDialog(
-            SimpleNamespace(connect=lambda *_args: None), lambda *_args: None,
+            SimpleNamespace(connect=lambda *_args: None,
+                            task_runner=lambda *_args: ManualRunner()),
+            lambda *_args: None,
         )
         page._run_setup = lambda operation, _done: operations.append(operation)
         page._devices = [PairedDevice.from_dict({

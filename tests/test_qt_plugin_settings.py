@@ -91,7 +91,7 @@ def test_store_install_is_confirmed_before_pip_runs(plugins) -> None:
     _wait(lambda: settings.state()["pending"] != {})
     rows = {row["label"]: row["value"] for row in settings.state()["pending"]["rows"]}
     assert rows["Source"] == URL and rows["Capabilities"] == "photos"
-    assert not any("pip" in " ".join(call) for call in runner.calls)
+    assert not any("pip" in call for call in runner.calls)
     settings.confirm_install()
     _wait(lambda: _idle(settings) and settings.state()["plugins"])
     assert "Installed Demo photos v0.1.0" in settings.state()["message"]
@@ -426,11 +426,13 @@ def test_settings_buttons_run_open_and_reload_the_form(with_actions) -> None:
     _wait(lambda: settings.state()["config"].get("loaded"))
     config = settings.state()["config"]
     assert config["actions"]["custom"] == [
-        {"id": "setup_iphone", "label": "Set up &lt;b&gt;iPhone&lt;/b&gt;", "icon": "smartphone",
+        {"id": "setup_iphone", "label": "Set up &lt;b&gt;iPhone&lt;/b&gt;",
+         "labelPlain": "Set up <b>iPhone</b>", "icon": "smartphone",
          "help": "Shows a QR code.", "primary": True},
-        {"id": "approve", "label": "Approve this network", "icon": "", "help": "",
+        {"id": "approve", "label": "Approve this network",
+         "labelPlain": "Approve this network", "icon": "", "help": "", "primary": False},
+        {"id": "broken", "label": "Broken", "labelPlain": "Broken", "icon": "", "help": "",
          "primary": False},
-        {"id": "broken", "label": "Broken", "icon": "", "help": "", "primary": False},
     ]
     assert config["fields"][0]["helpUrlLabel"] == "Which port?"
     settings.run_action("io.example.setup", "setup_iphone")
