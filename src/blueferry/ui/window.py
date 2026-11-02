@@ -94,7 +94,9 @@ class MainWindow(Adw.ApplicationWindow):
         )
         list_runner, original_runner = photo_runners or (
             client.task_runner("photos"), client.task_runner("photo-originals"))
-        self.photos = PhotosPage(list_runner, original_runner, open_file=open_file)
+        self.photos = PhotosPage(
+            list_runner, original_runner, open_file=open_file, on_error=self.toast,
+        )
         self.add_tab("photos", _("Photos"), "folder-pictures-symbolic", self.photos,
                      self.photos.set_watched)
         self.stack.connect("notify::visible-child-name", lambda *_args: self.sync_watches())

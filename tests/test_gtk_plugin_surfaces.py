@@ -483,9 +483,15 @@ def _exercise_photos():
     with (
         patch.object(photos_view, "load_current", lambda: answers["list"]),
         patch.object(photos_view, "fetch_current_original",
-                     lambda _plugin, _photo: answers["original"]),
+                     lambda _plugin, _photo: _answer(answers["original"])),
     ):
         _photos_scenario(Path(tempfile.mkdtemp()), answers)
+
+
+def _answer(value):
+    if isinstance(value, Exception):
+        raise value
+    return value
 
 
 def _photos_scenario(tmp, answers):
@@ -540,6 +546,15 @@ def _photos_scenario(tmp, answers):
         "Click to open, or drag the file into another app"
     assert page._drag("a") is not None and page._drag("b") is None
     assert not page.loader_banner.get_revealed()
+    # A failed download says why instead of only stopping the spinner.
+    toasts = []
+    window._toasts.add_toast = toasts.append
+    page.grid.emit("child-activated", page.cells["b"])
+    answers["original"] = RuntimeError("Immich is offline")
+    open_work.run_tasks()
+    assert not page.download_spinner.get_visible() and opened == [tmp / "a.jpg"]
+    assert [toast.get_title() for toast in toasts] == ["Immich is offline"]
+    del window._toasts.add_toast
 
     # A WebP thumbnail without the WebP loader: one banner names it.
     from unittest.mock import patch
