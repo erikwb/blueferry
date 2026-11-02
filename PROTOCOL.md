@@ -209,7 +209,10 @@ notification contents. During setup BlueFerry therefore sends a minimal
 Control Point request for the Messages app's display name and reports ANCS
 ready only after the corresponding Data Source response arrives. This probe
 contains no notification identifier or notification content. A rejected or
-interrupted probe is retried while MAP/PBAP remains available.
+interrupted probe is retried while MAP/PBAP remains available. The same
+applies after access was granted: an explicit `NotAuthorized`/`NotPermitted`
+rejection, as when notification sharing is turned off on the iPhone, ends
+ANCS readiness and resumes the probe retry without resetting LE.
 
 Without the relevant permission, MAP or PBAP can be visible at the SDP level
 but reject an OBEX connection with `Forbidden`/`0x43`; that state resolves

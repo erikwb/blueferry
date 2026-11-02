@@ -1440,6 +1440,15 @@ class AncsClient:
             word in detail for word in ("not authorized", "permission denied", "forbidden")
         ):
             self.permission_denied = True
+            # iOS answers this way once the user turns off notification
+            # sharing for this computer, without dropping the link. Stop
+            # reporting ANCS as working and probe until access returns.
+            if self._authorized:
+                self._authorized = False
+                log.info("ANCS notification access revoked for %s", self.device_path)
+                if self.on_status is not None:
+                    self.on_status()
+            self._schedule_authorization_retry()
 
     def _request_timed_out(self) -> bool:
         request = self._active_request
