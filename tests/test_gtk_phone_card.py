@@ -24,6 +24,7 @@ def test_gtk_phone_card(tmp_path, scenario):
 
 CALLS_READY = {
     "daemon": True, "map": True, "calls_enabled": True, "calls_state": "ready",
+    "storage_state": "ready",
 }
 
 
@@ -38,6 +39,8 @@ class FakeClient:
         self.status = BackendStatus.from_dict(status or {"daemon": True, "map": True})
         self.calls = []
         self.handlers = {}
+        self.runners = {}
+        self.opened = []  # what the window would have launched
 
     # GObject signals
     def connect(self, name, handler):
@@ -107,12 +110,18 @@ class FakeClient:
     def notifications(self, limit):
         raise AssertionError("only called through submit")
 
+    # the plugin parts' workers: nothing runs unless a scenario says so
+    def task_runner(self, name, _workers=1):
+        from tests.client_fakes import ManualRunner
+
+        return self.runners.setdefault(name, ManualRunner())
+
     # the Messages tab's reads stay unanswered
     def list_threads_async(self, *_args, **_kwargs):
         pass
 
-    def contact_photo_async(self, *_args, **_kwargs):
-        pass
+    def contact_photo_async(self, address, on_ok, on_err=None):
+        self.calls.append((("photo", address), on_ok, on_err))
 
     def names(self):
         return [call[0] for call in self.calls]
@@ -135,7 +144,10 @@ class FakeSettings:
     opened: ClassVar[list] = []
 
     def __init__(self, _client):
-        pass
+        from types import SimpleNamespace
+
+        self.listeners = []
+        self.plugins = SimpleNamespace(add_listener=self.listeners.append)
 
     def open(self, _parent, category=""):
         self.opened.append(category)
@@ -165,7 +177,8 @@ def _window(status=None, *, width=940, timer=None):
     ):
         window = window_module.MainWindow(
             None, client, name_loader=lambda done: done("<b>Test</b> iPhone"),
-            timer=timer,
+            timer=timer, opener=client.opened.append, open_file=client.opened.append,
+            files=lambda *_args: None,
         )
     window.set_default_size(width, 700)
     window.present()
@@ -213,9 +226,9 @@ def _exercise_layout():
 
     window, _client = _window(CALLS_READY)
     assert [page.get_name() for page in window.stack.get_pages()] == [
-        "messages", "calls", "notifications"]
+        "messages", "calls", "notifications", "photos"]
     assert [page.get_title() for page in window.stack.get_pages()] == [
-        "Messages", "Calls", "Notifications"]
+        "Messages", "Calls", "Notifications", "Photos"]
     assert window.header.get_title_widget() is window.switcher
     assert not window.switcher_bar.get_reveal()
     assert window.stack.get_visible_child_name() == "messages"
@@ -322,7 +335,6 @@ def _exercise_dial_pad():
     assert not calls.hint_banner.get_revealed()
     for key in ("0", "7", "9", "#"):
         calls.keys[key].emit("clicked")
-    calls.append_key("x")
     assert calls.entry.get_text() == "079#"
     assert runner.timers[0].delay is None, "the pad does not search contacts"
     calls.delete_button.emit("clicked")
@@ -366,6 +378,27 @@ def _exercise_dial_pad():
     _settle()
     assert window._dial_dialog is not None
     window._dial_dialog.force_close()
+
+    # Typed text is kept as it is, like in Qt: spacing is fine, but an
+    # extension or a service code is refused by the dialog, never shortened
+    # into another number.
+    calls.entry.set_text("+41 79 000 00 01")
+    assert calls.entry.get_text() == "+41 79 000 00 01"
+    calls.call_button.emit("clicked")
+    client.answer_status(CALLS_READY)
+    _settle()
+    assert "+41790000001" in window._dial_dialog.get_body()
+    window._dial_dialog.force_close()
+    for text in ("+1 555 123 4567 ext 89", "**21*15551234567#"):
+        calls.entry.set_text(text)
+        assert calls.call_button.get_sensitive()
+        calls.call_button.emit("clicked")
+        _settle()
+        dialog = window._dial_dialog
+        assert dialog is not None and dialog.get_heading() == "Can't Call This Number"
+        assert calls.entry.get_text() == text
+        dialog.force_close()
+    assert not [name for name in client.names() if name[0] == "dial" and name[1] != "0491570156"]
     window.destroy()
 
 
@@ -697,7 +730,7 @@ def _exercise_notifications():
     runner = ManualRunner()
     window, client = _window({"daemon": True, "map": True}, timer=runner.timer)
     page = window.notifications
-    timer = runner.timers[-1]
+    timer = page.history._timer
     assert "notifications" not in client.names(), "hidden tab: nothing is read"
     window.show_tab("notifications")
     _settle()

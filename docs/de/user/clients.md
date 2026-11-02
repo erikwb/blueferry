@@ -31,6 +31,17 @@ in der Kopfzeile, in einem schmalen Fenster unten:
 - **Notifications**: die [letzten iPhone-Mitteilungen](notification-history.md)
   anderer Apps. Ist die Liste aus, sagt der Reiter warum und öffnet die
   Einstellung.
+- **Photos**: die neuesten Fotos und Videos eines [Foto-Plugins](plugins.md),
+  mit All, Photos und Videos; ein Klick lädt das Original und öffnet es,
+  ein geöffnetes lässt sich in andere Apps ziehen.
+
+**Plugins & Tools** auf der Karte klappt auf, was der KDE-Client unter
+seinen Schaltern zeigt: **From Plugins** (was [Plugins](plugins.md)
+anbieten, mit ihren Knöpfen, und **Send to…**; auf ein Geräte-Element
+gezogene Dateien gehen an dieses Gerät) und **Tools** (Bildschirm spiegeln,
+LocalSend, die Fotos des iPhones über USB). Der Bereich bleibt, wie du ihn
+verlassen hast, und klappt von selbst auf, wenn ein Plugin etwas Neues
+bringt, etwa eine laufende Übertragung.
 
 **Settings** (Hauptmenü, `Strg+,`) hat dieselben Kategorien wie der
 KDE-Client, je eine Seite; die Umschaltleiste sitzt in der Kopfzeile, in
@@ -43,14 +54,12 @@ einem schmalen Fenster unten, und der Suchknopf findet jede Einstellung:
 | Calls & Audio | Anrufe, Anrufliste, Akku-Warnung, [iPhone-Ton am Computer](phone-audio.md), Mediensteuerung |
 | Network | Optionales [Bluetooth-Tethering](bluetooth-tethering.md) |
 | Security | Einmalcodes, Abwesenheitssperre, lokale Daten und ihre Verschlüsselung, Verlauf löschen |
+| Plugins | Installierte [Plugins](plugins.md) mit Schalter, **Show Log**, **Check for Update** und **Remove**; der Store, eine eigene Git-URL und die Plugin-Listen. Jede Installation fragt vorher nach. Die **Settings** eines Plugins öffnen sich als eigene Seite |
 | About | Version, Hintergrunddienst, About BlueFerry, Tastenkürzel, **Restart Service**, Beenden |
 
 Die Schalter, die einen Neustart brauchen (unten), funktionieren wie im
 KDE-Client: Solange eine Änderung auf den Neustart wartet, beginnt jede
-Seite mit einem Hinweis und **Restart Service**. Die Plugin-Einstellungen
-und den Reiter Photos hat der GTK-Client noch nicht; dafür gibt es den
-KDE-Client oder auf der Kommandozeile `blueferry plugins` und
-`blueferry photos`.
+Seite mit einem Hinweis und **Restart Service**.
 
 ## KDE Plasma (Kirigami)
 
@@ -349,6 +358,7 @@ blueferry sms-send Alice 'komme später'
 blueferry contacts-sync              # Kontakte neu vom iPhone holen
 blueferry storage-policy-set encrypted   # oder plaintext, none
 blueferry storage-unlock             # Schlüsselbund zum Entsperren auffordern
+blueferry storage-reset              # alle lokalen Daten löschen, Schlüssel ersetzen
 blueferry history-clear              # lokalen Nachrichtenverlauf löschen
 blueferry pairing-issue              # GitHub-Issue mit dem letzten Kopplungsbericht öffnen
 blueferry version
