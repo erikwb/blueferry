@@ -810,6 +810,26 @@ def test_a_status_forwarded_while_options_is_being_pushed_does_not_crash() -> No
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize("state", ["locked", "ready"])
+def test_storage_caption_says_why_local_data_is_unavailable(state) -> None:
+    detail = "Local data is not retained while settings.json cannot be read"
+
+    async def scenario() -> None:
+        backend = _OptionsBackend()
+        backend.status = lambda: BackendStatus(
+            daemon=True, storage_policy="encrypted", storage_state=state,
+            storage_detail=detail, extra=dict(_FULL_EXTRA),
+        )
+        app = _app(backend)
+        async with app.run_test(size=(160, 40)) as pilot:
+            screen = await _open(app, pilot, "security")
+            caption = _plain(screen, "#options-storage")
+            assert ("settings.json cannot be read" in caption) is (state == "locked")
+            assert "blueferry storage-reset" not in caption
+
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize("offered", [False, True])
 def test_storage_caption_names_the_reset_only_when_the_daemon_offers_it(offered) -> None:
     async def scenario() -> None:
