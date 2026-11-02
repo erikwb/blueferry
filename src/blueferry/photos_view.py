@@ -21,6 +21,7 @@ from blueferry.i18n import _
 from blueferry.plugin_api import CAPABILITY_PHOTOS
 from blueferry.plugin_api.client import Photo, PluginClient, PluginError
 from blueferry.plugin_api.manifest import Discovery, PluginManifest, discover
+from blueferry.plugin_prefs import disabled_plugins
 
 SETUP_COMMAND = "blueferry plugins install https://github.com/joshii-h/blueferry-plugin-immich"
 DEFAULT_LIMIT = 60
@@ -78,6 +79,9 @@ def load_recent(
         if status.state == "unconfigured":
             hint = status.detail or _("Configure the plugin in Settings > Plugins.")
             return PhotosSnapshot(True, False, hint)
+        if manifest.id in disabled_plugins():
+            # Disabled while it answered: the next call would start it again.
+            return PhotosSnapshot(False, False, not_installed_hint())
         photos = client.list_recent(limit)
     except PluginError as error:
         return PhotosSnapshot(True, False, _("Photos unavailable: {reason}").format(reason=error))
