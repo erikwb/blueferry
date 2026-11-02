@@ -203,7 +203,8 @@ the system". Their presence tells clients the choice is offered. See the
 
 With a backend that offers the choice, `ListCalls` also returns `audio`:
 `state` (`idle`, `waiting` until PipeWire shows the call audio, `ready`,
-`unavailable` when `pw-dump` fails) and per direction (`output`, `input`)
+`phone` when an answered call has had no call audio here for 8 s, so its
+sound is on the iPhone, `unavailable` when `pw-dump` fails) and per direction (`output`, `input`)
 `selected` (the `node.name` in effect, `""` for the system), `origin`
 (`call`, `settings`, `system`), `device`/`description` of the device the
 call actually uses, `stream` (the call audio exists) and `missing` (the
