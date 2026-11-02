@@ -8,6 +8,7 @@ from typing import Any
 from uuid import UUID
 
 from blueferry.connectivity import is_map_connection_refused
+from blueferry.events import canonical_address
 from blueferry.i18n import _
 from blueferry.message_links import linkify_message
 from blueferry.recipients import group_confirmation_token
@@ -565,6 +566,8 @@ class Thread:
             "roster_warning_key",
             "starred",
             "group_confirmed",
+            "can_compose",
+            "participant_draft",
         }
         raw_recipients = value.get("recipients")
         raw_messages = value.get("messages")
@@ -612,6 +615,39 @@ class Thread:
     def roster_warning_key(self) -> str:
         return self.roster_warning_id or f"{self.key}:{self.unexpected_sender or 'unknown'}"
 
+    @property
+    def can_compose(self) -> bool:
+        """Whether a reply can be typed; a group may first need its members."""
+        return self.reply_ready or (self.is_group and self.participants_required)
+
+    @property
+    def missing_members(self) -> tuple[str, ...]:
+        raw = self.extra.get("missing_members")
+        return tuple(str(item) for item in raw) if isinstance(raw, list | tuple) else ()
+
+    @property
+    def participant_draft(self) -> tuple[tuple[str, str], ...]:
+        """``(name, address)`` pairs to start the members editor with.
+
+        The addresses BlueFerry already knows, each named after the sender of
+        a message from it when there is one.
+        """
+        names = {
+            str(message.extra.get("address") or ""): message.sender
+            for message in self.messages
+            if not message.outgoing and message.sender
+        }
+        observed = self.extra.get("observed_recipients")
+        draft: dict[str, tuple[str, str]] = {}
+        for address in (
+            *self.recipients, *(observed if isinstance(observed, list | tuple) else ()),
+        ):
+            text = str(address).strip()
+            identity = canonical_address(text) or text
+            if text and identity not in draft:
+                draft[identity] = (names.get(text, ""), text)
+        return tuple(draft.values())
+
     def to_dict(self) -> dict[str, Any]:
         return {
             **self.extra,
@@ -634,6 +670,11 @@ class Thread:
             "roster_warning_key": self.roster_warning_key,
             "starred": self.starred,
             "group_confirmed": self.group_confirmed,
+            "can_compose": self.can_compose,
+            "participant_draft": [
+                {"name": name, "address": address}
+                for name, address in self.participant_draft
+            ],
         }
 
 

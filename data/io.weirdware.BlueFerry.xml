@@ -79,6 +79,8 @@
                   value="InvalidArgs,NotReady"/>
     </method>
     <method name="SetGroupParticipants">
+      <annotation name="org.freedesktop.DBus.Description"
+                  value="Save the reply addresses of a named group, or of an unnamed group whose members do not each resolve to one address. The list must include every observed sender; other threads are refused."/>
       <arg name="thread_key" type="s" direction="in"/>
       <arg name="recipients" type="as" direction="in"/>
       <arg name="thread_json" type="s" direction="out"/>
@@ -226,6 +228,14 @@
       <arg name="status_json" type="s" direction="out"/>
       <annotation name="io.weirdware.BlueFerry.Errors"
                   value="NotReady"/>
+    </method>
+    <method name="ResetStorage">
+      <annotation name="org.freedesktop.DBus.Description"
+                  value="Erase all retained local data (history, cached contacts, call history, conversation preferences), remove BlueFerry's keyring key and prepare storage again under a new one. For storage whose key is lost or replaced, or whose records failed authentication; GetStatus storage_reset advertises it"/>
+      <arg name="confirmed" type="b" direction="in"/>
+      <arg name="status_json" type="s" direction="out"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="ConfirmationRequired,NotReady"/>
     </method>
     <method name="ListRecent">
       <arg name="folder" type="s" direction="in"/>
