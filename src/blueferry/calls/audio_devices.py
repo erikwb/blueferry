@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
@@ -74,6 +75,9 @@ STATE_IDLE = "idle"            # no call
 STATE_WAITING = "waiting"      # a call, but no call audio in PipeWire yet
 STATE_READY = "ready"          # at least one call stream found
 STATE_UNAVAILABLE = "unavailable"  # pw-dump missing or failing
+# A call is answered, but the phone has not opened the call audio link to
+# this computer: the sound plays on the iPhone (answered there, or moved).
+STATE_PHONE = "phone"
 
 # The call streams appear a few seconds after the SCO link comes up. Check
 # every second for a while, then keep an eye on hot-plugged devices.
@@ -82,6 +86,10 @@ FAST_CHECKS = 20
 STEADY_INTERVAL_SEC = 5
 # After a move, look again soon so the call view shows the new device.
 FOLLOW_UP_CHECKS = 3
+# How long an answered call may stay without call streams before the sound
+# counts as being on the iPhone. The streams were seen "a few seconds" after
+# answering; this leaves room for a slow SCO setup.
+PHONE_AFTER_SEC = 8
 # A failed pw-dump counts as "unavailable" only when the next one fails too
 # (or at once when the tool is missing).
 UNAVAILABLE_AFTER_FAILURES = 2
@@ -419,6 +427,7 @@ class CallAudioRouter:
         schedule: Schedule,
         cancel: Cancel,
         on_changed: Callable[[], None] | None = None,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._settings = settings
         self._mac = mac
@@ -437,6 +446,14 @@ class CallAudioRouter:
         self._again = False
         self._fast_left = 0
         self._failures = 0
+        self._clock = clock
+        # When a call last became active (not ringing, dialing or held), on
+        # ``clock``; None while no call is active.
+        self._active_at: float | None = None
+        # Whether that call was answered through BlueFerry, for the log.
+        self._answered_here = False
+        # The "sound stays on the iPhone" line is logged once per call.
+        self._phone_logged = False
 
     # ---- status ---------------------------------------------------------
 
@@ -514,8 +531,23 @@ class CallAudioRouter:
 
     # ---- call lifecycle -------------------------------------------------
 
-    def calls_changed(self, in_call: bool) -> None:
+    def calls_changed(
+        self, in_call: bool, *, active: bool = False, answered_here: bool = False,
+    ) -> None:
+        """The phone's calls changed.
+
+        ``active``: a call is answered and not on hold, so its audio should
+        flow; ``answered_here``: that call was answered through BlueFerry.
+        Both only tell where the sound is (``STATE_PHONE``); nothing here
+        can move it to this computer.
+        """
         in_call = bool(in_call)
+        active = in_call and bool(active)
+        if not active:
+            self._active_at = None
+        elif self._active_at is None:
+            self._active_at = self._clock()
+        self._answered_here = active and bool(answered_here)
         if in_call and self._in_call:
             # Another change during a call (answered, a second call): the
             # call audio may appear now, so look every second again.
@@ -536,6 +568,7 @@ class CallAudioRouter:
         self._report = {}
         self._failures = 0
         if not in_call:
+            self._phone_logged = False
             # A choice made during a call ends with the call.
             self._overrides.clear()
             self._state = STATE_IDLE
@@ -618,12 +651,35 @@ class CallAudioRouter:
             self._fast_left = max(self._fast_left - 1, 0)
         changed = report != self._report
         self._report = dict(report)
-        state = STATE_READY if found else STATE_WAITING
+        state = STATE_READY if found else self._without_streams()
         if state != self._state:
             self._set_state(state)
         elif changed:
             self._notify()
         self._continue()
+
+    def _without_streams(self) -> str:
+        """``waiting`` or, once an answered call has gone without streams for
+        ``PHONE_AFTER_SEC``, ``phone``."""
+        if self._active_at is None or self._clock() - self._active_at < PHONE_AFTER_SEC:
+            return STATE_WAITING
+        if not self._phone_logged:
+            self._phone_logged = True
+            if self._answered_here:
+                # HFP expects the phone to open the audio link after an
+                # answer from the hands-free side; not seen on hardware yet.
+                log.warning(
+                    "call answered on this computer, but the iPhone opened no call "
+                    "audio link within %d s; the sound stays on the iPhone",
+                    PHONE_AFTER_SEC,
+                )
+            else:
+                log.info(
+                    "no call audio link from the iPhone %d s after the call became "
+                    "active; the sound is on the iPhone",
+                    PHONE_AFTER_SEC,
+                )
+        return STATE_PHONE
 
     def _failed(self, generation: int, error: Exception) -> None:
         if generation != self._generation:

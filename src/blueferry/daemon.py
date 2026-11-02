@@ -741,7 +741,11 @@ class Daemon:
             self._bluez_version = version
 
     def _calls_changed(self) -> None:
-        self.call_audio.calls_changed(self.calls.in_call)
+        self.call_audio.calls_changed(
+            self.calls.in_call,
+            active=self.calls.has_active_call,
+            answered_here=self.calls.answered_here,
+        )
         self._emit_calls_changed()
 
     def _emit_calls_changed(self) -> None:

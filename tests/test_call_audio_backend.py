@@ -123,14 +123,16 @@ def test_models_read_the_call_audio_and_keep_empty_choices() -> None:
 
 def test_daemon_routes_call_audio_only_while_a_call_runs(make_daemon) -> None:
     instance = make_daemon()
-    seen: list[bool] = []
-    instance.call_audio.calls_changed = seen.append
+    seen: list[tuple[bool, bool, bool]] = []
+    instance.call_audio.calls_changed = (
+        lambda in_call, *, active, answered_here: seen.append((in_call, active, answered_here))
+    )
     emitted: list[str] = []
     instance._emit_calls_changed = lambda: emitted.append("calls")
 
     instance._calls_changed()
 
-    assert seen == [False] and emitted == ["calls"]
+    assert seen == [(False, False, False)] and emitted == ["calls"]
     status = BackendOperations(_Sessions(), BackendDependencies(
         calls=instance.calls, call_audio=instance.call_audio,
     )).status()

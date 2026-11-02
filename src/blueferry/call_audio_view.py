@@ -38,6 +38,14 @@ def settings_hint() -> str:
     return _("Used only for phone calls; everything else keeps the system's devices.")
 
 
+def phone_hint() -> str:
+    """The call is answered, but its sound plays on the iPhone."""
+    return _(
+        "The sound of this call is on the iPhone. To hear it here, choose this "
+        "computer under Audio on the iPhone's call screen."
+    )
+
+
 def call_hint() -> str:
     return _("Applies to this call only.")
 
@@ -111,6 +119,8 @@ def call_audio(value: CallAudio | Mapping[str, Any] | None) -> dict[str, Any]:
         route = audio.output if direction == OUTPUT else audio.input
         if route.stream and route.description:
             text = route.description
+        elif audio.state == "phone":
+            text = _("On the iPhone")
         elif audio.state == "unavailable":
             text = _("System default")
         else:
@@ -126,6 +136,8 @@ def call_audio(value: CallAudio | Mapping[str, Any] | None) -> dict[str, Any]:
         hint = _("Could not read the audio devices; the call uses the system's devices.")
     elif audio.state == "waiting":
         hint = _("Waiting for the call audio…")
+    elif audio.state == "phone":
+        hint = phone_hint()
     elif missing == [OUTPUT]:
         hint = _("The chosen speaker is not connected; the call uses the system default.")
     elif missing == [INPUT]:

@@ -429,7 +429,10 @@ class CallAudioRoute:
 
 @dataclass(frozen=True, slots=True)
 class CallAudio:
-    """ListCalls ``audio``: ``state`` is idle, waiting, ready or unavailable."""
+    """ListCalls ``audio``: ``state`` is idle, waiting, ready, phone or unavailable.
+
+    ``phone``: the call is answered, but the iPhone keeps its sound.
+    """
 
     state: str = "idle"
     output: CallAudioRoute = field(default_factory=CallAudioRoute)

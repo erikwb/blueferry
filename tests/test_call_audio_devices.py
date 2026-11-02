@@ -15,7 +15,9 @@ from blueferry.calls.audio_devices import (
     ORIGIN_SETTINGS,
     ORIGIN_SYSTEM,
     OUTPUT,
+    PHONE_AFTER_SEC,
     STATE_IDLE,
+    STATE_PHONE,
     STATE_READY,
     STATE_UNAVAILABLE,
     STATE_WAITING,
@@ -182,13 +184,14 @@ class Loop:
         return [delay for delay, _callback in self.timers.values()]
 
 
-def _router(settings=None, pipewire=None, loop=None):
+def _router(settings=None, pipewire=None, loop=None, clock=None):
     loop = loop or Loop()
     pipewire = pipewire or FakePipeWire()
     changes: list[int] = []
     router = CallAudioRouter(
         settings=settings or Settings(), mac=MAC, submit=loop.submit, run=pipewire,
         schedule=loop.schedule, cancel=loop.cancel, on_changed=lambda: changes.append(1),
+        clock=clock or (lambda: 0.0),
     )
     return router, pipewire, loop, changes
 
@@ -508,6 +511,74 @@ def test_a_call_answered_late_is_checked_every_second_again() -> None:
     pipewire.dump = _dump()
     loop.fire()
     assert pipewire.commands[-1][3:6] == ["103", "target.object", "62"]
+
+
+def test_answered_on_the_iphone_the_sound_is_reported_there(caplog) -> None:
+    now = [0.0]
+    pipewire = FakePipeWire(_dump(call=False))
+    router, pipewire, loop, changes = _router(pipewire=pipewire, clock=lambda: now[0])
+    router.calls_changed(True)  # ringing
+    now[0] = 30.0
+    loop.fire()
+    assert router.call_audio()["state"] == STATE_WAITING  # ringing never counts
+
+    router.calls_changed(True, active=True)  # answered on the iPhone
+    now[0] = 30.0 + PHONE_AFTER_SEC - 1
+    loop.fire()
+    assert router.call_audio()["state"] == STATE_WAITING  # SCO may still come
+
+    changes.clear()
+    caplog.set_level("INFO", logger="blueferry.calls.audio_devices")
+    now[0] = 30.0 + PHONE_AFTER_SEC
+    loop.fire()
+    assert router.call_audio()["state"] == STATE_PHONE and changes
+    loop.fire()
+    phone_lines = [r for r in caplog.records if "on the iPhone" in r.getMessage()]
+    assert len(phone_lines) == 1 and phone_lines[0].levelname == "INFO"
+
+    # Moved here with the iPhone's audio menu: the streams appear.
+    pipewire.dump = _dump()
+    while loop.timers and router.call_audio()["state"] != STATE_READY:
+        loop.fire()
+    assert router.call_audio()["state"] == STATE_READY
+
+
+def test_answered_here_without_call_audio_is_a_warning(caplog) -> None:
+    now = [0.0]
+    router, _pipewire, loop, _changes = _router(
+        pipewire=FakePipeWire(_dump(call=False)), clock=lambda: now[0],
+    )
+    router.calls_changed(True)
+    router.calls_changed(True, active=True, answered_here=True)
+    now[0] = PHONE_AFTER_SEC
+    loop.fire()
+    assert router.call_audio()["state"] == STATE_PHONE
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warnings) == 1 and "answered on this computer" in warnings[0].getMessage()
+
+
+def test_call_audio_on_hold_or_streams_back_is_not_reported_on_the_phone() -> None:
+    now = [0.0]
+    pipewire = FakePipeWire(_dump(call=False))
+    router, pipewire, loop, _changes = _router(pipewire=pipewire, clock=lambda: now[0])
+    router.calls_changed(True, active=True)
+    now[0] = 100.0
+    router.calls_changed(True, active=False)  # held: no audio expected
+    loop.fire()
+    assert router.call_audio()["state"] == STATE_WAITING
+    router.calls_changed(True, active=True)  # resumed: the grace starts again
+    loop.fire()
+    assert router.call_audio()["state"] == STATE_WAITING
+    # A stream that goes away during the call means the sound moved.
+    pipewire.dump = _dump()
+    loop.fire()
+    assert router.call_audio()["state"] == STATE_READY
+    pipewire.dump = _dump(call=False)
+    now[0] = 100.0 + PHONE_AFTER_SEC
+    loop.fire()
+    assert router.call_audio()["state"] == STATE_PHONE
+    router.calls_changed(False)
+    assert router.call_audio()["state"] == STATE_IDLE
 
 
 def test_a_recycled_node_id_is_never_written() -> None:

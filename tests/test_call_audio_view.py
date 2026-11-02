@@ -79,6 +79,16 @@ def test_call_view_explains_waiting_missing_and_unavailable() -> None:
     assert "Could not read" in unavailable["hint"]
 
 
+def test_call_view_says_when_the_sound_stays_on_the_iphone() -> None:
+    phone = view.call_audio({"state": "phone", "output": {"missing": True}})
+
+    assert phone["supported"] and phone["state"] == "phone"
+    assert [row["text"] for row in phone["rows"]] == ["On the iPhone", "On the iPhone"]
+    # Where to move it wins over a missing chosen device.
+    assert phone["hint"] == view.phone_hint()
+    assert "choose this computer under Audio" in phone["hint"]
+
+
 def test_settings_view_has_one_row_per_direction() -> None:
     result = view.settings_view({"calls_audio_output": "alsa_output.builtin"}, DEVICES)
 
