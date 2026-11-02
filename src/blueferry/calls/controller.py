@@ -198,6 +198,10 @@ class CallController:
         self._vcm_matches: list[SignalMatch] = []
         self._call_matches: dict[str, SignalMatch] = {}
         self._calls: dict[str, CallRecord] = {}
+        # Calls answered through BlueFerry (a desktop popup, a client or the
+        # CLI) rather than on the iPhone; only to tell the two apart in the
+        # call-audio diagnosis. Entries end with the call.
+        self._answered_here: set[str] = set()
         self._snapshot_changes: set[str] | None = None
         self._bound_path: str | None = None
         self._retry_id: int | None = None
@@ -253,6 +257,19 @@ class CallController:
     def in_call(self) -> bool:
         """Whether the phone reports any call (ringing, dialing, active, held)."""
         return bool(self._calls)
+
+    @property
+    def has_active_call(self) -> bool:
+        """Whether a call is answered and not on hold (its audio should flow)."""
+        return any(record.state == "active" for record in self._calls.values())
+
+    @property
+    def answered_here(self) -> bool:
+        """Whether an active call was answered through BlueFerry."""
+        return any(
+            record.state == "active" and record.call_id in self._answered_here
+            for record in self._calls.values()
+        )
 
     @property
     def phone_status(self) -> PhoneStatus:
@@ -917,6 +934,7 @@ class CallController:
         self._bound_path = None
         ended = list(self._calls.values())
         self._calls.clear()
+        self._answered_here.clear()
         if emit and ended:
             for record in ended:
                 self._emit("call_ended", record)
@@ -1020,6 +1038,7 @@ class CallController:
         if self._snapshot_changes is not None:
             self._snapshot_changes.add(call_id)
         record = self._calls.pop(call_id, None)
+        self._answered_here.discard(call_id)
         self._remove(self._call_matches.pop(call_id, None))
         if record is None:
             return
@@ -1231,17 +1250,44 @@ class CallController:
             failed(error)
 
     def answer(self, call_id: object, success: Success, failure: Failure) -> None:
+        """Answer a ringing call from this computer.
+
+        oFono sends the hands-free ``ATA``; HFP then expects the phone to
+        open the call audio link to this computer, so the sound plays here.
+        BlueFerry cannot open that link itself: oFono only lets its audio
+        agent (PipeWire) call ``HandsfreeAudioCard.Connect``. See PROTOCOL.md
+        "Answering on the computer".
+        """
         modem = self._require_ready()
         record = self._find(call_id)
         if record.state == "incoming":
-            self._control(record.path, VOICE_CALL_IFACE, "Answer", "", (), success, failure)
+            self._control(
+                record.path, VOICE_CALL_IFACE, "Answer", "", (),
+                success, self._answer_failed(record.call_id, failure),
+            )
         elif record.state == "waiting":
             # A waiting call cannot be answered directly; hold the current one.
             self._control(
-                modem, VOICE_CALL_MANAGER_IFACE, "HoldAndAnswer", "", (), success, failure,
+                modem, VOICE_CALL_MANAGER_IFACE, "HoldAndAnswer", "", (),
+                success, self._answer_failed(record.call_id, failure),
             )
         else:
             raise InvalidArgumentsError("call is not ringing")
+        log.info("call %s: answer requested on this computer", record.call_id)
+
+    def _answer_failed(self, call_id: str, failure: Failure) -> Failure:
+        """Mark ``call_id`` as answered here until oFono refuses the request.
+
+        Marked before the reply, because the call can turn active before
+        oFono's reply to ``Answer`` arrives.
+        """
+        self._answered_here.add(call_id)
+
+        def failed(error: Exception) -> None:
+            self._answered_here.discard(call_id)
+            failure(error)
+
+        return failed
 
     def hangup(self, call_id: object, success: Success, failure: Failure) -> None:
         """Hang up, or decline a ringing call (oFono uses UDUB for waiting)."""
@@ -1328,8 +1374,12 @@ class CallController:
 
     def hold_and_answer(self, success: Success, failure: Failure) -> None:
         modem = self._require_ready()
-        if not any(record.state == "waiting" for record in self._calls.values()):
+        waiting = next(
+            (record for record in self._calls.values() if record.state == "waiting"), None,
+        )
+        if waiting is None:
             raise InvalidArgumentsError("no call is waiting")
         self._control(
-            modem, VOICE_CALL_MANAGER_IFACE, "HoldAndAnswer", "", (), success, failure,
+            modem, VOICE_CALL_MANAGER_IFACE, "HoldAndAnswer", "", (),
+            success, self._answer_failed(waiting.call_id, failure),
         )
