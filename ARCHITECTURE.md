@@ -788,11 +788,13 @@ A change to these rules has to be made in both places.
   a roster does not change the key. Legacy name-folded keys remain aliases
   only when history shows a single spelling, and reading history never
   rewrites the database. An unnamed group's route is saved under its
-  `group:participants:` key, built from the member names in the ANCS subtitle
-  and title, and is applied before address resolution, so later messages stay
-  in that thread. Renaming a member in Contacts or changing the group's
-  membership changes the key and orphans the route; the group then needs its
-  members again.
+  `group:participants:v2:` key, a hash of the member names in the ANCS
+  subtitle and title that keeps repeated names, and is applied before address
+  resolution, so later messages stay in that thread. Renaming a member in
+  Contacts or changing the group's membership changes the key and orphans the
+  route; the group then needs its members again. The older unversioned key
+  dropped repeated names, so it carries over as an alias only when history
+  shows one roster for it with no repeated name or `|`.
 - **Encryption at rest:** history, the contact cache, and the opt-in call
   history live in `0700` directories as `0600` SQLite files. Sensitive records, including event kind,
   timestamp, and content, are encrypted with AES-256-GCM under one random key
