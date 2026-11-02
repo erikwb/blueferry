@@ -757,6 +757,68 @@ def test_damaged_history_offers_the_reset_that_clears_it(recovery):
     assert [event["handle"] for event in read_events(storage=r.storage)] == ["new"]
 
 
+def test_unreadable_settings_come_before_a_damaged_database_reset(recovery):
+    r = recovery
+    _seal_history(r)
+    damaged = b"not a database" * 512
+    config.EVENTS_DB.write_bytes(damaged)
+    path = r.storage.settings_path
+    saved = path.read_text(encoding="utf-8")
+    path.write_text(saved[:-3], encoding="utf-8")
+    deleted, created = r.wallet.deleted, r.wallet.created
+
+    def reset():
+        r.operations.reset_storage_async(
+            r.queue.submit, r.outcomes.append, lambda error: pytest.fail(str(error)),
+            confirmed=True,
+        )
+
+    def retry():
+        r.operations.retry_storage_async(
+            r.queue.submit, r.outcomes.append, lambda error: pytest.fail(str(error)),
+        )
+        if r.queue.jobs:
+            r.queue.finish()
+
+    def refused():
+        # Refused before anything is erased or the wallet is asked.
+        with pytest.raises(ConfigurationError, match=r"settings\.json can't be read"):
+            reset()
+        assert not r.queue.jobs
+        assert config.EVENTS_DB.read_bytes() == damaged
+        assert (r.wallet.deleted, r.wallet.created) == (deleted, created)
+
+    def unreadable_settings_shown():
+        status = r.daemon._status()
+        assert "settings.json cannot be read" in status["storage_detail"]
+        assert status["storage_reset"] is False
+
+    # Both at once after a restart: the settings file is what to fix first.
+    r.storage.require_preparation()
+    retry()
+    unreadable_settings_shown()
+    refused()
+
+    path.write_text(saved, encoding="utf-8")
+    retry()
+    assert r.storage.status.detail == DAMAGED_DATABASE_DETAIL
+    assert r.daemon._status()["storage_reset"] is True
+
+    # The file breaks again while the reset is offered: the reset is refused,
+    # and the status stops offering it.
+    path.write_text(saved[:-3], encoding="utf-8")
+    refused()
+    unreadable_settings_shown()
+
+    path.write_text(saved, encoding="utf-8")
+    retry()
+    assert r.daemon._status()["storage_reset"] is True
+    reset()
+    r.queue.finish()
+    assert r.outcomes[-1]["storage_state"] == "ready"
+    assert read_events(storage=r.storage) == []
+
+
 def test_replacement_key_is_not_trusted_over_encrypted_preferences(recovery):
     r = recovery
     path = r.storage.settings_path

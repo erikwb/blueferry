@@ -828,7 +828,9 @@ A change to these rules has to be made in both places.
   History writes are transactional, and a monotonic revision invalidates the
   projection. A storage reset deletes a database SQLite cannot read, with its
   journal files; every other path leaves a damaged file in place. When one
-  stops storage preparation, the status offers that reset.
+  stops storage preparation, the status offers that reset, but not while
+  `settings.json` can't be read: changes, resets and preparation read it
+  first, so the unreadable file is what the status asks the user to fix.
   The projection, its rebuild after saving group members, and the
   full-archive read behind `DeleteThreads` run on the projection worker.
   History is read in short pages and decoded between them, so a slow read

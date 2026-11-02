@@ -750,13 +750,14 @@ def test_settings_read_failure_during_preparation_is_retried(tmp_path, monkeypat
     def unreadable(*_args, **_kwargs):
         raise OSError("transient")
 
-    monkeypatch.setattr(settings_store, "read_private_text", unreadable)
     pending = []
     storage.change_async(
         lambda operation, **handlers: pending.append((operation, handlers)),
         on_success=lambda _status: None, on_error=lambda error: pytest.fail(str(error)),
         prepare=lambda _candidate: None,
     )
+    # The file read before the request; it fails while preparation runs.
+    monkeypatch.setattr(settings_store, "read_private_text", unreadable)
     operation, handlers = pending.pop()
     with pytest.raises(UnreadableSettingsError) as raised:
         operation()
@@ -766,12 +767,12 @@ def test_settings_read_failure_during_preparation_is_retried(tmp_path, monkeypat
     assert path.read_text(encoding="utf-8") == saved
 
 
-@pytest.mark.parametrize(("read", "state"), [
-    pytest.param(OSError("transient"), "locked", id="transient"),
-    pytest.param("{not json", "error", id="malformed"),
+@pytest.mark.parametrize("read", [
+    pytest.param(OSError("transient"), id="transient"),
+    pytest.param("{not json", id="malformed"),
 ])
 def test_unreadable_settings_never_offer_the_storage_reset(
-    tmp_path, monkeypatch, read, state,
+    tmp_path, monkeypatch, read,
 ) -> None:
     # The reset erases saved data; it is for a damaged database, not settings.json.
     from gi.repository import GLib
@@ -787,19 +788,22 @@ def test_unreadable_settings_never_offer_the_storage_reset(
             raise read
         return read
 
-    monkeypatch.setattr(settings_store, "read_private_text", unreadable)
     pending = []
     storage.change_async(
         lambda operation, **handlers: pending.append((operation, handlers)),
         on_success=lambda _status: None, on_error=lambda error: pytest.fail(str(error)),
         prepare=lambda _candidate: None,
     )
+    # The file read before the request; it fails while preparation runs.
+    monkeypatch.setattr(settings_store, "read_private_text", unreadable)
     operation, handlers = pending.pop()
     with pytest.raises(UnreadableSettingsError) as raised:
         operation()
     handlers["on_error"](raised.value)
 
-    assert storage.status.state == state
+    # Locked, so the retry tick reads the file again.
+    assert storage.status.state == "locked"
+    assert "settings.json cannot be read" in storage.status.detail
     assert not storage.reset_offered
 
 
