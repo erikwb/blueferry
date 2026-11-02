@@ -317,6 +317,7 @@ class BackendOperations:
         self.sessions = sessions
         self.dependencies = dependencies or BackendDependencies()
         self._confirmed_groups: dict[str, str] = {}
+        self._roster_check_pending = False
         # Content-free GetStatus marker for click-rule edits. Clients reread
         # the rules only when it changes; a random start makes a restarted
         # daemon's value differ from what a client last saw.
@@ -631,6 +632,26 @@ class BackendOperations:
                 )
             except (OSError, ValueError, RuntimeError):
                 log.exception("could not retain a group roster warning")
+
+    def hold_roster_warnings(self, submit: Callable[..., object]) -> None:
+        """Save roster warnings when history changes, even if no client lists.
+
+        Otherwise a new sender's messages could expire before anyone lists
+        conversations, and the warning would never be saved.
+        """
+        if self._roster_check_pending or not self._group_routes():
+            return
+        self._roster_check_pending = True
+
+        def ready() -> None:
+            self._roster_check_pending = False
+            self._hold_roster_warnings(self._conversations.threads())
+
+        def failed(error: Exception) -> None:
+            self._roster_check_pending = False
+            log.warning("could not check saved group rosters: %s", error)
+
+        self.prepare_conversations(submit, ready, failed)
 
     def _present_threads(self, threads: Sequence[dict]) -> list[dict]:
         presented = sort_threads(threads, starred_keys=self._starred_keys())

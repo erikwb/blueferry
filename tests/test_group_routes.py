@@ -139,6 +139,30 @@ def test_roster_warning_outlives_the_outsiders_messages(isolated_state, monkeypa
     assert reviewed["reply_ready"] is True
 
 
+def test_roster_warning_is_kept_without_a_listing(isolated_state, monkeypatch):
+    monkeypatch.setattr(backend_operations, "MAX_CONVERSATION_EVENTS", 10)
+    backend = _backend()
+    _retain(_group_message(1))
+    backend.set_group_participants(KEY, [ALICE, BOB])
+    approved = group_confirmation_token([ALICE, BOB])
+
+    # Carol writes and her message leaves the window while no client lists.
+    _retain(_group_message(2, CAROL))
+    backend.hold_roster_warnings(
+        lambda job, on_success, on_error: on_success(job()),
+    )
+    _retain(_direct_message(index) for index in range(20))
+    _retain(_group_message(3))
+    backend.invalidate_conversations()
+
+    thread = _golf(backend)
+    assert thread["roster_changed"] is True
+    assert thread["reply_ready"] is False
+    assert group_confirmation_token(
+        thread["recipients"], thread["roster_warning_id"],
+    ) != approved
+
+
 class _Wallet:
     def get_or_create(self, *, allow_prompt, cancellable=None, create=True):
         return b"K" * 32

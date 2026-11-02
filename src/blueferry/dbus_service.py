@@ -1023,6 +1023,10 @@ class MessagesService(dbus.service.Object):
             ))
         except Exception:
             log.exception("history invalidation signal emit failed")
+        try:
+            self.operations.hold_roster_warnings(self._projection_worker.submit)
+        except Exception:
+            log.exception("could not check saved group rosters")
 
     def emit_status(self) -> None:
         try:
