@@ -838,6 +838,39 @@ def test_group_send_requires_explicit_approval_and_rejects_changed_roster(monkey
     assert len(queued) == 1
 
 
+def test_reply_to_a_maybe_group_message_asks_to_reply_to_the_sender_only(monkeypatch):
+    controller = BridgeController(backend=_Backend(), setup=object(), subscribe=False, autostart=False)
+    alice = {
+        "key": "address:phone:15551111111", "name": "Alice", "reply_ready": False,
+        "recipients": ["+15551111111"], "group_ambiguous": True,
+        "sender_reply_token": "sender:one",
+    }
+    _apply_threads(controller, [Thread.from_dict(alice)])
+    assert controller.threads[0]["can_compose"] is True
+    queued = []
+    prompts = []
+    monkeypatch.setattr(controller, "_run", lambda *args, **kwargs: queued.append(args))
+    controller.senderConfirmationRequested.connect(lambda *args: prompts.append(args))
+    controller.sendThread(alice["key"], "draft", False)
+    assert not queued
+    assert prompts == [(alice["key"], "draft", "Alice", "+15551111111")]
+    # Another message that may be from a group arrives while it asks.
+    _apply_threads(controller, [Thread.from_dict({**alice, "sender_reply_token": "sender:two"})])
+    controller.sendThread(alice["key"], "draft", True)
+    assert not queued
+    assert "new message" in controller.errorText
+    controller.sendThread(alice["key"], "draft", False)
+    controller.sendThread(alice["key"], "draft", True)
+    assert len(queued) == 1
+    sent = []
+    controller._backend.send_to_thread = lambda *args, **kwargs: sent.append((args, kwargs))
+    queued[0][0]()
+    assert sent == [(
+        (alice["key"], "draft"),
+        {"confirm_group": True, "expected_group_token": "sender:two"},
+    )]
+
+
 def test_draft_completion_is_emitted_only_after_success(monkeypatch):
     backend = _Backend()
     controller = BridgeController(backend=backend, setup=object(), subscribe=False, autostart=False)

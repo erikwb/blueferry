@@ -125,6 +125,8 @@ class BridgeController(QObject):
     messageOpenRequested = Signal(str)
     notificationOpenMapChanged = Signal()
     groupConfirmationRequested = Signal(str, str, str)
+    # A reply to a message that may be from a group: key, draft, name, address.
+    senderConfirmationRequested = Signal(str, str, str, str)
     # A reply to a group whose members are unconfirmed: key and draft.
     groupParticipantsRequested = Signal(str, str)
     threadSendSucceeded = Signal(str, str)
@@ -1353,6 +1355,12 @@ class BridgeController(QObject):
         if plan.disposition is ReplyDisposition.CONFIRM_GROUP and thread is not None:
             self._pending_group = (key, plan.body, plan.expected_group_token)
             self.groupConfirmationRequested.emit(key, draft, "\n".join(thread.recipients))
+            return
+        if plan.disposition is ReplyDisposition.CONFIRM_SENDER and thread is not None:
+            self._pending_group = (key, plan.body, plan.expected_group_token)
+            self.senderConfirmationRequested.emit(
+                key, draft, thread.name, ", ".join(thread.recipients),
+            )
             return
         if not plan.ready:
             if plan.disposition.message:
