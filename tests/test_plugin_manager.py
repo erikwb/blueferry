@@ -390,6 +390,25 @@ def test_remove_deletes_only_what_install_wrote(setup, tmp_path) -> None:
         manager.remove("io.example.demo")
 
 
+@pytest.mark.parametrize("manifest", ["another plugin's", "damaged"])
+def test_remove_deletes_its_own_service_whatever_the_manifest_says(setup, manifest) -> None:
+    manager, runner = setup
+    original_files = runner.files[OLD]
+    runner.files[OLD] = {"data/extra.plugin": MANIFEST.format(version="0.1.0").replace(
+        "Id=io.example.demo", "Id=io.example.demo-extra")}
+    other = manager.commit(manager.prepare(URL))
+    runner.files[OLD] = original_files
+    demo = manager.prepare(URL)
+    manager.commit(demo)
+    other_manifest = manager.manifest_path(other.id)
+    other_service = manager.service_path(parse_manifest(other_manifest.read_text()))
+    manager.manifest_path("io.example.demo").write_text(
+        other_manifest.read_text() if manifest == "another plugin's" else "[garbage")
+    manager.remove("io.example.demo")
+    assert not manager.service_path(demo.manifest).exists()
+    assert other_service.is_file() and other_manifest.is_file()
+
+
 def test_enable_and_disable_persist(setup) -> None:
     manager, _runner = setup
     manager.set_enabled("io.a.b", False)
