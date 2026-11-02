@@ -10,7 +10,7 @@ import pytest
 from tests.gtk_broadway import run_scenario
 
 
-@pytest.mark.parametrize("scenario", ["cancel", "save"])
+@pytest.mark.parametrize("scenario", ["cancel", "save", "moved-on"])
 def test_gtk_group_members_dialog(tmp_path, scenario):
     run_scenario(tmp_path, str(Path(__file__).resolve()), scenario)
 
@@ -30,6 +30,16 @@ GROUP = {
     "messages": [{
         "handle": "1", "body": "dinner at 7", "timestamp": "2026-10-31T18:00:00Z",
         "outgoing": False, "read": True, "sender": "Wife", "address": "+15551111111",
+    }],
+}
+
+
+BOB = {
+    "key": "address:phone:15553333333", "name": "Bob", "recipients": ["+15553333333"],
+    "reply_ready": True, "last_ts": "2026-10-30T18:00:00Z",
+    "messages": [{
+        "handle": "2", "body": "hey", "timestamp": "2026-10-30T18:00:00Z",
+        "outgoing": False, "read": True, "sender": "Bob", "address": "+15553333333",
     }],
 }
 
@@ -88,7 +98,7 @@ def _exercise(scenario):
     window.present()
     _settle()
     try:
-        client.take("threads")[1]([Thread.from_dict(GROUP)])
+        client.take("threads")[1]([Thread.from_dict(GROUP), Thread.from_dict(BOB)])
         page._thread_list.select_row(page._thread_list.get_row_at_index(0))
         _settle()
         # The reply box stays open; Send asks for the members.
@@ -145,11 +155,21 @@ def _exercise(scenario):
             ("participants", GROUP["key"], ("+15551111111", "+15552222222")),
         )
         assert not [name for name in client.names() if name[0] == "send"]
+        if scenario == "moved-on":
+            # While saving, the user writes to someone else; that reply must
+            # never be offered to the group.
+            page._thread_list.select_row(page._thread_list.get_row_at_index(1))
+            _settle()
+            page._entry.set_text("on my way")
         saved[1](Thread.from_dict({
             **GROUP, "recipients": ["+15551111111", "+15552222222"], "missing_members": [],
             "reply_ready": True, "participants_required": False,
         }))
         _settle()
+        if scenario == "moved-on":
+            assert window.get_visible_dialog() is None
+            assert not [name for name in client.names() if name[0] == "send"]
+            return
         # The draft continues through the normal path: confirm, then send.
         confirm = window.get_visible_dialog()
         assert isinstance(confirm, Adw.AlertDialog)

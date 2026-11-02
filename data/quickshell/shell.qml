@@ -1890,7 +1890,11 @@ ShellRoot {
         readonly property var thread: root.groupParticipantsThread
         readonly property var missing: conversationLogic.missingMembers(
           groupParticipantsPopup.thread, root.participantEntries)
+        // The query the current contact results answer. Results for an earlier
+        // query are never offered while the debounced search is pending.
+        property string searchedText: ""
         readonly property var suggestions: participantSearch.text.trim() === ""
+          || participantSearch.text !== groupParticipantsPopup.searchedText
           ? [] : conversationLogic.participantSuggestions(root.contactResults, root.participantEntries)
 
         onOpened: {
@@ -1905,7 +1909,10 @@ ShellRoot {
         Timer {
           id: participantSearchTimer
           interval: 180
-          onTriggered: root.searchContacts(participantSearch.text)
+          onTriggered: {
+            groupParticipantsPopup.searchedText = participantSearch.text
+            root.searchContacts(participantSearch.text)
+          }
         }
 
         background: Rectangle {

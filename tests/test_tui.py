@@ -1197,3 +1197,22 @@ def test_shift_b_toggles_the_automatic_profile_reset() -> None:
             assert notes and "no longer reset automatically" in notes[-1]
 
     _run_headless(scenario())
+
+
+def test_textual_saved_members_never_send_the_draft_to_another_conversation() -> None:
+    async def scenario() -> None:
+        backend = _Backend()
+        backend.loaded = [_unconfirmed_group(), _thread("one", "Alice", "hi")]
+        app = BlueFerryApp(TuiState(backend), monitor_factory=lambda: None)
+
+        async with app.run_test(size=(120, 40)) as pilot:
+            await _wait_for_threads(app, pilot, 2)
+            # While the group's members were saving, the user moved to Alice
+            # with the same text in the composer.
+            app.state.selected_key = "one"
+            app.query_one("#composer", TextArea).text = "on my way"
+            await app._roster_finished("group:participants:son|wife", True, "on my way")
+            await pilot.pause(0.1)
+            assert backend.sent == []
+
+    _run_headless(scenario())

@@ -16,7 +16,11 @@ Kirigami.Dialog {
     property string draft: ""
     property var entries: []
     readonly property var missing: logic.missingMembers(dialog.thread, dialog.entries)
+    // The query the current contact results answer. Results for an earlier
+    // query are never offered while the debounced search is pending.
+    property string searchedText: ""
     readonly property var suggestions: addField.text.trim() === ""
+        || addField.text !== dialog.searchedText
         ? [] : logic.participantSuggestions(dialog.bridge.contactResults, dialog.entries)
     title: thread ? qsTr("Who is in %1?").arg(thread.name) : ""
     preferredWidth: Kirigami.Units.gridUnit * 26
@@ -72,7 +76,10 @@ Kirigami.Dialog {
     Timer {
         id: searchTimer
         interval: 180
-        onTriggered: dialog.bridge.findContacts(addField.text)
+        onTriggered: {
+            dialog.searchedText = addField.text
+            dialog.bridge.findContacts(addField.text)
+        }
     }
 
     ColumnLayout {

@@ -2124,6 +2124,13 @@ def test_qt_reply_to_unconfirmed_group_asks_for_members_with_contact_search(
     QGuiApplication.processEvents()
     assert _evaluate(qml_engine, "membersDialog.missing") == []
     assert search.property("text") == ""
+    # Results for an earlier query are not offered while the next one is pending.
+    QTest.keyClick(window, "B")
+    QGuiApplication.processEvents()
+    assert _evaluate(qml_engine, "membersDialog.suggestions") == []
+    QTest.keyClick(window, Qt.Key_Return)
+    assert len(_evaluate(qml_engine, "membersDialog.entries")) == 2
+    search.setProperty("text", "")
 
     _evaluate(qml_engine, "membersDialog.customFooterActions[0].trigger()")
     assert _evaluate(qml_engine, "testBridge.calls").count({
@@ -3666,6 +3673,9 @@ Item {
         root.contactResults = [{name: "Carol", address: "carol@example.com"},
                                {name: "Dan", address: "dan@example.com"}];
         participantSearch.text = "a";
+        check(groupParticipantsPopup.suggestions.length === 0,
+          "results for an earlier query were offered");
+        groupParticipantsPopup.searchedText = "a";  // The debounced search answered.
         check(groupParticipantsPopup.suggestions.length === 1
           && groupParticipantsPopup.suggestions[0].address === "dan@example.com",
           "suggestions were not filtered");

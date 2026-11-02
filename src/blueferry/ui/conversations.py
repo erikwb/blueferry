@@ -1065,10 +1065,16 @@ class ConversationsPage(Gtk.Box):
             return
 
         def save(recipients: list[str]) -> None:
+            draft = self._entry.get_text().strip() if then_send else ""
+
             def saved(updated: Thread) -> None:
+                # Only the group and draft that asked; the user may have moved on.
+                resume = bool(draft) and self._state.selected_key == thread.key and (
+                    self._entry.get_text().strip() == draft
+                )
                 self._state.group_participants_saved(updated)
                 self._reload_threads()
-                if then_send and updated.reply_ready:
+                if resume and updated.reply_ready:
                     self._on_send(None)
 
             self._client.set_group_participants_async(

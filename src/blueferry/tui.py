@@ -2014,7 +2014,9 @@ class BlueFerryApp(App[None]):
         self, thread_key: str, recipients: list[str], then_send: str = "",
     ) -> None:
         succeeded = self.state.save_group_participants(thread_key, recipients)
-        self.call_from_thread(self._schedule_roster_finished, succeeded, then_send)
+        self.call_from_thread(
+            self._schedule_roster_finished, thread_key, succeeded, then_send,
+        )
 
     @work(thread=True, group="delete", exclusive=True, exit_on_error=False)
     def _delete_thread_worker(self, thread_key: str) -> None:
@@ -2040,15 +2042,19 @@ class BlueFerryApp(App[None]):
                 severity="error", markup=False,
             )
 
-    def _schedule_roster_finished(self, succeeded: bool, then_send: str = "") -> None:
+    def _schedule_roster_finished(
+        self, thread_key: str, succeeded: bool, then_send: str = "",
+    ) -> None:
         self.run_worker(
-            self._roster_finished(succeeded, then_send),
+            self._roster_finished(thread_key, succeeded, then_send),
             name="render-roster-result",
             group="render",
             exclusive=True,
         )
 
-    async def _roster_finished(self, succeeded: bool, then_send: str = "") -> None:
+    async def _roster_finished(
+        self, thread_key: str, succeeded: bool, then_send: str = "",
+    ) -> None:
         await self._populate_threads()
         await self._render_conversation()
         self._update_notice()
@@ -2064,7 +2070,8 @@ class BlueFerryApp(App[None]):
         composer = self.query_one("#composer", TextArea)
         if (
             then_send and thread is not None and thread.reply_ready
-            and composer.text.strip() == then_send
+            # Only the group and draft that asked; the user may have moved on.
+            and thread.key == thread_key and composer.text.strip() == then_send
         ):
             # Continue the reply that asked for the members.
             self.action_send_reply()
