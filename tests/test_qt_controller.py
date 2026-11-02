@@ -358,12 +358,69 @@ def test_named_group_participants_are_forwarded_to_backend(monkeypatch):
     monkeypatch.setattr(controller, "refresh", lambda: None)
 
     controller.setGroupParticipants(
-        "group:named:test", [" +15551111111 ", "beau@example.com"]
+        "group:named:test", [" +15551111111 ", "beau@example.com"], ""
     )
 
     assert backend.group_participants == (
         "group:named:test", ["+15551111111", "beau@example.com"]
     )
+
+
+_UNCONFIRMED = {
+    "key": "group:participants:son|wife", "name": "Son, Wife", "is_group": True,
+    "group_origin": "unnamed", "reply_ready": False, "participants_required": True,
+    "recipients": ["+15551111111"], "missing_members": ["Son"],
+}
+
+
+@pytest.mark.parametrize("saved_ready", [True, False])
+def test_reply_to_unconfirmed_group_asks_for_members_then_sends_the_draft(
+    monkeypatch, saved_ready,
+):
+    backend = _Backend()
+    unconfirmed = Thread.from_dict(_UNCONFIRMED)
+    saved = replace(
+        unconfirmed, reply_ready=saved_ready, participants_required=not saved_ready,
+        recipients=("+15551111111", "+15552222222"),
+    )
+    backend.set_group_participants = lambda key, recipients: (
+        setattr(backend, "group_participants", (key, recipients)) or saved
+    )
+    controller = BridgeController(backend=backend, setup=object(), subscribe=False, autostart=False)
+    _apply_threads(controller, [unconfirmed])
+    sent = []
+    backend.send_to_thread = lambda *args, **kwargs: sent.append(args) or "/transfer"
+    asked = []
+    confirmations = []
+    monkeypatch.setattr(
+        controller, "_run",
+        lambda operation, on_done=None, *_args, **_kwargs: on_done(operation()),
+    )
+    monkeypatch.setattr(controller, "refresh", lambda: None)
+    controller.groupParticipantsRequested.connect(lambda *args: asked.append(args))
+    controller.groupConfirmationRequested.connect(lambda *args: confirmations.append(args))
+
+    # Every attempt asks again, and nothing is sent until members are saved.
+    controller.sendThread(unconfirmed.key, "on my way", False)
+    controller.sendThread(unconfirmed.key, "on my way", False)
+    assert asked == [(unconfirmed.key, "on my way")] * 2
+    assert sent == [] and confirmations == []
+
+    controller.setGroupParticipants(
+        unconfirmed.key, ["+15551111111", "+15552222222"], "on my way",
+    )
+
+    assert backend.group_participants == (
+        unconfirmed.key, ["+15551111111", "+15552222222"],
+    )
+    assert controller.threads[0]["recipients"] == ["+15551111111", "+15552222222"]
+    # The held draft then takes the normal path: first-send confirmation.
+    assert confirmations == ([(
+        unconfirmed.key, "on my way", "+15551111111\n+15552222222",
+    )] if saved_ready else [])
+    # Members that still don't make the group reply-ready never loop back.
+    assert len(asked) == 2
+    assert sent == []
 
 
 def test_selected_threads_are_forwarded_to_backend(monkeypatch):
