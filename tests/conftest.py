@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import atexit
 import functools
+import gc
 import importlib.util
 import os
 import pathlib
@@ -478,6 +479,21 @@ def isolate_dbus(monkeypatch, request):
         expected = os.environ.get(PRIVATE_BUS_ADDRESS_ENV)
         if not active or active != expected:
             pytest.skip("requires an explicitly isolated dbus-run-session")
+        # Freezing what exists before the test keeps the collection below to
+        # this test's own objects; scanning everything collection loaded each
+        # time added about 15 seconds to CI. A cycle that also holds an object
+        # from before the test (say, a wider-scoped fixture's connection)
+        # escapes this collection, so keep D-Bus objects function-scoped.
+        gc.freeze()
+        try:
+            yield
+            # Free this test's connections and exported objects now. Left to a
+            # later collection, dbus-python can tear them down while another
+            # test dispatches ("does not have a Connection instance associated
+            # with it"), which failed the OBEX tests on Ubuntu 24.04.
+            gc.collect()
+        finally:
+            gc.unfreeze()
         return
 
     monkeypatch.setenv("DBUS_SESSION_BUS_ADDRESS", _unreachable_bus)
@@ -485,6 +501,7 @@ def isolate_dbus(monkeypatch, request):
     monkeypatch.setattr(bus_module, "_thread_state", threading.local())
     monkeypatch.setattr(dbus, "SessionBus", _forbid_live_bus("session"))
     monkeypatch.setattr(dbus, "SystemBus", _forbid_live_bus("system"))
+    yield
 
 
 @pytest.fixture(autouse=True)

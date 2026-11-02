@@ -19,8 +19,9 @@ setting turns it on. The tabs are switched in the header bar, or at the
 bottom in a narrow window:
 
 - **Messages**: conversations and the chat.
-- **Calls**: running [phone calls](calls.md) with answer, hold/resume and
-  hang up and the sound switch, a dial pad that also searches your
+- **Calls**: running [phone calls](calls.md) with answer, hold/resume,
+  hang up, keypad tones (0-9, `*`, `#`) for the active call and the sound
+  switch, a dial pad that also searches your
   contacts by name, and the [call history](call-history.md) grouped by day,
   with All and Missed, call back and message buttons, and **Refresh from
   iPhone**. Every call asks for confirmation first.
@@ -73,7 +74,7 @@ tabs:
 - **Messages**: conversations with All, Unread and Starred filters, and the
   chat.
 - **Calls**: [phone calls](calls.md) with a dial pad and running calls as
-  cards (answer, hold, hang up), and the [call history](call-history.md)
+  cards (answer, hold, hang up, keypad tones for the active call), and the [call history](call-history.md)
   grouped by day, with All and Missed. Dialing asks you to confirm the number;
   names and numbers with extensions are never converted into another number.
 - **Notifications**: the [recent iPhone notifications](notification-history.md)
@@ -161,6 +162,46 @@ omarchy plugin add https://github.com/erikwb/omarchy-blueferry.git
 Enable it in **Setup → Plugins** and add it to your bar. The full Quickshell
 client still handles pairing, messages, and preferences.
 
+### Settings
+
+**iPhone settings** has the same categories as the Qt, GTK and terminal
+settings, one below the other. A setting appears only when the running
+background service offers it.
+
+| Category | What you find there |
+|---|---|
+| Phone | Pairing, connection health with **Reconnect**, resetting a stuck connection automatically, **Run Diagnostics**, **Sync Contacts**, contact photos |
+| Notifications | Which events create popups, contacts only, notification content, action buttons, sync notifications with iPhone, mark read on dismiss, keeping recent iPhone notifications, and the recent notifications themselves |
+| Calls & Audio | Phone calls, call history and missed-call popups, battery warning, iPhone sound on this computer, media control and MPRIS |
+| Security | One-time codes, away lock, the local storage setting |
+| About | The background service, its version and **Restart Service** |
+
+The switches that need a restart show the restart notice at the top of the
+page with **Restart Service**. A service that predates them shows each
+switch greyed out with the `local.env` variable to set instead.
+
+**Show Recent Notifications** lists the last 30 notifications that **Keep
+recent iPhone notifications** keeps: the app, the time and, if allowed,
+title and text. The list is read only while it is shown, follows new
+notifications, and is forgotten when you hide it or leave the page. When it
+is off, empty or unavailable, it says why.
+
+### What the panel leaves out
+
+Quickshell is a compact panel, so some parts stay with the other clients:
+
+| Left out | Why | Use instead |
+|---|---|---|
+| Plugin management and plugin settings | Each plugin brings its own settings form, secrets, buttons and log, and the store lists plugins to install; that is too much, and too varied, for a compact panel | Qt or GTK settings, `blueferry plugins` |
+| **Send to…** and the **Photos** tab (plugin features) | Send to needs a file picker or file drop, which the panel does not have; both come from plugins, which the panel does not manage | Qt client (Photos), Qt or GTK client (Send to), `blueferry send`, `blueferry photos` |
+| Companion tools | Setting up desktop helpers is a one-time job, not a panel task | Qt or GTK settings, `blueferry tools` |
+| Clearing the message history | Not offered by the terminal client either | `blueferry history-clear` |
+| Click Rules, recent calls, the calls panel | Not in the Quickshell client yet | Qt, GTK or terminal client |
+
+The panel loads no translation catalog, so its own labels are English.
+Texts that come from the shared BlueFerry code, such as the reconnect hint,
+the restart notice or the notification placeholder, follow your language.
+
 ## Terminal (TUI)
 
 The terminal client is part of `blueferry-backend` on every distribution.
@@ -176,6 +217,62 @@ conversation search, a multiline composer, mouse support, themes, and a layout
 that adapts to narrow terminals.
 
 ![Terminal client](../../images/terminal.png)
+
+### Settings
+
+`o` opens **Settings**, with the same categories as the Qt and GTK settings as
+tabs. A setting appears only when the running background service offers it.
+
+| Category | What you find there |
+|---|---|
+| Phone | Background service state, **Reconnect** (also `b`), resetting a stuck connection automatically (also `B`), **Run Diagnostics**, contact sync, contact photos |
+| Notifications | Which events create popups, contacts only, **Click Rules** (also `l`), notification content, action buttons, sync notifications with iPhone, mark read on dismiss, keeping recent iPhone notifications |
+| Calls & Audio | Phone calls, call history and missed-call popups, battery warning, iPhone sound on this computer (also `a`), media control and MPRIS |
+| Security | One-time codes, away lock, the local storage setting (shown; change it with `blueferry storage-policy-set`) |
+| About | Version, the background service with **Restart Service**, the keyboard map |
+
+The switches that need a restart (see above) show the restart notice at the
+top of Settings with **Restart Service**. A service that predates them shows
+each switch greyed out with the `local.env` variable to set instead.
+
+**Run Diagnostics** runs `blueferry doctor` and shows its report. **Copy
+Report** puts it on the clipboard through the terminal (OSC 52); where the
+terminal does not pass that on, select the text with the mouse instead.
+
+The command palette (`Ctrl+P`) also has **Settings: Phone** … **Settings:
+About** and **Run Diagnostics**. Pairing stays with `blueferry pair-setup`
+or a graphical client; the terminal client has no plugin settings yet.
+
+### iPhone, calls and notifications
+
+**iPhone Overview** in the command palette is the terminal's phone card:
+the iPhone's name, the connection, battery, signal and network, what is
+playing, and for each optional feature that is off the switch that turns it
+on and its Settings category. Its buttons open the notification list, the
+recent calls, the calls panel and Settings.
+
+**iPhone Notifications** (in the palette and the overview) lists the recent
+iPhone app notifications that **Keep recent iPhone notifications** keeps:
+the app, the time and, if allowed, title and text. It is read only while it
+is open, follows new notifications, and is forgotten when you close it.
+When the list is off, empty or unavailable, it says why; **Open
+Notification Settings** goes to Settings › Notifications.
+
+The calls panel (`c`, or **Phone Calls** in the palette) words each call
+like Qt and GTK (incoming, on hold, the duration). Its one row of buttons
+acts on the obvious call: **Answer** the ringing one, **Hold** or
+**Resume** the connected one, **Hang Up** (or **Decline**) the active one
+first; a call waiting while another is connected gets its own **Decline**.
+During an active call, the keys 0-9, `*` and `#` are sent at once as
+keypad tones, for example to a phone menu, unless a text field has the
+focus; the panel shows them as "Sent: …". The keypad tone field sends a
+whole sequence such as a PIN. Typing a name in the number field suggests the
+phone numbers of matching contacts. A call is always confirmed first.
+
+**Recent calls** (`h`) are grouped by day; `m` shows only missed calls and
+`s` (or **Refresh from iPhone**) reads the iPhone's list again. Enter or
+**Call Back** calls the selected number after the confirmation, **Send a
+Message** starts a new message to it.
 
 ## Command line
 

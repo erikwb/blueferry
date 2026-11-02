@@ -76,6 +76,14 @@ class MainWindow(Adw.ApplicationWindow):
         )
         self.add_tab("calls", _("Calls"), "call-start-symbolic", self.calls,
                      self.calls.set_watched)
+        # During an active call the keyboard's 0-9, * and # are keypad tones
+        # (outside text fields, which consume them first in this phase).
+        tone_keys = Gtk.EventControllerKey(propagation_phase=Gtk.PropagationPhase.BUBBLE)
+        tone_keys.connect(
+            "key-pressed",
+            lambda _controller, keyval, _code, state: self.calls.tone_key(keyval, state),
+        )
+        self.add_controller(tone_keys)
         self.notifications = NotificationsPage(
             client, open_settings=self.present_phone_settings, timer=timer,
         )

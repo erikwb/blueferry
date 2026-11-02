@@ -139,6 +139,8 @@ class BridgeController(QObject):
     featuresChanged = Signal()
     doctorChanged = Signal()
     phoneCallsChanged = Signal()
+    callTonesDraftChanged = Signal()
+    callTonesSentChanged = Signal()
     tetherChanged = Signal()
     # (number, problem) of a clicked tel:/callto: link to confirm; see
     # tel_links.dial_request. Never dials by itself.
@@ -198,6 +200,15 @@ class BridgeController(QObject):
         self._refresh_again = False
         # Optional HFP calls (Calls1); empty unless the backend enables them.
         self._phone_calls: list[dict] = []
+        # The keypad-tone field's text: the call cards are rebuilt whenever
+        # phoneCalls changes, so the draft lives here, not in the delegate.
+        self._call_tones_draft = ""
+        # Keypad clicks, keyboard keys and the tone field share one ordered
+        # queue (phone_link_view.KeypadTones, as in GTK and the terminal).
+        self._keypad = phone_link_view.KeypadTones(
+            self._send_tones, on_changed=self.callTonesSentChanged.emit,
+            on_error=self._operation_failed,
+        )
         self._calls_state = "disabled"
         # (calls_enabled, calls_state) of the last status that refreshed the
         # call list. Calls themselves are announced by CallsChanged.
@@ -313,6 +324,27 @@ class BridgeController(QObject):
     @Property(str, notify=phoneCallsChanged)
     def callsState(self) -> str:
         return self._calls_state
+
+    @Property(str, notify=phoneCallsChanged)
+    def activeCallId(self) -> str:
+        """The call keypad tones go to; "" while no call is connected."""
+        return phone_link_view.active_call_id(self._phone_calls)
+
+    @Property(str, notify=callTonesSentChanged)
+    def callTonesSent(self) -> str:
+        """"Sent: …" under the active call, or ""."""
+        return phone_link_view.tones_feedback(self._keypad.sent)
+
+    @Property(str, notify=callTonesDraftChanged)
+    def callTonesDraft(self) -> str:
+        return self._call_tones_draft
+
+    @Slot(str)
+    def setCallTonesDraft(self, text: str) -> None:
+        draft = phone_link_view.dial_tones(text)
+        if draft != self._call_tones_draft:
+            self._call_tones_draft = draft
+            self.callTonesDraftChanged.emit()
 
     @Property("QVariantMap", notify=statusChanged)
     def status(self):
@@ -1388,8 +1420,12 @@ class BridgeController(QObject):
     def _apply_calls(self, snapshot: object) -> None:
         if not isinstance(snapshot, CallsSnapshot):
             return
-        self._phone_calls = [call.to_dict() for call in snapshot.calls]
+        calls = [call.to_dict() for call in snapshot.calls]
+        if calls == self._phone_calls and snapshot.state == self._calls_state:
+            return  # an unchanged list must not rebuild the call cards
+        self._phone_calls = calls
         self._calls_state = snapshot.state
+        self._keypad.follow(phone_link_view.active_call_id(calls))
         self.phoneCallsChanged.emit()
 
     def _calls_unavailable(self, _message: str = "") -> None:
@@ -1401,6 +1437,7 @@ class BridgeController(QObject):
         if self._phone_calls or state != self._calls_state:
             self._phone_calls = []
             self._calls_state = state
+            self._keypad.follow("")
             self.phoneCallsChanged.emit()
 
     @Slot()
@@ -1447,6 +1484,22 @@ class BridgeController(QObject):
     def swapCalls(self) -> None:
         """Hold the active call (or resume the held one): HFP AT+CHLD=2."""
         self._call_action(self._backend.swap_calls)
+
+    @Slot(str, str)
+    def sendCallTones(self, call_id: str, tones: str) -> None:
+        """Keypad tones (DTMF) from the tone field; clears the draft."""
+        if self._keypad.press(str(call_id or ""), str(tones or "")):
+            self.setCallTonesDraft("")
+
+    @Slot(str, result=bool)
+    def pressCallTone(self, key: str) -> bool:
+        """A keypad click or key during an active call: send it at once."""
+        return self._keypad.press(self.activeCallId, str(key or ""))
+
+    def _send_tones(self, call_id: str, tones: str, done, failed) -> None:
+        self._run(
+            lambda: self._backend.send_call_tones(call_id, tones), done, failed, busy=False,
+        )
 
     @Slot()
     def syncContacts(self) -> None:

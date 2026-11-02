@@ -107,7 +107,8 @@ def test_another_users_process_is_left_alone(tmp_path) -> None:
     assert signals == []
 
 
-@pytest.mark.parametrize("pid", [os.getpid(), 1, 0])
+# Fixed ids: a pid in the id differs between pytest-xdist workers.
+@pytest.mark.parametrize("pid", [os.getpid(), 1, 0], ids=["self", "init", "zero"])
 def test_blueferry_itself_and_init_are_never_signalled(tmp_path, pid) -> None:
     """Even when the bus says so and /proc looks like the venv: a client that
     owns the name by mistake, or a bogus pid, is never sent SIGTERM."""

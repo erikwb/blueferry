@@ -13,7 +13,8 @@ from tests.gtk_broadway import run_scenario
 
 @pytest.mark.parametrize(
     "scenario", [
-        "layout", "card", "quick-settings", "dial-pad", "running-calls", "recent-calls",
+        "layout", "card", "quick-settings", "dial-pad", "running-calls", "call-tones",
+        "keypad-tones", "recent-calls",
         "notifications", "close",
     ],
 )
@@ -23,6 +24,7 @@ def test_gtk_phone_card(tmp_path, scenario):
 
 CALLS_READY = {
     "daemon": True, "map": True, "calls_enabled": True, "calls_state": "ready",
+    "storage_state": "ready",
 }
 
 
@@ -83,6 +85,9 @@ class FakeClient:
     def swap_calls_async(self, on_ok, on_err):
         self.calls.append(("swap", on_ok, on_err))
 
+    def send_call_tones_async(self, call_id, tones, on_ok, on_err):
+        self.calls.append((("tones", call_id, tones), on_ok, on_err))
+
     def set_phone_audio_route_async(self, route, on_ok, on_err):
         self.calls.append((("route", route), on_ok, on_err))
 
@@ -91,7 +96,16 @@ class FakeClient:
 
     # TaskRunner for NotificationHistory
     def submit(self, operation, on_done=None, on_error=None, on_finished=None):
-        self.calls.append(("notifications", on_done, on_error))
+        # Like the real runner: on_finished follows either answer.
+        def answered(callback):
+            def deliver(value):
+                if callback is not None:
+                    callback(value)
+                if on_finished is not None:
+                    on_finished()
+            return deliver
+
+        self.calls.append(("notifications", answered(on_done), answered(on_error)))
 
     def notifications(self, limit):
         raise AssertionError("only called through submit")
@@ -106,8 +120,8 @@ class FakeClient:
     def list_threads_async(self, *_args, **_kwargs):
         pass
 
-    def contact_photo_async(self, *_args, **_kwargs):
-        pass
+    def contact_photo_async(self, address, on_ok, on_err=None):
+        self.calls.append((("photo", address), on_ok, on_err))
 
     def names(self):
         return [call[0] for call in self.calls]
@@ -321,7 +335,6 @@ def _exercise_dial_pad():
     assert not calls.hint_banner.get_revealed()
     for key in ("0", "7", "9", "#"):
         calls.keys[key].emit("clicked")
-    calls.append_key("x")
     assert calls.entry.get_text() == "079#"
     assert runner.timers[0].delay is None, "the pad does not search contacts"
     calls.delete_button.emit("clicked")
@@ -365,6 +378,27 @@ def _exercise_dial_pad():
     _settle()
     assert window._dial_dialog is not None
     window._dial_dialog.force_close()
+
+    # Typed text is kept as it is, like in Qt: spacing is fine, but an
+    # extension or a service code is refused by the dialog, never shortened
+    # into another number.
+    calls.entry.set_text("+41 79 000 00 01")
+    assert calls.entry.get_text() == "+41 79 000 00 01"
+    calls.call_button.emit("clicked")
+    client.answer_status(CALLS_READY)
+    _settle()
+    assert "+41790000001" in window._dial_dialog.get_body()
+    window._dial_dialog.force_close()
+    for text in ("+1 555 123 4567 ext 89", "**21*15551234567#"):
+        calls.entry.set_text(text)
+        assert calls.call_button.get_sensitive()
+        calls.call_button.emit("clicked")
+        _settle()
+        dialog = window._dial_dialog
+        assert dialog is not None and dialog.get_heading() == "Can't Call This Number"
+        assert calls.entry.get_text() == text
+        dialog.force_close()
+    assert not [name for name in client.names() if name[0] == "dial" and name[1] != "0491570156"]
     window.destroy()
 
 
@@ -434,6 +468,116 @@ def _exercise_running_calls():
     _settle()
     client.emit("calls-changed")
     assert "list-calls" not in client.names()
+    window.destroy()
+
+
+def _exercise_call_tones():
+    from blueferry.models import CallsSnapshot
+
+    window, client = _window()
+    running = window.calls.running
+    client.answer_status(CALLS_READY)
+    window.show_tab("calls")
+    ringing = {"call_id": "voicecall01", "state": "incoming", "number": "+41790000001"}
+    client.take("list-calls")[1](CallsSnapshot.from_dict({"state": "ready", "calls": [ringing]}))
+    assert running.tones is None, "keypad tones only for the active call"
+    active = {**ringing, "state": "active"}
+    held = {"call_id": "voicecall02", "state": "held", "number": "+41790000002"}
+    client.emit("calls-changed")
+    client.take("list-calls")[1](CallsSnapshot.from_dict({"state": "ready", "calls": [
+        held, active]}))
+    tones, send = running.tones, running.tones_button
+    assert tones is not None and tones.get_parent() is running
+    assert tones.get_title() == "Keypad tones (0-9 * #)"
+    assert send.get_tooltip_text() == "Send Tones" and not send.get_sensitive()
+    assert running.rows[1][0].get_index() + 1 == tones.get_index(), "under the active call"
+    tones.set_text("1a2*#b ")
+    assert tones.get_text() == "12*#" and send.get_sensitive()
+    tones.set_text("1" * 50)
+    assert tones.get_text() == "1" * 32
+    tones.set_text("12*#")
+    # A new ListCalls read rebuilds the rows; the typed tones stay.
+    client.emit("calls-changed")
+    client.take("list-calls")[1](CallsSnapshot.from_dict({"state": "ready", "calls": [
+        held, active]}))
+    assert running.tones is not tones and running.tones.get_text() == "12*#"
+    tones, send = running.tones, running.tones_button
+    send.emit("clicked")
+    assert tones.get_text() == "" and not send.get_sensitive()
+    assert running.rows[0][3][0].get_sensitive(), "tones do not block the call buttons"
+    tones.set_text("9")
+    assert send.get_sensitive(), "tones queue up behind a running send"
+    tones.emit("entry-activated")
+    assert ("tones", "voicecall01", "9") not in client.names(), "one request at a time"
+    toasts = []
+    window._toasts.add_toast = toasts.append
+    client.take(("tones", "voicecall01", "12*#"))[2]("<b>No</b> call")
+    assert [(t.get_title(), t.get_use_markup()) for t in toasts] == [("<b>No</b> call", False)]
+    assert ("tones", "voicecall01", "9") not in client.names(), "dropped after a failure"
+    tones.set_text("9")
+    tones.emit("entry-activated")
+    client.take(("tones", "voicecall01", "9"))[1](None)
+    assert running.tones_sent.get_visible() and running.tones_sent.get_title() == "Sent: 9"
+    # The call ends: no tone row, and the next call starts with an empty field.
+    while "list-calls" in client.names():
+        client.take("list-calls")[1](CallsSnapshot.from_dict({"state": "ready", "calls": [
+            held, active]}))
+    running.tones.set_text("5")
+    client.emit("calls-changed")
+    client.take("list-calls")[1](CallsSnapshot.from_dict({"state": "ready", "calls": [held]}))
+    assert running.tones is None
+    client.emit("calls-changed")
+    client.take("list-calls")[1](CallsSnapshot.from_dict({"state": "ready", "calls": [active]}))
+    assert running.tones.get_text() == ""
+    window.destroy()
+
+
+def _exercise_keypad_tones():
+    from gi.repository import Gdk
+
+    from blueferry.models import CallsSnapshot
+
+    window, client = _window()
+    calls, running = window.calls, window.calls.running
+    client.answer_status(CALLS_READY)
+    window.show_tab("calls")
+    _settle()
+    # No call: the pad dials.
+    client.take("list-calls")[1](CallsSnapshot.from_dict({"state": "ready", "calls": []}))
+    calls.keys["1"].emit("clicked")
+    assert calls.entry.get_text() == "1"
+    calls.entry.set_text("")
+    calls.entry.grab_focus()
+    active = {"call_id": "voicecall01", "state": "active", "number": "+41790000001"}
+    held = {"call_id": "voicecall02", "state": "held", "number": "+41790000002"}
+    client.emit("calls-changed")
+    client.take("list-calls")[1](CallsSnapshot.from_dict({"state": "ready", "calls": [
+        held, active]}))
+    focus = window.get_focus()
+    assert focus is None or not focus.is_ancestor(calls.entry), "empty field kept the focus"
+    # During the call: each click is a tone for the active call, in order.
+    for key in ("1", "2", "#"):
+        calls.keys[key].emit("clicked")
+    assert calls.entry.get_text() == ""
+    client.take(("tones", "voicecall01", "1"))[1](None)
+    client.take(("tones", "voicecall01", "2#"))[1](None)
+    assert running.tones_sent.get_title() == "Sent: 1 2 #"
+    # A long press on 0 is just 0 during a call, never "+".
+    gesture = calls.keys["0"].observe_controllers()
+    long_press = next(c for c in gesture if c.__class__.__name__ == "GestureLongPress")
+    long_press.emit("pressed", 0.0, 0.0)
+    client.take(("tones", "voicecall01", "0"))[1](None)
+    assert calls.entry.get_text() == ""
+    # The keyboard, number pad included, outside text fields.
+    assert calls.tone_key(Gdk.KEY_KP_5)
+    client.take(("tones", "voicecall01", "5"))[1](None)
+    assert not calls.tone_key(Gdk.KEY_7, int(Gdk.ModifierType.CONTROL_MASK))
+    assert not calls.tone_key(Gdk.KEY_a)
+    calls.entry.grab_focus()
+    assert not calls.tone_key(Gdk.KEY_7), "the number field keeps its keys"
+    running.tones.grab_focus()
+    assert not calls.tone_key(Gdk.KEY_7), "the tone field keeps its keys"
+    assert ("tones", "voicecall01", "7") not in client.names()
     window.destroy()
 
 
@@ -662,6 +806,8 @@ if __name__ == "__main__":
         "card": _exercise_card,
         "dial-pad": _exercise_dial_pad,
         "running-calls": _exercise_running_calls,
+        "call-tones": _exercise_call_tones,
+        "keypad-tones": _exercise_keypad_tones,
         "quick-settings": _exercise_quick_settings,
         "recent-calls": _exercise_recent_calls,
         "notifications": _exercise_notifications,

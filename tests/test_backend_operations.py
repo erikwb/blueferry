@@ -68,6 +68,33 @@ def _stub_group(operations: BackendOperations, thread: dict) -> None:
     operations._conversations.threads = lambda: [thread]
 
 
+@pytest.mark.parametrize("operation", ["send", "send_to_thread", "list_recent"])
+def test_missing_map_rejects_work_without_assuming_a_permission_failure(operation):
+    queued = []
+    operations = _operations(submit_obex=lambda *args, **kwargs: queued.append(args))
+    operations.sessions.map = None
+    thread = _group()
+    _stub_group(operations, thread)
+
+    def unexpected(_value):
+        pytest.fail("unavailable MAP must reject the request before queuing work")
+
+    with pytest.raises(NotReadyError) as error:
+        if operation == "send":
+            operations.send("+15551111111", "hello", unexpected, unexpected)
+        elif operation == "send_to_thread":
+            operations.send_to_thread(
+                thread["key"], "hello", True, unexpected, unexpected,
+                expected_group_token=group_confirmation_token(thread["recipients"]),
+            )
+        else:
+            operations.list_recent("telecom/msg/INBOX", 10, unexpected, unexpected)
+
+    assert queued == []
+    assert "connection" in str(error.value).lower()
+    assert "Show Message Notifications" not in str(error.value)
+
+
 def test_group_reply_requires_confirmation_before_send(monkeypatch):
     operations = _operations()
     thread = _group()
