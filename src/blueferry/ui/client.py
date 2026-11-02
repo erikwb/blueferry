@@ -648,28 +648,6 @@ class DaemonClient(GObject.Object):
             mutation=True,
         )
 
-    def decline_call_with_message_async(self, call_id: str, text: str, on_ok, on_err) -> None:
-        """Decline a ringing call and text the caller (Calls1.DeclineWithMessage)."""
-        self._submit(
-            lambda: self._call_backend(
-                lambda backend: backend.decline_call_with_message(call_id, text)
-            ),
-            on_ok,
-            on_err,
-            mutation=True,
-        )
-
-    def set_call_quick_replies_async(self, replies: list[str], on_ok, on_err) -> None:
-        """Save the texts offered when declining a call."""
-        self._submit(
-            lambda: self._call_backend(
-                lambda backend: backend.set_call_quick_replies(list(replies))
-            ),
-            on_ok,
-            on_err,
-            mutation=True,
-        )
-
     def calls_async(self, on_ok, on_err=None) -> None:
         """Calls1.ListCalls: the running calls as a ``CallsSnapshot``."""
         self._submit(
@@ -707,6 +685,28 @@ class DaemonClient(GObject.Object):
         """Keypad tones (DTMF) on the active call (Calls1.SendTones)."""
         self._submit(
             lambda: self._call_backend(lambda backend: backend.send_call_tones(call_id, tones)),
+            on_ok,
+            on_err,
+            mutation=True,
+        )
+
+    def decline_call_with_message_async(self, call_id: str, text: str, on_ok, on_err) -> None:
+        """Decline a ringing call and text the caller (Calls1.DeclineWithMessage)."""
+        self._submit(
+            lambda: self._call_backend(
+                lambda backend: backend.decline_call_with_message(call_id, text)
+            ),
+            on_ok,
+            on_err,
+            mutation=True,
+        )
+
+    def set_call_quick_replies_async(self, replies: list[str], on_ok, on_err) -> None:
+        """Save the texts offered when declining a call."""
+        self._submit(
+            lambda: self._call_backend(
+                lambda backend: backend.set_call_quick_replies(list(replies))
+            ),
             on_ok,
             on_err,
             mutation=True,
