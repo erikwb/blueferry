@@ -40,6 +40,7 @@ import os
 import re
 import shlex
 import shutil
+import stat
 import subprocess  # nosec B404
 import sys
 import tempfile
@@ -708,9 +709,17 @@ def _manifest_text(checkout: Path) -> str:
         current = current / part
         if current.is_symlink():
             raise InstallError("the manifest is not a regular file inside the repository")
-    if not path.is_file():
-        raise InstallError("the manifest is not a regular file")
-    with path.open("rb") as stream:
+    # The type is checked on the opened file, so it cannot change in between.
+    # O_NONBLOCK keeps a FIFO from blocking the open, and has no effect on
+    # reads from a regular file.
+    try:
+        descriptor = os.open(
+            path, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC | os.O_NOFOLLOW)
+    except OSError:
+        raise InstallError("the manifest is not a readable regular file") from None
+    with os.fdopen(descriptor, "rb") as stream:
+        if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+            raise InstallError("the manifest is not a regular file")
         data = stream.read(MAX_MANIFEST_BYTES + 1)
     if len(data) > MAX_MANIFEST_BYTES:
         raise InstallError("the manifest is too large")

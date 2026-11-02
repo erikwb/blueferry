@@ -1,6 +1,7 @@
 """Plugin installs from Git URLs with fake git and venv; no process, no network."""
 from __future__ import annotations
 
+import io
 import json
 import os
 import threading
@@ -582,6 +583,46 @@ def test_a_symlinked_or_oversized_manifest_is_refused(setup, tmp_path) -> None:
                          + "# " + "x" * (16 * 1024) + "\n"}
     with pytest.raises(InstallError, match="too large"):
         manager.prepare(URL)
+    assert not list((manager.root / "src").glob(".staging-*"))
+
+
+def test_a_manifest_swapped_for_a_fifo_before_it_is_opened_is_refused(setup, monkeypatch) -> None:
+    manager, _runner = setup
+    swapped: list[Path] = []
+
+    def swapping(real):
+        def open_(path, *args, **kwargs):
+            # Replaced by a FIFO after every check, right before the open.
+            candidate = Path(os.fsdecode(path)) if not isinstance(path, int) else Path()
+            if (not swapped and candidate.suffix == ".plugin"
+                    and ".staging-" in str(candidate) and candidate.is_file()):
+                candidate.unlink()
+                os.mkfifo(candidate, 0o600)
+                swapped.append(candidate)
+            return real(path, *args, **kwargs)
+        return open_
+
+    monkeypatch.setattr(os, "open", swapping(os.open))
+    monkeypatch.setattr(io, "open", swapping(io.open))
+    result: list[Exception] = []
+
+    def prepare() -> None:
+        try:
+            manager.prepare(URL)
+        except Exception as error:
+            result.append(error)
+
+    installer = threading.Thread(target=prepare, daemon=True)
+    installer.start()
+    installer.join(timeout=5)
+    if installer.is_alive():
+        # Release the blocked open so the hang fails this test only.
+        os.close(os.open(swapped[0], os.O_WRONLY | os.O_NONBLOCK))
+        installer.join(timeout=5)
+        pytest.fail("install blocked on a FIFO manifest until a writer appeared")
+    assert swapped
+    assert len(result) == 1 and isinstance(result[0], InstallError)
+    assert "regular file" in str(result[0])
     assert not list((manager.root / "src").glob(".staging-*"))
 
 
