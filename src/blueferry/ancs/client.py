@@ -1506,6 +1506,9 @@ class AncsClient:
         self._notify_refreshes += 1
         # The probe is written again once both CCCs are re-enabled.
         self._finish_active_request()
+        # The old UID session ends here, before events of the new
+        # subscription can arrive: a reused UID is a new notification.
+        self._end_session()
         token = object()
         self._notify_refresh = token
         generation = self._bluez_owner_generation

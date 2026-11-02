@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import struct
+from types import SimpleNamespace
 
 import pytest
 
@@ -18,6 +19,7 @@ from blueferry.ancs.constants import (
     EventID,
 )
 from blueferry.ancs.parsers import Notification
+from blueferry.event_dispatcher import EventDispatcher
 
 
 def _notification(uid: int, *, flags: int = 0) -> bytes:
@@ -2642,6 +2644,42 @@ def test_silent_transport_reenables_ccc_and_repeats_probe_before_le_reset(
     assert all(
         callback != client._request_transport_reset for _delay, callback in scheduled
     )
+
+
+def test_reused_uid_after_a_silent_transport_refresh_is_delivered(monkeypatch) -> None:
+    # Re-enabling the CCCs starts a new UID session even when the iPhone has
+    # nothing to replay; an identical message under a reused UID is new.
+    client, _calls, scheduled, _resets = _silent_transport_client(monkeypatch)
+    sink = SimpleNamespace(name="history", events=[])
+    sink.handle_ancs = sink.events.append
+    dispatcher = EventDispatcher(object(), defer_mark_read=lambda _path: None)
+    dispatcher.sinks = [sink]
+    client.on_event = dispatcher.ancs
+    client._on_session_reset = dispatcher.ancs_session_reset
+    iface = "org.bluez.GattCharacteristic1"
+    _complete_authorization_probe(client)
+
+    def deliver() -> None:
+        client._on_ns_changed(iface, {"Value": _notification(42)}, [])
+        uid = struct.pack("<I", 42)
+        head = bytes([CommandID.GetNotificationAttributes]) + uid
+        client._on_ds_changed(
+            iface, {"Value": head + _attribute(0, MESSAGES_APP_ID)}, [],
+        )
+        content = _attribute(1, "Alice") + _attribute(2, "") + _attribute(3, "ok")
+        client._on_ds_changed(
+            iface, {"Value": head + _attribute(0, MESSAGES_APP_ID) + content}, [],
+        )
+
+    deliver()
+    assert len(sink.events) == 1
+    scheduled.clear()
+    client._queue_authorization_probe(force=True)
+    _fire(scheduled, client._request_timed_out)
+    _complete_authorization_probe(client)
+    deliver()
+
+    assert [event.body for event in sink.events] == ["ok", "ok"]
 
 
 def test_silent_transport_escalates_once_the_refresh_budget_is_spent(
