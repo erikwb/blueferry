@@ -1336,10 +1336,14 @@ def _exercise_contact_photos():
     assert avatars[0].get_custom_image() is None
     assert page.book.row_photo("c1") == b""
 
-    # Leaving the tab forgets the photos with the rows.
+    # Turning them on again reads the list again (the photo hints were
+    # dropped with the photos); the row photo follows that answer.
     client.answer_status(status)
+    _settle()
+    client.take(("cards", 0, ""))[1](cards)
     _settle_list(page)
     runner.fire_timers()
+    # Leaving the tab forgets the photos with the rows.
     assert len(client.photo_reads) == 2 and page.book.row_photo("c1") == photo
     window.show_tab("messages")
     _settle()
