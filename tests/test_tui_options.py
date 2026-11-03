@@ -253,6 +253,31 @@ def test_an_unknown_contact_photo_choice_is_unavailable_until_it_reads() -> None
     asyncio.run(scenario())
 
 
+def test_a_photo_toggle_is_not_sent_once_the_choice_turns_unknown() -> None:
+    async def scenario() -> None:
+        backend = _OptionsBackend()
+        backend.photos_state = "off"
+        app = _app(backend)
+        notices: list[str] = []
+        app.notify = lambda message, **_kwargs: notices.append(message)  # type: ignore[method-assign]
+        async with app.run_test(size=(120, 40)) as pilot:
+            screen = await _open(app, pilot)
+            photos = screen.query_one("#opt-contact_photos", Checkbox)
+            otp = screen.query_one("#opt-otp_autocopy", Checkbox)
+            photos.toggle()
+            otp.toggle()
+            # settings.json stops reading before the Changed messages are handled.
+            backend.photos_state = "unknown"
+            screen.status_changed(backend.status())
+            await _until(pilot, lambda: ("otp_autocopy", True) in backend.calls)
+            await _until(pilot, lambda: not screen.pending)
+            assert not any(call[0] == "contact_photos" for call in backend.calls)
+            assert notices == ["Unavailable while settings.json cannot be read"]
+            assert photos.value is False and otp.value is True
+
+    asyncio.run(scenario())
+
+
 def test_options_screen_saves_the_one_time_code_opt_in_under_security() -> None:
     async def scenario() -> None:
         backend = _OptionsBackend()

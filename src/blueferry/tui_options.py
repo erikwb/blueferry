@@ -734,6 +734,12 @@ class OptionsScreen(ModalScreen[None]):
         switch = SAVED_SWITCHES.get(key)
         if switch is None or self.values is None or _held(key, self.pending):
             return
+        if key == "contact_photos" and _contact_photos_unknown(self.values):
+            # A toggle queued before the status went unknown; the daemon would refuse it.
+            self.app.notify(_contact_photos_caption(self.values), severity="warning",
+                            markup=False)
+            self._render_state()
+            return
         if enabled == switch.active(self.values):
             return
         values = dict(self.values)
