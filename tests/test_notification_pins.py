@@ -356,6 +356,21 @@ def test_pinning_is_refused_while_the_settings_file_cannot_be_read(tmp_path) -> 
     assert ids(log.snapshot(10)) == [9]
 
 
+def test_pins_load_once_the_key_that_sealed_them_unlocks(tmp_path) -> None:
+    path = tmp_path / "settings.json"
+    pinned_three(path)
+    key = [b"W" * 32]  # the keyring offers another key first
+    provider = SimpleNamespace(get_or_create=lambda **_kwargs: key[0])
+    storage = StorageSecurity(settings=SettingsStore(path), key_provider=provider)
+    log = make_log(pins=PinnedNotificationsStore(path, storage=storage), new_key=keys("n"))
+    log.handle_ancs(event(9))
+    assert not storage.status.can_read
+    key[0] = b"K" * 32
+    storage.refresh(allow_prompt=False)
+    assert log.set_pinned("n1", True) is True
+    assert ids(log.snapshot(10)) == [9, 3, 2, 1]
+
+
 def test_unpinning_is_refused_once_the_settings_file_breaks(tmp_path) -> None:
     path = tmp_path / "settings.json"
     _, store = store_for(path)

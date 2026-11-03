@@ -348,6 +348,8 @@ class NotificationLog:
         stored, rewrite = store.load(
             show_content=self._show_content, max_chars=MAX_FIELD_CHARS,
         )
+        if not store.readable():
+            return  # they failed to decrypt; retry once the right key opens them
         self._pins_loaded = True
         self._pins_load_failed = False
         loaded: list[str] = []
