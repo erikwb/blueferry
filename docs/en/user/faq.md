@@ -8,8 +8,11 @@ subscription.
 
 ## Can I see my older messages?
 
-Only messages BlueFerry has seen while connected. It doesn't download your
-iCloud Messages archive or your complete sent-message history.
+Messages BlueFerry has seen while connected, plus incoming messages it
+catches up on after a reconnect (see
+[Messages received while disconnected](privacy.md#messages-received-while-disconnected)).
+It doesn't download your iCloud Messages archive or your complete
+sent-message history.
 
 ## Can I send pictures, react to messages, or see typing indicators?
 

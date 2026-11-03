@@ -11,7 +11,7 @@ import org.kde.kirigami as Kirigami
 // an optional wrapped body, a trailing meta text (time) and trailing actions
 // that appear on hover or keyboard focus. Selection and hover are a tint of
 // the highlight colour; keyboard focus draws the focus colour. All text is
-// plain text.
+// plain text, except an ``escapedBody`` the caller escaped itself.
 Controls.ItemDelegate {
     id: row
 
@@ -19,6 +19,10 @@ Controls.ItemDelegate {
     property string subtitle: ""
     property string body: ""
     property int bodyLines: 4
+    // Styled text the caller has already escaped (a search snippet with the
+    // match in bold); shown in place of ``body``. Never pass remote text
+    // here unescaped.
+    property string escapedBody: ""
     property string meta: ""
     property string iconName: ""
     // Replaces the icon, e.g. Component { ContactAvatar { … } }.
@@ -150,6 +154,17 @@ Controls.ItemDelegate {
                 visible: text !== ""
                 text: row.body
                 textFormat: Text.PlainText
+                wrapMode: Text.Wrap
+                maximumLineCount: row.bodyLines
+                elide: Text.ElideRight
+                opacity: 0.85
+            }
+            Controls.Label {
+                objectName: row.partPrefix + "EscapedBody"
+                Layout.fillWidth: true
+                visible: text !== ""
+                text: row.escapedBody
+                textFormat: Text.StyledText
                 wrapMode: Text.Wrap
                 maximumLineCount: row.bodyLines
                 elide: Text.ElideRight

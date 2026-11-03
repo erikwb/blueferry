@@ -3,10 +3,20 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+import dbus
 import pytest
 
 from blueferry.obex import map_query
 from blueferry.otp_context import OtpMetadata
+
+
+def assert_bluez_list_filters(options, expected_count):
+    """BlueZ reads only ``MaxCount`` and rejects any type but uint16."""
+    assert isinstance(options, dbus.Dictionary)
+    assert options.signature == "sv"
+    assert set(options) == {"MaxCount"}
+    assert type(options["MaxCount"]) is dbus.UInt16
+    assert int(options["MaxCount"]) == expected_count
 
 
 @pytest.mark.parametrize(
@@ -38,7 +48,7 @@ def test_otp_lookup_matches_the_pushed_message_not_the_newest(
         def ListMessages(self, folder, options, *, timeout):
             calls.append(("list", timeout))
             assert folder == ""
-            assert 0 < int(options["MaxListCount"]) <= 20
+            assert_bluez_list_filters(options, map_query.OTP_QUERY_LIMIT)
             messages = {
                 session + "/message2": {"Timestamp": "20261008T224400Z"},
             }
@@ -175,3 +185,34 @@ def test_recent_query_bounds_remote_property_sizes(monkeypatch):
     assert len(message["sender"]) <= map_query.MAX_REMOTE_PROPERTY_CHARS
     assert len(message["body"]) <= map_query.MAX_THREAD_BODY_CHARS
     assert len(message["status"]) <= map_query.MAX_REMOTE_PROPERTY_CHARS
+
+
+def test_otp_lookup_keeps_obexds_default_listing_size():
+    # Truncation order on iOS is unverified; the pushed message must not be
+    # cut off by a smaller listing than the lookup has always received.
+    assert map_query.OTP_QUERY_LIMIT == 1024
+
+
+@pytest.mark.parametrize(
+    "requested,expected", [(1, 1), (20, 20), (200, 200), (0, 1), (5000, 200)],
+)
+def test_recent_query_passes_bluez_max_count(monkeypatch, requested, expected):
+    seen = []
+
+    class FakeMap:
+        @staticmethod
+        def SetFolder(_folder, *, timeout):
+            assert timeout > 0
+
+        @staticmethod
+        def ListMessages(folder, options, *, timeout):
+            assert folder == ""
+            assert timeout > 0
+            seen.append(options)
+            return {}
+
+    monkeypatch.setattr(map_query, "obex", lambda *_args: FakeMap())
+
+    assert map_query.list_recent_messages("/session", limit=requested) == []
+    assert len(seen) == 1
+    assert_bluez_list_filters(seen[0], expected)

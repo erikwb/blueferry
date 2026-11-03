@@ -13,6 +13,8 @@ GridLayout {
     id: callsTab
     objectName: "callsTab"
     required property var bridge
+    // A recent call picked in the global search (a ListCallHistory id).
+    property string focusedCallId: ""
     signal messageRequested(string address)
 
     readonly property var hints: callsTab.bridge.featureHints || ({})
@@ -493,6 +495,7 @@ GridLayout {
             visible: active
             sourceComponent: RecentCallsPage {
                 bridge: callsTab.bridge
+                focusedCallId: callsTab.focusedCallId
                 onCallRequested: number => callsTab.bridge.requestDialLink(number)
                 onMessageRequested: address => callsTab.messageRequested(address)
             }
