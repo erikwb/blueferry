@@ -93,6 +93,7 @@ ALLOWLIST: dict[tuple[str, str, str], str] = {
     ("blueferry.obex.map_query", "_navigate_to_folder", "sync-dbus"): _WORKER,
     ("blueferry.obex.map_query", "lookup_otp_metadata", "sync-dbus"): _WORKER,
     ("blueferry.obex.map_query", "list_recent_messages", "sync-dbus"): _WORKER,
+    ("blueferry.obex.map_query", "list_inbox_since", "sync-dbus"): _WORKER,
     ("blueferry.obex.map_read", "set_message_read", "sync-dbus"): _WORKER,
     ("blueferry.obex.map_send", "_push_bmessage", "sync-dbus"): _WORKER,
     ("blueferry.obex.sessions", "_create_session", "sync-dbus"): _WORKER,

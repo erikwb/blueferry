@@ -17,6 +17,7 @@ from blueferry.tui_phone import (
     PhoneOverviewScreen,
     RecentCallsScreen,
     now_playing_text,
+    volume_controls,
 )
 from tests.test_tui import _Backend, _run_headless
 
@@ -578,5 +579,108 @@ def test_refresh_from_iphone_syncs_once_and_reports_failures_as_plain_text() -> 
             state = screen.query_one("#recent-calls-sync-state", Static).render()
             assert "Call history sync failed: [@click=app.quit]boom[/]" in str(state)
             assert app.is_running
+
+    _run_headless(scenario())
+
+
+# ---- iPhone volume ----------------------------------------------------------
+
+
+def test_now_playing_text_shows_the_volume_level_and_keys() -> None:
+    snapshot = {
+        "available": True,
+        "player": {"state": "playing", "volume": 0.4},
+        "track": {"title": "Song"},
+        "supported_commands": ["pause", "volume-up"],
+    }
+    text = now_playing_text(overview.now_playing(snapshot), volume_controls(snapshot))
+    assert text.plain == "▶  Song  ·  Volume 40%   p +"
+    # Without the presenter's controls the line is the old one.
+    assert now_playing_text(overview.now_playing(snapshot)).plain == "▶  Song   p"
+
+
+def test_minus_and_plus_step_the_iphone_volume_when_offered() -> None:
+    backend = _PhoneBackend(media_control_enabled=True)
+    backend.snapshot["supported_commands"] = ["pause", "volume-up", "volume-down"]
+    backend.snapshot["player"]["volume"] = 0.5
+
+    async def scenario() -> None:
+        app = BlueFerryApp(TuiState(backend), monitor_factory=lambda: None)
+        async with app.run_test(size=(120, 36)) as pilot:
+            line = app.query_one("#now-playing")
+            await _until(pilot, lambda: line.display)
+            assert "Volume 50%" in line.render().plain
+            await pilot.press("minus", "plus", "equals_sign")
+            await _until(pilot, lambda: len(backend.commands) == 3)
+            assert sorted(backend.commands) == ["volume-down", "volume-up", "volume-up"]
+
+            # The player stops offering volume: nothing is sent, the reason shown.
+            backend.snapshot["supported_commands"] = ["pause"]
+            app._load_now_playing()
+            await _until(pilot, lambda: app.volume["up_enabled"] is False)
+            await pilot.press("plus")
+            await pilot.pause(0.1)
+            assert len(backend.commands) == 3
+
+            # Typing in the search field never changes the volume.
+            backend.snapshot["supported_commands"] = ["volume-down"]
+            app._load_now_playing()
+            await _until(pilot, lambda: app.volume["down_enabled"] is True)
+            app.action_focus_search()
+            await pilot.press("minus")
+            await pilot.pause(0.1)
+            assert len(backend.commands) == 3
+
+    _run_headless(scenario())
+
+
+def test_volume_keys_say_why_without_media_control() -> None:
+    backend = _PhoneBackend()
+
+    async def scenario() -> None:
+        app = BlueFerryApp(TuiState(backend), monitor_factory=lambda: None)
+        async with app.run_test(size=(120, 36)) as pilot:
+            await _until(pilot, lambda: app.state.status.daemon)
+            await pilot.press("plus")
+            await pilot.pause(0.1)
+            assert backend.commands == []
+            assert any("media control is off" in str(n.message) for n in app._notifications)
+
+    _run_headless(scenario())
+
+
+def test_overview_volume_buttons_step_the_volume_and_keep_the_dialog_open() -> None:
+    backend = _CallingBackend(media_control_enabled=True)
+    backend.snapshot["supported_commands"] = ["pause", "volume-down"]
+    backend.snapshot["player"]["volume"] = 0.25
+
+    async def scenario() -> None:
+        app = BlueFerryApp(TuiState(backend), monitor_factory=lambda: None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await _until(pilot, lambda: app.now_playing.visible)
+            app.action_phone_overview()
+            await _until(pilot, lambda: _overview_shown(app))
+            screen = app.screen
+            controls = screen.query_one("#phone-overview-media-controls")
+            await _until(pilot, lambda: controls.display)
+            assert "Volume 25%" in _overview_text(screen)
+            down = screen.query_one("#phone-overview-volume-down", Button)
+            up = screen.query_one("#phone-overview-volume-up", Button)
+            assert not down.disabled and up.disabled
+            # Tooltips are Text, so they can never be parsed as markup.
+            assert isinstance(up.tooltip, Text)
+            assert "does not offer volume control" in up.tooltip.plain
+
+            down.press()
+            screen.query_one("#phone-overview-play", Button).press()
+            await _until(pilot, lambda: len(backend.commands) == 2)
+            # Each command runs on its own worker, so their order may vary.
+            assert sorted(backend.commands) == ["toggle", "volume-down"]
+            assert app.screen is screen
+
+            # Media control switched off: the buttons go away.
+            backend.extra["media_control_enabled"] = False
+            app._load_data()
+            await _until(pilot, lambda: not controls.display)
 
     _run_headless(scenario())

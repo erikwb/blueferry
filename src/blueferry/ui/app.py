@@ -37,6 +37,8 @@ _CSS = """
   color: @accent_fg_color;
 }
 .msg-out label link { color: @accent_fg_color; }
+.msg-focused { outline: 2px solid @accent_color; outline-offset: 2px; }
+row.call-focused { background-color: alpha(@accent_bg_color, 0.2); }
 """
 
 
@@ -80,6 +82,7 @@ class BlueFerryApp(Adw.Application):
         self.set_accels_for_action("app.close", ["<primary>w"])
         self.set_accels_for_action("app.shortcuts", ["<primary>question"])
         self.set_accels_for_action("win.phone", ["<primary>comma"])
+        self.set_accels_for_action("win.search", ["<primary>k", "<primary>f"])
 
         provider = Gtk.CssProvider()
         provider.load_from_string(_CSS)
@@ -116,6 +119,7 @@ class BlueFerryApp(Adw.Application):
                 "Ctrl+W  Close Window\n"
                 "Ctrl+Q  Quit\n"
                 "Ctrl+,  Settings\n"
+                "Ctrl+K, Ctrl+F  Search\n"
                 "Ctrl+?  Keyboard Shortcuts\n"
                 "Enter   Send Message"
             ),

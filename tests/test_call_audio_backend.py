@@ -4,8 +4,17 @@ from __future__ import annotations
 import pytest
 
 from blueferry.backend_operations import BackendDependencies, BackendOperations
-from blueferry.errors import CallsDisabledError, InvalidArgumentsError, NotReadyError
+from blueferry.calls.settings import CallAudioSettings
+from blueferry.dbus_service import MessagesService
+from blueferry.errors import (
+    CallsDisabledError,
+    ConfigurationError,
+    InvalidArgumentsError,
+    NotReadyError,
+)
 from blueferry.models import BackendStatus, CallAudio, CallsSnapshot
+from blueferry.protocol import ERROR_PREFIX
+from blueferry.settings_store import UnreadableSettingsError
 
 
 class _Sessions:
@@ -99,10 +108,33 @@ def test_setters_need_calls_and_the_capability() -> None:
 @pytest.mark.parametrize(("error", "expected"), [
     (ValueError("bad"), InvalidArgumentsError),
     (OSError("disk full"), NotReadyError),
+    # Also a ValueError, but not the caller's fault.
+    (UnreadableSettingsError("settings.json could not be read"), ConfigurationError),
 ])
 def test_save_failures_are_typed(error, expected) -> None:
     with pytest.raises(expected):
         _operations(audio=FakeAudio(error=error)).set_call_audio_device("output", "x")
+
+
+def test_unreadable_settings_refuse_the_device_as_a_configuration_error(tmp_path) -> None:
+    path = tmp_path / "settings.json"
+    path.write_text("{not json", encoding="utf-8")
+    path.chmod(0o600)
+
+    class SavingAudio(FakeAudio):
+        def set_preferred(self, direction, name):
+            CallAudioSettings(path).set(direction, name)
+            return {"calls_audio_output": name}
+
+    with pytest.raises(ConfigurationError) as caught:
+        _operations(audio=SavingAudio()).set_call_audio_device("output", "alsa_output.a50")
+
+    error = MessagesService._dbus_error(caught.value)
+    assert error.get_dbus_name() == f"{ERROR_PREFIX}.Configuration"
+    assert error.get_dbus_message().startswith(
+        "settings.json could not be read, so the change was not saved"
+    )
+    assert path.read_text(encoding="utf-8") == "{not json"
 
 
 def test_models_read_the_call_audio_and_keep_empty_choices() -> None:

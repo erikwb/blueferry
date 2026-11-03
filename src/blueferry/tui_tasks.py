@@ -111,3 +111,24 @@ class TextualTimer:
 def timer_factory(node: DOMNode) -> Callable[[Callable[[], None]], TextualTimer]:
     """A :data:`~blueferry.client_tasks.TimerFactory` bound to ``node``."""
     return lambda callback: TextualTimer(node, callback)
+
+
+def tearing_down(node: DOMNode) -> bool:
+    """True once ``node`` or the app is being removed or closed.
+
+    Textual removes a closing screen's children before it cancels the
+    screen's workers, so a render worker can still look up a widget that is
+    gone. Only then may it stop quietly; a lookup that fails on a healthy
+    screen is a bug and must still raise.
+    """
+    if not node.is_attached:
+        return True
+    try:
+        app = node.app
+    except Exception:  # no active app: being torn down
+        return True
+    return any(
+        getattr(each, "_closing", False) or getattr(each, "_closed", False)
+        or getattr(each, "_pruning", False)
+        for each in (node, app)
+    )

@@ -17,6 +17,8 @@ ColumnLayout {
     objectName: "recentCallsPage"
     required property var bridge
     property bool missedOnly: false
+    // A call picked in the global search: its row is shown and marked.
+    property string focusedCallId: ""
     readonly property bool canCall: (callsPage.bridge.status || ({})).calls_enabled === true
         && callsPage.bridge.callsState === "ready"
     signal callRequested(string number)
@@ -26,6 +28,33 @@ ColumnLayout {
     function visibleCalls() {
         const rows = callsPage.bridge.callHistoryRows || ({})
         return (callsPage.missedOnly ? rows.missed : rows.all) || []
+    }
+
+    // Row of the focused call among the visible rows, or -1.
+    function focusedIndex(): int {
+        if (callsPage.focusedCallId === "")
+            return -1
+        const rows = callsPage.visibleCalls()
+        for (let index = 0; index < rows.length; ++index) {
+            if ((rows[index].ids || []).indexOf(callsPage.focusedCallId) >= 0)
+                return index
+        }
+        return -1
+    }
+
+    // Computed once per change of the list or the focused call, not per row.
+    readonly property int focusedRow: callsPage.focusedIndex()
+
+    function showFocusedCall(): void {
+        const index = callsPage.focusedRow
+        if (index >= 0)
+            callsList.positionViewAtIndex(index, ListView.Center)
+    }
+
+    onFocusedCallIdChanged: {
+        if (callsPage.focusedCallId !== "")
+            callsPage.missedOnly = false
+        Qt.callLater(callsPage.showFocusedCall)
     }
 
     function directionIcon(direction) {
@@ -68,6 +97,7 @@ ColumnLayout {
             id: callsList
             model: callsPage.visibleCalls()
             reuseItems: true
+            onCountChanged: Qt.callLater(callsPage.showFocusedCall)
             section.property: "day"
             section.criteria: ViewSection.FullString
             section.delegate: Kirigami.ListSectionHeader {
@@ -89,8 +119,10 @@ ColumnLayout {
             delegate: ListRow {
                 id: callRow
                 required property var modelData
+                required property int index
                 partPrefix: "call"
                 density: "compact"
+                highlighted: callRow.index === callsPage.focusedRow
                 Accessible.name: callRow.modelData.direction_label
                     + ", " + callRow.modelData.caller + ", " + callRow.modelData.clock
                 title: callRow.modelData.title

@@ -64,11 +64,25 @@ other audio rules and the adapter's advertised roles stay intact.
 - **Calls:** this preference controls media (A2DP). The separate phone-calls
   opt-in and the desktop's HFP roles are unchanged.
 
+## Video and sound in sync
+
+When the iPhone plays a video with the sound here, it delays the picture by
+the latency this computer reports over Bluetooth (AVDTP delay reporting).
+The clients show the reported delay next to the iPhone sound status, for
+example *A/V sync: this computer reports 110 ms.* The line appears
+only while the iPhone's audio stream to this computer is open. While no
+delay is reported it says *A/V sync: delay reporting active.*, and if the
+stream was set up without delay reporting it warns that the video may be
+out of sync. `blueferry doctor` checks it while the
+sound plays here. If it warns that BlueZ exports no delay, BlueZ (5.70 to
+5.77 only while the delay is above zero) or the audio server does not report
+one, and the video may run ahead of the sound.
+
 ## Privacy
 
 The switch and its status carry no track or app data: only the route
 (`pc`, `phone`, `unavailable`), a reason code and where the sound plays
-(`pc`, `phone`, `none`, `unknown`).
+(`pc`, `phone`, `none`, `unknown`) and the A/V sync delay in milliseconds.
 The remembered choice and phone address are stored locally in `settings.json`.
 The WirePlumber rule is `zz-blueferry-phone-audio.conf`; `audio auto` removes it.
 

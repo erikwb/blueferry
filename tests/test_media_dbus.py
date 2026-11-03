@@ -466,6 +466,32 @@ def test_mpris_omits_an_unknown_volume(mpris_factory) -> None:
     assert '<property name="Volume" type="d" access="readwrite"/>' in introspect()
 
 
+def test_mpris_volume_write_is_one_relative_step(mpris_factory) -> None:
+    """AMS has no absolute volume: a write moves one step toward the target."""
+    media, writer = _media()
+    _bus, name, player = mpris_factory(media)
+    _play(media)  # volume 0.5
+    _dispatch_until(lambda: player.owned)
+
+    def set_volume(value: float) -> None:
+        assert "error" not in _call(
+            name, MPRIS_PATH, dbus.PROPERTIES_IFACE, "Set",
+            PLAYER_IFACE, "Volume", dbus.Double(value, variant_level=1),
+        )
+
+    set_volume(0.1)
+    assert writer.sent == [RemoteCommandID.VolumeDown]
+    set_volume(1.0)
+    assert writer.sent[-1] == RemoteCommandID.VolumeUp
+    # Within 1 % of the reported level: nothing to do.
+    set_volume(0.505)
+    assert len(writer.sent) == 2
+    # A player without volume commands: MPRIS says no effect, no error.
+    media.handle_supported_commands(frozenset({RemoteCommandID.TogglePlayPause}))
+    set_volume(0.9)
+    assert len(writer.sent) == 2
+
+
 def test_mpris_trackid_is_stable_when_a_truncated_title_completes(mpris_factory) -> None:
     """Review #208: completing a long title is not a new track."""
     media, _writer = _media()

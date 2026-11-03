@@ -4,6 +4,7 @@ from __future__ import annotations
 import typer
 
 from blueferry.client import BackendClient, BackendError
+from blueferry.phone_audio_view import av_sync
 from blueferry.text_safety import terminal_text
 
 _ACTIONS = ("status", "pc", "phone", "auto")
@@ -77,6 +78,9 @@ def audio(
             playing = describe_playing(status)
             if playing:
                 typer.echo(playing)
+            sync = av_sync(status)
+            if sync:
+                typer.echo(sync)
             preference = status.get("phone_audio_preference")
             if preference in ("pc", "phone", "auto"):
                 typer.echo(f"Remembered audio choice: {preference}.")
