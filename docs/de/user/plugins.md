@@ -112,6 +112,10 @@ blueferry photos recent
 
 ### Dateien aufs Fenster ziehen
 
+Noch nicht verfügbar: Die Ablagefläche im KDE- und GTK-Fenster kommt mit einer
+der nächsten Versionen. Bis dahin nimm **Send to…** auf der Karte oder
+`blueferry send`. So wird es funktionieren:
+
 Zieh Dateien aus der Dateiverwaltung irgendwo aufs Hauptfenster des KDE- oder
 GTK-Clients: **Drop to send to iPhone** erscheint, und beim Loslassen gibt
 BlueFerry die Dateien an ein Ziel von **Send to…**:
@@ -131,7 +135,7 @@ Dateien annimmt, bekommt die darauf gezogenen Dateien weiterhin selbst.
 
 | | Qt | GTK | TUI | Quickshell | CLI |
 |---|---|---|---|---|---|
-| Dateien aufs Fenster ziehen | ✓ | ✓ | — ein Terminal bekommt keine abgelegten Dateien | — das Panel hat keine Ablagefläche und verwaltet keine Plugins | `blueferry send DATEI… [--to PLUGIN]` |
+| Dateien aufs Fenster ziehen | folgt | folgt | — ein Terminal bekommt keine abgelegten Dateien | — das Panel hat keine Ablagefläche und verwaltet keine Plugins | `blueferry send DATEI… [--to PLUGIN]` |
 
 ## Protokolle und Datenschutz
 

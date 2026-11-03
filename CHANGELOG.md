@@ -4,26 +4,6 @@
 
 ### Added
 
-- `blueferry media volume up|down` sends one iPhone volume step and confirms
-  it with the last reported level; `blueferry media volume` prints the level.
-  A shared presenter (`media_volume_view`) prepares the volume buttons for the
-  graphical and terminal clients.
-- Pin entries of the opt-in iPhone notification list so they stay listed,
-  also across restarts, until unpinned (`Messages1.SetNotificationPinned`,
-  `blueferry notifications pin`/`unpin`). Pins are saved under the local data
-  policy, at most 20; entries removed on the iPhone are marked as such.
-- Mute the desktop popups of single iPhone apps: `Messages1.ListNotificationApps`
-  lists the apps seen since the daemon started (memory only) plus the muted
-  ones, `SetNotificationAppMuted` saves a choice under the storage policy, and
-  `Events1.NotificationAppsChanged` invalidates the list. CLI:
-  `blueferry notifications apps|mute|unmute`. The environment allowlist and
-  blocklist stay a hard filter in front of it.
-- KDE client: volume down/up buttons and the reported level under the
-  now-playing transport buttons; **Pin**/**Unpin** on entries of the
-  Notifications tab, with a pin marker, greyed-out entries removed on the
-  iPhone or from muted apps, and the pin limit and errors shown above the
-  list; a **Muted apps** section in Settings › Notifications with a switch per
-  app, refreshed on `NotificationAppsChanged` while it is shown.
 - Contact cards: the contact cache now keeps each number with its iPhone
   label, labelled email addresses, postal addresses, company and job title,
   inside the encrypted contact records only. `Messages1.ListContactCards`
@@ -38,13 +18,43 @@
   holds in memory; there is no search index on disk. `ListCallHistory`
   entries gain an opaque `id`, and `GetStatus` reports `search_result_limit`.
   CLI: `blueferry search`.
-- Shared presenter `file_drop_view` for files dropped on the KDE and GTK
-  main windows: it holds the decisions and texts, so both clients send the
-  files to a **Send to…** target the same way (the only target at once, a
-  picker for several with the session's last pick preselected, or an
-  explanation when no `share` plugin is there). Only local files, 1 to 64;
-  folders and remote URIs are skipped with a note, and a drop waits while
-  "Send to…" is sending.
+- Client models: `contacts_model` and `search_model` hold the paging,
+  typing delay, stale-id and busy handling of the contact list and the
+  global search for the KDE, GTK and terminal clients, drop contact photos
+  once the option is off and search results once their data changes
+  (`GlobalSearch.invalidate`); recent-call rows
+  from `phone_overview.call_groups` carry the ids of the folded calls.
+- KDE client: a **Contacts** tab lists the contact cards with a search
+  field (searching after a short pause while typing) and loads more cards
+  while scrolling; a card shows every labelled number, email and postal
+  address, company, job title and photo, with **Call** (asks first) and
+  **Message**, and the list reloads when `contact_card_epoch` changes. A
+  global search (header magnifier, `Ctrl+K` or `Ctrl+F`) shows the grouped
+  hits and opens the conversation at the message, the contact card or the
+  call.
+- Mute the desktop popups of single iPhone apps: `Messages1.ListNotificationApps`
+  lists the apps seen since the daemon started (memory only) plus the muted
+  ones, `SetNotificationAppMuted` saves a choice under the storage policy, and
+  `Events1.NotificationAppsChanged` invalidates the list. CLI:
+  `blueferry notifications apps|mute|unmute`. The environment allowlist and
+  blocklist stay a hard filter in front of it.
+- `blueferry media volume up|down` sends one iPhone volume step and confirms
+  it with the last reported level; `blueferry media volume` prints the level.
+  A shared presenter (`media_volume_view`) prepares the volume buttons for the
+  graphical and terminal clients.
+- KDE client: volume down/up buttons and the reported level under the
+  now-playing transport buttons; **Pin**/**Unpin** on entries of the
+  Notifications tab, with a pin marker, greyed-out entries removed on the
+  iPhone or from muted apps, and the pin limit and errors shown above the
+  list; a **Muted apps** section in Settings › Notifications with a switch per
+  app, refreshed on `NotificationAppsChanged` while it is shown.
+- Shared presenter `file_drop_view` for the drop zones of the KDE main
+  window and the coming GTK one. It holds the decisions and texts, so both
+  clients send dropped files to a **Send to…** target the same way (the
+  only target at once, a picker for several with the session's last pick
+  preselected, or an explanation when no `share` plugin is there). Only local files, 1 to 64; folders and
+  remote URIs are skipped with a note, and a client never runs two
+  `SendFiles` at once across "Send to…", card sends and drops.
 - KDE client: files dragged anywhere onto the main window go to a
   **Send to…** target (overlay "Drop to send to iPhone"): the only target
   at once with a notice, a picker for several (the session's last pick
@@ -57,18 +67,35 @@
   AVDTP delay reporting in `blueferry doctor`.
 - KDE client: the iPhone sound switches in Settings and on the phone card
   show the A/V sync line under the sound status.
-- Client models: `contacts_model` and `search_model` hold the paging,
-  typing delay, stale-id and busy handling of the contact list and the
-  global search for the KDE, GTK and terminal clients; recent-call rows
-  from `phone_overview.call_groups` carry the ids of the folded calls.
-- KDE client: a **Contacts** tab lists the contact cards with a search
-  field (searching after a short pause while typing) and loads more cards
-  while scrolling; a card shows every labelled number, email and postal
-  address, company, job title and photo, with **Call** (asks first) and
-  **Message**, and the list reloads when `contact_card_epoch` changes. A
-  global search (header magnifier, `Ctrl+K` or `Ctrl+F`) shows the grouped
-  hits and opens the conversation at the message, the contact card or the
-  call.
+- Catch up on incoming messages that arrived while the iPhone was
+  disconnected. After each MAP or MNS reconnect, and only while message
+  history is kept and unlocked, the backend lists the iPhone's inbox once
+  and adds the missing messages to history: no popups, no one-time code
+  copies, the iPhone's read state kept. It looks back from shortly before
+  the newest stored message, within the retention period and at most 200
+  messages, and never restores messages erased locally. MAP cannot say
+  whether such a message went to a group, so before you reply to one the
+  clients ask whether the reply should go to the sender only, as for other
+  messages that may be from a group. Messages sent from the iPhone itself
+  remain unavailable (related to
+  [#280](https://github.com/erikwb/blueferry/issues/280)).
+
+### Fixed
+
+- Pass BlueZ's `MaxCount` filter key to MAP `ListMessages` instead of
+  `MaxListCount`, which obexd ignored. The message query now asks the iPhone
+  for only the requested number of messages instead of up to 1024. The
+  one-time-code lookup keeps listing up to 1024 inbox entries
+  ([#396](https://github.com/erikwb/blueferry/pull/396)).
+- Follow the iPhone's battery through BlueZ's `Battery1` when BlueZ's
+  battery plugin already reads the GATT Battery Level, instead of reading and
+  subscribing to the same characteristic a second time. This removes the
+  `ReadValue failed: org.bluez.Error.Failed` and `StartNotify failed:
+  org.bluez.Error.InProgress` log lines and the battery value that could stay
+  at its first reading. Without that `Battery1`, BlueFerry still reads the
+  characteristic itself, and a plugin `Battery1` that survives an LE
+  reconnect unchanged is checked against it
+  ([#280](https://github.com/erikwb/blueferry/issues/280)).
 
 ## [0.9.1](https://github.com/erikwb/blueferry/releases/tag/v0.9.1) - 2026-10-30
 
@@ -126,6 +153,10 @@
 - OpenRC support, English and German documentation, and WSL2 setup guidance.
 - Report a stable opaque phone profile ID in `GetStatus` for clients that need
   to scope local per-phone metadata.
+- Pin entries of the opt-in iPhone notification list so they stay listed,
+  also across restarts, until unpinned (`Messages1.SetNotificationPinned`,
+  `blueferry notifications pin`/`unpin`). Pins are saved under the local data
+  policy, at most 20; entries removed on the iPhone are marked as such.
 
 ### Fixed
 

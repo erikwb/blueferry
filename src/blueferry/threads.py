@@ -16,6 +16,7 @@ from blueferry.events import (
 from blueferry.grouping import correlate_group_events
 from blueferry.history import history_revision
 from blueferry.limits import MAX_DBUS_JSON_BYTES, MAX_THREAD_MESSAGES
+from blueferry.recipients import sender_reply_token
 
 MESSAGE_KINDS = {"sms_received", "sms_sent"}
 CacheKey: TypeAlias = tuple[int, ...]
@@ -44,7 +45,9 @@ class ConversationIndex:
         self._threads: list[dict] | None = None
         self._generation = 0
         self._loading = False
-        self._waiting: list[tuple[Callable[[], None], Callable[[Exception], None]]] = []
+        self._waiting: list[tuple[
+            Callable[[], None], Callable[[Exception], None], Callable[[], bool] | None,
+        ]] = []
 
     @staticmethod
     def _file_signature(source: Path) -> tuple[int, int]:
@@ -54,13 +57,22 @@ class ConversationIndex:
         except OSError:
             return 0, 0
 
+    @property
+    def generation(self) -> int:
+        """Changes on every invalidation, so late worker results can tell."""
+        return self._generation
+
     def invalidate(self) -> None:
         self._generation += 1
         self._signature = None
         self._threads = None
 
-    def prepare_async(self, submit, job_factory, on_ready, on_error) -> None:
-        """Coalesce reads and publish only a still-current projection on GLib."""
+    def prepare_async(self, submit, job_factory, on_ready, on_error, retry=None) -> None:
+        """Coalesce reads and publish only a still-current projection on GLib.
+
+        A stale read is retried for every waiter, unless its ``retry`` returns
+        False; that waiter then fails instead of waiting for history to settle.
+        """
         signature = self._revision()
         if self._threads is not None and signature == self._signature:
             on_ready()
@@ -68,7 +80,7 @@ class ConversationIndex:
         if len(self._waiting) >= 64:
             on_error(NotReadyError("conversation refresh is busy; try again shortly"))
             return
-        self._waiting.append((on_ready, on_error))
+        self._waiting.append((on_ready, on_error, retry))
         if self._loading:
             return
         self._loading = True
@@ -77,7 +89,7 @@ class ConversationIndex:
         def reject(error: Exception) -> None:
             self._loading = False
             waiting, self._waiting = self._waiting, []
-            for _ready, failure in waiting:
+            for _ready, failure, _retry in waiting:
                 failure(error)
 
         def failed(error: Exception) -> None:
@@ -104,9 +116,11 @@ class ConversationIndex:
             waiting, self._waiting = self._waiting, []
             # Each callback may mutate history or contact state. Recheck the
             # cache before delivering the next request, never rebuild inline.
-            for ready, failure in waiting:
+            for ready, failure, retry in waiting:
                 try:
-                    self.prepare_async(submit, job_factory, ready, failure)
+                    if not current and retry is not None and not retry():
+                        raise NotReadyError("conversations kept changing; try again")
+                    self.prepare_async(submit, job_factory, ready, failure, retry)
                 except Exception as error:
                     failure(error)
 
@@ -200,6 +214,8 @@ def build_threads(events: list[dict], resolver=None) -> list[dict]:
     """
     correlated = correlate_group_events(events, resolver)
     by_key: dict[str, dict] = {}
+    # Messages, by id(), that may have been sent to a group instead.
+    maybe_group: set[int] = set()
     for event in correlated:
         if event.get("kind") not in MESSAGE_KINDS:
             continue
@@ -265,6 +281,7 @@ def build_threads(events: list[dict], resolver=None) -> list[dict]:
                 "missing_members": [
                     str(value) for value in event["group_missing_members"]
                 ] if is_group and "group_missing_members" in event else None,
+                "group_ambiguous": False,
                 "messages": [],
                 "last_ts": "",
             }
@@ -337,6 +354,8 @@ def build_threads(events: list[dict], resolver=None) -> list[dict]:
             "body_truncated": bool(event.get("body_truncated", False)),
         }
         thread["messages"].append(message)
+        if not is_group and event.get("group_ambiguous"):
+            maybe_group.add(id(message))
         if timestamp_order(str(message["timestamp"])) >= timestamp_order(thread["last_ts"]):
             thread["last_ts"] = message["timestamp"]
             if event.get("group_observed_sender"):
@@ -364,6 +383,17 @@ def build_threads(events: list[dict], resolver=None) -> list[dict]:
                 messages[-1],
             )
             thread["recipients"] = [latest_incoming["address"]]
+            if id(latest_incoming) in maybe_group:
+                # A reply here would reach the sender alone while the
+                # conversation may be a group.
+                thread["group_ambiguous"] = True
+                if thread["reply_ready"] and latest_incoming["address"]:
+                    # The user may still say it was a 1:1 message.
+                    thread["sender_reply_token"] = sender_reply_token(
+                        latest_incoming["address"],
+                        [message for message in messages if id(message) in maybe_group],
+                    )
+                thread["reply_ready"] = False
         if thread.get("participants_required"):
             thread["reply_ready"] = False
         thread["missing_members"] = thread["missing_members"] or []

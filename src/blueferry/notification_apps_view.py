@@ -154,8 +154,8 @@ def apps_hint(payload: object) -> str:
     lines = []
     if not view["mute_available"]:
         lines.append(_(
-            "Muted apps are unavailable while local storage is locked or turned "
-            "off. Until it can be read, no app is muted."
+            "Muted apps can't be changed while local storage is locked or turned "
+            "off, or while settings.json can't be read."
         ))
     if not view["all_notifications"]:
         lines.append(_(

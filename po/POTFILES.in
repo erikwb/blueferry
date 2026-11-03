@@ -2,6 +2,7 @@ src/blueferry/conversation_state.py
 src/blueferry/onboarding.py
 src/blueferry/models.py
 src/blueferry/reconnect_view.py
+src/blueferry/notification_pin_view.py
 src/blueferry/phone_overview.py
 src/blueferry/ui/app.py
 src/blueferry/ui/window.py
@@ -39,6 +40,7 @@ src/blueferry/qt/qml/NotificationOpenMapEditor.qml
 src/blueferry/qt/qml/MessageBubble.qml
 src/blueferry/qt/qml/OnboardingSummary.qml
 src/blueferry/qt/qml/GroupConfirmationDialog.qml
+src/blueferry/qt/qml/SenderConfirmationDialog.qml
 src/blueferry/qt/qml/GroupParticipantsDialog.qml
 src/blueferry/qt/qml/NewMessageDialog.qml
 src/blueferry/qt/qml/ProximityLockSettings.qml
@@ -90,5 +92,4 @@ src/blueferry/search_view.py
 src/blueferry/qt/qml/ContactsTab.qml
 src/blueferry/qt/qml/SearchDialog.qml
 src/blueferry/notification_apps_view.py
-src/blueferry/notification_pin_view.py
 src/blueferry/media_volume_view.py

@@ -3,12 +3,14 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from blueferry import contacts_view
 from blueferry.client import ContactNotFoundError
 from blueferry.contacts_model import PAGE_SIZE, ContactBook
 from blueferry.search_view import TYPING_DELAY_MS
 
-STATUS = {"contact_card_count": 3, "contact_card_epoch": 7}
+STATUS = {"contact_card_count": 3, "contact_card_epoch": 7, "contact_photos": True}
 
 
 class Runner:
@@ -77,6 +79,8 @@ class Daemon:
 
     def card(self, card_id):
         self.opened.append(card_id)
+        if self.fail:
+            raise RuntimeError(self.fail)
         if card_id in self.stale:
             raise ContactNotFoundError("unknown contact")
         return json.dumps({
@@ -231,3 +235,80 @@ def test_answers_after_hiding_are_dropped():
     book.watch(False)
     runner.run_all()
     assert book.rows == [] and book.view()["loaded"] is False
+
+
+def _with_open_card():
+    book, daemon, runner, timer, _changes = _book(
+        Daemon([_card("c1", "Ada Lovelace", has_photo=True)]),
+    )
+    book.watch(True)
+    runner.run_all()
+    book.open("c1")
+    runner.run_all()
+    assert book.photo and book.card["has_photo"] and book.rows[0]["has_photo"]
+    return book, daemon, runner, timer
+
+
+@pytest.mark.parametrize("photos", [
+    {"contact_photos": False},
+    {"contact_photos": False, "contact_photos_state": "unknown"},
+    {"contact_photos": True, "contact_photos_state": "unknown"},
+])
+def test_photos_are_dropped_as_soon_as_they_are_off_or_unknown(photos):
+    book, _daemon, runner, _timer = _with_open_card()
+    book.apply_status({**STATUS, **photos})  # the card epoch stays the same
+    assert runner.queue == []
+    assert book.photo == b"" and book.card["has_photo"] is False
+    assert book.rows[0]["has_photo"] is False and book.card["title"] == "Ada Lovelace"
+
+
+def test_answers_already_on_their_way_bring_no_photo_back():
+    book, _daemon, runner, _timer = _with_open_card()
+    book.open("c1")
+    book.reload()
+    book.apply_status({**STATUS, "contact_photos": False})
+    runner.run_all()
+    assert book.photo == b"" and book.card["has_photo"] is False
+    assert book.card["loading"] is False and book.rows[0]["has_photo"] is False
+
+
+def test_turning_photos_on_reads_the_list_and_the_open_card_again():
+    book, daemon, runner, _timer = _with_open_card()
+    book.apply_status({**STATUS, "contact_photos": False})
+    book.apply_status(STATUS)
+    runner.run_all()
+    assert daemon.opened == ["c1", "c1"] and book.photo == b"\x89PNG"
+    assert book.rows[0]["has_photo"] is True
+
+
+def test_no_page_loads_between_a_query_change_and_its_first_page():
+    cards = [_card(f"c{index:03d}", f"Person {index:03d}") for index in range(PAGE_SIZE + 5)]
+    book, daemon, runner, timer, _changes = _book(Daemon(cards))
+    book.watch(True)
+    runner.run_all()
+    assert book.view()["has_more"] is True
+    book.set_query("Person 1")
+    book.load_more()
+    assert runner.queue == [] and book.view()["has_more"] is False
+    timer.fire()
+    runner.run_all()
+    assert daemon.pages[-1] == (0, PAGE_SIZE, "Person 1")
+    assert [row["title"] for row in book.rows] == [f"Person {n}" for n in range(100, 105)]
+    book.set_query("")
+    timer.fire()
+    runner.run_all()
+    book.load_more()
+    runner.run_all()
+    assert daemon.pages[-1] == (PAGE_SIZE, PAGE_SIZE, "")
+    assert len(book.rows) == PAGE_SIZE + 5
+
+
+def test_a_new_epoch_drops_what_was_read_before_its_answers_arrive():
+    book, daemon, runner, _timer = _with_open_card()
+    daemon.fail = "storage is locked"
+    book.apply_status({**STATUS, "contact_card_epoch": 8})
+    assert book.rows == [] and book.photo == b""
+    assert book.card["open"] and book.card["title"] == "" and book.card["sections"] == []
+    runner.run_all()
+    assert book.rows == [] and book.card["title"] == "" and book.photo == b""
+    assert book.card["error"] and book.view()["error"]

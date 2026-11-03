@@ -528,6 +528,12 @@ Kirigami.ApplicationWindow {
         bridge: root.bridge
     }
 
+    SenderConfirmationDialog {
+        id: confirmSenderDialog
+        objectName: "confirmSenderDialog"
+        bridge: root.bridge
+    }
+
     GroupParticipantsDialog {
         id: groupParticipantsDialog
         objectName: "groupParticipantsDialog"

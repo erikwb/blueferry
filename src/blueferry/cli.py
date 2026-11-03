@@ -537,7 +537,9 @@ def _doctor_av_sync(log: logging.Logger) -> bool:
         log.info("A/V sync: delay reporting active, audio delay %s  OK", shown)
         return True
     log.warning(
-        "A/V sync: delay reporting not negotiated (older adapter or BlueZ); "
+        "A/V sync: BlueZ exports no delay for the iPhone's audio stream "
+        "(BlueZ 5.70 to 5.77 only while it is nonzero, or the audio server's "
+        "sink does not register delay reporting); "
         "video on the iPhone may be out of sync with the sound here."
     )
     return False
