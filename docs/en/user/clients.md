@@ -242,7 +242,7 @@ tabs. A setting appears only when the running background service offers it.
 | Category | What you find there |
 |---|---|
 | Phone | Background service state, **Reconnect** (also `b`), resetting a stuck connection automatically (also `B`), **Run Diagnostics**, contact sync, contact photos |
-| Notifications | Which events create popups, contacts only, **Click Rules** (also `l`), notification content, action buttons, sync notifications with iPhone, mark read on dismiss, keeping recent iPhone notifications |
+| Notifications | Which events create popups, contacts only, **Click Rules** (also `l`), [muted apps](notification-mute.md), notification content, action buttons, sync notifications with iPhone, mark read on dismiss, keeping recent iPhone notifications |
 | Calls & Audio | Phone calls, call history and missed-call popups, battery warning, iPhone sound on this computer (also `a`), media control and MPRIS |
 | Security | One-time codes, away lock, the local storage setting (shown; change it with `blueferry storage-policy-set`) |
 | About | Version, the background service with **Restart Service**, the keyboard map |
@@ -264,15 +264,24 @@ or a graphical client; the terminal client has no plugin settings yet.
 **iPhone Overview** in the command palette is the terminal's phone card:
 the iPhone's name, the connection, battery, signal and network, what is
 playing, and for each optional feature that is off the switch that turns it
-on and its Settings category. Its buttons open the notification list, the
-recent calls, the calls panel and Settings.
+on and its Settings category. Under now playing, **Volume Down**,
+**Play/Pause** and **Volume Up** control the iPhone without closing the
+overview; anywhere outside a text field, `-` and `+` (or `=`, the same key
+without Shift) step the volume too.
+The volume moves one iPhone step at a time, and the level the iPhone last
+reported is shown next to the title. Its other buttons open the
+notification list, the recent calls, the calls panel and Settings.
 
 **iPhone Notifications** (in the palette and the overview) lists the recent
 iPhone app notifications that **Keep recent iPhone notifications** keeps:
 the app, the time and, if allowed, title and text. It is read only while it
 is open, follows new notifications, and is forgotten when you close it.
 When the list is off, empty or unavailable, it says why; **Open
-Notification Settings** goes to Settings › Notifications.
+Notification Settings** goes to Settings › Notifications. `P` (or **Pin**)
+pins or unpins the selected notification; pinned ones are listed first and
+marked **Pinned**. Entries removed on the iPhone say **Removed on iPhone**
+and are dimmed, and so are the entries of apps muted under Settings ›
+Notifications › **Muted apps**, where each app has its own checkbox.
 
 The calls panel (`c`, or **Phone Calls** in the palette) words each call
 like Qt and GTK (incoming, on hold, the duration). Its one row of buttons
@@ -289,6 +298,29 @@ phone numbers of matching contacts. A call is always confirmed first.
 `s` (or **Refresh from iPhone**) reads the iPhone's list again. Enter or
 **Call Back** calls the selected number after the confirmation, **Send a
 Message** starts a new message to it.
+
+### Contacts and search
+
+`C` (Shift+c; or **Contacts** in the palette) opens the iPhone's
+[contact cards](contacts.md). The list follows the search field a moment
+after you stop typing and loads further contacts when you reach its end.
+Enter shows the selected card: name, job title and company, then every
+number, email and postal address with its label. On a detail row, `c` (or
+**Call**) calls the number after the confirmation, `m` (or **Send a
+Message**) starts a new message to the number or email address, and `y` (or
+**Copy**) copies the entry through the terminal (OSC 52). Enter does the
+first of these the row offers. Contact photos and writing an email in a
+mail app are not offered in the terminal; copy the address instead. When
+the background service restarts or re-reads the contacts, the list and an
+open card are read again; a card that changed meanwhile says so.
+
+`f` (or **Search Everything** in the palette) is the [global
+search](search.md): one field for conversations, messages, contacts and
+calls, grouped, with the matching words of a message highlighted. It
+searches a moment after you stop typing; Enter in the field moves to the
+results. Enter on a hit opens it: the conversation (at the message), the
+contact card, or **Recent calls** with that call selected. `/` stays the
+quick filter of the conversation list.
 
 ## Command line
 

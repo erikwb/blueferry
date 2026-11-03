@@ -47,8 +47,9 @@ restart of the background service — also after the iPhone removed them or
 they dropped out of the last 200. In the clients, use **Pin** / **Unpin** on
 an entry; in the GTK client that is the pin button at the end of each entry,
 pinned entries show a pin icon, and the button is greyed out, with the
-reason in its tooltip, once 20 are pinned. From a terminal, use the key
-shown at the end of each line:
+reason in its tooltip, once 20 are pinned. In the terminal client's **iPhone
+Notifications**, `P` pins and unpins too. From a terminal, use the key shown
+at the end of each line:
 
 ```bash
 blueferry notifications pin KEY

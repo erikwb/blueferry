@@ -41,7 +41,8 @@ Kontaktansicht in den Clients:
   solange der Reiter offen ist, und lädt von selbst neu, wenn der
   Hintergrunddienst neu startet oder die Kontakte neu synchronisiert wurden.
 - **Terminal-Client:**
-  noch nicht; nutze die Kommandozeile.
+  `C` öffnet die Kontakte mit Suche, den Details der Karte und Call, Send a
+  Message und Copy (siehe [Clients](clients.md#kontakte-und-suche)).
 - **Quickshell-Panel:**
   noch nicht; nutze die Kommandozeile.
 

@@ -26,8 +26,11 @@ Im GTK-Client zeigt **Settings › Notifications** dieselbe Liste in der Gruppe
 Hinweis, wenn die Liste eingeschränkt ist (gesperrte lokale Daten, eine
 andere Mitteilungsrichtlinie, die Höchstzahl oder der Umgebungsfilter unten);
 Einträge stummgeschalteter Apps sind in seinem Reiter **Notifications**
-abgeblendet. Die anderen grafischen Clients und der Terminal-Client bekommen die Liste mit einer separaten
-Änderung; bis dahin nutze dort die Kommandozeile.
+abgeblendet. Der Terminal-Client hat dieselbe Liste unter Settings ›
+Notifications › **Muted apps**, mit einem Kästchen je App, und blendet die
+Einträge stummgeschalteter Apps in seiner Mitteilungsliste ab. Die anderen
+grafischen Clients bekommen die Liste mit einer separaten Änderung; bis dahin
+nutze dort die Kommandozeile.
 
 ## Was Stummschalten tut und was nicht
 
@@ -60,8 +63,9 @@ hin, damit du weißt, warum manche Apps nie auftauchen.
   `ancs_muted_apps` in `~/.config/blueferry/settings.json` gespeichert, im
   selben [Speichermodus](privacy.md#lokale-daten) wie markierte Unterhaltungen
   (standardmäßig verschlüsselt). Ein Wechsel des Speichermodus löscht sie.
-- Solange die Wallet gesperrt ist oder **Do not retain local data** gewählt
-  ist, ist keine App stummgeschaltet und Stummschalten nicht möglich.
+- Solange der Schlüsselbund gesperrt ist oder **Keine lokalen Daten
+  behalten** gewählt ist, ist keine App stummgeschaltet und Stummschalten
+  nicht möglich.
   BlueFerry überschreibt die gespeicherte Liste nie, solange es sie nicht
   lesen kann.
 - Solange `settings.json` selbst nicht lesbar ist, wird Stummschalten und

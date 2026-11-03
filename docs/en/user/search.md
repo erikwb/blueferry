@@ -30,7 +30,9 @@ Search in the clients:
   any other: the conversation scrolled to the message, the contact card, or
   the call in the call history. Closing the search forgets the results.
 - **Terminal client:**
-  not yet; use the command line.
+  `f` opens the same search as you type, with up to 20 hits per group, and
+  Enter on a hit opens the conversation, contact card or call (see
+  [Clients](clients.md#contacts-and-search)).
 - **Quickshell panel:**
   not yet; use the command line.
 

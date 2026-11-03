@@ -85,8 +85,9 @@ previous/play-pause/next buttons appears above the conversations while
 something is playing. The Quickshell client shows the same strip under its
 header, the GTK client on the phone card above its tabs, and
 the terminal client in a line under the status pills, where `p`, `[` and `]`
-play/pause, go back and skip. None of them is shown, and no client asks the
-backend, while the option is off.
+play/pause, go back and skip, and `-` and `+` (or `=`) step the volume (its
+iPhone overview has Volume Down, Play/Pause and Volume Up buttons). None of
+them is shown, and no client asks the backend, while the option is off.
 
 ```mermaid
 flowchart LR

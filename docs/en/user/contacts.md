@@ -39,7 +39,8 @@ Contact view in the clients:
   itself when the background service restarts or the contacts were synced
   again.
 - **Terminal client:**
-  not yet; use the command line.
+  `C` opens the contacts with search, the card details and Call, Send a
+  Message and Copy (see [Clients](clients.md#contacts-and-search)).
 - **Quickshell panel:**
   not yet; use the command line.
 

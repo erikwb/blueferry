@@ -23,7 +23,9 @@ In the GTK client, *Settings → Notifications* shows the same list under
 **Muted apps**, with a switch per app and a note when the list is limited
 (locked storage, another notification policy, the limit or the environment
 filter below); entries of muted apps are dimmed in its Notifications tab.
-The other graphical clients and the terminal client get the list in a
+The terminal client has the same list under *Settings → Notifications →
+Muted apps*, with a checkbox per app, and dims the muted apps' entries in
+its notification list. The other graphical clients get the list in a
 separate change; until then use the command line there.
 
 ## What muting does and doesn't do

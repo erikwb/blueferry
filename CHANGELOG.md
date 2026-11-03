@@ -34,6 +34,23 @@
   it with the last reported level; `blueferry media volume` prints the level.
   A shared presenter (`media_volume_view`) prepares the volume buttons for the
   graphical and terminal clients.
+- Pin entries of the opt-in iPhone notification list so they stay listed,
+  also across restarts, until unpinned (`Messages1.SetNotificationPinned`,
+  `blueferry notifications pin`/`unpin`). Pins are saved under the local data
+  policy, at most 20; entries removed on the iPhone are marked as such.
+- Terminal client: `-` and `+` step the iPhone volume, the now-playing line
+  shows the reported level, and the iPhone overview has Volume Down,
+  Play/Pause and Volume Up buttons. `P` pins or unpins the selected entry of
+  iPhone Notifications, which marks pinned entries and dims removed ones and
+  those of muted apps. Settings › Notifications › Muted apps mutes single
+  apps with a checkbox each.
+- Terminal client: `C` (or **Contacts** in the command palette) lists the
+  contact cards with a search field and paging, shows every number, email
+  and postal address of the selected card, and calls, messages or copies the
+  selected entry. `f` (or **Search Everything**) searches conversations,
+  messages, contacts and calls as you type and opens the hit: the
+  conversation, the contact card or the call in Recent calls. Contact
+  photos are not shown.
 - Shared presenter `file_drop_view` for the drop zones of the KDE and GTK
   main windows (the GTK one below; the KDE one is still coming). It holds
   the decisions and texts, so both clients send dropped files to a
@@ -46,6 +63,8 @@
   (`phone_audio_delay_ms`, `phone_audio_delay_reporting`; the delay only while
   the stream is active), show it next to the iPhone sound status, and check
   AVDTP delay reporting in `blueferry doctor`.
+- Terminal client: the connection summary shows the A/V sync line next to
+  the iPhone sound status.
 - Catch up on incoming messages that arrived while the iPhone was
   disconnected. After each MAP or MNS reconnect, and only while message
   history is kept and unlocked, the backend lists the iPhone's inbox once

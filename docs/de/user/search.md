@@ -32,7 +32,10 @@ Suche in den Clients:
   Kontaktkarte oder den Anruf in der Anrufliste. Beim Schließen vergisst die
   Suche die Ergebnisse.
 - **Terminal-Client:**
-  noch nicht; nutze die Kommandozeile.
+  `f` öffnet dieselbe Suche beim Tippen, mit je bis zu 20 Treffern pro
+  Gruppe, und Enter auf einem Treffer öffnet die Unterhaltung, die
+  Kontaktkarte oder den Anruf (siehe
+  [Clients](clients.md#kontakte-und-suche)).
 - **Quickshell-Panel:**
   noch nicht; nutze die Kommandozeile.
 
