@@ -414,8 +414,9 @@ dbus-python; the guard tolerates that.
   `SetCallAudioDeviceForCall` choose the call speaker and microphone;
   `SetCallMuted` mutes this computer for the running call.
   `DeclineWithMessage` declines a ringing call and then sends a text to the
-  caller's number through the normal MAP send path (charged to both the
-  call-control and the send quota); `SetCallQuickReplies` saves its texts.
+  caller's number through the normal MAP send path (charged to the hang-up
+  quota it shares with `Hangup` and to the send quota);
+  `SetCallQuickReplies` saves its texts.
   Dialing has its own strict quota. Adding it did not change the API
   generation.
 
