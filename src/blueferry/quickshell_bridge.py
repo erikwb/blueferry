@@ -18,6 +18,7 @@ from dataclasses import asdict
 from typing import Any, TextIO
 
 from blueferry import (
+    call_audio_view,
     contacts_view,
     doctor_report,
     features_view,
@@ -26,6 +27,7 @@ from blueferry import (
     notification_pin_view,
     phone_link_view,
     phone_overview,
+    quick_reply_view,
     search_view,
 )
 from blueferry.backend_lifecycle import restart_backend
@@ -427,6 +429,10 @@ class QuickshellBridge:
         # This bridge's diagnostics children, stopped when the shell exits.
         self.doctor = doctor_report.DoctorRunner()
         self._reconnect_lock = threading.Lock()
+        # SetCallQuickReplies replaces the whole list and has no version,
+        # so the workers edit it one at a time: each read-modify-write
+        # reads GetStatus right before it writes.
+        self._quick_replies_lock = threading.Lock()
         # SetNotificationAppMuted takes an app ID, the panel sends a row
         # index: each toggle rereads the list right before it writes, one
         # worker at a time, so a reordered list cannot hit the wrong app.
@@ -589,6 +595,49 @@ class QuickshellBridge:
                     app["muted"] = muted is True
             return notification_apps_reply(payload, saved=True)
 
+    def _current_quick_replies(self) -> list[str]:
+        status = self.client.status().to_dict()
+        if not quick_reply_view.supported(status):
+            raise RequestError("saved replies are not available")
+        return quick_reply_view.replies(status)
+
+    def _saved_quick_replies(self, replies: list[str]) -> dict[str, Any]:
+        saved = self.client.set_call_quick_replies(replies).get(quick_reply_view.STATUS_KEY)
+        view = quick_reply_view.settings_view(
+            {quick_reply_view.STATUS_KEY: saved if isinstance(saved, list) else replies}
+        )
+        return {"saved": True, "error": "", **view}
+
+    def _save_quick_reply(self, text: str, index: int) -> dict[str, Any]:
+        """Add (``index`` -1) or replace a reply after the shared checks.
+
+        A text the presenter rejects is not sent; the reply carries the
+        reason in the user's language next to the unchanged list, and
+        ``saved`` tells the page whether to close its editor.
+        """
+        with self._quick_replies_lock:
+            return self._save_quick_reply_locked(text, index)
+
+    def _save_quick_reply_locked(self, text: str, index: int) -> dict[str, Any]:
+        current = self._current_quick_replies()
+        if index < -1 or index >= len(current):
+            raise RequestError("index is out of range")
+        editing = None if index == -1 else index
+        error = quick_reply_view.reply_error(text, current, editing=editing)
+        if error:
+            view = quick_reply_view.settings_view({quick_reply_view.STATUS_KEY: current})
+            return {"saved": False, "error": error, **view}
+        if editing is None:
+            return self._saved_quick_replies(quick_reply_view.with_added(current, text))
+        return self._saved_quick_replies(quick_reply_view.with_replaced(current, editing, text))
+
+    def _remove_quick_reply(self, index: int) -> dict[str, Any]:
+        with self._quick_replies_lock:
+            current = self._current_quick_replies()
+            if not 0 <= index < len(current):
+                raise RequestError("index is out of range")
+            return self._saved_quick_replies(quick_reply_view.with_removed(current, index))
+
     def emit(self, payload: Mapping[str, Any]) -> None:
         line = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
         with self._output_lock:
@@ -713,6 +762,26 @@ class QuickshellBridge:
             )
         if method == "set_calls_enabled":
             return self.client.set_calls_enabled(_boolean(args, "enabled"))
+        if method == "call_audio_settings":
+            # The speaker/microphone rows with their wording; the panel has
+            # no gettext and no call view (see the README gap matrix).
+            status = self.client.status().to_dict()
+            if not call_audio_view.supported(status):
+                return call_audio_view.settings_view(status, None)
+            return call_audio_view.settings_view(status, self.client.call_audio_devices())
+        if method == "set_call_audio_device":
+            direction = _text(args, "direction")
+            if direction not in call_audio_view.DIRECTIONS:
+                raise RequestError("direction must be output or input")
+            return self.client.set_call_audio_device(direction, _text(args, "name"))
+        if method == "quick_replies":
+            # The saved decline replies with their wording; the panel has no
+            # gettext and no call view, so it only edits the list.
+            return quick_reply_view.settings_view(self.client.status().to_dict())
+        if method == "save_quick_reply":
+            return self._save_quick_reply(_text(args, "text"), _index(args, "index"))
+        if method == "remove_quick_reply":
+            return self._remove_quick_reply(_index(args, "index"))
         if method == "set_contact_photos":
             return self.client.set_contact_photos(_boolean(args, "enabled"))
         if method == "set_otp_autocopy":

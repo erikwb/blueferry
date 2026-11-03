@@ -22,6 +22,32 @@ Rectangle {
   property var features: ({})
   property var featurePending: ({})
   property var doctor: ({})
+  // The bridge's call_audio_view.settings_view (speaker and microphone).
+  property var callAudio: ({})
+  readonly property bool callAudioShown: root.status.calls_audio_output !== undefined
+    && root.callAudio.supported === true
+  // The bridge's quick_reply_view.settings_view: the replies offered
+  // when declining a call. quickReplyEditing is -2 while no editor is
+  // open, -1 while adding and the row index while editing.
+  property var quickReplies: ({})
+  readonly property bool quickRepliesShown: root.status.calls_quick_replies !== undefined
+    && root.quickReplies.supported === true
+  readonly property var quickReplyList: root.quickRepliesShown ? (root.quickReplies.replies || []) : []
+  property int quickReplyEditing: -2
+  property string quickReplyError: ""
+  // The list the open editor's index refers to. A list changed elsewhere
+  // (e.g. with the command line) closes an editor for an existing entry,
+  // so it never saves over the wrong one; a new reply can still be added.
+  property string quickReplySignature: ""
+  onQuickRepliesChanged: {
+    const signature = JSON.stringify(root.quickReplies.replies || [])
+    const changedElsewhere = signature !== root.quickReplySignature
+      && root.quickReplies.saved !== true && root.quickReplyEditing >= 0
+    root.quickReplySignature = signature
+    root.quickReplyError = String(root.quickReplies.error || "")
+    if (root.quickReplies.saved === true || changedElsewhere) root.closeQuickReplyEditor()
+  }
+  onQuickRepliesShownChanged: if (!root.quickRepliesShown) root.closeQuickReplyEditor()
   property var notificationList: ({})
   // The bridge's refusal of the last pin request (shared wording).
   property string notificationPinError: ""
@@ -53,6 +79,26 @@ Rectangle {
   signal operationRequested(string method, var args)
   signal errorRequested(string message)
   signal reloadRequested
+
+  function openQuickReplyEditor(index) {
+    root.quickReplyError = ""
+    root.quickReplyEditing = index
+    quickReplyField.text = index >= 0 ? String(root.quickReplyList[index] || "") : ""
+    quickReplyField.forceActiveFocus()
+  }
+
+  function closeQuickReplyEditor() {
+    root.quickReplyEditing = -2
+    root.quickReplyError = ""
+    quickReplyField.text = ""
+  }
+
+  function saveQuickReply() {
+    if (root.quickReplyEditing < -1 || root.busy.quickReplies) return
+    root.operationRequested("save_quick_reply", {
+      text: quickReplyField.text, index: root.quickReplyEditing
+    })
+  }
 
   OnboardingState {
     id: onboarding
@@ -876,6 +922,175 @@ Rectangle {
           Layout.fillWidth: true
           wrapMode: Text.Wrap
           text: "Experimental. While this is on, the iPhone's hands-free link stays connected to this computer, so calls can ring and be answered here and their audio plays here. Music stays on the iPhone. Working calls also need oFono set as the hands-free backend and BlueZ's own HFP plugin disabled; see \"Phone calls\" in the BlueFerry documentation. Make emergency calls on the iPhone itself."
+        }
+        // Speaker and microphone for calls; only while calls are on and the
+        // daemon reports the saved choices. Rows and wording come from the
+        // bridge (call_audio_view); the panel has no running-call view.
+        FerrySectionLabel {
+          ferryTheme: root.theme
+          visible: root.callAudioShown
+          text: "Call speaker and microphone"
+        }
+        Repeater {
+          model: root.callAudioShown ? (root.callAudio.rows || []) : []
+          delegate: ColumnLayout {
+            id: callAudioRow
+            required property var modelData
+            Layout.fillWidth: true
+            spacing: root.theme.scaled(4)
+            FerryLabel {
+              ferryTheme: root.theme
+              text: callAudioRow.modelData.label || ""
+              textFormat: Text.PlainText
+            }
+            FerryComboBox {
+              id: callAudioCombo
+              objectName: "callAudioCombo_" + (callAudioRow.modelData.direction || "")
+              ferryTheme: root.theme
+              Layout.fillWidth: true
+              model: callAudioRow.modelData.options || []
+              textRole: "label"
+              currentIndex: callAudioRow.modelData.index ?? 0
+              enabled: root.setup.configured && !root.busy.callAudio
+              Accessible.name: callAudioRow.modelData.label || ""
+              onActivated: index => {
+                const choice = (callAudioRow.modelData.options || [])[index]
+                if (choice)
+                  root.operationRequested("set_call_audio_device", {
+                    direction: callAudioRow.modelData.direction, name: choice.value
+                  });
+                callAudioCombo.currentIndex = Qt.binding(function() {
+                  return callAudioRow.modelData.index ?? 0
+                });
+              }
+            }
+          }
+        }
+        FerryLabel {
+          objectName: "callAudioHint"
+          ferryTheme: root.theme
+          visible: root.callAudioShown
+          Layout.fillWidth: true
+          wrapMode: Text.Wrap
+          textFormat: Text.PlainText
+          text: root.callAudio.hint || ""
+        }
+        // Replies offered when declining a call; only while calls are on and
+        // the daemon reports them. The wording and the checks come from the
+        // bridge (quick_reply_view); declining itself needs a call view,
+        // which the panel does not have.
+        FerrySectionLabel {
+          objectName: "quickRepliesLabel"
+          ferryTheme: root.theme
+          visible: root.quickRepliesShown
+          text: root.quickReplies.label || ""
+        }
+        FerryLabel {
+          objectName: "quickRepliesHint"
+          ferryTheme: root.theme
+          visible: root.quickRepliesShown
+          Layout.fillWidth: true
+          wrapMode: Text.Wrap
+          textFormat: Text.PlainText
+          text: root.quickReplies.hint || ""
+        }
+        FerryLabel {
+          objectName: "quickRepliesEmpty"
+          ferryTheme: root.theme
+          visible: root.quickRepliesShown && root.quickReplyList.length === 0
+          Layout.fillWidth: true
+          wrapMode: Text.Wrap
+          textFormat: Text.PlainText
+          color: root.theme.muted
+          text: root.quickReplies.empty || ""
+        }
+        Repeater {
+          model: root.quickReplyList
+          delegate: RowLayout {
+            id: quickReplyRow
+            required property var modelData
+            required property int index
+            Layout.fillWidth: true
+            spacing: root.theme.scaled(6)
+            FerryLabel {
+              ferryTheme: root.theme
+              Layout.fillWidth: true
+              text: String(quickReplyRow.modelData)
+              textFormat: Text.PlainText
+              elide: Text.ElideRight
+              font.bold: root.quickReplyEditing === quickReplyRow.index
+            }
+            FerryButton {
+              objectName: "quickReplyEdit_" + quickReplyRow.index
+              ferryTheme: root.theme
+              text: "Edit"
+              enabled: root.setup.configured && !root.busy.quickReplies
+              Accessible.name: "Edit reply: " + String(quickReplyRow.modelData)
+              onClicked: root.openQuickReplyEditor(quickReplyRow.index)
+            }
+            FerryButton {
+              objectName: "quickReplyRemove_" + quickReplyRow.index
+              ferryTheme: root.theme
+              text: "Remove"
+              enabled: root.setup.configured && !root.busy.quickReplies
+              Accessible.name: "Remove reply: " + String(quickReplyRow.modelData)
+              onClicked: root.operationRequested("remove_quick_reply", {index: quickReplyRow.index})
+            }
+          }
+        }
+        RowLayout {
+          objectName: "quickReplyEditor"
+          Layout.fillWidth: true
+          visible: root.quickRepliesShown && root.quickReplyEditing >= -1
+          spacing: root.theme.scaled(6)
+          FerryTextField {
+            id: quickReplyField
+            objectName: "quickReplyField"
+            ferryTheme: root.theme
+            Layout.fillWidth: true
+            // The presenter's limit (quick_reply_view.MAX_REPLY_CHARS) from
+            // the bridge; until it is known, TextInput's own default.
+            maximumLength: root.quickReplies.max_chars > 0 ? root.quickReplies.max_chars : 32767
+            placeholderText: root.quickReplyEditing === -1 ? (root.quickReplies.add_label || "") : ""
+            Accessible.name: root.quickReplies.label || ""
+            enabled: !root.busy.quickReplies
+            onTextEdited: root.quickReplyError = ""
+            onAccepted: root.saveQuickReply()
+          }
+          FerryButton {
+            objectName: "quickReplySave"
+            ferryTheme: root.theme
+            text: "Save"
+            highlighted: true
+            enabled: root.setup.configured && !root.busy.quickReplies
+            onClicked: root.saveQuickReply()
+          }
+          FerryButton {
+            objectName: "quickReplyCancel"
+            ferryTheme: root.theme
+            text: "Cancel"
+            enabled: !root.busy.quickReplies
+            onClicked: root.closeQuickReplyEditor()
+          }
+        }
+        FerryLabel {
+          objectName: "quickReplyError"
+          ferryTheme: root.theme
+          visible: root.quickRepliesShown && root.quickReplyEditing >= -1 && root.quickReplyError !== ""
+          Layout.fillWidth: true
+          wrapMode: Text.Wrap
+          textFormat: Text.PlainText
+          color: root.theme.warning
+          text: root.quickReplyError
+        }
+        FerryButton {
+          objectName: "quickReplyAdd"
+          ferryTheme: root.theme
+          visible: root.quickRepliesShown && root.quickReplyEditing < -1
+            && root.quickReplies.can_add === true
+          text: root.quickReplies.add_label || ""
+          enabled: root.setup.configured && !root.busy.quickReplies
+          onClicked: root.openQuickReplyEditor(-1)
         }
         // Only daemons that report the call-history keys support the settings.
         FerrySectionLabel {
