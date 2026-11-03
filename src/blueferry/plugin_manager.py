@@ -695,6 +695,30 @@ def _restore_on_failure(paths: Sequence[Path]) -> Iterator[None]:
                 backup.unlink(missing_ok=True)
 
 
+def _back_up(path: Path) -> Path:
+    """Copy a regular file beside itself, with its mode and times."""
+    # The type is checked on the opened file, so it cannot change in between.
+    # O_NONBLOCK keeps a FIFO from blocking the open, and has no effect on
+    # reads from a regular file.
+    source = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
+    with os.fdopen(source, "rb") as reader:
+        current = os.fstat(reader.fileno())
+        if not stat.S_ISREG(current.st_mode):
+            raise InstallError(f"{path.name} is not a regular file")
+        descriptor, name = tempfile.mkstemp(prefix=f".{path.name}.backup-", dir=path.parent)
+        backup = Path(name)
+        try:
+            with os.fdopen(descriptor, "wb") as writer:
+                shutil.copyfileobj(reader, writer)
+                writer.flush()
+                os.fchmod(writer.fileno(), stat.S_IMODE(current.st_mode))
+                os.utime(writer.fileno(), ns=(current.st_atime_ns, current.st_mtime_ns))
+        except BaseException:
+            backup.unlink(missing_ok=True)
+            raise
+    return backup
+
+
 def _manifest_text(checkout: Path) -> str:
     candidates = sorted(checkout.glob("data/*.plugin")) or sorted(
         checkout.glob("src/*/*.plugin")) or sorted(checkout.glob("*.plugin"))
@@ -765,10 +789,20 @@ def _rewrite(text: str, exec_argv: Sequence[str], cli_argv: Sequence[str]) -> st
 
 def _write_text(path: Path, text: str, mode: int = 0o644) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.tmp")
-    temporary.write_text(text, encoding="utf-8")
-    temporary.chmod(mode)
-    os.replace(temporary, path)
+    # A fresh name, created exclusively, so nothing planted beside the file
+    # (a FIFO at a fixed name would block the write) can receive it.
+    descriptor, name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    temporary = Path(name)
+    try:
+        os.fchmod(descriptor, mode)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            descriptor = -1
+            stream.write(text)
+        os.replace(temporary, path)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        temporary.unlink(missing_ok=True)
 
 
 def _write_json(path: Path, value: object, *, private: bool) -> None:
