@@ -509,8 +509,14 @@ ShellRoot {
           const epochWasKnown = root.contactCardEpoch !== undefined
           root.contactCardEpoch = result.contact_card_epoch
           if (epochWasKnown && searchPopup.visible) {
+            // The old rows, hits and card go at once, with any card or
+            // page still on its way (contacts_model.ContactBook).
+            backendBridge.cancelLatest("contact_card")
+            backendBridge.cancelLatest("contact_cards")
             root.contactCard = ({})
-            root.runSearch(root.searchQuery)
+            root.contactCards = ({})
+            if (root.searchesEverything(root.searchQuery)) root.invalidateSearch()
+            else root.runSearch(root.searchQuery)
             searchedAgain = true
           }
         }

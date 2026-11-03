@@ -7452,6 +7452,7 @@ def test_quickshell_search_without_contact_cards_shows_the_search_hint(qml_engin
         close()
 
 
+@pytest.mark.private_dbus
 def test_quickshell_search_popup_reads_only_while_open(tmp_path, quickshell_environment):
     """The real shell: contact cards and search are read while the popup is
     open, a new epoch rereads, a stale card rereads, Call is confirmed and
@@ -7524,6 +7525,8 @@ Item {
           rows: [{id: "c1", title: "Ana"}, {id: "c2", title: "Bo"}]})
         check(root.contactCards.rows.length === 2, "page not appended once")
 
+        // As if typed: the planned searches read the field.
+        searchPanel.children.find(child => child.objectName === "searchField").text = "ana"
         root.runSearch("ana")
         check(backendBridge.take("latest:search") === 1, "search not sent")
         check(backendBridge.take("cancel:contact_cards") === 1, "contact read not cancelled")
@@ -7548,9 +7551,20 @@ Item {
         check(backendBridge.take("latest:search") === 1, "stale card did not reread")
 
         backendBridge.response("contact_card", 7, {found: true, title: "Ana", rows: []})
+        backendBridge.response("search", 71, {rows: [{kind: "message", title: "x"}], hint: ""})
+        backendBridge.log = []
         backendBridge.response("status", 8, {daemon: true, contact_card_count: 2,
           contact_card_epoch: 6, search_result_limit: 50})
+        // Old rows, hits and card go at once, with a card still on its way.
         check(root.contactCard.found === undefined, "new epoch kept the card")
+        check(root.contactCards.rows === undefined && root.searchResults.rows === undefined,
+          "new epoch kept the old rows or hits")
+        check(backendBridge.take("cancel:contact_cards") === 1, "page on its way kept")
+        check(backendBridge.take("cancel:contact_card") === 1, "card on its way kept")
+        check(backendBridge.take("cancel:search") === 1, "search on its way kept")
+        check(searchTimer.running, "new epoch did not plan a search")
+        searchTimer.stop()
+        searchTimer.triggered()
         check(backendBridge.take("latest:search") === 1, "new epoch did not reread")
         backendBridge.response("status", 9, {daemon: true, contact_card_count: 2,
           contact_card_epoch: 6, search_result_limit: 50})
