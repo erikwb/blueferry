@@ -132,6 +132,8 @@ ColumnLayout {
                         anchors.right: parent.right
                         anchors.margins: Kirigami.Units.smallSpacing
                         height: parent.height - caption.height - Kirigami.Units.largeSpacing
+                        // image://blueferry-thumbnail (qt/thumbnails.py): read
+                        // without waiting on a FIFO, never opened by path here.
                         source: cell.modelData.thumbnail
                         sourceSize.width: 256
                         sourceSize.height: 256
