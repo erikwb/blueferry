@@ -847,6 +847,19 @@ specification-based expectation, not a captured result.
   `Can*` properties are true while the command list is unknown (a list the
   phone did send is followed exactly, even when empty), and `mpris:trackid`
   stays the same when a truncated title is completed.
+- Volume: AMS has Remote Commands VolumeUp (5) and VolumeDown (6) and the
+  read-only Player attribute Volume (2, a float string 0.0 to 1.0), but no
+  way to set a level. BlueFerry therefore exposes volume only as the
+  existing `SendMediaCommand("volume-up"/"volume-down")` (no extra method:
+  same capability check against the advertised command list, same
+  rate-limit bucket) and the level as `player.volume`; a value outside 0 to
+  1 is dropped. `blueferry media volume up|down` and the client buttons
+  (`media_volume_view`) send one step each. MPRIS `Volume` stays readable
+  because the phone reports it, and a write keeps mapping to one step toward
+  the target (none within 0.01 of the reported level, none while the level
+  is unknown, and no effect for a player without volume commands, as MPRIS
+  wants for unsupported actions). Whether one AMS step equals one press of
+  the iPhone's volume button is not verified on hardware.
 - AMS ATT application errors 0xA0 (InvalidState), 0xA1 (InvalidCommand) and
   0xA2 (AbsentAttribute) appear only in BlueZ's error message text; BlueFerry
   logs them by name.

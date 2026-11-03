@@ -1046,8 +1046,9 @@ messaging focus. Turn it on in the Qt client's iPhone settings
 ```bash
 blueferry media enable     # opt in (blueferry media disable to opt out)
 blueferry media            # now playing
-blueferry media toggle     # also: play, pause, next, previous, volume-up,
-                           # volume-down, skip-forward, skip-backward, like, ...
+blueferry media toggle     # also: play, pause, next, previous,
+                           # skip-forward, skip-backward, like, ...
+blueferry media volume up  # one iPhone volume step (also: volume down)
 ```
 
 Only commands the iPhone currently offers are sent; for example, like/dislike
