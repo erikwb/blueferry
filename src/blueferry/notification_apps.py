@@ -15,7 +15,9 @@ Two sources make up the list:
   ``settings.json``, sealed under the same storage policy as starred
   conversations, so they stay listed after a restart. While that storage is
   locked, disabled or unreadable nothing counts as muted, and nothing is
-  written, so a locked keyring can never overwrite the saved list.
+  written, so a locked keyring can never overwrite the saved list. While
+  ``settings.json`` itself can't be read, mutes already read stay in effect,
+  changes are refused, and a failed read is never kept as an empty list.
 
 Apple Messages is never listed and cannot be muted: its ANCS records only
 correlate group messages, and its popups come from MAP.
@@ -39,6 +41,7 @@ from blueferry.limits import (
 )
 from blueferry.notification_policy import ALL_NOTIFICATIONS, MESSAGES_ONLY
 from blueferry.private_preferences import PrivatePreference
+from blueferry.settings_store import UnreadableSettingsError
 from blueferry.storage_security import StorageSecurity, StorageUnavailableError
 
 log = logging.getLogger(__name__)
@@ -149,6 +152,16 @@ class MutedAppsStore:
     @property
     def available(self) -> bool:
         """Whether the saved list can be read and changed right now."""
+        if not self._storage_ready:
+            return False
+        try:
+            self._preference.require_readable()
+        except UnreadableSettingsError:
+            return False
+        return True
+
+    @property
+    def _storage_ready(self) -> bool:
         storage = self._storage
         return storage is None or bool(
             storage.status.can_read and storage.status.can_write
@@ -171,7 +184,12 @@ class MutedAppsStore:
         return (status.policy, getattr(status, "state", None), status.can_read)
 
     def entries(self) -> dict[str, str]:
-        """Valid saved entries in saved order; empty while unreadable."""
+        """Valid saved entries in saved order; empty while storage is unreadable.
+
+        Raises UnreadableSettingsError while settings.json can't be read and
+        no list was read before. That failure is not cached, so the list is
+        read again once the file is repaired.
+        """
         state = self._storage_state()
         if self._cached is None or self._cached_for != state:
             selected = self._read_entries()
@@ -180,7 +198,7 @@ class MutedAppsStore:
         return dict(self._cached)
 
     def _read_entries(self) -> dict[str, str]:
-        raw = self._preference.read()
+        raw = self._preference.load()
         if not isinstance(raw, list):
             return {}
         selected: dict[str, str] = {}
@@ -199,7 +217,7 @@ class MutedAppsStore:
         return bool(app_id) and app_id in self.entries()
 
     def _require_available(self) -> None:
-        if not self.available:
+        if not self._storage_ready:
             raise StorageUnavailableError(
                 "muted apps are unavailable while local storage is locked or disabled"
             )
@@ -207,11 +225,15 @@ class MutedAppsStore:
     def set_muted(self, app_id: str, muted: bool, app_name: str = "") -> bool:
         """Save one change and return the app's new muted state.
 
-        Raises ValueError for an invalid ID or a full list and
-        StorageUnavailableError while the saved list cannot be read.
+        Raises ValueError for an invalid ID or a full list,
+        StorageUnavailableError while the saved list cannot be read, and
+        UnreadableSettingsError while settings.json cannot be read.
         """
         selected = validate_app_id(app_id)
         self._require_available()
+        # Refuse even a change that would write nothing, and even when the
+        # list was read before the file became unreadable.
+        self._preference.require_readable()
         current = self.entries()
         # Reading can fail closed on a damaged record; never write then.
         self._require_available()
@@ -331,7 +353,11 @@ class NotificationApps:
     def payload(self) -> dict[str, Any]:
         """The ListNotificationApps document, sorted by display name."""
         rows: dict[str, dict[str, Any]] = {}
-        for app_id, name in self.store.entries().items():
+        try:
+            saved = self.store.entries()
+        except UnreadableSettingsError:
+            saved = {}
+        for app_id, name in saved.items():
             if self._listed(app_id):
                 rows[app_id] = {
                     "app_id": app_id, "app_name": name, "muted": True,
