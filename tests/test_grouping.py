@@ -11,6 +11,7 @@ from blueferry.grouping import (
     group_members_from_ancs,
     named_group_key,
 )
+from blueferry.named_groups import unnamed_group_key
 from blueferry.threads import build_threads
 
 
@@ -106,6 +107,9 @@ def test_unnamed_group_without_trusted_map_sender_name_is_read_only() -> None:
     assert group_sms["group_reply_ready"] is False
 
 
+FAMILY_KEY = unnamed_group_key(["Son", "Wife"])
+
+
 def _family(*extra: dict) -> list[dict]:
     """Issue #300: the son has a number and an Apple ID, so he is ambiguous."""
     return [
@@ -120,7 +124,7 @@ def _family(*extra: dict) -> list[dict]:
 def _family_route(recipients: list[str]) -> dict:
     return {
         "kind": "group_route",
-        "group_key": "group:participants:son|wife",
+        "group_key": FAMILY_KEY,
         "group_name": "Son, Wife",
         "group_members": ["Wife", "Son"],
         "group_recipients": recipients,
@@ -135,7 +139,7 @@ def _family_group(events: list[dict]) -> dict:
 def test_unresolved_unnamed_group_requires_participants() -> None:
     group = _family_group(_family())
 
-    assert group["key"] == "group:participants:son|wife"
+    assert group["key"] == FAMILY_KEY
     assert group["group_origin"] == "unnamed"
     assert group["participants_required"] is True
     assert group["reply_ready"] is False
@@ -164,7 +168,7 @@ def test_saved_roster_makes_an_unnamed_group_reply_ready() -> None:
 
     group = _family_group([*_family(*later), route])
 
-    assert group["key"] == "group:participants:son|wife"
+    assert group["key"] == FAMILY_KEY
     assert group["reply_ready"] is True
     assert group["participants_required"] is False
     assert group["recipients"] == ["+15551111111", "+15552222222"]
@@ -180,7 +184,7 @@ def test_saved_unnamed_roster_replaces_historical_outgoing_recipients() -> None:
         "handle": "sent-1",
         "body": "ok",
         "timestamp": "2026-10-31T18:06:00+00:00",
-        "group_key": "group:participants:son|wife",
+        "group_key": FAMILY_KEY,
         "group_name": "Son, Wife",
         "group_members": ["Wife", "Son"],
         "group_recipients": ["+15551111111", "son@icloud.com"],
@@ -202,12 +206,74 @@ def test_outsider_in_a_saved_unnamed_group_flags_the_roster() -> None:
 
     group = _family_group([*_family(*outsider), route])
 
-    assert group["key"] == "group:participants:son|wife"
+    assert group["key"] == FAMILY_KEY
     assert group["roster_changed"] is True
     assert group["unexpected_sender"] == "Son"
     assert group["participants_required"] is True
     assert group["reply_ready"] is False
     assert "son@icloud.com" in group["observed_recipients"]
+
+
+def _from_alice(subtitle: str, body: str, at: str) -> list[dict]:
+    return [
+        _sms("+15551111111", "Alice", body, f"2026-10-31T{at}:00+00:00"),
+        _ancs("Alice", subtitle, body, f"2026-10-31T{at}:02+00:00"),
+    ]
+
+
+def _unnamed_crew_route(key: str) -> dict:
+    return {
+        "kind": "group_route", "group_key": key, "group_name": "Alice, Bob",
+        "group_members": ["Alice", "Bob"],
+        "group_recipients": ["+15551111111", "+15552222222"],
+        "seen_at": "2026-10-31T18:05:00+00:00",
+    }
+
+
+def _thread_with(threads: list[dict], body: str) -> dict:
+    return next(thread for thread in threads
+                if any(message["body"] == body for message in thread["messages"]))
+
+
+def test_unnamed_group_keys_keep_repeated_names_and_separators_apart() -> None:
+    assert unnamed_group_key(["Alice", "Bob", "Bob"]) != unnamed_group_key(["Alice", "Bob"])
+    assert unnamed_group_key(["Alice", "Bob|Carol"]) != unnamed_group_key(["Alice", "Bob", "Carol"])
+
+
+def test_saved_unnamed_roster_does_not_follow_a_second_member_with_the_same_name() -> None:
+    events = [
+        _sms("+15552222222", "Bob", "hi", "2026-10-31T09:00:00+00:00"),
+        *_from_alice("To you & Bob", "first", "18:00"),
+        _unnamed_crew_route(unnamed_group_key(["Alice", "Bob"])),
+        *_from_alice("To you & Bob, Bob", "second", "18:10"),
+    ]
+
+    threads = build_threads(events)
+    joined = _thread_with(threads, "second")
+
+    assert _thread_with(threads, "first")["reply_ready"] is True
+    assert joined["key"] == unnamed_group_key(["Alice", "Bob", "Bob"])
+    assert [message["body"] for message in joined["messages"]] == ["second"]
+    # Both Bobs carry one name, so the known Bob cannot stand in for both.
+    assert joined["reply_ready"] is False
+    assert joined["participants_required"] is True
+
+
+def test_roster_saved_under_the_old_unnamed_key_does_not_carry_over() -> None:
+    # The old key also named Alice, Bob and a second Bob, so its roster may
+    # include someone this group does not.
+    events = [
+        *_from_alice("To you & Bob", "first", "18:00"),
+        {**_unnamed_crew_route("group:participants:alice|bob"),
+         "group_recipients": ["+15551111111", "+15552222222", "+15553333333"]},
+    ]
+
+    group = _thread_with(build_threads(events), "first")
+
+    assert group["key"] == unnamed_group_key(["Alice", "Bob"])
+    assert group["aliases"] == []
+    assert group["participants_required"] is True
+    assert "+15553333333" not in group["recipients"]
 
 
 def test_ancs_title_cannot_replace_an_unverified_map_sender() -> None:
@@ -314,6 +380,138 @@ def test_repeated_body_with_two_candidates_is_not_correlated() -> None:
     correlated = correlate_group_events(events)
     assert "group_key" not in correlated[0]
     assert "group_key" not in correlated[1]
+
+
+def _crew_route() -> dict:
+    return {
+        "kind": "group_route",
+        "group_key": named_group_key("Crew"),
+        "group_name": "Crew",
+        "group_members": ["Alice", "Bob"],
+        "group_recipients": ["+15551111111", "+15552222222"],
+        "seen_at": "2026-08-12T09:00:00+00:00",
+    }
+
+
+def test_repeated_body_from_a_group_sender_cannot_be_answered_one_to_one() -> None:
+    events = [
+        _crew_route(),
+        _sms("+15551111111", "Alice", "ok", "2026-08-12T10:00:00+00:00"),
+        _ancs("Alice", "Crew", "ok", "2026-08-12T10:00:02+00:00"),
+        # Either "ok" may be the one sent to Crew.
+        _sms("+15551111111", "Alice", "ok", "2026-08-12T10:00:30+00:00"),
+    ]
+
+    (alice,) = build_threads(events)
+
+    assert alice["key"] == "address:phone:15551111111"
+    assert alice["reply_ready"] is False
+    assert alice["group_ambiguous"] is True
+    assert alice["sender_reply_token"]
+
+    later = _sms("+15551111111", "Alice", "call me", "2026-08-12T10:05:00+00:00")
+    (alice,) = build_threads([*events, later])
+
+    assert alice["reply_ready"] is True
+    assert alice["group_ambiguous"] is False
+    assert "sender_reply_token" not in alice
+
+
+def test_joined_message_does_not_make_a_second_notification_unique() -> None:
+    events = [
+        _crew_route(),
+        _sms("+15551111111", "Alice", "ok", "2026-08-12T10:00:00+00:00"),
+        _ancs("Alice", "Crew", "ok", "2026-08-12T10:00:00+00:00"),
+        # Fits both messages: a copy of the first, or the second's.
+        _ancs("Alice", "Crew", "ok", "2026-08-12T10:00:50+00:00"),
+        _sms("+15551111111", "Alice", "ok", "2026-08-12T10:01:40+00:00"),
+    ]
+
+    alice = next(thread for thread in build_threads(events) if not thread["is_group"])
+
+    assert [message["timestamp"] for message in alice["messages"]] == [
+        "2026-08-12T10:01:40+00:00",
+    ]
+    assert alice["reply_ready"] is False
+
+
+def test_map_message_claimed_by_two_group_notifications_is_not_correlated() -> None:
+    events = [
+        _crew_route(),
+        _ancs("Alice", "Crew", "same", "2026-08-12T10:00:00+00:00"),
+        _ancs("Alice", "Secret", "same", "2026-08-12T10:00:05+00:00"),
+        # Only one of the two MAP fetches succeeded; it may be either group's.
+        _sms("+15551111111", "Alice", "same", "2026-08-12T10:00:03+00:00"),
+    ]
+
+    (alice,) = build_threads(events)
+
+    assert alice["is_group"] is False
+    assert alice["reply_ready"] is False
+
+
+def test_history_does_not_choose_between_contacts_with_the_same_name() -> None:
+    class Resolver:
+        @staticmethod
+        def find_by_name(name):
+            return [("Bob", "+15552222222"), ("Bob", "+15553333333")] if (
+                name.casefold() == "bob"
+            ) else []
+
+        @staticmethod
+        def resolve(_address):
+            return None
+
+    events = [
+        # History has heard from only one of the two Bobs.
+        _sms("+15552222222", "Bob", "hi", "2026-08-12T09:00:00+00:00"),
+        _sms("+15551111111", "Alice", "yo", "2026-08-12T10:00:00+00:00"),
+        _ancs("Alice", "To you & Bob", "yo", "2026-08-12T10:00:02+00:00"),
+    ]
+
+    group = next(
+        thread for thread in build_threads(events, Resolver()) if thread["is_group"]
+    )
+
+    assert group["reply_ready"] is False
+    assert group["participants_required"] is True
+    assert group["missing_members"] == ["Bob"]
+
+
+@pytest.mark.parametrize("bob_first", [False, True])
+def test_another_group_with_a_shared_name_does_not_lend_its_route(
+    bob_first: bool,
+) -> None:
+    class Resolver:
+        @staticmethod
+        def find_by_name(name):
+            return {
+                "alice": [("Alice", "+15551111111"), ("Alice", "+15553333333")],
+                "bob": [("Bob", "+15552222222")],
+            }.get(name.casefold(), [])
+
+        @staticmethod
+        def resolve(_address):
+            return None
+
+    from_alice = [
+        _sms("+15551111111", "Alice", "first", "2026-08-12T10:00:00+00:00"),
+        _ancs("Alice", "To you & Bob", "first", "2026-08-12T10:00:02+00:00"),
+    ]
+    # Bob's "Alice" may be the other contact of that name.
+    from_bob = [
+        _sms("+15552222222", "Bob", "second", "2026-08-12T11:00:00+00:00"),
+        _ancs("Bob", "To you & Alice", "second", "2026-08-12T11:00:02+00:00"),
+    ]
+    events = [*from_bob, *from_alice] if bob_first else [*from_alice, *from_bob]
+
+    correlated = correlate_group_events(events, Resolver())
+    second = next(event for event in correlated if event.get("body") == "second"
+                  and event["kind"] == "sms_received")
+
+    assert second["group_reply_ready"] is False
+    assert second["group_participants_required"] is True
+    assert second["group_missing_members"] == ["Alice"]
 
 
 def test_contact_name_must_agree_with_ancs_sender_title() -> None:

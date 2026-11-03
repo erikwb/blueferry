@@ -8,8 +8,10 @@ Jailbreak, keinen Cloud-Dienst und kein Abo.
 
 ## Sehe ich meine älteren Nachrichten?
 
-Nur Nachrichten, die BlueFerry während einer Verbindung gesehen hat. Es lädt
-weder dein iCloud-Nachrichtenarchiv noch deinen vollständigen Verlauf
+Nachrichten, die BlueFerry während einer Verbindung gesehen hat, und
+eingehende Nachrichten, die es nach einem erneuten Verbinden nachholt (siehe
+[Nachrichten, die ohne Verbindung ankamen](privacy.md#nachrichten-die-ohne-verbindung-ankamen)).
+Es lädt weder dein iCloud-Nachrichtenarchiv noch deinen vollständigen Verlauf
 gesendeter Nachrichten.
 
 ## Kann ich Bilder senden, auf Nachrichten reagieren oder Tippanzeigen sehen?

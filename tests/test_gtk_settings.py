@@ -13,7 +13,7 @@ from tests.gtk_broadway import run_scenario
 @pytest.mark.parametrize(
     "scenario", [
         "categories", "features", "old-daemon", "doctor", "mirror-removals",
-        "battery-warning", "reconnect", "notification-rules",
+        "battery-warning", "reconnect", "notification-rules", "muted-apps",
         "feature-races", "status-save-races", "rule-races", "storage-reset",
     ],
 )
@@ -43,9 +43,15 @@ class FakeClient:
     def __init__(self, status):
         self.status = status
         self.calls = []
+        self.handlers = {}
 
-    def connect(self, *_args):
+    def connect(self, name, handler):
+        self.handlers.setdefault(name, []).append(handler)
         return 0
+
+    def emit(self, name):
+        for handler in self.handlers.get(name, []):
+            handler(self)
 
     def record_status(self, _status):
         pass
@@ -88,6 +94,11 @@ class FakeClient:
 
     def reset_storage_async(self, on_ok, on_err):
         self.calls.append(("reset_storage", on_ok, on_err))
+    def notification_apps_async(self, on_ok, on_err=None):
+        self.calls.append(("apps", on_ok, on_err))
+
+    def set_notification_app_muted_async(self, app_id, muted, on_ok, on_err):
+        self.calls.append((("mute", app_id, muted), on_ok, on_err))
 
     def run_doctor_async(self, on_ok, on_err, runner=None):
         self.calls.append(("doctor", on_ok, on_err))
@@ -521,6 +532,126 @@ def _exercise_notification_rules():
     window.destroy()
 
 
+APPS = {
+    "apps": [
+        {"app_id": "com.example.Chat", "app_name": "<b>Chat</b>", "muted": False,
+         "seen": True},
+        {"app_id": "com.example.Game", "app_name": "", "muted": True, "seen": False},
+    ],
+    "muted_count": 1, "max_muted": 100, "mute_available": True,
+    "all_notifications": True, "env_allowlist": False, "env_blocklist": True,
+}
+
+
+def _exercise_muted_apps():
+    from blueferry import notification_apps_view as view
+    from blueferry.models import BackendStatus
+
+    dialog, window, client = _settings()
+    apps = dialog.muted_apps
+    page = dialog.pages["notifications"]
+    assert apps.group.get_ancestor(type(page)) is page
+    assert apps.group.get_title() == "Muted apps"
+    # An older daemon without the capability key: hidden, nothing read.
+    dialog._apply_status(BackendStatus.from_dict({"daemon": True}))
+    assert not apps.group.get_visible() and client.calls == []
+    open_state = [False]
+    apps._is_open = lambda: open_state[0]
+
+    def status(count):
+        return BackendStatus.from_dict({"daemon": True, "notification_muted_app_count": count})
+
+    dialog._apply_status(status(1))
+    assert apps.group.get_visible()
+    assert client.calls == [], "the first read waits for the settings to open"
+    # Opening reads once; the status read right after does not read again.
+    dialog.open(window, "notifications")
+    open_state[0] = True
+    client.take("apps")[1](APPS)
+    client.calls.clear()  # the other groups' reads on opening
+    dialog._apply_status(status(1))
+    assert client.calls == []
+    open_state[0] = False
+    # Status reads without a reachability change keep the rows as they are.
+    renders = []
+    original_render = apps._render
+    apps._render = lambda: (renders.append(True), original_render())
+    dialog._apply_status(status(1))
+    assert renders == []
+    dialog._apply_status(BackendStatus.from_dict({
+        "daemon": False, "notification_muted_app_count": 1}))
+    assert renders == [True] and not apps.group.get_visible()
+    dialog._apply_status(status(1))
+    assert renders == [True, True] and apps.group.get_visible()
+    apps._render = original_render
+    assert "apps" not in [call[0] for call in client.calls]
+    client.calls.clear()  # other groups react to the daemon coming back
+    chat, game = apps.rows["com.example.Chat"], apps.rows["com.example.Game"]
+    assert (chat.get_title(), chat.get_active(), chat.get_sensitive()) == (
+        "<b>Chat</b>", False, True)
+    assert chat.get_subtitle() == "com.example.Chat"
+    assert game.get_title() == "com.example.Game" and game.get_active()
+    assert "Muted" in game.get_subtitle()
+    assert apps.hint.get_visible() and "BLUEFERRY_ANCS_APP_BLOCKLIST" in apps.hint.get_label()
+    assert apps.hint.get_label() == view.apps_hint(APPS)
+
+    # Muting: the switch waits for the daemon, then the list is read again.
+    chat.set_active(True)
+    assert not chat.get_sensitive() and chat.get_active()
+    _call, _saved, failed = client.take(("mute", "com.example.Chat", True))
+    failed("Access denied")
+    assert not chat.get_active() and chat.get_sensitive()
+    client.take("apps")[1](APPS)
+    toasts = []
+    apps._toast = toasts.append
+    chat.set_active(True)
+    client.take(("mute", "com.example.Chat", True))[2]("")
+    assert toasts == [view.change_failed_text("")]
+    client.take("apps")
+    chat.set_active(True)
+    client.take(("mute", "com.example.Chat", True))[1](True)
+    # Confirmed: shown at once, not only after the list is read again.
+    assert chat.get_active() and chat.get_sensitive() and "Muted" in chat.get_subtitle()
+    muted = {**APPS, "apps": [{**APPS["apps"][0], "muted": True}, APPS["apps"][1]]}
+    client.take("apps")[1](muted)
+    assert chat.get_active() and "Muted" in chat.get_subtitle()
+
+    # While the settings are closed, signals and count changes read nothing.
+    client.emit("notification-apps-changed")
+    dialog._apply_status(status(2))
+    assert client.calls == []
+    open_state[0] = True
+    client.emit("notification-apps-changed")
+    client.take("apps")
+    dialog._apply_status(status(3))
+    client.take("apps")
+    dialog._apply_status(status(3))
+    assert client.calls == []
+    # Opening the settings reads the list; an app that left it loses its row.
+    dialog.muted_apps.load()
+    client.take("apps")[1]({**APPS, "apps": [APPS["apps"][0]]})
+    assert list(apps.rows) == ["com.example.Chat"]
+    # Locked storage: switches greyed out, the hint says why.
+    client.emit("notification-apps-changed")
+    client.take("apps")[1]({**APPS, "mute_available": False})
+    assert not apps.rows["com.example.Chat"].get_sensitive()
+    assert "locked" in apps.hint.get_label()
+    # settings.json can't be read: the daemon refuses with Configuration; the
+    # toast carries its text and the list read next greys the switches.
+    client.emit("notification-apps-changed")
+    client.take("apps")[1](APPS)
+    unreadable = ("settings.json could not be read, so the change was not saved; "
+                  "repair or remove the file and try again")
+    toasts.clear()
+    apps.rows["com.example.Chat"].set_active(True)
+    client.take(("mute", "com.example.Chat", True))[2](unreadable)
+    assert toasts == [unreadable]
+    assert not apps.rows["com.example.Chat"].get_active()
+    client.take("apps")[1]({**APPS, "mute_available": False})
+    assert not apps.rows["com.example.Chat"].get_sensitive()
+    assert "settings.json can't be read" in apps.hint.get_label()
+
+
 def _exercise_feature_races():
     for failed_read in (False, True):
         dialog, window, client = _settings()
@@ -625,11 +756,18 @@ def _exercise_storage_reset():
     assert not row.get_visible()
     dialog._apply_status(BackendStatus.from_dict({**locked, "storage_reset": False}))
     assert not row.get_visible()
+    policy_row = dialog._storage_policy_row
+    unreadable = "Local data is not retained while settings.json cannot be read"
+    dialog._apply_status(BackendStatus.from_dict(
+        {**locked, "storage_reset": False, "storage_detail": unreadable},
+    ))
+    assert policy_row.get_subtitle() == unreadable and not row.get_visible()
     detail = "The key for saved encrypted history is no longer in the desktop keyring"
     dialog._apply_status(BackendStatus.from_dict(
         {**locked, "storage_reset": True, "storage_detail": detail},
     ))
     assert row.get_visible() and row.get_subtitle() == detail and button.get_sensitive()
+    assert policy_row.get_subtitle() == "Protects message history and cached contacts"
 
     alerts = []
     toasts = []
@@ -651,6 +789,7 @@ def _exercise_storage_reset():
 if __name__ == "__main__":
     {
         "storage-reset": _exercise_storage_reset,
+        "muted-apps": _exercise_muted_apps,
         "notification-rules": _exercise_notification_rules,
         "feature-races": _exercise_feature_races,
         "status-save-races": _exercise_status_save_races,

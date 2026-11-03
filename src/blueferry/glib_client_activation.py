@@ -13,10 +13,11 @@ from blueferry.client_activation import (
     CLIENTS,
     record_client_use,
 )
+from blueferry.dbus_object import StrictObject
 from blueferry.tel_links import MAX_PHONE_LINK_CHARS
 
 
-class ClientActivation(dbus.service.Object):
+class ClientActivation(StrictObject):
     def __init__(
         self,
         key: str,

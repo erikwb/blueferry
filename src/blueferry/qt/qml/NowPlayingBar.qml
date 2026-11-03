@@ -9,6 +9,8 @@ Controls.ToolBar {
     objectName: "nowPlayingBar"
 
     required property var nowPlaying
+    // blueferry.media_volume_view.volume_controls(); empty hides the row.
+    property var volume: ({})
     signal commandRequested(string command)
 
     readonly property var track: nowPlaying.track || ({})
@@ -46,57 +48,108 @@ Controls.ToolBar {
     leftPadding: 0
     rightPadding: 0
 
-    contentItem: RowLayout {
-        spacing: Kirigami.Units.smallSpacing
+    contentItem: ColumnLayout {
+        spacing: 0
 
-        Kirigami.Icon {
-            // Shows the iPhone's current state; the toggle button shows the action.
-            source: bar.stateIcon
-            implicitWidth: Kirigami.Units.iconSizes.small
-            implicitHeight: Kirigami.Units.iconSizes.small
-        }
-
-        Controls.Label {
-            objectName: "nowPlayingSummary"
+        RowLayout {
             Layout.fillWidth: true
-            // Remote text is never interpreted as markup.
-            textFormat: Text.PlainText
-            text: bar.summary()
-            elide: Text.ElideRight
+            spacing: Kirigami.Units.smallSpacing
+
+            Kirigami.Icon {
+                // Shows the iPhone's current state; the toggle button shows the action.
+                source: bar.stateIcon
+                implicitWidth: Kirigami.Units.iconSizes.small
+                implicitHeight: Kirigami.Units.iconSizes.small
+            }
+
+            Controls.Label {
+                objectName: "nowPlayingSummary"
+                Layout.fillWidth: true
+                // Remote text is never interpreted as markup.
+                textFormat: Text.PlainText
+                text: bar.summary()
+                elide: Text.ElideRight
+            }
+
+            Controls.ToolButton {
+                objectName: "nowPlayingPrevious"
+                icon.name: "media-skip-backward"
+                text: qsTr("Previous")
+                display: Controls.AbstractButton.IconOnly
+                enabled: bar.supports("previous")
+                Accessible.name: text
+                Controls.ToolTip.text: text
+                Controls.ToolTip.visible: hovered
+                onClicked: bar.commandRequested("previous")
+            }
+            Controls.ToolButton {
+                objectName: "nowPlayingToggle"
+                icon.name: bar.playing ? "media-playback-pause" : "media-playback-start"
+                text: bar.playing ? qsTr("Pause") : qsTr("Play")
+                display: Controls.AbstractButton.IconOnly
+                enabled: bar.supports("toggle") || bar.supports(bar.playing ? "pause" : "play")
+                Accessible.name: text
+                Controls.ToolTip.text: text
+                Controls.ToolTip.visible: hovered
+                onClicked: bar.commandRequested("toggle")
+            }
+            Controls.ToolButton {
+                objectName: "nowPlayingNext"
+                icon.name: "media-skip-forward"
+                text: qsTr("Next")
+                display: Controls.AbstractButton.IconOnly
+                enabled: bar.supports("next")
+                Accessible.name: text
+                Controls.ToolTip.text: text
+                Controls.ToolTip.visible: hovered
+                onClicked: bar.commandRequested("next")
+            }
         }
 
-        Controls.ToolButton {
-            objectName: "nowPlayingPrevious"
-            icon.name: "media-skip-backward"
-            text: qsTr("Previous")
-            display: Controls.AbstractButton.IconOnly
-            enabled: bar.supports("previous")
-            Accessible.name: text
-            Controls.ToolTip.text: text
-            Controls.ToolTip.visible: hovered
-            onClicked: bar.commandRequested("previous")
-        }
-        Controls.ToolButton {
-            objectName: "nowPlayingToggle"
-            icon.name: bar.playing ? "media-playback-pause" : "media-playback-start"
-            text: bar.playing ? qsTr("Pause") : qsTr("Play")
-            display: Controls.AbstractButton.IconOnly
-            enabled: bar.supports("toggle") || bar.supports(bar.playing ? "pause" : "play")
-            Accessible.name: text
-            Controls.ToolTip.text: text
-            Controls.ToolTip.visible: hovered
-            onClicked: bar.commandRequested("toggle")
-        }
-        Controls.ToolButton {
-            objectName: "nowPlayingNext"
-            icon.name: "media-skip-forward"
-            text: qsTr("Next")
-            display: Controls.AbstractButton.IconOnly
-            enabled: bar.supports("next")
-            Accessible.name: text
-            Controls.ToolTip.text: text
-            Controls.ToolTip.visible: hovered
-            onClicked: bar.commandRequested("next")
+        // AMS has no absolute volume: one step down or up, and the level the
+        // iPhone reports (read-only). Texts come from media_volume_view.
+        RowLayout {
+            objectName: "nowPlayingVolume"
+            Layout.fillWidth: true
+            spacing: Kirigami.Units.smallSpacing
+            visible: bar.volume.visible === true
+
+            Controls.Label {
+                objectName: "nowPlayingVolumeLevel"
+                Layout.fillWidth: true
+                textFormat: Text.PlainText
+                // Disabled buttons show no tooltip: say why they are off.
+                text: bar.volume.level_text
+                    || (bar.volume.up_enabled !== true && bar.volume.down_enabled !== true
+                        ? bar.volume.up_tooltip || "" : "")
+                wrapMode: Text.Wrap
+                color: Kirigami.Theme.disabledTextColor
+                font: Kirigami.Theme.smallFont
+            }
+            Controls.ToolButton {
+                objectName: "nowPlayingVolumeDown"
+                icon.name: "audio-volume-low"
+                text: qsTr("Volume Down")
+                display: Controls.AbstractButton.IconOnly
+                enabled: bar.volume.down_enabled === true
+                Accessible.name: text
+                Accessible.description: bar.volume.down_tooltip || ""
+                Controls.ToolTip.text: bar.volume.down_tooltip || text
+                Controls.ToolTip.visible: hovered
+                onClicked: bar.commandRequested(bar.volume.down_command)
+            }
+            Controls.ToolButton {
+                objectName: "nowPlayingVolumeUp"
+                icon.name: "audio-volume-high"
+                text: qsTr("Volume Up")
+                display: Controls.AbstractButton.IconOnly
+                enabled: bar.volume.up_enabled === true
+                Accessible.name: text
+                Accessible.description: bar.volume.up_tooltip || ""
+                Controls.ToolTip.text: bar.volume.up_tooltip || text
+                Controls.ToolTip.visible: hovered
+                onClicked: bar.commandRequested(bar.volume.up_command)
+            }
         }
     }
 }
