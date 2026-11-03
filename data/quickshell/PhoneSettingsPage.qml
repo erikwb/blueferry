@@ -24,6 +24,7 @@ Rectangle {
   property var doctor: ({})
   property var notificationList: ({})
   property string contactsSyncNotice: ""
+  property string storageResetNotice: ""
   // The list is private: shell.qml reads it only while this is set, and
   // hiding the page collapses it, so it is forgotten.
   property bool notificationsExpanded: false
@@ -38,6 +39,7 @@ Rectangle {
     && onboarding.stage === "iphone-settings" && onboarding.pendingIphoneSetupTasks().length > 0
   signal closeRequested
   signal pairingIssueRequested
+  signal storageResetRequested
   signal operationRequested(string method, var args)
   signal errorRequested(string message)
   signal reloadRequested
@@ -569,13 +571,23 @@ Rectangle {
           text: "Show contact photos from the iPhone"
           visible: root.status.saved_opt_ins === true && root.status.contact_photos !== undefined
           checked: root.status.contact_photos === true
+          // While settings.json can't be read the saved choice is unknown.
           enabled: root.setup.configured && !root.busy.photos
-          Accessible.description: "Photos are kept with your contacts and arrive with the next contact sync. Turning this off erases them."
+            && root.status.contact_photos_state !== "unknown"
+          Accessible.description: root.status.contact_photos_state === "unknown" ? "Unavailable while settings.json cannot be read." : "Photos are kept with your contacts and arrive with the next contact sync. Turning this off erases them."
           onClicked: {
             root.operationRequested("set_contact_photos", {
               enabled: checked
             });
           }
+        }
+        FerryLabel {
+          objectName: "contactPhotosUnavailable"
+          ferryTheme: root.theme
+          Layout.fillWidth: true
+          wrapMode: Text.Wrap
+          visible: root.status.saved_opt_ins === true && root.status.contact_photos_state === "unknown"
+          text: "Unavailable while settings.json cannot be read."
         }
         FerryCategoryHeading {
           objectName: "notificationsCategory"
@@ -988,6 +1000,36 @@ Rectangle {
           id: confirmStorageChange
           ferryTheme: root.theme
           text: "I understand that changing storage mode clears local messages and contacts"
+        }
+        // The way out when the saved data can't be opened. Like the other
+        // clients, only while the daemon offers it; older daemons don't.
+        FerryLabel {
+          objectName: "storageResetDetail"
+          ferryTheme: root.theme
+          Layout.fillWidth: true
+          visible: root.status.storage_reset === true && text !== ""
+          wrapMode: Text.Wrap
+          color: root.theme.warning
+          text: String(root.status.storage_detail || "")
+        }
+        RowLayout {
+          Layout.fillWidth: true
+          FerryButton {
+            objectName: "storageResetButton"
+            ferryTheme: root.theme
+            visible: root.status.storage_reset === true
+            text: root.busy.storageReset ? "Resetting…" : "Reset Local Storage…"
+            enabled: root.status.daemon === true && !root.busy.storage
+            onClicked: root.storageResetRequested()
+          }
+          FerryLabel {
+            objectName: "storageResetNotice"
+            ferryTheme: root.theme
+            Layout.fillWidth: true
+            wrapMode: Text.Wrap
+            visible: text !== ""
+            text: root.storageResetNotice
+          }
         }
         FerryCategoryHeading {
           objectName: "aboutCategory"

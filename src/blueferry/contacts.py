@@ -345,9 +345,9 @@ def _parse_vcard_entries(
     return out
 
 
-def clear_contact_cache() -> None:
+def clear_contact_cache(*, discard_damaged: bool = False) -> None:
     """Erase every retained contact representation."""
-    ContactRepository().clear()
+    ContactRepository().clear(discard_damaged=discard_damaged)
 
 
 # ---- PBAP pull ----------------------------------------------------------

@@ -47,6 +47,7 @@ from blueferry.qt.companion import CompanionTools
 from blueferry.qt.plugin_settings import PluginSettings
 from blueferry.qt.plugin_surfaces import PluginSurfaces
 from blueferry.qt.tasks import QtTaskRunner, Task, qt_timers
+from blueferry.qt.thumbnails import thumbnail_url
 from blueferry.quirks_report import issue_report, issue_url
 from blueferry.reconnect_view import ManualReconnect, reconnect_view
 from blueferry.service_manager import bluetooth_restart_command
@@ -125,6 +126,8 @@ class BridgeController(QObject):
     messageOpenRequested = Signal(str)
     notificationOpenMapChanged = Signal()
     groupConfirmationRequested = Signal(str, str, str)
+    # A reply to a message that may be from a group: key, draft, name, address.
+    senderConfirmationRequested = Signal(str, str, str, str)
     # A reply to a group whose members are unconfirmed: key and draft.
     groupParticipantsRequested = Signal(str, str)
     threadSendSucceeded = Signal(str, str)
@@ -172,6 +175,9 @@ class BridgeController(QObject):
         self._tasks: set[Task] = set()
         self._threads: list[dict] = []
         self._pending_group: tuple[str, str, str] | None = None
+        # Whether the last prompt asked to reply to the sender alone, so an
+        # answer that no longer matches it gets the sender's wording.
+        self._confirming_sender = False
         self._contact_results: list[dict] = []
         self._state = ConversationState(select_first=False)
         self._status: dict = {}
@@ -275,7 +281,7 @@ class BridgeController(QObject):
         self._photos_pool.setMaxThreadCount(1)
         self._photos = PhotosTabModel(
             runner=QtTaskRunner(self._photos_pool),
-            url=_file_url, open_file=_open_file,
+            url=_file_url, thumbnail_url=thumbnail_url, open_file=_open_file,
             on_change=self.photosChanged.emit, on_error=self._operation_failed,
         )
         # UxPlay, LocalSend and iPhone photos: client-side, no daemon involved.
@@ -1340,7 +1346,10 @@ class BridgeController(QObject):
         self._pending_group = None
         if confirm_group:
             if pending is None or pending[:2] != (key, body.strip()):
-                self._set_error(ReplyDisposition.STALE_GROUP.message)
+                self._set_error((
+                    ReplyDisposition.STALE_SENDER if self._confirming_sender
+                    else ReplyDisposition.STALE_GROUP
+                ).message)
                 return
         plan = state.plan_reply(
             body, thread_key=key, confirm_group=confirm_group,
@@ -1352,7 +1361,15 @@ class BridgeController(QObject):
             return
         if plan.disposition is ReplyDisposition.CONFIRM_GROUP and thread is not None:
             self._pending_group = (key, plan.body, plan.expected_group_token)
+            self._confirming_sender = False
             self.groupConfirmationRequested.emit(key, draft, "\n".join(thread.recipients))
+            return
+        if plan.disposition is ReplyDisposition.CONFIRM_SENDER and thread is not None:
+            self._pending_group = (key, plan.body, plan.expected_group_token)
+            self._confirming_sender = True
+            self.senderConfirmationRequested.emit(
+                key, draft, thread.name, ", ".join(thread.recipients),
+            )
             return
         if not plan.ready:
             if plan.disposition.message:

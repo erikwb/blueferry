@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import threading
 
 import pytest
 from typer.testing import CliRunner
@@ -48,6 +49,33 @@ def test_symlinks_odd_ids_and_foreign_files_are_never_read(state, tmp_path) -> N
     assert plugin_logs.find_log("../../secret") is None
     with pytest.raises(OSError):
         plugin_logs.read_tail(state / "io.example.link.log")
+
+
+def test_a_log_swapped_for_a_fifo_after_the_check_is_not_waited_on(state, monkeypatch) -> None:
+    path = state / "io.example.ls.log"
+    path.write_text("line\n")
+    find_log = plugin_logs.find_log
+
+    def find_then_swap(plugin_id):
+        found = find_log(plugin_id)
+        # Replaced by a FIFO after find_log looked at it, before it is read.
+        found.unlink()
+        os.mkfifo(found, 0o600)
+        return found
+
+    monkeypatch.setattr(plugin_logs, "find_log", find_then_swap)
+    result = []
+    reader = threading.Thread(
+        target=lambda: result.append(plugin_logs.tail("io.example.ls")), daemon=True,
+    )
+    reader.start()
+    reader.join(timeout=5)
+    if reader.is_alive():
+        # Release the blocked open so the hang fails this test only.
+        os.close(os.open(path, os.O_WRONLY | os.O_NONBLOCK))
+        reader.join(timeout=5)
+        pytest.fail("reading a plugin log blocked on a FIFO until a writer appeared")
+    assert result == [(None, "")]
 
 
 def test_cli_plugins_log_prints_plain_text_or_the_path(state, tmp_path, monkeypatch) -> None:

@@ -92,8 +92,8 @@ class _History:
     def sync(self, success, failure):
         self.sync_calls.append((success, failure))
 
-    def clear(self):
-        clear_call_history()
+    def clear(self, *, discard_damaged=False):
+        clear_call_history(discard_damaged=discard_damaged)
         self.discarded += 1
         self._records = []
 
