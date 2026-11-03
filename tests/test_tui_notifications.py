@@ -439,6 +439,39 @@ def test_a_failed_pin_explains_itself_from_the_dbus_error_name() -> None:
     _run_headless(scenario())
 
 
+def test_a_pin_refused_while_settings_json_cannot_be_read_says_so() -> None:
+    from blueferry import notification_pin_view
+
+    backend = _PinBackend()
+    # The daemon refuses pin and unpin with Configuration and saves nothing.
+    backend.pin_error = (
+        "settings.json can't be read, so local storage was not changed; "
+        "repair or remove the file and try again"
+    )
+    backend.pin_error_name = "io.weirdware.BlueFerry.Error.Configuration"
+
+    async def scenario() -> None:
+        app = BlueFerryApp(TuiState(backend), monitor_factory=lambda: None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            screen = await _open(app, pilot)
+            await _listed(pilot, screen)
+            for index, pinned in ((1, False), (0, True)):
+                await _highlight(pilot, screen, index)
+                screen.action_toggle_pin()
+                await _until(
+                    pilot, lambda: screen.pin_error == notification_pin_view.CONFIGURATION_TEXT,
+                )
+                await _until(pilot, lambda: not screen.pinning)
+                assert "settings.json can't be read" in _text(
+                    screen, "#notifications-pin-state",
+                )
+                # The row keeps the daemon's state: nothing was pinned or unpinned.
+                assert _items(screen)[index].record["pinned"] is pinned
+            assert backend.pinned == [("k2", True), ("k1", False)]
+
+    _run_headless(scenario())
+
+
 def test_a_failed_app_list_keeps_muted_rows_dimmed() -> None:
     backend = _PinBackend(notification_muted_app_count=1)
     monitor = _AppsMonitor()
