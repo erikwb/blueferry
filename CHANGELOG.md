@@ -34,6 +34,14 @@
   it with the last reported level; `blueferry media volume` prints the level.
   A shared presenter (`media_volume_view`) prepares the volume buttons for the
   graphical and terminal clients.
+- Shared presenter `file_drop_view` for the coming drop zones of the KDE
+  and GTK main windows; nothing changes for users until those land. It
+  holds the decisions and texts, so both clients will send dropped files to
+  a **Send to…** target the same way (the only target at once, a picker for
+  several with the session's last pick preselected, or an explanation when
+  no `share` plugin is there). Only local files, 1 to 64; folders and
+  remote URIs are skipped with a note, and a client never runs two
+  `SendFiles` at once across "Send to…", card sends and drops.
 - Report the A/V sync delay of the iPhone's audio stream in `GetStatus`
   (`phone_audio_delay_ms`, `phone_audio_delay_reporting`; the delay only while
   the stream is active), show it next to the iPhone sound status, and check

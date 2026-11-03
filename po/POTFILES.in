@@ -74,6 +74,7 @@ src/blueferry/qt/qml/PluginConfigForm.qml
 src/blueferry/qt/qml/PluginStoreCard.qml
 src/blueferry/qt/qml/SettingsPlugins.qml
 src/blueferry/plugin_surfaces_model.py
+src/blueferry/file_drop_view.py
 src/blueferry/qt/qml/PhotosTab.qml
 src/blueferry/qt/qml/PluginCardSection.qml
 src/blueferry/companion_tools.py
