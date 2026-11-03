@@ -687,6 +687,19 @@ or app display-name attributes are requested. Even when mirroring is enabled,
 included non-Messages content is never written to history or placed on
 BlueFerry's D-Bus event feed.
 
+The daemon remembers which non-Messages apps sent such a notification during
+the running session (bundle ID, the display name from `GetAppAttributes`, and
+when it last saw one; in memory only, at most 64 apps). The display name is
+normally known before the event is emitted; when the app-name request cannot
+be queued the event carries the bundle ID instead, and a later event fills the
+name in. A client can mute an app from that list: its desktop popup is then
+skipped, checked for each notification, while ANCS processing stays exactly
+as before (the same attributes are requested, a `MissedCall` still marks the
+call for the call-history path). Muted apps are saved with their display name
+under the storage policy. The allow/block rules above stay a hard filter in
+front of this: an app they exclude is never fetched, listed or muted. Messages
+cannot be muted. This is verified only against simulated ANCS events.
+
 With the opt-in notification actions (a saved setting; `BLUEFERRY_ANCS_ACTIONS`
 is its initial value), BlueFerry reads the Notification
 Source `PositiveAction`/`NegativeAction` event flags. For an included

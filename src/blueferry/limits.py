@@ -30,6 +30,11 @@ MAX_ANCS_ACTIONABLE = 64
 MAX_ANCS_ACTIONS_IN_FLIGHT = 4
 # Desktop popups that still carry live iPhone action buttons.
 MAX_ANCS_ACTION_POPUPS = 64
+# Apps whose notifications this daemon run has seen (memory only, LRU), and
+# apps the user muted (saved in settings.json with their display name).
+MAX_ANCS_SEEN_APPS = 64
+MAX_ANCS_MUTED_APPS = 100
+MAX_ANCS_APP_NAME_CHARS = 256
 
 # AMS values are short display strings (titles, artists). A full Entity
 # Attribute read can exceed one notification, but never needs to be large.
