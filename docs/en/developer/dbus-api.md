@@ -188,6 +188,20 @@ opt-in; clients show the switch only when `phone_audio_route` exists):
   `unknown` without media control. A change to `pc` is reported at once,
   every other change only after it held for two seconds. `phone` together
   with route `pc` means the user picked another output on the iPhone.
+- `phone_audio_delay_reporting`: `true` while BlueZ exports
+  `MediaTransport1.Delay` on the open A2DP stream, `false` when the stream
+  has no `Delay` (video on the iPhone can run ahead of the sound): BlueZ 5.70
+  to 5.77 export the read-only `Delay` only while it is nonzero, and an audio
+  server whose sink endpoint does not register `DelayReporting` gets none.
+  `null` while no stream is open.
+- `phone_audio_delay_ms`: the audio delay the local stack reports, in
+  milliseconds (`MediaTransport1.Delay` is in 1/10 ms), or `null` without
+  delay reporting. It follows `PropertiesChanged`; iOS shifts video by it.
+  The delay is only reported while the transport's `State` is `active`; an
+  idle or pending transport gives `null` here while
+  `phone_audio_delay_reporting` stays as it is (`true` when `Delay` exists).
+  BlueZ lists `Delay` as invalidated only once it no longer exists, so both
+  keys then read as for a stream without `Delay`.
 
 ## Calls1 methods (optional phone calls)
 
