@@ -75,6 +75,11 @@ it. If the app that is playing does not offer volume control, BlueFerry says
 so and sends nothing. The older spellings `volume-up` and `volume-down` still
 work.
 
+The GTK client has the same steps as two buttons next to play/pause on its
+phone card, with the last reported level between them. A button is greyed
+out, with the reason in its tooltip, when the app that is playing does not
+offer that step.
+
 In the Kirigami client a small bar with title, artist and
 previous/play-pause/next buttons appears above the conversations while
 something is playing. The Quickshell client shows the same strip under its

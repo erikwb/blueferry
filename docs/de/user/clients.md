@@ -15,13 +15,19 @@ Desktops.
 
 Das Fenster ist eine Telefon-Übersicht. Eine Karte über den Reitern zeigt
 Name und Verbindung des iPhones, Akku, Empfang und Netz sowie, was gerade
-läuft (mit zurück, Wiedergabe/Pause und weiter). Ihr Knopf **Quick
+läuft (mit zurück, Wiedergabe/Pause und weiter sowie
+[leiser und lauter](media-control.md) um die zuletzt vom iPhone
+gemeldete Lautstärke). Ihr Knopf **Quick
 Settings** enthält die Schalter für [den Ton](phone-audio.md) und die
 [Abwesenheitssperre](proximity-lock.md). Ist etwas ausgeschaltet, nennt die
 Karte die Einstellung, die es einschaltet. Die Reiter wechselt man
 in der Kopfzeile, in einem schmalen Fenster unten:
 
 - **Messages**: Unterhaltungen und der Chat.
+- **Contacts**: die [Kontaktkarten](contacts.md) mit einem Suchfeld; eine
+  Karte zeigt jede Nummer mit Bezeichnung, E-Mail- und Postadressen,
+  Firma, Funktion und Foto, mit **Call** und **Message** (öffnet die
+  Unterhaltung mit dieser Nummer oder eine neue Nachricht).
 - **Calls**: laufende [Anrufe](calls.md) mit annehmen, halten/fortsetzen,
   auflegen, Tastentönen (0-9, `*`, `#`) für den aktiven Anruf sowie dem
   Ton-Schalter, ein Wählfeld, das auch deine
@@ -29,8 +35,10 @@ in der Kopfzeile, in einem schmalen Fenster unten:
   gruppiert, mit All und Missed, Rückruf- und Nachrichtenknöpfen und
   **Refresh from iPhone**. Jeder Anruf fragt vorher nach.
 - **Notifications**: die [letzten iPhone-Mitteilungen](notification-history.md)
-  anderer Apps. Ist die Liste aus, sagt der Reiter warum und öffnet die
-  Einstellung.
+  anderer Apps, mit einem Knopf zum Anheften an jedem Eintrag; angeheftete
+  Einträge stehen oben, Einträge, die das iPhone entfernt hat oder die von
+  [stummgeschalteten Apps](notification-mute.md) stammen, sind abgeblendet.
+  Ist die Liste aus, sagt der Reiter warum und öffnet die Einstellung.
 - **Photos**: die neuesten Fotos und Videos eines [Foto-Plugins](plugins.md),
   mit All, Photos und Videos; ein Klick lädt das Original und öffnet es,
   ein geöffnetes lässt sich in andere Apps ziehen.
@@ -43,6 +51,15 @@ LocalSend, die Fotos des iPhones über USB). Der Bereich bleibt, wie du ihn
 verlassen hast, und klappt von selbst auf, wenn ein Plugin etwas Neues
 bringt, etwa eine laufende Übertragung.
 
+Zieh Dateien aus der Dateiverwaltung irgendwo aufs Fenster, um sie über ein
+Plugin mit **Send to…** wie LocalSend ans iPhone zu senden; siehe
+[Dateien aufs Fenster ziehen](plugins.md#dateien-aufs-fenster-ziehen).
+
+Die Lupe in der Kopfzeile, `Strg+K` oder `Strg+F` öffnet die
+[Suche](search.md) über Unterhaltungen, Nachrichten, Kontakte und Anrufe.
+Ein Treffer öffnet die Unterhaltung bei dieser Nachricht, die Kontaktkarte
+oder den Anruf in der Anrufliste.
+
 **Settings** (Hauptmenü, `Strg+,`) hat dieselben Kategorien wie der
 KDE-Client, je eine Seite; die Umschaltleiste sitzt in der Kopfzeile, in
 einem schmalen Fenster unten, und der Suchknopf findet jede Einstellung:
@@ -50,7 +67,7 @@ einem schmalen Fenster unten, und der Suchknopf findet jede Einstellung:
 | Kategorie | Inhalt |
 | --- | --- |
 | Phone | Kopplung, Verbindungszustand mit **Reconnect**, **Run Diagnostics** (dieselben Prüfungen wie `blueferry doctor`; der Bericht öffnet sich in einem eigenen Dialog mit Kopierknopf), Kopplungsbericht, Kontaktabgleich, Kontaktfotos |
-| Notifications | Welche Ereignisse Popups erzeugen, nur Kontakte, Klickregeln, Mitteilungsinhalt, Aktionsknöpfe, Mitteilungen mit dem iPhone abgleichen, beim Wegklicken als gelesen markieren, letzte Mitteilungen behalten |
+| Notifications | Welche Ereignisse Popups erzeugen, nur Kontakte, [stummgeschaltete Apps](notification-mute.md), Klickregeln, Mitteilungsinhalt, Aktionsknöpfe, Mitteilungen mit dem iPhone abgleichen, beim Wegklicken als gelesen markieren, letzte Mitteilungen behalten |
 | Calls & Audio | Anrufe, Anrufliste, Akku-Warnung, [iPhone-Ton am Computer](phone-audio.md), Mediensteuerung |
 | Network | Optionales [Bluetooth-Tethering](bluetooth-tethering.md) |
 | Security | Einmalcodes, Abwesenheitssperre, lokale Daten und ihre Verschlüsselung, Verlauf löschen |
