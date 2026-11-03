@@ -104,6 +104,32 @@ blueferry send photo.jpg --to localsend
 blueferry photos recent
 ```
 
+### Dropping files on the window
+
+Not available yet: the KDE and GTK windows get their drop zone in a coming
+release. Until then, use **Send to…** on the card or `blueferry send`. This
+is how it will work:
+
+Drag files from the file manager anywhere onto the KDE or GTK main window:
+**Drop to send to iPhone** appears, and when you let go BlueFerry hands the
+files to a **Send to…** target:
+
+- One target, for example "iPhone (LocalSend)": the files go there at once.
+  A short notice says so, and the plugin's card shows the transfer.
+- Several targets: BlueFerry asks which one. The target you picked last is
+  preselected until you close BlueFerry.
+- No target: BlueFerry explains that a plugin with **Send to** (the `share`
+  capability, for example LocalSend) is needed, with a button that opens
+  **Settings › Plugins**.
+
+Only files on this computer are sent, 1 to 64 at a time. Folders, links from
+a browser and files on other computers (for example `sftp://`) are skipped
+with a note. A card item that takes files still gets the files dropped on it.
+
+| | Qt | GTK | TUI | Quickshell | CLI |
+|---|---|---|---|---|---|
+| Drop files on the window | coming | coming | — a terminal gets no file drops | — the panel has no drop zone and does not manage plugins | `blueferry send FILE… [--to PLUGIN]` |
+
 ## Logs and privacy
 
 Plugins write `~/.local/state/blueferry/plugins/<id>.log` (only you can read

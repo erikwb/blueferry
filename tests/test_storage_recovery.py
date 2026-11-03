@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sqlite3
+import threading
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -10,22 +11,26 @@ import pytest
 from gi.repository import GLib
 
 from blueferry import config
+from blueferry import contact_repository as repository_mod
 from blueferry import contacts as contacts_mod
 from blueferry import daemon as daemon_mod
 from blueferry import history as history_mod
 from blueferry import storage_preparation as preparation_mod
 from blueferry.ancs.constants import MESSAGES_APP_ID
 from blueferry.backend_operations import BackendDependencies, BackendOperations
+from blueferry.call_history import MISSED, CallRecord
+from blueferry.call_history_repository import CallHistoryRepository, clear_call_history
 from blueferry.contact_repository import ContactRepository
 from blueferry.contact_sync import CONTACTS_REFRESH_SEC
-from blueferry.contacts import ContactsResolver
-from blueferry.errors import ConfirmationRequiredError
+from blueferry.contacts import ContactsResolver, clear_contact_cache
+from blueferry.errors import ConfigurationError, ConfirmationRequiredError
 from blueferry.events import SmsEvent
-from blueferry.history import append_event, read_events
+from blueferry.history import append_event, clear_events, read_events
 from blueferry.settings_store import SettingsStore
 from blueferry.sinks.sqlite import SqliteSink
 from blueferry.starred_threads import StarredThreadsStore
 from blueferry.storage_security import (
+    DAMAGED_DATABASE_DETAIL,
     KEY_CHECK_SETTING,
     KEY_MISMATCH_DETAIL,
     KEY_MISSING_DETAIL,
@@ -98,8 +103,6 @@ def recovery(make_daemon, monkeypatch):
     daemon.sessions.pbap = object()  # PBAP is live; MAP is not.
     monkeypatch.setattr(daemon.sessions, "report_error", lambda _error: None)
     storage = daemon.storage
-    seeded = []
-    daemon.events = SimpleNamespace(seed_historical_ancs=seeded.extend)
     published = []
     monkeypatch.setattr(daemon, "_emit_status", lambda: published.append(storage.status))
     operations = BackendOperations(daemon.sessions, BackendDependencies(
@@ -118,7 +121,7 @@ def recovery(make_daemon, monkeypatch):
 
     return SimpleNamespace(
         storage=storage, wallet=wallet, daemon=daemon, operations=operations,
-        queue=queue, outcomes=outcomes, published=published, seeded=seeded, unlock=unlock,
+        queue=queue, outcomes=outcomes, published=published, unlock=unlock,
         scheduled=scheduled,
     )
 
@@ -255,7 +258,6 @@ def test_recovery_runs_deferred_history_cleanup_and_seeds_ancs(recovery, interac
     r.storage.refresh(allow_prompt=False)
     r.daemon.contacts.refresh()
     SqliteSink(storage=r.storage)
-    assert not r.seeded
 
     r.wallet.locked = False
     r.unlock(interactive=interactive)
@@ -264,7 +266,6 @@ def test_recovery_runs_deferred_history_cleanup_and_seeds_ancs(recovery, interac
     assert len(retained) == 2
     assert retained[0]["handle"] == "recent"
     assert "extra_private_field" not in retained[1]
-    assert r.seeded == [retained[1]]
     assert r.outcomes[-1]["storage_state"] == "ready"
     assert r.published[-1].state == "ready"
     assert b"legacy plaintext" not in config.EVENTS_DB.read_bytes()
@@ -639,6 +640,185 @@ def test_reset_erases_unreadable_storage_and_starts_over(recovery):
     assert [event["handle"] for event in read_events(storage=r.storage)] == ["new"]
 
 
+@pytest.mark.parametrize("database, clear", [
+    ("EVENTS_DB", clear_events),
+    ("CONTACTS_DB", clear_contact_cache),
+    ("CALLS_DB", clear_call_history),
+])
+def test_reset_replaces_a_database_sqlite_cannot_open(recovery, database, clear):
+    r = recovery
+    r.wallet.locked = False
+    r.storage.refresh(allow_prompt=False)
+    now = datetime.now(timezone.utc)
+    append_event({"kind": "sms_received", "handle": "old", "body": "lost"}, storage=r.storage)
+    ContactRepository(r.storage).replace([("Alice", ["15551111111"], [])])
+    CallHistoryRepository(r.storage).replace([CallRecord(
+        direction=MISSED, occurred_at=now, raw_time=now.strftime("%Y%m%dT%H%M%SZ"),
+        address="+15551111111", phone="15551111111", name=None,
+    )], now=now)
+    path = getattr(config, database)
+    damaged = b"not a database" * 512
+    path.write_bytes(damaged)
+    sidecar = path.with_name(path.name + "-wal")
+    sidecar.write_bytes(b"stale log")
+
+    # Ordinary erasing never deletes a damaged file; only a reset does.
+    with pytest.raises(sqlite3.DatabaseError):
+        clear()
+    assert path.read_bytes() == damaged
+
+    r.operations.reset_storage_async(
+        r.queue.submit, r.outcomes.append, lambda error: pytest.fail(str(error)),
+        confirmed=True,
+    )
+    r.queue.finish()
+
+    assert r.outcomes[-1]["storage_state"] == "ready"
+    assert not sidecar.exists()
+    assert not path.exists() or path.read_bytes() != damaged
+    assert read_events(storage=r.storage) == []
+    assert ContactRepository(r.storage).load() == []
+    assert CallHistoryRepository(r.storage).load(now=now) == []
+
+
+def test_reset_waits_for_a_contact_sync_that_has_the_cache_open(monkeypatch):
+    ContactRepository().replace([("Old", ["15550000000"], [])])
+    reset_thread = threading.current_thread()
+    opened = threading.Event()
+    reset_waiting = threading.Event()
+    real_open, real_lock = repository_mod._open_db, repository_mod._STORE_LOCK
+
+    class WatchedLock:
+        def __enter__(self):
+            if threading.current_thread() is reset_thread:
+                reset_waiting.set()
+            real_lock.acquire()
+
+        def __exit__(self, *exc_info):
+            real_lock.release()
+
+    def open_db():
+        connection = real_open()
+        if threading.current_thread() is not reset_thread:
+            # Connected but not yet writing: the window the reset must respect.
+            opened.set()
+            reset_waiting.wait(timeout=10)
+        return connection
+
+    monkeypatch.setattr(repository_mod, "_STORE_LOCK", WatchedLock())
+    monkeypatch.setattr(repository_mod, "_open_db", open_db)
+    errors: list[BaseException] = []
+
+    def sync():
+        try:
+            ContactRepository().replace([("Alice", ["15551111111"], [])])
+        except BaseException as error:
+            errors.append(error)
+
+    worker = threading.Thread(target=sync)
+    worker.start()
+    assert opened.wait(timeout=10)
+    clear_contact_cache(discard_damaged=True)
+    reset_waiting.set()
+    worker.join(timeout=10)
+
+    assert not worker.is_alive()
+    assert errors == []
+    # The reset ran after the sync's write, so nothing it wrote survives.
+    assert ContactRepository().load(strict=True) == []
+    path = config.CONTACTS_DB
+    assert not path.with_name(path.name + "-journal").exists()
+
+
+def test_damaged_history_offers_the_reset_that_clears_it(recovery):
+    r = recovery
+    _seal_history(r)
+    damaged = b"not a database" * 512
+    config.EVENTS_DB.write_bytes(damaged)
+    r.storage.require_preparation()  # A restart.
+
+    r.unlock()
+
+    assert r.storage.status == StorageStatus("encrypted", "error", DAMAGED_DATABASE_DETAIL)
+    status = r.daemon._status()
+    assert status["storage_reset"] is True
+    assert status["storage_detail"] == DAMAGED_DATABASE_DETAIL
+    assert config.EVENTS_DB.read_bytes() == damaged
+
+    r.operations.reset_storage_async(
+        r.queue.submit, r.outcomes.append, lambda error: pytest.fail(str(error)),
+        confirmed=True,
+    )
+    r.queue.finish()
+
+    assert r.outcomes[-1]["storage_state"] == "ready"
+    assert r.daemon._status()["storage_reset"] is False
+    append_event({"kind": "sms_received", "handle": "new", "body": "kept"}, storage=r.storage)
+    assert [event["handle"] for event in read_events(storage=r.storage)] == ["new"]
+
+
+def test_unreadable_settings_come_before_a_damaged_database_reset(recovery):
+    r = recovery
+    _seal_history(r)
+    damaged = b"not a database" * 512
+    config.EVENTS_DB.write_bytes(damaged)
+    path = r.storage.settings_path
+    saved = path.read_text(encoding="utf-8")
+    path.write_text(saved[:-3], encoding="utf-8")
+    deleted, created = r.wallet.deleted, r.wallet.created
+
+    def reset():
+        r.operations.reset_storage_async(
+            r.queue.submit, r.outcomes.append, lambda error: pytest.fail(str(error)),
+            confirmed=True,
+        )
+
+    def retry():
+        r.operations.retry_storage_async(
+            r.queue.submit, r.outcomes.append, lambda error: pytest.fail(str(error)),
+        )
+        if r.queue.jobs:
+            r.queue.finish()
+
+    def refused():
+        # Refused before anything is erased or the wallet is asked.
+        with pytest.raises(ConfigurationError, match=r"settings\.json can't be read"):
+            reset()
+        assert not r.queue.jobs
+        assert config.EVENTS_DB.read_bytes() == damaged
+        assert (r.wallet.deleted, r.wallet.created) == (deleted, created)
+
+    def unreadable_settings_shown():
+        status = r.daemon._status()
+        assert "settings.json cannot be read" in status["storage_detail"]
+        assert status["storage_reset"] is False
+
+    # Both at once after a restart: the settings file is what to fix first.
+    r.storage.require_preparation()
+    retry()
+    unreadable_settings_shown()
+    refused()
+
+    path.write_text(saved, encoding="utf-8")
+    retry()
+    assert r.storage.status.detail == DAMAGED_DATABASE_DETAIL
+    assert r.daemon._status()["storage_reset"] is True
+
+    # The file breaks again while the reset is offered: the reset is refused,
+    # and the status stops offering it.
+    path.write_text(saved[:-3], encoding="utf-8")
+    refused()
+    unreadable_settings_shown()
+
+    path.write_text(saved, encoding="utf-8")
+    retry()
+    assert r.daemon._status()["storage_reset"] is True
+    reset()
+    r.queue.finish()
+    assert r.outcomes[-1]["storage_state"] == "ready"
+    assert read_events(storage=r.storage) == []
+
+
 def test_replacement_key_is_not_trusted_over_encrypted_preferences(recovery):
     r = recovery
     path = r.storage.settings_path
@@ -658,3 +838,139 @@ def test_replacement_key_is_not_trusted_over_encrypted_preferences(recovery):
     r.unlock(interactive=True)
     assert r.outcomes[-1]["storage_state"] == "ready"
     assert StarredThreadsStore(path, storage=r.storage).keys() == [thread]
+
+
+def _unreadable_settings_daemon(make_daemon, monkeypatch):
+    """Start with plaintext history and contacts, and settings.json damaged."""
+    wallet = _Wallet()
+    wallet.locked = False
+    monkeypatch.setattr(GLib, "timeout_add_seconds", lambda *_args: 1)
+    monkeypatch.setattr(GLib, "source_remove", lambda _source: True)
+    monkeypatch.setattr(daemon_mod, "ObexWorker", _Queue)
+    monkeypatch.setattr(
+        daemon_mod, "StorageSecurity",
+        lambda **kwargs: StorageSecurity(key_provider=wallet, **kwargs),
+    )
+    path = config.SETTINGS_JSON
+    SettingsStore(path).update(local_data="plaintext")
+    seeded = StorageSecurity(key_provider=wallet, initialize=False)
+    append_event({"kind": "sms_received", "handle": "kept", "body": "private"}, storage=seeded)
+    ContactRepository(seeded).replace([("Alice", ["15551111111"], [])])
+    saved = path.read_text(encoding="utf-8")
+    path.write_text(saved[:-3], encoding="utf-8")
+    daemon = make_daemon()
+    operations = BackendOperations(daemon.sessions, BackendDependencies(
+        storage=daemon.storage, contacts=daemon.contacts,
+        starred_threads=daemon.starred_threads, group_routes=daemon.group_routes,
+        confirmed_groups=daemon.confirmed_groups,
+        prepare_storage=preparation_mod.prepare_storage,
+        on_storage_prepared=daemon._apply_storage_preparation,
+        on_storage_changed=daemon._on_storage_changed,
+    ))
+    queue = _Queue()
+    daemon.storage.require_preparation()
+    operations.retry_storage_async(
+        queue.submit, lambda _status: None, lambda error: pytest.fail(str(error)),
+        initialize=True,
+    )
+    assert not queue.jobs
+    assert "settings.json cannot be read" in daemon.storage.status.detail
+    return SimpleNamespace(
+        daemon=daemon, operations=operations, queue=queue, wallet=wallet, saved=saved,
+    )
+
+
+@pytest.mark.parametrize("change", ["none", "plaintext", "encrypted", "reset"])
+def test_storage_changes_are_refused_while_settings_cannot_be_read(
+    make_daemon, monkeypatch, change,
+):
+    r = _unreadable_settings_daemon(make_daemon, monkeypatch)
+    before = {
+        path: path.read_bytes()
+        for path in (config.SETTINGS_JSON, config.EVENTS_DB, config.CONTACTS_DB)
+    }
+    status = r.daemon.storage.status
+
+    def replied(value):
+        pytest.fail(f"unexpected reply: {value}")
+
+    with pytest.raises(ConfigurationError, match=r"settings\.json can't be read") as caught:
+        if change == "reset":
+            r.operations.reset_storage_async(
+                r.queue.submit, replied, replied, confirmed=True,
+            )
+        else:
+            r.operations.change_storage_async(
+                r.queue.submit, replied, replied, policy=change,
+            )
+
+    assert caught.value.dbus_suffix == "Configuration"
+    # Nothing was erased, migrated or rewritten, and the wallet was untouched.
+    assert {path: path.read_bytes() for path in before} == before
+    assert not r.queue.jobs and r.wallet.deleted == 0 and r.wallet.created == 0
+    assert r.daemon.storage.status == status
+
+
+def test_policy_change_after_settings_reads_again_uses_the_saved_policy(
+    make_daemon, monkeypatch,
+):
+    r = _unreadable_settings_daemon(make_daemon, monkeypatch)
+    # Repaired before the retry tick has read it again.
+    config.SETTINGS_JSON.write_text(r.saved, encoding="utf-8")
+    outcomes = []
+
+    r.operations.change_storage_async(
+        r.queue.submit, outcomes.append, lambda error: pytest.fail(str(error)),
+        policy="encrypted",
+    )
+    r.queue.finish()
+
+    # The saved policy was plaintext, so its records were erased, not kept
+    # beside encrypted ones.
+    assert outcomes[-1]["storage_policy"] == "encrypted"
+    assert outcomes[-1]["storage_state"] == "ready"
+    assert _event_rows() == 0
+    assert SettingsStore(config.SETTINGS_JSON).read()["local_data"] == "encrypted"
+
+
+def test_photos_show_after_settings_read_again_during_preparation(make_daemon, monkeypatch):
+    from tests.photo_fixtures import png
+
+    monkeypatch.setattr(config, "CONTACT_PHOTOS", False)
+    monkeypatch.setattr(GLib, "timeout_add_seconds", lambda *_args: 1)
+    monkeypatch.setattr(GLib, "source_remove", lambda _source: True)
+    wallet = _Wallet()
+    monkeypatch.setattr(daemon_mod, "ObexWorker", _Queue)
+    monkeypatch.setattr(
+        daemon_mod, "StorageSecurity",
+        lambda **kwargs: StorageSecurity(key_provider=wallet, **kwargs),
+    )
+    path = config.SETTINGS_JSON
+    SettingsStore(path).update(local_data="plaintext", contact_photos=True)
+    seeded = StorageSecurity(key_provider=wallet, initialize=False)
+    ContactRepository(seeded).replace([("Alice", ["15551112222"], [])], photos=[png()])
+    saved = path.read_bytes()
+    path.write_bytes(b"{ damaged")
+    daemon = make_daemon()
+    monkeypatch.setattr(daemon, "_emit_status", lambda: None)
+    operations = BackendOperations(daemon.sessions, BackendDependencies(
+        storage=daemon.storage, contacts=daemon.contacts,
+        prepare_storage=lambda storage: preparation_mod.prepare_storage(
+            storage, photos=daemon._contact_photos_enabled,
+        ),
+        on_storage_prepared=daemon._apply_storage_preparation,
+        on_storage_changed=daemon._on_storage_changed,
+    ))
+    path.write_bytes(saved)
+    # Preparation reads the repaired file and builds the cache before the
+    # retry tick has read the photo choice; the tick runs before it lands.
+    queue = _Queue()
+    operations.change_storage_async(
+        queue.submit, lambda _status: None, lambda error: pytest.fail(str(error)),
+    )
+    operation, handlers = queue.jobs.pop(0)
+    prepared = operation()
+    daemon._retry_storage()
+    handlers["on_success"](prepared)
+    assert daemon.storage.status.can_read
+    assert daemon.contacts.photo("+15551112222") is not None

@@ -61,6 +61,11 @@ hin, damit du weißt, warum manche Apps nie auftauchen.
   gewählt ist, ist keine App stummgeschaltet und Stummschalten nicht möglich.
   BlueFerry überschreibt die gespeicherte Liste nie, solange es sie nicht
   lesen kann.
+- Solange `settings.json` selbst nicht lesbar ist, wird Stummschalten und
+  Aufheben abgelehnt; die Datei reparieren oder entfernen und erneut
+  versuchen. Vorher stummgeschaltete Apps bleiben stumm. Ist der Dienst mit
+  der beschädigten Datei gestartet, erscheinen ihre Popups, bis die Datei
+  wieder lesbar ist.
 - Das D-Bus-Signal `NotificationAppsChanged` trägt keinen Inhalt; Clients
   holen die Liste mit `ListNotificationApps`. `GetStatus` meldet nur die
   Anzahl stummgeschalteter Apps (`notification_muted_app_count`).

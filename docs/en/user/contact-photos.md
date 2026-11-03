@@ -66,6 +66,10 @@ automatically. `blueferry contact-photos status` reports whether cleanup is
 pending or complete. A backend that starts with the option off cleans up
 leftovers too.
 
+If `~/.config/blueferry/settings.json` can't be read, BlueFerry doesn't know
+the saved choice. It keeps any stored photos but doesn't show them, and the
+clients show the option as unavailable until the file is repaired or removed.
+
 **Before going back to an older BlueFerry release**, turn the option off
 first and wait until `blueferry contact-photos status` reports cleanup complete. If you forget,
 the older release deletes them together with the contacts at its next

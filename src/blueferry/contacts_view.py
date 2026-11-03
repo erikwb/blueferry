@@ -59,6 +59,14 @@ def supported(status: Mapping[str, Any]) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
 
 
+def photos_shown(status: Mapping[str, Any]) -> bool:
+    """Whether contact photos may be shown: on, and the saved choice is known."""
+    return (
+        status.get("contact_photos") is True
+        and status.get("contact_photos_state") != "unknown"
+    )
+
+
 def _decode(payload: object) -> Mapping[str, Any]:
     if isinstance(payload, str | bytes):
         try:
