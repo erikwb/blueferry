@@ -2236,6 +2236,7 @@ def test_photos_load_only_while_watched_and_open_the_original(monkeypatch, tmp_p
     from blueferry import photos_view
     from blueferry.plugin_api.client import Photo
     from blueferry.plugin_api.testing import manifest
+    from blueferry.qt.thumbnails import thumbnail_url
 
     from .photo_fixtures import png
     from .test_photo_thumbnails import png_bomb
@@ -2266,7 +2267,9 @@ def test_photos_load_only_while_watched_and_open_the_original(monkeypatch, tmp_p
     assert controller.photos["loaded"] is False  # not watched: nothing loaded
     controller.watchPhotos(True)
     item = controller.photos["items"][0]
-    assert item["video"] is True and item["thumbnail"].endswith("/t.webp")
+    # Through the image provider: QML never opens the thumbnail path itself.
+    assert item["video"] is True and item["thumbnail"] == thumbnail_url(thumb)
+    assert item["thumbnail"].startswith("image://blueferry-thumbnail/")
     assert item["original"] == "" and controller.photos["ready"] is True
     assert not controller.busy
     # A thumbnail declaring 10 gigapixels never reaches QML's image loader.
