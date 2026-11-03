@@ -750,8 +750,15 @@ What happens then:
   blueferry calls answer          # the ringing call
   blueferry calls dtmf 1234#      # tones on the active call
   blueferry calls hangup          # or: hangup --all
+  blueferry calls audio           # speaker/microphone for calls
   ```
 
+- Calls can use their own speaker and microphone (**Speaker for calls** and
+  **Microphone for calls** in the settings, `blueferry calls audio output|input
+  <node name>|system`), and each running call can be switched to another
+  device for that call only. Other sound and the system defaults stay as
+  they are; a chosen device that is not connected falls back to the system's
+  device. See [Call speaker and microphone](docs/en/user/calls.md#call-speaker-and-microphone).
 - `dial` accepts plain numbers only (an optional leading `+` and digits;
   spaces, dashes, dots, parentheses, and slashes are ignored). `*` and `#`
   are refused: dialed, they form service codes such as `**21*…#` that
