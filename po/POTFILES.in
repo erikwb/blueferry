@@ -40,6 +40,7 @@ src/blueferry/qt/qml/NotificationOpenMapEditor.qml
 src/blueferry/qt/qml/MessageBubble.qml
 src/blueferry/qt/qml/OnboardingSummary.qml
 src/blueferry/qt/qml/GroupConfirmationDialog.qml
+src/blueferry/qt/qml/SenderConfirmationDialog.qml
 src/blueferry/qt/qml/GroupParticipantsDialog.qml
 src/blueferry/qt/qml/NewMessageDialog.qml
 src/blueferry/qt/qml/ProximityLockSettings.qml

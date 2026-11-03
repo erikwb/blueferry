@@ -31,6 +31,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `dbus_service.py` | Session D-Bus adapter (`Messages1`/`Events1`/`Presence1`/`CallHistory1`) that maps operations to wire types; claims the bus name. |
 | `dbus_security.py` | Caller UID validation and per-connection/daemon-wide rate limits. |
 | `dbus_call.py` | Asynchronous dbus-python calls with an explicit input signature (`call_async`), plus typed `ay`/`a{sv}` builders. |
+| `dbus_object.py` | `StrictObject`: base class for every exported dbus-python object; rejects a call whose argument types differ from the method's declared `in_signature` with `InvalidArgs`. |
 | `protocol.py` | Stable D-Bus identifiers and the API-generation compatibility check. |
 | `event_dispatcher.py` | Builds messages from MAP/ANCS events and fans them out to persistence, desktop, and D-Bus sinks. |
 | `events.py` | Normalized MAP event dataclasses (`SmsEvent`) and address/timestamp normalization. |
@@ -48,7 +49,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `settings_store.py` | Small atomic store shared by daemon-owned preferences. |
 | `glib_timers.py` | `schedule_periodic`: a repeating GLib timer whose owner forgets the source id once GLib destroys the source (false return or exception). |
 | `read_receipts.py` | Delays MAP read acknowledgements so ANCS can still deliver group metadata. |
-| `recipients.py` | Recipient validation and group confirmation tokens (shared by backend and Python clients). |
+| `recipients.py` | Recipient validation, group confirmation and sender-only reply tokens (shared by backend and Python clients). |
 | `connectivity.py` | MAP/PBAP connectivity state machine and retry policy, independent of GLib and BlueZ. |
 | `profile_supervisor.py` | Owns MAP/PBAP open, close, retry, loss, and resume transitions. |
 | `background_worker.py` | Bounded local jobs completed on the owning GLib loop. |
@@ -140,6 +141,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `history.py` | Bounded, encrypted SQLite event history with a monotonic revision. |
 | `storage_security.py` | Retention policy and Secret Service-backed AES-256-GCM encryption. |
 | `storage_preparation.py` | Worker-side storage validation before the daemon commits it. |
+| `sqlite_files.py` | Recognizes damaged SQLite files and deletes one with its journals for a storage reset. |
 | `text_safety.py` | Escaping for remote text at terminal presentation boundaries. |
 | `message_links.py` | Escaped markup with safe clickable web URLs, shared by GTK and QML. |
 
@@ -204,7 +206,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `plugin_surfaces.py`, `cli_surfaces.py`, `qt/plugin_surfaces.py`, `qt/qml/PluginCardSection.qml` | Host side of the `card` and `share` surfaces: card rows, actions, "Send to…" targets, card actions that take files; `blueferry cards`/`blueferry send` and the Qt "From Plugins" section (which hears `CardChanged` only from enabled card plugins). Plugin calls run on worker threads with timeouts. |
 | `plugin_surfaces_model.py` | Toolkit-neutral state of "From Plugins" and "Send to…", shared by Qt and GTK: coalesced card reloads, actions that re-resolve the plugin before opening a page, one send at a time, targets resolved on the worker; it names the bus names the client must watch for `CardChanged`. `qt/plugin_surfaces.py` adds the `QThreadPool`, `QTimer`, URL conversion and QtDBus watching; `ui/plugin_cards.py` and `ui/card_watch.py` are the GTK side. |
 | `plugin_notify.py` | Daemon side of the `notify` capability: watches the content-free `Plugin1.NotifyChanged`, accepts it only from the owner of an enabled notify plugin's bus name running as the same user, fetches the popup with `GetPendingNotification` from that connection, rate-limits, and hands it to the libnotify sink; the popup button calls `InvokeAction` asynchronously. |
-| `photos_view.py`, `photos_model.py`, `cli_photos.py`, `qt/qml/PhotosTab.qml` | Client side of the `photos` capability: plugin lookup, loads for worker threads, plain-text labels and the tab's state map; `photos_model.py` is the toolkit-neutral Photos tab shared by Qt and GTK (a private worker queue and local busy state, coalesced reloads, generation guards across tab/plugin changes, and originals fetched only from the current plugin); `blueferry photos`, the Qt Photos tab and the GTK one (`ui/photos.py`). |
+| `photos_view.py`, `photos_model.py`, `cli_photos.py`, `qt/qml/PhotosTab.qml` | Client side of the `photos` capability: plugin lookup, loads for worker threads, plain-text labels and the tab's state map; `read_thumbnail` reads a thumbnail's bytes without waiting on a FIFO, and the image loaders of both clients get those bytes, never the path; `photos_model.py` is the toolkit-neutral Photos tab shared by Qt and GTK (a private worker queue and local busy state, coalesced reloads, generation guards across tab/plugin changes, and originals fetched only from the current plugin); `blueferry photos`, the Qt Photos tab and the GTK one (`ui/photos.py`). |
 | `cli_plugins.py` | `blueferry plugins …` and `blueferry plugins ALIAS …` (exec of the plugin's own CLI; refused for a disabled plugin). |
 | `desktop_open.py` | Opens a checked URI with the desktop's default handler for the CLIs. |
 | `companion_tools.py`, `cli_tools.py`, `qt/companion.py`, `qt/qml/CompanionToolsSection.qml` | Client-only launchers for UxPlay screen mirroring, LocalSend and the iPhone camera roll over USB (ifuse); `blueferry tools` and the Qt card's Tools section. Not part of the daemon or its D-Bus API. |
@@ -237,7 +239,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `ui/plugin_cards.py`, `ui/card_watch.py` | GTK From Plugins on `plugin_surfaces_model.py`: card items with their buttons (the row runs the primary action), dimmed lines for failed plugins, Send to… (targets asked for when its menu opens), `sendTo` actions through `GtkFileDialog` and local files dropped on an item (`GtkDropTarget`). `card_watch.CardChangeWatcher` keeps one GDBus `CardChanged` subscription per bus name the model names, so only the enabled card plugins' owners trigger a reload. |
 | `ui/ui_state.py` | The GTK window's own preferences (whether Plugins & Tools is unfolded) in `gtk-ui.json` beside `settings.json`, via `SettingsStore` on a worker; never in the daemon's `settings.json`, which another process writes. |
 | `ui/companion_tools.py` | GTK Tools section on `companion_model.py`: UxPlay, LocalSend, iPhone photos with Eject and the pairing hint; polls only while shown in an active window. |
-| `ui/photos.py` | GTK Photos tab on `photos_model.py`: a `GtkFlowBox` of thumbnails decoded asynchronously (files over 8 MiB or 40 megapixels are skipped), All/Photos/Videos, loaded only while shown; a click downloads the original (header spinner) and opens it with `GtkFileLauncher`; downloaded originals can be dragged out. |
+| `ui/photos.py` | GTK Photos tab on `photos_model.py`: a `GtkFlowBox` of thumbnails read and decoded on a worker (files over 8 MiB or 40 megapixels are skipped), All/Photos/Videos, loaded only while shown; a click downloads the original (header spinner) and opens it with `GtkFileLauncher`; downloaded originals can be dragged out. |
 | `ui/phone_card.py` | GTK phone card: name, connection, battery/signal/network or the hint naming the setting, opt-in now playing with its buttons, the Quick Settings popover; reads the status once for all tabs and nothing while the window is hidden. |
 | `ui/calls.py` | GTK Calls tab: running calls (`running_calls.py`), dial pad with contact suggestions and the opt-in recent calls (`phone_overview.call_groups`), read only while the tab is shown; a StatusChanged re-reads them only when the opt-in changes (CallHistoryChanged and Refresh from iPhone always do). |
 | `ui/running_calls.py` | GTK running calls on the Calls tab (`phone_link_view.call_card`): answer, hold/resume, hang up and the sound switch; `ListCalls` on `CallsChanged`, on a calls status change and after each action, while the window is shown; the duration ticks only on the visible tab. |
@@ -258,6 +260,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `tray_autostart.py` | The tray's opt-in per-user XDG autostart entry. |
 | `qt/tasks.py` | Qt worker primitive, and `QtTaskRunner`/`QtTimer`, the Qt side of `client_tasks.py`. |
 | `qt/avatars.py` | Image provider that decodes opt-in contact photos with `QImageReader` after header and size checks. |
+| `qt/thumbnails.py` | Image provider for the Photos tab: reads a thumbnail with `photos_view.read_thumbnail` and decodes the bytes with `QImageReader`, on QML's image thread. |
 | `qt/activation.py` | Qt adapter for client activation. |
 | `qt/qml/Main.qml` | Kirigami window: navigation and composition. |
 | `qt/qml/ConversationLogic.qml` | Thread lookup, roster-warning dedup, the members editor's list (also used by Quickshell). |
@@ -271,6 +274,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `qt/qml/ProximityLockSettings.qml` | Away-lock toggle, grace period, and warning; loaded only for daemons that report it. |
 | `qt/qml/TetherSection.qml` | "Enable Bluetooth tethering" checkbox, then the connect switch and automatic choice; loaded only when the daemon offers `Tether1`. |
 | `qt/qml/GroupConfirmationDialog.qml` | Group recipient confirmation before sending. |
+| `qt/qml/SenderConfirmationDialog.qml` | Asks before replying only to the sender of a message that may be from a group. |
 | `qt/qml/GroupParticipantsDialog.qml` | Confirm a group's members, with contact suggestions. |
 | `qt/qml/NewMessageDialog.qml` | New message composition. |
 | `qt/qml/PhoneCard.qml` | The phone card left of the tabs: name, connection, battery/signal, now playing and quick switches (sound, away lock); opt-ins that are off stay greyed out with a hint. Folds behind a header button in a narrow window. |
@@ -453,6 +457,16 @@ dbus-python; the guard tolerates that.
   and, once the group is reply-ready, sends the draft through the normal path,
   first-send confirmation included. Without a saved roster the backend still
   refuses the send.
+- A direct thread whose latest incoming message may belong to a group
+  (`group_ambiguous`) is not reply-ready, but carries a `sender_reply_token`
+  while the reply would otherwise be allowed (`Thread.can_compose`). Sending
+  plans as `CONFIRM_SENDER`: every client asks whether to reply to the sender
+  only, then calls `SendToThreadChecked` with `confirm_group` and that token.
+  `recipients.sender_reply_token` hashes the reply address and every such
+  message in the thread, so a confirmation cannot cover a newer one; the
+  backend refuses a stale token and, without one, keeps the thread read-only.
+  A queued reply checks its token again when its turn comes, so one that
+  waited while a message arrived is refused, even if the doubt is gone.
 
 ## Client architecture
 
@@ -782,7 +796,9 @@ A change to these rules has to be made in both places.
   address (a member with a number and an Apple ID, say). Both are marked
   `participants_required`. Only the backend retains a user-supplied route, and
   every observed sender must remain in it. A sender outside the route raises a roster-change
-  warning and disables replies. Routes are local and never modify iPhone
+  warning and disables replies. The warning is saved with the route, so it
+  stays after that sender's messages leave history, until the user saves the
+  members again. Routes are local and never modify iPhone
   groups. They are preferences in `settings.json`, not history events, so
   retention and the bounded conversation window never discard a route that
   is still in use. Two named groups with the same name share a key because ANCS has no
@@ -790,11 +806,16 @@ A change to these rules has to be made in both places.
   a roster does not change the key. Legacy name-folded keys remain aliases
   only when history shows a single spelling, and reading history never
   rewrites the database. An unnamed group's route is saved under its
-  `group:participants:` key, built from the member names in the ANCS subtitle
-  and title, and is applied before address resolution, so later messages stay
-  in that thread. Renaming a member in Contacts or changing the group's
-  membership changes the key and orphans the route; the group then needs its
-  members again.
+  `group:participants:v2:` key, a hash of the member names in the ANCS
+  subtitle and title that keeps repeated names, and is applied before address
+  resolution, so later messages stay in that thread. Renaming a member in
+  Contacts or changing the group's membership changes the key and orphans the
+  route; the group then needs its members again. A route or confirmation
+  saved under the older unversioned key, which dropped repeated names, does
+  not carry over: it never applies, storage preparation removes it from
+  `settings.json`, and a conversation still under that key is read-only.
+  Preparation once also stars the v2 key of a group starred under the old
+  key, keeping the old star; a star never chooses recipients.
 - **Encryption at rest:** history, the contact cache, and the opt-in call
   history live in `0700` directories as `0600` SQLite files. Sensitive records, including event kind,
   timestamp, and content, are encrypted with AES-256-GCM under one random key
@@ -805,9 +826,25 @@ A change to these rules has to be made in both places.
 - **Fail closed:** passive startup only loads a key from an already unlocked
   collection and never prompts. If the key is missing or wrong, or plaintext
   is unframed, storage becomes unavailable without deleting records while live
-  delivery continues. Only an explicit client action may create or unlock the
-  key. History writes are transactional, and a monotonic revision invalidates
-  the projection.
+  delivery continues. While `settings.json` exists but can't be read, the
+  storage policy is unknown, so storage stays locked and nothing is retained;
+  the retry tick reads it again. Policy changes and resets are refused with
+  a `Configuration` error before anything is erased, because erasing for an
+  assumed policy could lose data or keep plaintext the user believes is
+  encrypted. Only an explicit client action may create or unlock the key.
+  History writes are transactional, and a monotonic revision invalidates the
+  projection. A storage reset deletes a database SQLite cannot read, with its
+  journal files; every other path leaves a damaged file in place. When one
+  stops storage preparation, the status offers that reset, but not while
+  `settings.json` can't be read: changes, resets and preparation read it
+  first, so the unreadable file is what the status asks the user to fix.
+  The projection, its rebuild after saving group members, and the
+  full-archive read behind `DeleteThreads` run on the projection worker.
+  History is read in short pages and decoded between them, so a slow read
+  never holds the lock a new message needs. A deletion erases rows only if no
+  history or conversation change arrived during that read; otherwise it starts
+  again. After two such restarts, counting refreshes, it asks the caller to try
+  again.
 - **Contact photos** are opt-in (`contact_photos` in `settings.json`, set
   through `Messages1.SetContactPhotos` and seeded by
   `BLUEFERRY_CONTACT_PHOTOS`; switching applies without a restart). The daemon keeps
@@ -815,7 +852,12 @@ A change to these rules has to be made in both places.
   reading the header and never decodes pixels. It stores the raw bytes
   AES-GCM-sealed in a BLOB next to the contact records, in the same
   transaction, and erases them when the option is turned off (on the OBEX
-  worker, after any queued pull) or at startup when it is off. The photo
+  worker, after any queued pull) or at startup when it is off. While
+  `settings.json` can't be read the choice is unknown: photos are neither
+  erased, pulled nor shown, contact syncs wait, and the storage retry applies
+  the saved choice once the file reads. `GetStatus` then reports
+  `contact_photos_state: unknown` next to the boolean `contact_photos`
+  (false), and clients show the option as unavailable. The photo
   table is created only when a sync stores a photo, and the off-path check is
   read-only, so a profile that never opted in keeps the upstream schema.
   A trigger created with the table deletes all photos whenever
