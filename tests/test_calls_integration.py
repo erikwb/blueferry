@@ -187,12 +187,17 @@ def test_switching_calls_saves_and_applies_without_changing_audio_roles(
     monkeypatch.setattr(daemon_mod, "LegacyPhoneAudioPolicy", forbidden)
     monkeypatch.setattr(daemon_mod, "_in_background", forbidden)
     instance.phone_audio.remove = forbidden
+    # Switching calls off releases the call streams on a real worker whose
+    # answer would arm GLib.idle_add after a race; that part has its own
+    # test (test_call_audio_backend).
+    released = []
+    instance.call_audio.release = lambda: released.append(True)
     status = instance._set_calls_enabled(True)
     assert status["calls_enabled"] is True
     assert started == [True] and statuses
     assert CallsSettings().enabled is True
     instance._set_calls_enabled(False)
-    assert instance.calls.enabled is False
+    assert instance.calls.enabled is False and released == [True]
     assert CallsSettings().enabled is False
 
 
