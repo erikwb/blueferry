@@ -6,7 +6,7 @@ from collections import deque
 from collections.abc import Callable, Iterable
 from functools import partial
 from pathlib import Path
-from typing import ClassVar, Protocol
+from typing import Any, ClassVar, Protocol
 
 from gi.repository import GLib
 from rich.text import Text
@@ -32,7 +32,14 @@ from textual.widgets import (
 )
 from textual.widgets.option_list import Option
 
-from blueferry import config, phone_link_view, phone_overview
+from blueferry import (
+    config,
+    contacts_view,
+    media_volume_view,
+    phone_link_view,
+    phone_overview,
+    search_view,
+)
 from blueferry.backend_lifecycle import BackendLifecycleError, ensure_backend_current
 from blueferry.bus import get_session_bus
 from blueferry.client import BackendClient, BackendError, TetherUnsupportedError
@@ -54,7 +61,7 @@ from blueferry.models import (
     phone_status_fields,
 )
 from blueferry.onboarding import ancs_unavailable_detail
-from blueferry.phone_audio_view import phone_audio
+from blueferry.phone_audio_view import av_sync, phone_audio
 from blueferry.protocol import BUS_NAME, EVENTS_IFACE, OBJECT_PATH, TETHER_IFACE
 from blueferry.reconnect_view import (
     UNSUPPORTED_AUTO_RESET_TEXT,
@@ -66,6 +73,7 @@ from blueferry.tether_status import TetherStatus
 from blueferry.text_safety import terminal_text
 from blueferry.time_display import format_message_timestamp
 from blueferry.tui_calls import CallsScreen
+from blueferry.tui_contacts import ContactsResult, ContactsScreen
 from blueferry.tui_doctor import DoctorScreen
 from blueferry.tui_notification_rules import REVISION_KEY, NotificationRulesScreen
 from blueferry.tui_notifications import NotificationsScreen
@@ -76,7 +84,9 @@ from blueferry.tui_phone import (
     RecentCallsScreen,
     load_phone_name,
     now_playing_text,
+    volume_controls,
 )
+from blueferry.tui_search import SearchResult, SearchScreen
 from blueferry.tui_tasks import TextualTaskRunner, TextualTimer
 
 _REFRESH_SECONDS = 15.0
@@ -133,6 +143,14 @@ class _Client(_TetherClient, Protocol):
     # Contact matches for the calls panel's number field.
     def find_contacts(self, query: str) -> list[tuple[str, str]]: ...
 
+    def contact_cards(
+        self, offset: int = 0, limit: int = 150, query: str = "",
+    ) -> dict: ...
+
+    def contact(self, contact_id: str) -> tuple[dict, bytes]: ...
+
+    def search(self, query: str, limit: int = 20) -> dict: ...
+
     # Opt-in recent iPhone notifications (ListNotifications).
     def notifications(self, limit: int = 50) -> dict: ...
 
@@ -166,6 +184,13 @@ class _Client(_TetherClient, Protocol):
 
     def send_media_command(self, command: str) -> None: ...
 
+    # Messages1 notification list pins and muted apps.
+    def set_notification_pinned(self, key: str, pinned: bool) -> bool: ...
+
+    def notification_apps(self) -> dict: ...
+
+    def set_notification_app_muted(self, app_id: str, muted: bool) -> bool: ...
+
     def call_history(self, limit: int = 200) -> list[CallHistoryEntry]: ...
 
     def sync_call_history(self) -> int: ...
@@ -173,8 +198,6 @@ class _Client(_TetherClient, Protocol):
 
 class _Monitor(Protocol):
     def pump(self) -> tuple[bool, str | None]: ...
-
-    def take_tether_changed(self) -> bool: ...
 
     def close(self) -> None: ...
 
@@ -296,11 +319,15 @@ class _EventMonitor:
     def __init__(self) -> None:
         self.handles: deque[str] = deque()
         self.invalidated = False
+        # HistoryChanged on its own: a StatusChanged also reloads the
+        # snapshot, but only stored history can make a search hit stale.
+        self.history_changed = False
         self.calls_changed = False
         self.tether_changed = False
         self.now_playing_changed = False
         self.call_history_changed = False
         self.notifications_changed = False
+        self.notification_apps_changed = False
         self._context = GLib.MainContext.default()
         bus = get_session_bus()
         common = {
@@ -310,7 +337,7 @@ class _EventMonitor:
         }
         self._matches = [
             bus.add_signal_receiver(
-                lambda _props: self._invalidate(),
+                lambda _props: self._history_changed(),
                 signal_name="HistoryChanged",
                 **common,
             ),
@@ -355,6 +382,12 @@ class _EventMonitor:
                 signal_name="NotificationsChanged",
                 **common,
             ),
+            # Content-free; the muted apps come from ListNotificationApps.
+            bus.add_signal_receiver(
+                lambda: setattr(self, "notification_apps_changed", True),
+                signal_name="NotificationAppsChanged",
+                **common,
+            ),
         ]
 
     def _calls_changed(self) -> None:
@@ -376,8 +409,20 @@ class _EventMonitor:
         changed, self.notifications_changed = self.notifications_changed, False
         return changed
 
+    def take_notification_apps_changed(self) -> bool:
+        changed, self.notification_apps_changed = self.notification_apps_changed, False
+        return changed
+
     def _invalidate(self) -> None:
         self.invalidated = True
+
+    def _history_changed(self) -> None:
+        self.history_changed = True
+        self.invalidated = True
+
+    def take_history_changed(self) -> bool:
+        changed, self.history_changed = self.history_changed, False
+        return changed
 
     def pump(self) -> tuple[bool, str | None]:
         while self._context.pending():
@@ -496,6 +541,30 @@ class GroupConfirmScreen(ModalScreen[bool]):
 
     def action_cancel(self) -> None:
         self.dismiss(False)
+
+
+class SenderConfirmScreen(GroupConfirmScreen):
+    """Asks whether a reply to a message that may be from a group goes to
+    its sender only."""
+
+    def compose(self) -> ComposeResult:
+        name = _one_line(self.thread.name)
+        address = _one_line(", ".join(self.thread.recipients))
+        with Vertical(id="confirm-dialog", classes="dialog"):
+            # Names come from the phone; never parse them as markup.
+            yield Static(Text(f"Reply to {name} only?"), classes="dialog-title")
+            yield Static(
+                Text(
+                    "The latest message may have been sent in a group. "
+                    f"Your reply goes only to {address}."
+                ),
+                classes="dialog-copy",
+            )
+            with Horizontal(classes="dialog-actions"):
+                yield Button("Cancel", id="confirm-cancel")
+                yield Button(
+                    Text(f"Reply only to {name}"), variant="primary", id="confirm-send",
+                )
 
 
 class DeleteConversationScreen(ModalScreen[bool]):
@@ -814,13 +883,18 @@ class HelpScreen(ModalScreen[None]):
         if self.call_history:
             calls_line += "[bold #7dd3fc]Recent calls · refresh from iPhone[/]  h · s\n"
         if self.media_control:
-            calls_line += "[bold #7dd3fc]iPhone play/pause · previous · next[/]  p \\[ ]\n"
+            calls_line += (
+                "[bold #7dd3fc]iPhone play/pause · previous · next · volume down/up[/]"
+                "  p \\[ ] - + (or =)\n"
+            )
         help_text = Text.from_markup(
             "[bold #7dd3fc]Move[/]  ↑ ↓ or j k\n"
             "[bold #7dd3fc]Open / reply[/]  Enter\n"
             "[bold #7dd3fc]Send[/]  Enter\n"
             "[bold #7dd3fc]New line[/]  Shift+Enter\n"
-            "[bold #7dd3fc]Search[/]  /\n"
+            "[bold #7dd3fc]Search conversations[/]  /\n"
+            "[bold #7dd3fc]Search messages, contacts and calls[/]  f\n"
+            "[bold #7dd3fc]Contacts · call · message · copy[/]  C · c m y\n"
             "[bold #7dd3fc]New message[/]  n\n"
             "[bold #7dd3fc]Star conversation[/]  s\n"
             "[bold #7dd3fc]Delete conversation[/]  Delete\n"
@@ -829,6 +903,7 @@ class HelpScreen(ModalScreen[None]):
             "[bold #7dd3fc]Settings · diagnostics · restart service[/]  o\n"
             "[bold #7dd3fc]Notification click rules[/]  l\n"
             "[bold #7dd3fc]iPhone overview · iPhone notifications[/]  Ctrl+P\n"
+            "[bold #7dd3fc]Pin or unpin in iPhone notifications[/]  P\n"
             f"{audio_line}"
             "[bold #7dd3fc]Reconnect iPhone[/]  b\n"
             "[bold #7dd3fc]Automatic connection reset on/off[/]  B\n"
@@ -1019,6 +1094,8 @@ class BlueFerryApp(App[None]):
         Binding("s", "toggle_star", "Star"),
         Binding("delete", "delete_thread", "Delete"),
         Binding("c", "calls", "Calls", show=False),
+        Binding("C", "contacts", "Contacts", show=False),
+        Binding("f", "global_search", "Search everything", show=False),
         Binding("t", "tethering", "Tethering"),
         Binding("o", "options", "Settings"),
         Binding("l", "click_rules", "Click rules", show=False),
@@ -1029,6 +1106,8 @@ class BlueFerryApp(App[None]):
         Binding("p", "media('toggle')", "Play/Pause", show=False),
         Binding("left_square_bracket", "media('previous')", "Previous track", show=False),
         Binding("right_square_bracket", "media('next')", "Next track", show=False),
+        Binding("minus", "volume('down')", "iPhone volume down", show=False),
+        Binding("plus,equals_sign", "volume('up')", "iPhone volume up", show=False),
         Binding("escape", "return_to_list", "Back", show=False),
     ]
 
@@ -1057,6 +1136,7 @@ class BlueFerryApp(App[None]):
         self._deleting = False
         self._announced_calls: set[str] = set()
         self.now_playing = phone_overview.now_playing(None)
+        self.volume = volume_controls(None)
         self._now_playing_key: tuple[bool, bool] | None = None
         self._media_generation = 0
         self._media_loading = False
@@ -1152,21 +1232,33 @@ class BlueFerryApp(App[None]):
         take_calls = getattr(self._monitor, "take_calls_changed", None)
         if take_calls is not None and take_calls():
             self._calls_changed()
-        if self._monitor.take_tether_changed() and isinstance(self.screen, TetherScreen):
+        take_tether = getattr(self._monitor, "take_tether_changed", None)
+        if take_tether is not None and take_tether() and isinstance(self.screen, TetherScreen):
             self.screen.refresh_state()
         take_media = getattr(self._monitor, "take_now_playing_changed", None)
         if take_media is not None and take_media():
             self._load_now_playing()
-        take_history = getattr(self._monitor, "take_call_history_changed", None)
-        if take_history is not None and take_history() and isinstance(
-            self.screen, RecentCallsScreen,
-        ):
+        take_history = getattr(self._monitor, "take_history_changed", None)
+        history_changed = take_history is not None and take_history()
+        take_call_history = getattr(self._monitor, "take_call_history_changed", None)
+        call_history_changed = take_call_history is not None and take_call_history()
+        if call_history_changed and isinstance(self.screen, RecentCallsScreen):
             self.screen.refresh_calls()
+        if history_changed or call_history_changed:
+            # A shown search answer may name a deleted message or call.
+            for screen in self.screen_stack:
+                if isinstance(screen, SearchScreen):
+                    screen.data_changed()
         take_notifications = getattr(self._monitor, "take_notifications_changed", None)
         if take_notifications is not None and take_notifications():
             for screen in self.screen_stack:
                 if isinstance(screen, NotificationsScreen):
                     screen.invalidated()
+        take_apps = getattr(self._monitor, "take_notification_apps_changed", None)
+        if take_apps is not None and take_apps():
+            for screen in self.screen_stack:
+                if isinstance(screen, NotificationsScreen | OptionsScreen):
+                    screen.apps_changed()
         if handle:
             self._pending_open_handle = handle
             if self.state.select_message(handle):
@@ -1247,6 +1339,7 @@ class BlueFerryApp(App[None]):
                         screen.status_changed(self.state.status)
                 elif isinstance(screen, (
                     PhoneOverviewScreen, CallsScreen, RecentCallsScreen, NotificationsScreen,
+                    ContactsScreen, SearchScreen,
                 )):
                     screen.status_changed(values)
         elif self.state.error != previous_error:
@@ -1396,9 +1489,13 @@ class BlueFerryApp(App[None]):
             f"{label} {value}"
             for label, value in phone_status_fields(status, include_network=False)
         ]
-        audio = phone_audio(status.to_dict())
+        values = status.to_dict()
+        audio = phone_audio(values)
         if audio["available"]:
             extras.append("sound here" if audio["on_pc"] else "sound on iPhone")
+        sync = av_sync(values, terse=True)
+        if sync:
+            extras.append(sync)
         if extras:
             summary = "  ·  ".join([summary, *extras])
         connection = self.query_one("#connection-summary", Static)
@@ -1625,6 +1722,16 @@ class BlueFerryApp(App[None]):
             self.action_notifications,
         )
         yield SystemCommand(
+            _("Search Everything"),
+            _("Search messages, contacts and calls (f)"),
+            self._open_global_search,
+        )
+        yield SystemCommand(
+            _("Contacts"),
+            _("Browse the iPhone's contacts, then call or message one (C)"),
+            self._open_contacts,
+        )
+        yield SystemCommand(
             _("Phone Calls"), _("Dial, answer, hold and hang up (c)"), self._open_calls,
         )
         yield SystemCommand(
@@ -1675,6 +1782,8 @@ class BlueFerryApp(App[None]):
             self.state.status.to_dict(), self.now_playing, self._phone_name,
             load_name=None if self._phone_name else self._phone_name_loader,
             on_name=self._remember_phone_name,
+            volume=self.volume,
+            send_media=self._overview_media,
         )
         self.push_screen(screen, self._overview_closed)
 
@@ -1802,7 +1911,7 @@ class BlueFerryApp(App[None]):
         status = self.state.status
         if not status.daemon or not phone_overview.media_control_enabled(status.to_dict()):
             self._media_again = False
-            self._show_now_playing(phone_overview.now_playing(None))
+            self._show_now_playing(phone_overview.now_playing(None), volume_controls(None))
             return
         if self._media_loading:
             self._media_again = True
@@ -1817,42 +1926,82 @@ class BlueFerryApp(App[None]):
             snapshot = self.state.client.now_playing()
         except BackendError:
             pass
-        self.call_from_thread(self._media_loaded, phone_overview.now_playing(snapshot), generation)
+        self.call_from_thread(
+            self._media_loaded, phone_overview.now_playing(snapshot), generation,
+            volume_controls(snapshot),
+        )
 
-    def _media_loaded(self, view: phone_overview.NowPlaying, generation: int) -> None:
+    def _media_loaded(
+        self, view: phone_overview.NowPlaying, generation: int,
+        volume: dict[str, Any] | None = None,
+    ) -> None:
         self._media_loading = False
         if generation == self._media_generation:
-            self._show_now_playing(view)
+            self._show_now_playing(view, volume or volume_controls(None))
         if self._media_again:
             self._media_again = False
             self._load_now_playing()
 
-    def _show_now_playing(self, view: phone_overview.NowPlaying) -> None:
+    def _show_now_playing(
+        self, view: phone_overview.NowPlaying, volume: dict[str, Any],
+    ) -> None:
         self.now_playing = view
+        self.volume = volume
         if not self.is_running:
             return
         try:
             line = self.query_one("#now-playing", Static)
         except NoMatches:
             return
-        line.update(now_playing_text(view))
+        line.update(now_playing_text(view, volume))
         line.display = view.visible
         for screen in self.screen_stack:
             if isinstance(screen, PhoneOverviewScreen):
-                screen.now_playing_changed(view)
+                screen.now_playing_changed(view, volume)
+
+    def _media_unavailable(self) -> bool:
+        """Say why media keys do nothing; True when media control is not shown."""
+        if self.now_playing.visible:
+            return False
+        if not phone_overview.media_control_enabled(self.state.status.to_dict()):
+            self.notify(
+                "iPhone media control is off; enable it with 'blueferry media enable'",
+                severity="warning",
+            )
+        else:
+            self.notify("iPhone media control is not connected", severity="warning")
+        return True
+
+    def action_volume(self, direction: str) -> None:
+        """One iPhone volume step (``-`` and ``+``); the phone has no absolute level."""
+        if isinstance(self.focused, Input | TextArea) or self._media_unavailable():
+            return
+        volume = self.volume
+        command = media_volume_view.volume_command(direction)
+        if command is None:
+            return
+        side = "up" if command == media_volume_view.VOLUME_UP else "down"
+        if volume.get(f"{side}_enabled") is not True:
+            message = str(volume.get(f"{side}_tooltip") or "")
+            self.notify(
+                _one_line(message or "The iPhone player does not offer this right now"),
+                severity="warning", markup=False,
+            )
+            return
+        self._send_media_command(command)
+
+    def _overview_media(self, command: str) -> None:
+        """A media button in the iPhone overview."""
+        if command in {media_volume_view.VOLUME_UP, media_volume_view.VOLUME_DOWN}:
+            self.action_volume(command)
+        else:
+            self.action_media(command)
 
     def action_media(self, command: str) -> None:
         if isinstance(self.focused, Input | TextArea):
             return
         view = self.now_playing
-        if not view.visible:
-            if not phone_overview.media_control_enabled(self.state.status.to_dict()):
-                self.notify(
-                    "iPhone media control is off; enable it with 'blueferry media enable'",
-                    severity="warning",
-                )
-            else:
-                self.notify("iPhone media control is not connected", severity="warning")
+        if self._media_unavailable():
             return
         if command not in view.commands:
             self.notify("The iPhone player does not offer this right now", severity="warning")
@@ -1874,7 +2023,7 @@ class BlueFerryApp(App[None]):
             return
         self._open_recent_calls()
 
-    def _open_recent_calls(self) -> None:
+    def _open_recent_calls(self, call_id: str = "") -> None:
         if isinstance(self.screen, RecentCallsScreen):
             return
         values = self.state.status.to_dict()
@@ -1883,10 +2032,11 @@ class BlueFerryApp(App[None]):
             self.notify(terminal_text(hint), severity="warning", markup=False)
             return
         self.push_screen(
-            RecentCallsScreen(self.state.client, status=values), self._recent_call_chosen,
+            RecentCallsScreen(self.state.client, status=values, focus_call_id=call_id),
+            self._recent_call_chosen,
         )
 
-    def _recent_call_chosen(self, choice: RecentCallsResult) -> None:
+    def _recent_call_chosen(self, choice: RecentCallsResult | ContactsResult) -> None:
         if choice is None:
             return
         action, address = choice
@@ -1894,6 +2044,74 @@ class BlueFerryApp(App[None]):
             self._open_calls(address)
         elif action == "message":
             self.push_screen(NewMessageScreen(address), self._new_message_ready)
+
+    def action_contacts(self) -> None:
+        if isinstance(self.focused, Input | TextArea):
+            return
+        self._open_contacts()
+
+    def _open_contacts(self, contact_id: str = "") -> None:
+        if isinstance(self.screen, ContactsScreen):
+            if contact_id:
+                self.screen.open_card(contact_id)
+            return
+        values = self.state.status.to_dict()
+        if not contacts_view.supported(values):
+            self.notify(
+                _("The running backend cannot show contact cards; restart it after upgrading"),
+                severity="warning", markup=False,
+            )
+            return
+        self.push_screen(
+            ContactsScreen(self.state.client, status=values, open_id=contact_id),
+            self._recent_call_chosen,
+        )
+
+    def action_global_search(self) -> None:
+        if isinstance(self.focused, Input | TextArea):
+            return
+        self._open_global_search()
+
+    def _open_global_search(self) -> None:
+        if isinstance(self.screen, SearchScreen):
+            return
+        if not search_view.supported(self.state.status.to_dict()):
+            self.notify(
+                _("The running backend cannot search; restart it after upgrading"),
+                severity="warning", markup=False,
+            )
+            return
+        self.push_screen(
+            SearchScreen(self.state.client, status=self.state.status.to_dict()),
+            self._search_hit_chosen,
+        )
+
+    def _search_hit_chosen(self, target: SearchResult) -> None:
+        """Open where a search hit lives (``search_view`` row targets)."""
+        if target is None:
+            return
+        kind = target.get("kind")
+        if kind == "contact":
+            self._open_contacts(str(target.get("contact_id") or ""))
+        elif kind == "call":
+            self._open_recent_calls(str(target.get("call_id") or ""))
+        elif kind in {"conversation", "message"}:
+            self._open_conversation_hit(
+                str(target.get("thread_key") or ""), str(target.get("handle") or ""),
+            )
+
+    def _open_conversation_hit(self, thread_key: str, handle: str) -> None:
+        found = bool(handle) and self.state.select_message(handle)
+        thread = None if found or not thread_key else self.state.thread(thread_key)
+        if thread is not None:
+            self.state.selected_key = thread.key
+        elif not found:
+            self.notify(
+                _("This conversation is not in the list; refresh and try again."),
+                severity="warning", markup=False,
+            )
+            return
+        self.call_later(self._show_selected_from_notification)
 
     def action_toggle_star(self) -> None:
         focused = self.focused
@@ -1965,15 +2183,25 @@ class BlueFerryApp(App[None]):
                 ),
             )
             return
+        if plan.disposition is ReplyDisposition.CONFIRM_SENDER:
+            self.push_screen(
+                SenderConfirmScreen(thread),
+                lambda confirmed: self._group_reply_ready(
+                    confirmed, thread.key, body, plan.expected_group_token,
+                    cancelled="Reply cancelled",
+                ),
+            )
+            return
         self._begin_reply(thread.key, body, False, plan.expected_group_token)
 
     def _group_reply_ready(
         self, confirmed: bool, thread_key: str, body: str, expected_group_token: str,
+        *, cancelled: str = "Group reply cancelled",
     ) -> None:
         if confirmed:
             self._begin_reply(thread_key, body, True, expected_group_token)
         else:
-            self.state.notice = "Group reply cancelled"
+            self.state.notice = cancelled
             self._update_notice()
 
     def _begin_reply(

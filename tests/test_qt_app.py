@@ -69,6 +69,17 @@ def kde_style_installed(monkeypatch):
     return installed
 
 
+@pytest.fixture(autouse=True)
+def stub_quick_style_binding(monkeypatch):
+    """Never reach the real QQuickStyle: setStyle() is process-wide and
+    cannot be undone, so a test that runs main() would leave the style it
+    picked for every later QML test on the same worker. The fixtures below
+    replace this stub when a test needs a particular binding."""
+    binding = types.ModuleType("PySide6.QtQuickControls2")
+    binding.QQuickStyle = types.SimpleNamespace(setStyle=lambda _style: None)
+    monkeypatch.setitem(sys.modules, "PySide6.QtQuickControls2", binding)
+
+
 @pytest.fixture
 def quick_style_binding(monkeypatch):
     """Install a stub PySide6.QtQuickControls2 and return the styles set."""

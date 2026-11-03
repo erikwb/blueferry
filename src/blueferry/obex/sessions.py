@@ -7,6 +7,7 @@ for its lifetime, reopening only on observed failure.
 from __future__ import annotations
 
 import logging
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -91,6 +92,13 @@ class SessionManager:
         self._signal_matches: list = []
         self._closing = False
         self._monitoring = False
+        # open_all() runs on the OBEX worker, but removals are dispatched on
+        # the main loop and can arrive before the worker publishes the new
+        # path. Remember them for the duration of the open so that a session
+        # removed before publication is reported as a failed open.
+        self._publish_lock = threading.Lock()
+        self._removed_while_opening: set[str] | None = None
+        self._obexd_exited_while_opening = False
 
     def set_on_lost(self, callback: Callable[[str], None] | None) -> None:
         """Replace the lifecycle observer before monitoring starts."""
@@ -127,21 +135,39 @@ class SessionManager:
     def _on_interfaces_removed(self, path, _interfaces) -> None:
         lost = []
         path = str(path)
-        if self.map is not None and path == self.map.path:
-            lost.append("MAP")
-            self.map = None
-        if self.pbap is not None and path == self.pbap.path:
-            lost.append("PBAP")
-            self.pbap = None
+        with self._publish_lock:
+            if self._removed_while_opening is not None:
+                self._removed_while_opening.add(path)
+            if self.map is not None and path == self.map.path:
+                lost.append("MAP")
+                self.map = None
+            if self.pbap is not None and path == self.pbap.path:
+                lost.append("PBAP")
+                self.pbap = None
         if lost and not self._closing:
             self._notify_lost("/".join(lost) + " session disappeared")
 
     def _on_name_owner_changed(self, _name, old_owner, new_owner) -> None:
-        if old_owner and not new_owner and (self.map or self.pbap):
+        if not old_owner or new_owner:
+            return
+        with self._publish_lock:
+            if self._removed_while_opening is not None:
+                self._obexd_exited_while_opening = True
+            lost = self.map is not None or self.pbap is not None
             self.map = None
             self.pbap = None
-            if not self._closing:
-                self._notify_lost("obexd exited")
+        if lost and not self._closing:
+            self._notify_lost("obexd exited")
+
+    def _publish(self, attribute: str, session: ObexSession) -> bool:
+        with self._publish_lock:
+            if (
+                self._obexd_exited_while_opening
+                or session.path in (self._removed_while_opening or ())
+            ):
+                return False
+            setattr(self, attribute, session)
+            return True
 
     def _notify_lost(self, reason: str) -> None:
         log.warning("OBEX connection lost: %s", reason)
@@ -163,16 +189,29 @@ class SessionManager:
         if self.map is not None and self.pbap is not None:
             return
         failures: list[Exception] = []
-        for target, attribute in (("MAP", "map"), ("PBAP", "pbap")):
-            if getattr(self, attribute) is not None:
-                continue
-            try:
-                session = _create_session(target)
-            except Exception as error:
-                failures.append(error)
-                continue
-            setattr(self, attribute, session)
-            log.info("%s session: %s", target, session.path)
+        with self._publish_lock:
+            self._removed_while_opening = set()
+            self._obexd_exited_while_opening = False
+        try:
+            for target, attribute in (("MAP", "map"), ("PBAP", "pbap")):
+                if getattr(self, attribute) is not None:
+                    continue
+                try:
+                    session = _create_session(target)
+                except Exception as error:
+                    failures.append(error)
+                    continue
+                if not self._publish(attribute, session):
+                    close_obex_profile_bus(target)
+                    failures.append(SessionError(
+                        f"{target} session disappeared while opening"
+                    ))
+                    continue
+                log.info("%s session: %s", target, session.path)
+        finally:
+            with self._publish_lock:
+                self._removed_while_opening = None
+                self._obexd_exited_while_opening = False
 
         if failures:
             # Keep a successful sibling profile alive. iOS can reject its

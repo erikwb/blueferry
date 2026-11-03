@@ -312,7 +312,12 @@ ANCS metadata is required for group-message correlation.
 ANCS_APP_BLOCKLIST: frozenset[str] = (
     _env_ancs_app_ids("BLUEFERRY_ANCS_APP_BLOCKLIST") or frozenset()
 )
-"""Exact bundle IDs denied after the allowlist; block rules take precedence."""
+"""Exact bundle IDs denied after the allowlist; block rules take precedence.
+
+Both lists stay a hard filter applied before anything else. Muting an app
+in a client (saved as ``ancs_muted_apps``) only hides the popups of apps
+that pass it; it does not replace these variables.
+"""
 
 
 ANCS_ACTIONS: bool = _env_bool("BLUEFERRY_ANCS_ACTIONS", False)
@@ -328,8 +333,19 @@ off while BLUEFERRY_SHOW_NOTIFICATION_CONTENT is false.
 """
 
 
+def valid_ancs_app_id(app_id: object) -> bool:
+    """Whether ``app_id`` is shaped like an ANCS bundle ID these rules accept."""
+    return isinstance(app_id, str) and bool(_ANCS_APP_ID_RE.fullmatch(app_id))
+
+
 def include_ancs_app(app_id: str) -> bool:
-    """Return whether one validated non-Messages app passes local rules."""
+    """Return whether one validated non-Messages app passes local rules.
+
+    These environment rules are a hard filter: an excluded app's
+    notifications are never fetched, so it reaches no popup and never shows
+    up in the list of notification apps. Muting an app from a client
+    (``notification_apps``) only applies to apps that pass this filter.
+    """
     selected = str(app_id).strip()
     if not _ANCS_APP_ID_RE.fullmatch(selected):
         return False

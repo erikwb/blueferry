@@ -25,12 +25,14 @@ from gi.repository import Adw, Gdk, Gio, GLib, Gtk
 from blueferry.gio_dbus import GioBus
 from blueferry.i18n import _
 from blueferry.plugin_api.surfaces import icon_name
-from blueferry.plugin_surfaces_model import PluginSurfacesModel
+from blueferry.plugin_surfaces_model import PluginSurfacesModel, SendGate
 from blueferry.ui.card_watch import CardChangeWatcher
 from blueferry.ui.util import glib_timer, launch_uri
 
+# factory(on_change, opener, watch, gate): the gate is the window's one
+# SendGate, shared with its drop zone.
 SurfacesFactory = Callable[
-    [Callable[[], None], Callable[[str], None], Callable[[list[str]], None]],
+    [Callable[[], None], Callable[[str], None], Callable[[list[str]], None], SendGate],
     PluginSurfacesModel,
 ]
 # choose_files(parent, title, done(paths)): paths of local files only.
@@ -38,10 +40,10 @@ FileChooser = Callable[[Gtk.Widget, str, Callable[[list[str]], None]], None]
 
 
 def default_surfaces(client) -> SurfacesFactory:
-    def make(on_change, opener, watch) -> PluginSurfacesModel:
+    def make(on_change, opener, watch, gate) -> PluginSurfacesModel:
         return PluginSurfacesModel(
             runner=client.task_runner("surfaces", 2), timer=glib_timer, opener=opener,
-            on_change=on_change, watch=watch,
+            on_change=on_change, watch=watch, gate=gate,
         )
 
     return make
@@ -88,6 +90,7 @@ class PluginCardSection(Gtk.Box):
         files: FileChooser = choose_files,
         opener: Callable[[str], None] | None = None,
         on_new_items: Callable[[], None] = lambda: None,
+        gate: SendGate | None = None,
     ) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         self._files = files
@@ -148,7 +151,9 @@ class PluginCardSection(Gtk.Box):
         close.connect("clicked", lambda _b: self.model.clear_message())
         self.message_row.add_suffix(close)
 
-        self.model = surfaces(self._render, self._open, self._watch)
+        self.model = surfaces(
+            self._render, self._open, self._watch, gate if gate is not None else SendGate(),
+        )
         self._render()
         self.model.reload()
 

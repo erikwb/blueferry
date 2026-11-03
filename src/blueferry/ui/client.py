@@ -13,15 +13,23 @@ from gi.repository import GLib, GObject
 
 from blueferry.backend_lifecycle import ensure_backend_current, restart_backend
 from blueferry.bus import get_session_bus
-from blueferry.client import BackendClient, CompatibilityCache, TetherUnsupportedError
+from blueferry.client import (
+    BackendClient,
+    BackendError,
+    CompatibilityCache,
+    TetherUnsupportedError,
+    _dbus_message,
+)
 from blueferry.doctor_report import DoctorReport, DoctorRunner
 from blueferry.models import BackendStatus
+from blueferry.notification_pin_view import GENERIC_ERROR_TEXT, pin_error_text
 from blueferry.protocol import (
     BUS_NAME,
     EVENTS_IFACE,
     OBJECT_PATH,
     TETHER_IFACE,
 )
+from blueferry.reconnect_view import is_rate_limited
 from blueferry.setup_client import SetupClient
 from blueferry.tether_status import TetherStatus
 from blueferry.ui.tasks import WorkerRunner
@@ -50,12 +58,34 @@ def _plain(value):
     return value
 
 
+# The D-Bus errors SetNotificationPinned itself answers with; the shared pin
+# wording covers them. Anything else (no daemon, no reply, ...) keeps its text.
+_PIN_ERROR_SUFFIXES = (".UnknownMethod", ".NotReady", ".InvalidArgs", ".Configuration")
+
+
+def _pin_error(error: BaseException) -> str:
+    """The text for a failed SetNotificationPinned call."""
+    cause = error if isinstance(error, dbus.exceptions.DBusException) else error.__cause__
+    if isinstance(cause, dbus.exceptions.DBusException):
+        name = cause.get_dbus_name() or ""
+        if is_rate_limited(name) or name.endswith(_PIN_ERROR_SUFFIXES):
+            return pin_error_text(name, cause.get_dbus_message() or "")
+        return _dbus_message(cause) or GENERIC_ERROR_TEXT
+    if isinstance(error, BackendError):
+        return str(error) or GENERIC_ERROR_TEXT
+    return GENERIC_ERROR_TEXT
+
+
 class DaemonClient(GObject.Object):
     """Live link to the daemon. Emits GObject signals as D-Bus signals arrive."""
 
     __gsignals__: ClassVar = {
         "history-changed": (GObject.SignalFlags.RUN_FIRST, None, (object,)),
         "status-invalidated": (GObject.SignalFlags.RUN_FIRST, None, ()),
+        # Every GetStatus answer as ``BackendStatus.to_dict()``, whoever asked;
+        # a failed read sends the empty status. Models that must drop data
+        # as soon as any answer says so (contact photos, search) listen here.
+        "status-read": (GObject.SignalFlags.RUN_FIRST, None, (object,)),
         "availability-changed": (GObject.SignalFlags.RUN_FIRST, None, (bool,)),
         "open-message-requested": (GObject.SignalFlags.RUN_FIRST, None, (str,)),
         "tether-invalidated": (GObject.SignalFlags.RUN_FIRST, None, ()),
@@ -64,6 +94,9 @@ class DaemonClient(GObject.Object):
         "now-playing-changed": (GObject.SignalFlags.RUN_FIRST, None, ()),
         "call-history-changed": (GObject.SignalFlags.RUN_FIRST, None, ()),
         "notifications-changed": (GObject.SignalFlags.RUN_FIRST, None, ()),
+        # The seen or muted iPhone apps changed; clients call
+        # ListNotificationApps again.
+        "notification-apps-changed": (GObject.SignalFlags.RUN_FIRST, None, ()),
         # Running phone calls changed (Calls1); clients call ListCalls.
         "calls-changed": (GObject.SignalFlags.RUN_FIRST, None, ()),
     }
@@ -143,6 +176,7 @@ class DaemonClient(GObject.Object):
             ("NowPlayingChanged", "now-playing-changed"),
             ("CallHistoryChanged", "call-history-changed"),
             ("NotificationsChanged", "notifications-changed"),
+            ("NotificationAppsChanged", "notification-apps-changed"),
             ("CallsChanged", "calls-changed"),
         ):
             self._matches.append(
@@ -398,10 +432,19 @@ class DaemonClient(GObject.Object):
         )
 
     def get_status_async(self, on_ok, on_err=None) -> None:
+        def loaded(status: BackendStatus) -> None:
+            self.emit("status-read", status.to_dict())
+            on_ok(status)
+
+        def failed(message: str) -> None:
+            self.emit("status-read", BackendStatus().to_dict())
+            if on_err is not None:
+                on_err(message)
+
         self._submit(
             lambda: self._call_backend(lambda backend: backend.status()),
-            on_ok,
-            on_err,
+            loaded,
+            failed,
         )
 
     def clear_history_async(self, on_ok, on_err) -> None:
@@ -832,6 +875,57 @@ class DaemonClient(GObject.Object):
     def notifications(self, limit: int) -> dict:
         """ListNotifications; blocking, so only for work passed to :meth:`submit`."""
         return self._call_backend(lambda backend: backend.notifications(limit))
+
+    def contact_cards(self, offset: int, limit: int, query: str) -> dict:
+        """ListContactCards; blocking, so only for work passed to :meth:`submit`."""
+        return self._call_backend(
+            lambda backend: backend.contact_cards(offset, limit, query)
+        )
+
+    def contact(self, contact_id: str) -> tuple[dict, bytes]:
+        """GetContact (card and photo bytes); blocking, only through :meth:`submit`.
+
+        A stale id raises :class:`blueferry.client.ContactNotFoundError`.
+        """
+        return self._call_backend(lambda backend: backend.contact(contact_id))
+
+    def search(self, query: str, limit: int) -> dict:
+        """Search; blocking, so only for work passed to :meth:`submit`."""
+        return self._call_backend(lambda backend: backend.search(query, limit))
+
+    def set_notification_pinned_async(
+        self, key: str, pinned: bool, on_ok, on_err
+    ) -> None:
+        """Messages1.SetNotificationPinned; ``on_err`` gets the shared pin text."""
+        def operation() -> bool:
+            try:
+                return self._call_backend(
+                    lambda backend: backend.set_notification_pinned(key, pinned)
+                )
+            except Exception as error:
+                raise BackendError(_pin_error(error)) from error
+
+        self._submit(operation, on_ok, on_err, mutation=True)
+
+    def notification_apps_async(self, on_ok, on_err=None) -> None:
+        """Messages1.ListNotificationApps: the seen iPhone apps, muted or not."""
+        self._submit(
+            lambda: self._call_backend(lambda backend: backend.notification_apps()),
+            on_ok,
+            on_err,
+        )
+
+    def set_notification_app_muted_async(
+        self, app_id: str, muted: bool, on_ok, on_err
+    ) -> None:
+        self._submit(
+            lambda: self._call_backend(
+                lambda backend: backend.set_notification_app_muted(app_id, muted)
+            ),
+            on_ok,
+            on_err,
+            mutation=True,
+        )
 
     # ---- settings: feature switches, service restart, doctor -------------
 

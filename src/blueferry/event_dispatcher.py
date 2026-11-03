@@ -56,10 +56,7 @@ _ANCS_FINGERPRINT_FIELDS = (
 
 
 def _ancs_fingerprint(event) -> bytes:
-    if isinstance(event, dict):
-        values = [event.get(field) for field in _ANCS_FINGERPRINT_FIELDS]
-    else:
-        values = [getattr(event, field, None) for field in _ANCS_FINGERPRINT_FIELDS]
+    values = [getattr(event, field, None) for field in _ANCS_FINGERPRINT_FIELDS]
     encoded = json.dumps(values, ensure_ascii=False, separators=(",", ":"), default=str).encode(
         "utf-8"
     )
@@ -72,7 +69,6 @@ class EventDispatcher:
         contacts,
         *,
         defer_mark_read: Callable[[str], None],
-        historical_ancs=(),
         notification_policy=None,
         contacts_only_notifications=None,
         notification_open_target=None,
@@ -81,6 +77,8 @@ class EventDispatcher:
         contact_photo: Callable[[str | None], str | None] | None = None,
         perform_ancs_action=None,
         ancs_actions_enabled: Callable[[], bool] | None = None,
+        ancs_app_seen: Callable[[str, str], None] | None = None,
+        ancs_app_muted: Callable[[str], bool] | None = None,
         on_call_action: Callable[..., None] | None = None,
         quick_replies: Callable[[], list[str]] | None = None,
         plugin_action=None,
@@ -104,6 +102,10 @@ class EventDispatcher:
         self.contact_photo = contact_photo
         self.perform_ancs_action = perform_ancs_action
         self.ancs_actions_enabled = ancs_actions_enabled
+        # Memory-only list of apps that sent notifications (notification_apps).
+        self.ancs_app_seen = ancs_app_seen
+        # Live check: hide the desktop popup of an app the user muted.
+        self.ancs_app_muted = ancs_app_muted
         self.on_call_action = on_call_action
         # The texts a ringing-call popup may offer for declining with a message.
         self.quick_replies = quick_replies
@@ -120,16 +122,9 @@ class EventDispatcher:
         self._notification_retry_id: int | None = None
         self._setup_complete = False
         self._setup_logged = False
+        # Events already delivered in the current ANCS session. Replays of
+        # older notifications are flagged PreExisting and never get here.
         self._seen_ancs: OrderedDict[bytes, None] = OrderedDict()
-        self.seed_historical_ancs(historical_ancs)
-
-    def seed_historical_ancs(self, events) -> None:
-        """Add retained correlation fingerprints without emitting events."""
-        for event in events:
-            if isinstance(event, dict) and event.get("kind") == "ancs_notification":
-                self._seen_ancs[_ancs_fingerprint(event)] = None
-        while len(self._seen_ancs) > MAX_ANCS_FINGERPRINTS:
-            self._seen_ancs.popitem(last=False)
 
     def setup(self) -> None:
         if self._setup_complete:
@@ -258,6 +253,8 @@ class EventDispatcher:
             options["on_plugin_action"] = self.plugin_action
         if self.quick_replies is not None:
             options["quick_replies"] = self.quick_replies
+        if self.ancs_app_muted is not None:
+            options["app_muted"] = self.ancs_app_muted
         try:
             sink = self._notification_sink_factory(
                 defer_mark_read=self.defer_mark_read,
@@ -353,7 +350,9 @@ class EventDispatcher:
         self._fan_out("close_removed_ancs_popup", notification_id)
 
     def ancs_session_reset(self) -> None:
-        """Forget popup UIDs of an ended ANCS session (they may be reused)."""
+        """Forget UIDs of an ended ANCS session (they may be reused)."""
+        # A reused UID with the same text is a new notification, not a replay.
+        self._seen_ancs.clear()
         self._fan_out("forget_ancs_popups")
 
     def _fan_out(self, method: str, *args: int) -> None:
@@ -406,10 +405,17 @@ class EventDispatcher:
                 return bool(open_click(click_id, token))
         return False
 
-    def message(self, event) -> None:
+    def message(self, event, *, persist: bool = True) -> None:
+        """Fan one message out to every sink.
+
+        ``persist=False`` skips history: a live copy of a message that the
+        missed-message backfill already stored still notifies, once.
+        """
         if getattr(event, "kind", "") == "sms_received" and self.on_incoming_message is not None:
             self.on_incoming_message()
         for sink in self.sinks:
+            if not persist and sink.name == SqliteSink.name:
+                continue
             try:
                 sink.handle(event)
             except Exception:
@@ -530,6 +536,11 @@ class EventDispatcher:
         self._seen_ancs.move_to_end(fingerprint)
         while len(self._seen_ancs) > MAX_ANCS_FINGERPRINTS:
             self._seen_ancs.popitem(last=False)
+        if event.app_id != MESSAGES_APP_ID and self.ancs_app_seen is not None:
+            try:
+                self.ancs_app_seen(event.app_id, event.app_name)
+            except Exception:
+                log.exception("could not record a notification app")
         for sink in self.sinks:
             if event.app_id != MESSAGES_APP_ID and not bool(
                 getattr(sink, "accepts_system_ancs", False)

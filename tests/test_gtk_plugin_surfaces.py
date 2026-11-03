@@ -162,7 +162,7 @@ def _window(saved=None, **window_options):
     invoked, sent, opened, chosen = [], [], [], []
     bus = RecordingBus()
 
-    def surfaces(on_change, opener, watch):
+    def surfaces(on_change, opener, watch, gate):
         from blueferry import plugin_surfaces as surfaces
 
         choice = surfaces.ShareChoice("io.example.ls", "LocalSend", "mac", "MacBook", "computer")
@@ -172,7 +172,7 @@ def _window(saved=None, **window_options):
 
         model = PluginSurfacesModel(
             runner=work, timer=work.timer, opener=opener,
-            on_change=on_change, watch=watch,
+            on_change=on_change, watch=watch, gate=gate,
             load_cards=_cards, share_available=lambda: True,
             card_names=lambda: ["io.example.Calendar", "io.example.LocalSend"],
             load_targets=lambda: surfaces.ShareTargets([choice], []),
