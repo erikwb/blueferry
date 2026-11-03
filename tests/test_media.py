@@ -919,3 +919,30 @@ def test_published_media_notifies_the_audio_route(make_daemon, monkeypatch) -> N
     assert instance.phone_audio_route.media_changed in listeners
     instance._dbus_service = None
     instance.media = None
+
+
+def test_cover_art_follows_the_media_opt_in(make_daemon, monkeypatch) -> None:
+    """Cover art has no switch of its own; it lives and dies with media control."""
+    monkeypatch.setattr(daemon_mod.config, "ANCS_ENABLED", True)
+    monkeypatch.setattr(daemon_mod, "AmsClient", _FakeAms)
+    instance = make_daemon()
+    assert instance.media is None
+    assert instance.cover_art._enabled is False
+    monkeypatch.setattr(instance, "_emit_status", lambda: None)
+    emitted = []
+    monkeypatch.setattr(instance, "_emit_status_soon", lambda: emitted.append(True))
+    toggles = []
+    monkeypatch.setattr(instance.cover_art, "set_enabled", toggles.append)
+
+    instance._set_media_control(True)
+    assert toggles == [True]
+    instance.media._schedule = lambda _ms, _callback: 1
+    instance.media._cancel = lambda _source: None
+    instance._cover_changed("/cache/cover-x-1000001.jpg")
+    assert instance.media.cover_path == "/cache/cover-x-1000001.jpg"
+    assert emitted == [True]
+    instance._set_media_control(False)
+    assert toggles == [True, False]
+    # Without media control the callback must not fail.
+    instance._cover_changed(None)
+    assert instance.cover_art.snapshot() == {"phone_media_cover": ""}

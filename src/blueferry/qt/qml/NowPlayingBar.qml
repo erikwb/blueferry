@@ -20,6 +20,8 @@ Controls.ToolBar {
         || player.state === "rewinding" || player.state === "fast-forwarding"
 
     readonly property string stateIcon: playing ? "media-playback-start" : "media-playback-pause"
+    // file:// URL of the track's cover (AVRCP cover art), or empty.
+    readonly property string coverUrl: nowPlaying.cover_url || ""
 
     // An unknown list (the phone has not sent it yet) is not an empty one:
     // offer the transport buttons and let the phone refuse what it lacks.
@@ -54,6 +56,28 @@ Controls.ToolBar {
         RowLayout {
             Layout.fillWidth: true
             spacing: Kirigami.Units.smallSpacing
+
+            Image {
+                id: cover
+                objectName: "nowPlayingCover"
+                source: bar.coverUrl
+                visible: bar.coverUrl !== "" && status === Image.Ready
+                Layout.preferredWidth: Kirigami.Units.gridUnit * 3
+                Layout.preferredHeight: Kirigami.Units.gridUnit * 3
+                Layout.alignment: Qt.AlignVCenter
+                // Decode only what is shown (3 grid units, also on 2x screens),
+                // whatever size the file has.
+                sourceSize.width: 128
+                sourceSize.height: 128
+                fillMode: Image.PreserveAspectCrop
+                asynchronous: true
+                // Every new image has a new file name; nothing to keep.
+                cache: false
+                smooth: true
+                mipmap: true
+                Accessible.role: Accessible.Graphic
+                Accessible.name: qsTr("Cover art")
+            }
 
             Kirigami.Icon {
                 // Shows the iPhone's current state; the toggle button shows the action.

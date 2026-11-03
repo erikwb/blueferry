@@ -146,8 +146,21 @@ BlueFerry's message interface through it.
 - Media control returns on its own after the iPhone leaves and comes back in
   range. It needs the LE link, so it pauses while notifications are
   disconnected, too.
-- BlueFerry deliberately does not use AVRCP. Acting as an AVRCP remote could
-  make the iPhone send its audio to the computer, which BlueFerry prevents.
+- BlueFerry does not act as an AVRCP remote itself; that could make the
+  iPhone send its audio to the computer. The cover art (see below) only uses
+  the AVRCP connection BlueZ already has.
+- With some players, the cover of the track that is already playing when
+  the phone connects appears only from the next track on.
+
+## Cover art
+
+With media control on, the Qt and GTK clients show the current track's
+cover next to the title, and desktops that read MPRIS (GNOME, Plasma, DMS,
+Waybar …) show it too when the MPRIS option is on. The image comes over
+Bluetooth (AVRCP cover art, 200×200 pixels), is checked to be a real JPEG,
+and is kept in `~/.cache/blueferry/cover` (readable only by you, at most 20
+images, emptied when the phone disconnects). Nothing is downloaded from the
+internet. Tested with Apple Music, YouTube Music and Pocket FM.
 - Verified on real hardware so far: the now-playing display, commands, and
   switching media control off and on. The renewed request for the command
   list after a reconnect and long-title completion are tested with simulated

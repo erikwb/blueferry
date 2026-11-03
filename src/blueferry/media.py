@@ -146,6 +146,8 @@ class MediaController:
         self._writer: CommandWriter | None = None
         self._listeners: list[Callable[[], None]] = []
         self._pending_change: int | None = None
+        # Owner-only file of the current track's cover (AVRCP cover art).
+        self.cover_path: str | None = None
 
     # ---- wiring ---------------------------------------------------------
 
@@ -185,6 +187,12 @@ class MediaController:
         self, commands: frozenset[RemoteCommandID] | None,
     ) -> None:
         if self.state.set_supported_commands(commands):
+            self._changed()
+
+    def set_cover(self, path: str | None) -> None:
+        """The current cover image file, or ``None`` (``blueferry.cover_art``)."""
+        if path != self.cover_path:
+            self.cover_path = path
             self._changed()
 
     def handle_availability(self, available: bool) -> None:
@@ -230,6 +238,8 @@ class MediaController:
         }
         if available:
             result.update(self.state.snapshot(self._clock()))
+            if self.cover_path:
+                result["cover"] = self.cover_path
         return result
 
     def resolve_command(self, name: str) -> RemoteCommandID:

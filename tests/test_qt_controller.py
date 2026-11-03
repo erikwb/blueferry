@@ -1278,6 +1278,18 @@ def test_now_playing_is_fetched_only_when_media_is_enabled(monkeypatch):
     assert controller.nowPlaying == {}
 
 
+def test_now_playing_cover_becomes_a_file_url():
+    controller = BridgeController(
+        backend=_MediaBackend(), setup=object(), subscribe=False, autostart=False)
+    controller._set_now_playing({"available": True, "cover": "/home/a b/c/cover-x-1000001.jpg"})
+    assert "cover" not in controller.nowPlaying
+    assert controller.nowPlaying["cover_url"] == "file:///home/a%20b/c/cover-x-1000001.jpg"
+    # Anything but an absolute path is ignored.
+    for bad in ("relative.jpg", "https://example.com/x.jpg", 5, None):
+        controller._set_now_playing({"available": True, "cover": bad})
+        assert "cover_url" not in controller.nowPlaying
+
+
 def test_media_command_runs_off_the_ui_thread_without_busy_state():
     backend = _MediaBackend()
     controller = BridgeController(backend=backend, setup=object(), subscribe=False, autostart=False)
