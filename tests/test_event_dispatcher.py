@@ -447,3 +447,26 @@ def test_mirrored_removal_and_session_reset_reach_popup_sinks() -> None:
     dispatcher.ancs_mirror_removed(42)
     dispatcher.ancs_session_reset()
     assert calls == [("close", 42), ("forget",)]
+
+
+def test_a_message_already_in_history_still_notifies_without_a_new_row():
+    class Named:
+        def __init__(self, name):
+            self.name = name
+            self.handled = []
+
+        def handle(self, event):
+            self.handled.append(event)
+
+    dispatcher = EventDispatcher(object(), defer_mark_read=lambda _path: None)
+    history, popups = Named("sqlite"), Named("libnotify")
+    service = _Service()
+    dispatcher.sinks = [history, popups]
+    dispatcher.set_dbus_service(service)
+    event = SimpleNamespace(kind="sms_received", handle="message1")
+
+    dispatcher.message(event, persist=False)
+
+    assert history.handled == []
+    assert popups.handled == [event]
+    assert service.events == ["changed"]

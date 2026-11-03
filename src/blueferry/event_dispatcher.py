@@ -383,10 +383,17 @@ class EventDispatcher:
                 return bool(open_click(click_id, token))
         return False
 
-    def message(self, event) -> None:
+    def message(self, event, *, persist: bool = True) -> None:
+        """Fan one message out to every sink.
+
+        ``persist=False`` skips history: a live copy of a message that the
+        missed-message backfill already stored still notifies, once.
+        """
         if getattr(event, "kind", "") == "sms_received" and self.on_incoming_message is not None:
             self.on_incoming_message()
         for sink in self.sinks:
+            if not persist and sink.name == SqliteSink.name:
+                continue
             try:
                 sink.handle(event)
             except Exception:

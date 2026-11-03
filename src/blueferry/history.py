@@ -153,6 +153,39 @@ def append_event(
         _insert(database, event, storage)
 
 
+class HistoryErasedError(RuntimeError):
+    """History was erased after the caller read the backfill floor."""
+
+
+_ANY_FLOOR = object()
+
+
+def append_events(
+    events: Iterable[EventRecord],
+    *,
+    path: Path | None = None,
+    storage: StorageSecurity | None = None,
+    floor: datetime | object | None = _ANY_FLOOR,
+) -> int:
+    """Commit several serialized events as one SQLite transaction.
+
+    With ``floor`` (as read by ``backfill_floor``), raise
+    ``HistoryErasedError`` and append nothing if history was erased since.
+    """
+    selected = list(events)
+    if not selected:
+        return 0
+    with closing(_open_database(path)) as database, database:
+        if floor is not _ANY_FLOOR:
+            # Hold the write lock from the check to the commit.
+            database.execute("BEGIN IMMEDIATE")
+            if _read_backfill_floor(database) != floor:
+                raise HistoryErasedError("local history was erased meanwhile")
+        for event in selected:
+            _insert(database, event, storage)
+    return len(selected)
+
+
 def read_events(
     *,
     kinds: set[str] | None = None,
@@ -256,8 +289,13 @@ def delete_event_rows(
     *,
     path: Path | None = None,
     storage: StorageSecurity | None = None,
+    raise_floor: bool = False,
 ) -> int:
-    """Securely erase a backend-resolved set of event rows."""
+    """Securely erase a backend-resolved set of event rows.
+
+    ``raise_floor`` raises the backfill floor in the same transaction, so a
+    reconnect cannot fetch the erased messages again.
+    """
     selected = sorted({int(event_id) for event_id in event_ids})
     if not selected:
         return 0
@@ -271,6 +309,8 @@ def delete_event_rows(
                 "DELETE FROM events WHERE id = ?",
                 ((event_id,) for event_id in selected),
             )
+            if raise_floor and database.total_changes != before:
+                _raise_backfill_floor(database, datetime.now(timezone.utc))
         removed = database.total_changes - before
     return int(removed)
 
@@ -544,17 +584,61 @@ def prune_events(
     return removed
 
 
+_BACKFILL_FLOOR_KEY = "map_backfill_floor"
+
+
+def _raise_backfill_floor(database: sqlite3.Connection, when: datetime) -> None:
+    database.execute(
+        "INSERT INTO meta(key, value) VALUES (?, ?) "
+        "ON CONFLICT(key) DO UPDATE SET value = MAX(value, excluded.value)",
+        (_BACKFILL_FLOOR_KEY, int(when.timestamp())),
+    )
+
+
+def raise_backfill_floor(
+    when: datetime | None = None, *, path: Path | None = None
+) -> None:
+    """Never fetch missed messages from the phone that are older than ``when``.
+
+    Erasing history raises this floor, so a later reconnect does not restore
+    messages the user deleted from the iPhone's inbox. It holds no message
+    content or message time, only when local history was last erased.
+    """
+    with closing(_open_database(path)) as database, database:
+        _raise_backfill_floor(database, when or datetime.now(timezone.utc))
+
+
+def backfill_floor(*, path: Path | None = None) -> datetime | None:
+    """Return the backfill floor, or ``None`` when history was never erased."""
+    with closing(_open_database(path)) as database:
+        return _read_backfill_floor(database)
+
+
+def _read_backfill_floor(database: sqlite3.Connection) -> datetime | None:
+    row = database.execute(
+        "SELECT value FROM meta WHERE key = ?", (_BACKFILL_FLOOR_KEY,)
+    ).fetchone()
+    if row is None:
+        return None
+    try:
+        return datetime.fromtimestamp(int(row[0]), timezone.utc)
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
 def clear_events(*, path: Path | None = None, discard_damaged: bool = False) -> None:
     """Erase local history and scrub SQLite's reusable pages.
 
     A storage reset passes ``discard_damaged`` so that a file SQLite cannot
-    read is deleted rather than blocking the reset.
+    read is deleted rather than blocking the reset. Clearing raises the
+    backfill floor (see ``raise_backfill_floor``); a deleted file loses it.
     """
     try:
         with closing(_open_database(path)) as database:
             database.execute("PRAGMA secure_delete = ON")
             with database:
                 database.execute("DELETE FROM events")
+                _raise_backfill_floor(database, datetime.now(timezone.utc))
             database.execute("VACUUM")
     except sqlite3.DatabaseError as error:
         if not discard_damaged or not is_damaged(error):
