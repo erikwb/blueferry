@@ -268,8 +268,8 @@ class Daemon:
             submit=lambda *args, **kwargs: self.obex_worker.submit(*args, **kwargs),
             list_inbox=list_inbox_since,
             collect=lambda: collect_history(self.storage),
-            store=lambda payloads, handles: store_backfill(
-                self.storage, payloads, handles,
+            store=lambda payloads, handles, floor: store_backfill(
+                self.storage, payloads, handles, floor,
             ),
             resolve_contact=lambda raw: self.contacts.resolve(raw),
             on_changed=self._backfill_changed,

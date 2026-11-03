@@ -214,6 +214,8 @@ class Harness:
         self.enabled = enabled
         self.session = SESSION
         self.writes = []
+        self.floors = []
+        self.floor = None
         self.changed = 0
         self.calls = []
         self.list_error = None
@@ -250,10 +252,11 @@ class Harness:
 
     def collect(self):
         self.calls.append("collect")
-        return list(self.stored), None
+        return list(self.stored), self.floor
 
-    def store(self, payloads, handles):
+    def store(self, payloads, handles, floor):
         self.writes.append((payloads, handles))
+        self.floors.append(floor)
         return True
 
     def on_changed(self):
@@ -462,7 +465,7 @@ def test_storage_round_trip_keeps_backfilled_messages_encrypted(storage):
     [message] = _listed(_entry("message1", body="missed"))
     payload = backfill.history_payload(message, contact_name=None)
 
-    assert backfill.store_backfill(storage, [payload], ["old1"]) is True
+    assert backfill.store_backfill(storage, [payload], ["old1"], floor) is True
 
     events = history.read_events(kinds={"sms_received"}, storage=storage)
     assert [event["handle"] for event in events] == ["old1", "message1"]
@@ -477,7 +480,7 @@ def test_storage_helpers_refuse_when_history_is_not_retained(storage):
     with pytest.raises(RuntimeError):
         backfill.collect_history(storage)
     with pytest.raises(RuntimeError):
-        backfill.store_backfill(storage, [{"kind": "sms_received"}], [])
+        backfill.store_backfill(storage, [{"kind": "sms_received"}], [], None)
 
 
 def test_erasing_history_raises_the_backfill_floor(isolated_state):
@@ -492,6 +495,78 @@ def test_erasing_history_raises_the_backfill_floor(isolated_state):
     assert history.backfill_floor() == floor
 
 
+@pytest.mark.parametrize("erase", ["clear", "delete"])
+def test_an_erase_during_the_backfill_keeps_the_listed_messages_out(storage, erase):
+    from blueferry.backend_operations import BackendDependencies, BackendOperations
+
+    history.append_event(_stored("old1", body="erase me"), storage=storage)
+    _stored_events, floor = backfill.collect_history(storage)
+    [message] = _listed(_entry("message1", body="erase me too"))
+    payload = backfill.history_payload(message, contact_name=None)
+    # The user erases while the listing is in flight.
+    if erase == "clear":
+        history.clear_events()
+    else:
+        sessions = SimpleNamespace(map=None, pbap=None, map_path="")
+        operations = BackendOperations(sessions, BackendDependencies(storage=storage))
+        [thread] = operations.list_threads(10)
+        assert operations.delete_threads([thread["key"]], True) == 1
+
+    with pytest.raises(history.HistoryErasedError):
+        backfill.store_backfill(storage, [payload], [], floor)
+    assert history.read_events(storage=storage) == []
+
+
+def test_the_store_gets_the_floor_the_plan_was_made_under(caplog):
+    floor = NOW - timedelta(days=1)
+    harness = Harness(listing=[_entry("message1", body="missed")])
+    harness.floor = floor
+    harness.coordinator.request("MAP connected")
+    harness.fire()
+    harness.worker.run_next()
+    harness.worker.run_next()
+    assert harness.floors == [floor]
+
+    # An erase in between is not a failure, and the next connect lists again.
+    def erased(*_args):
+        raise history.HistoryErasedError("erased")
+
+    harness.store = erased
+    harness.coordinator._store = erased
+    harness.coordinator.stop()
+    harness.coordinator.request("MAP connected")
+    harness.fire()
+    harness.worker.run_next()
+    with caplog.at_level(logging.INFO, logger=backfill.__name__):
+        harness.worker.run_next()
+    assert harness.changed == 1
+    assert "erased meanwhile" in caplog.text
+    assert not [record for record in caplog.records if record.levelno >= logging.WARNING]
+    harness.coordinator.request("MAP connected")
+    assert len(harness.timers) == 1
+
+
+def test_a_conversation_is_not_deleted_without_raising_the_floor(isolated_state, monkeypatch):
+    import sqlite3
+
+    from blueferry.backend_operations import BackendDependencies, BackendOperations
+    from blueferry.errors import NotReadyError
+
+    history.append_event(_stored("old1"))
+    sessions = SimpleNamespace(map=None, pbap=None, map_path="")
+    operations = BackendOperations(sessions, BackendDependencies())
+    [thread] = operations.list_threads(10)
+
+    def broken(*_args):
+        raise sqlite3.OperationalError("disk I/O error")
+
+    monkeypatch.setattr(history, "_raise_backfill_floor", broken)
+    with pytest.raises(NotReadyError):
+        operations.delete_threads([thread["key"]], True)
+    # Erasing and raising the floor are one transaction: both or neither.
+    assert [event["handle"] for event in history.read_events()] == ["old1"]
+
+
 def test_deleting_a_conversation_raises_the_floor(isolated_state):
     from blueferry.backend_operations import BackendDependencies, BackendOperations
 
@@ -503,6 +578,59 @@ def test_deleting_a_conversation_raises_the_floor(isolated_state):
     assert operations.delete_threads([thread["key"]], True) == 1
 
     assert history.backfill_floor() is not None
+
+
+def _thread_operations():
+    from blueferry.backend_operations import BackendDependencies, BackendOperations
+
+    def submit(operation, *, on_success, on_error):
+        try:
+            on_success(operation())
+        except Exception as error:
+            on_error(error)
+
+    sessions = SimpleNamespace(
+        map=object(), pbap=None, map_path=SESSION, report_error=lambda _error: None,
+    )
+    return BackendOperations(sessions, BackendDependencies(submit_obex=submit))
+
+
+def test_a_caught_up_message_offers_a_reply_to_the_sender_only(isolated_state, monkeypatch):
+    from blueferry import backend_operations
+    from blueferry.errors import NotReadyError
+
+    [message] = _listed(_entry("message1", body="missed", minutes_ago=30))
+    history.append_events([backfill.history_payload(message, contact_name="Alice")])
+    operations = _thread_operations()
+    [thread] = operations.list_threads(10)
+    # Maybe from a group: not reply-ready, but the user may confirm a 1:1 reply.
+    assert thread["group_ambiguous"] is True
+    assert thread["reply_ready"] is False
+    token = thread["sender_reply_token"]
+    assert token
+    sent = []
+    monkeypatch.setattr(
+        backend_operations, "send_message",
+        lambda _path, recipient, body: sent.append((recipient, body)) or "/transfer/1",
+    )
+    with pytest.raises(NotReadyError):
+        operations.send_to_thread(
+            thread["key"], "draft", False,
+            lambda _: pytest.fail("unexpected send"), lambda error: pytest.fail(str(error)),
+        )
+    replies = []
+    operations.send_to_thread(
+        thread["key"], "just you", True, replies.append,
+        lambda error: pytest.fail(str(error)), expected_group_token=token,
+    )
+    assert replies == ["/transfer/1"]
+    assert sent == [(ALICE, "just you")]
+
+    # A live message from the sender makes the conversation reply-ready again.
+    history.append_event(_stored("message2", body="live", minutes_ago=1))
+    [thread] = operations.list_threads(10)
+    assert thread["reply_ready"] is True
+    assert not thread.get("sender_reply_token")
 
 
 # -- MAP listing on the worker ------------------------------------------------

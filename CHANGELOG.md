@@ -52,10 +52,11 @@
   and adds the missing messages to history: no popups, no one-time code
   copies, the iPhone's read state kept. It looks back from shortly before
   the newest stored message, within the retention period and at most 200
-  messages, and never restores messages erased locally. Such messages leave
-  the sender's conversation read-only until the sender writes again, because
-  MAP cannot say whether they went to a group. Messages sent from the
-  iPhone itself remain unavailable (related to
+  messages, and never restores messages erased locally. MAP cannot say
+  whether such a message went to a group, so before you reply to one the
+  clients ask whether the reply should go to the sender only, as for other
+  messages that may be from a group. Messages sent from the iPhone itself
+  remain unavailable (related to
   [#280](https://github.com/erikwb/blueferry/issues/280)).
 
 ### Fixed

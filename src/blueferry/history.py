@@ -153,17 +153,34 @@ def append_event(
         _insert(database, event, storage)
 
 
+class HistoryErasedError(RuntimeError):
+    """History was erased after the caller read the backfill floor."""
+
+
+_ANY_FLOOR = object()
+
+
 def append_events(
     events: Iterable[EventRecord],
     *,
     path: Path | None = None,
     storage: StorageSecurity | None = None,
+    floor: datetime | object | None = _ANY_FLOOR,
 ) -> int:
-    """Commit several serialized events as one SQLite transaction."""
+    """Commit several serialized events as one SQLite transaction.
+
+    With ``floor`` (as read by ``backfill_floor``), raise
+    ``HistoryErasedError`` and append nothing if history was erased since.
+    """
     selected = list(events)
     if not selected:
         return 0
     with closing(_open_database(path)) as database, database:
+        if floor is not _ANY_FLOOR:
+            # Hold the write lock from the check to the commit.
+            database.execute("BEGIN IMMEDIATE")
+            if _read_backfill_floor(database) != floor:
+                raise HistoryErasedError("local history was erased meanwhile")
         for event in selected:
             _insert(database, event, storage)
     return len(selected)
@@ -272,8 +289,13 @@ def delete_event_rows(
     *,
     path: Path | None = None,
     storage: StorageSecurity | None = None,
+    raise_floor: bool = False,
 ) -> int:
-    """Securely erase a backend-resolved set of event rows."""
+    """Securely erase a backend-resolved set of event rows.
+
+    ``raise_floor`` raises the backfill floor in the same transaction, so a
+    reconnect cannot fetch the erased messages again.
+    """
     selected = sorted({int(event_id) for event_id in event_ids})
     if not selected:
         return 0
@@ -287,6 +309,8 @@ def delete_event_rows(
                 "DELETE FROM events WHERE id = ?",
                 ((event_id,) for event_id in selected),
             )
+            if raise_floor and database.total_changes != before:
+                _raise_backfill_floor(database, datetime.now(timezone.utc))
         removed = database.total_changes - before
     return int(removed)
 
@@ -587,9 +611,13 @@ def raise_backfill_floor(
 def backfill_floor(*, path: Path | None = None) -> datetime | None:
     """Return the backfill floor, or ``None`` when history was never erased."""
     with closing(_open_database(path)) as database:
-        row = database.execute(
-            "SELECT value FROM meta WHERE key = ?", (_BACKFILL_FLOOR_KEY,)
-        ).fetchone()
+        return _read_backfill_floor(database)
+
+
+def _read_backfill_floor(database: sqlite3.Connection) -> datetime | None:
+    row = database.execute(
+        "SELECT value FROM meta WHERE key = ?", (_BACKFILL_FLOOR_KEY,)
+    ).fetchone()
     if row is None:
         return None
     try:

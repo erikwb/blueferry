@@ -130,10 +130,11 @@ und ergänzt die eingehenden Nachrichten, die im Verlauf noch fehlen:
   der Zeitpunkt des Löschens, ohne Inhalt.
 - Nachgeholte Nachrichten erscheinen in der Unterhaltungsliste ohne Popups
   und ohne Kopieren von Einmalcodes, mit dem Gelesen-Status vom iPhone.
-- Das iPhone verrät nicht, ob eine solche Nachricht an eine Gruppe ging. Die
-  Unterhaltung mit dem Absender bleibt deshalb schreibgeschützt, bis er
-  wieder schreibt, damit eine Antwort für eine Gruppe nicht nur bei ihm
-  landet.
+- Das iPhone verrät nicht, ob eine solche Nachricht an eine Gruppe ging.
+  Bevor du darauf antwortest, fragt BlueFerry deshalb, ob die Antwort nur an
+  den Absender gehen soll, damit eine Antwort für eine Gruppe nicht aus
+  Versehen nur bei ihm landet. Schreibt der Absender wieder, antwortest du
+  ohne Rückfrage.
 - Nachrichten, die du am iPhone selbst gesendet hast, lassen sich nicht
   nachholen: iOS hält den Gesendet-Ordner über Bluetooth leer.
 

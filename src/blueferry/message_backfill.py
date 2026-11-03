@@ -34,6 +34,7 @@ from blueferry.events import (
     spelled_on_keypad,
 )
 from blueferry.history import (
+    HistoryErasedError,
     append_events,
     backfill_floor,
     mark_event_handles_read,
@@ -87,6 +88,8 @@ class BackfillPlan:
     missing: tuple[ListedMessage, ...]
     read_handles: tuple[str, ...]
     listed: int
+    # The erase floor the plan was made under (see ``store_backfill``).
+    floor: datetime | None = None
 
 
 def _normalized_body(text: object) -> str:
@@ -249,6 +252,7 @@ def plan_backfill(
     *,
     since: datetime,
     limit: int = MAX_BACKFILL_MESSAGES,
+    floor: datetime | None = None,
 ) -> BackfillPlan:
     """Choose the newest missing messages and stored messages read on the phone."""
     window_start = since - DEDUP_WINDOW
@@ -270,6 +274,7 @@ def plan_backfill(
         missing=tuple(kept),
         read_handles=tuple(read_handles),
         listed=len(listed),
+        floor=floor,
     )
 
 
@@ -283,8 +288,9 @@ def history_payload(
     an unrelated notification that happens to arrive during the backfill.
     MAP gives no group context and no notification exists for the offline
     period, so the message may have been sent to a group. It is marked
-    ``group_ambiguous`` like other messages that may be from a group: the
-    sender's 1:1 conversation stays read-only until the sender writes again.
+    ``group_ambiguous`` like other messages that may be from a group: until
+    the sender writes again, a reply in the sender's 1:1 conversation needs
+    the sender-only confirmation (``sender_reply_token``).
     """
     event = SmsEvent(
         kind="sms_received",
@@ -321,13 +327,19 @@ def collect_history(
 
 def store_backfill(
     storage: StorageSecurity, payloads: list[dict], read_handles: list[str],
+    floor: datetime | None,
 ) -> bool:
-    """Persist missed messages in one transaction, on the OBEX worker."""
+    """Persist missed messages in one transaction, on the OBEX worker.
+
+    ``floor`` is the erase floor the listing was planned under. If history
+    was cleared or a conversation deleted since, nothing is added, so the
+    erased messages do not come back (``HistoryErasedError``).
+    """
     if not history_enabled(storage):
         raise RuntimeError("message history is not available")
     changed = False
     if payloads:
-        append_events(payloads, storage=storage)
+        append_events(payloads, storage=storage, floor=floor)
         changed = True
         # The count and size ceilings; every payload is inside retention.
         prune_events(storage=storage, expire_by_age=False)
@@ -350,7 +362,8 @@ class MessageBackfill:
     ``enabled`` is the message-history opt-in: with local storage off,
     locked or unavailable nothing is listed. ``collect`` runs on the worker
     and returns ``(history, floor)``; ``store`` runs there too and persists
-    payloads and read flags, returning whether history changed.
+    payloads and read flags unless history was erased below that floor,
+    returning whether history changed.
     """
 
     def __init__(
@@ -361,7 +374,7 @@ class MessageBackfill:
         submit: Submit,
         list_inbox: Callable[[str, datetime | None, int], list[dict[str, Any]]],
         collect: Callable[[], tuple[list[dict], datetime | None]],
-        store: Callable[[list[dict], list[str]], bool],
+        store: Callable[[list[dict], list[str], datetime | None], bool],
         resolve_contact: Callable[[str | None], str | None],
         on_changed: Callable[[], None],
         schedule: Schedule,
@@ -462,7 +475,7 @@ class MessageBackfill:
             listed = parse_listing(
                 list_inbox(session, since, MAX_BACKFILL_MESSAGES), now=now,
             )
-            return plan_backfill(listed, history, since=since), since
+            return plan_backfill(listed, history, since=since, floor=floor), since
 
         self._busy = True
         self._live = set()
@@ -528,11 +541,15 @@ class MessageBackfill:
                     self._remembered.remove(message)
                 except ValueError:
                     pass
+            if isinstance(error, HistoryErasedError):
+                log.info("missed-message backfill: history was erased meanwhile")
+                self._finish(generation)
+                return
             self._failed(generation, "store", error)
 
         try:
             self._submit(
-                lambda: store(payloads, read_handles),
+                lambda: store(payloads, read_handles, plan.floor),
                 on_success=stored,
                 on_error=failed,
             )

@@ -895,14 +895,19 @@ A change to these rules has to be made in both places.
   received message, bounded by retention and by an erase floor that history
   clears, storage-mode changes and conversation deletion raise in the
   history `meta` table (a time, no content; a damaged database deleted by a
-  storage reset loses it). Matching is one-to-one on sender identity and
+  storage reset loses it). The write checks that floor in its transaction,
+  so an erase while the listing is in flight keeps the listed messages out,
+  and a deletion raises it in the transaction that erases the rows. Matching is one-to-one on sender identity and
   text, by MAP handle or nearest time within three hours. The decision runs
   on the main loop next to live MNS delivery: a live copy during or after a
   backfill is stored once and still notifies (`EventDispatcher.message(...,
   persist=False)`). Missed messages bypass the sinks (no popup, code copy or
   ANCS correlation), keep the phone's read flag, carry the phone's time as
   `seen_at`, and are marked `group_ambiguous` because no group evidence can
-  exist for them. Clients see them through `HistoryChanged`.
+  exist for them: a reply to one needs the sender-only confirmation
+  (`sender_reply_token`, see [Group replies and roster
+  tokens](#group-replies-and-roster-tokens)) until the sender writes again.
+  Clients see them through `HistoryChanged`.
 - **ANCS content:** the app is identified before any content is requested.
   The default policy never fetches content from other apps. The opt-in `all`
   policy applies exact bundle-ID allow/block rules first and delivers content

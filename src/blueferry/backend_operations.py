@@ -42,7 +42,6 @@ from blueferry.history import (
     delete_event_rows,
     history_revision,
     mark_event_handles_read,
-    raise_backfill_floor,
     read_event_rows,
     read_events,
 )
@@ -1592,12 +1591,11 @@ class BackendOperations:
                 raise NotFoundError(
                     "selected conversations no longer exist in local history"
                 )
-            if delete_event_rows(event_ids, storage=storage) == 0:
+            # A later reconnect must not fetch the deleted messages again.
+            if delete_event_rows(event_ids, storage=storage, raise_floor=True) == 0:
                 raise NotFoundError(
                     "selected conversations no longer exist in local history"
                 )
-            # A later reconnect must not fetch the deleted messages again.
-            raise_backfill_floor()
         except NotFoundError:
             raise
         except (OSError, RuntimeError, ValueError, sqlite3.Error) as error:

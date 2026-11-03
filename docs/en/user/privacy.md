@@ -121,9 +121,10 @@ history doesn't have yet:
   again. Only the time of that erase is stored, without content.
 - Caught-up messages appear in the conversation list without popups or
   one-time code copies, with the read state from the iPhone.
-- The iPhone doesn't say whether such a message went to a group. Its
-  sender's conversation stays read-only until the sender writes again, so a
-  reply meant for a group can't reach the sender alone.
+- The iPhone doesn't say whether such a message went to a group. Before you
+  reply to it, BlueFerry asks whether your reply should go to the sender
+  only, so a reply meant for a group doesn't reach the sender alone by
+  mistake. Once the sender writes again, you can reply without being asked.
 - Messages you sent from the iPhone itself can't be caught up: iOS keeps its
   sent folder empty over Bluetooth.
 
