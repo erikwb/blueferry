@@ -21,10 +21,10 @@ bevor sie überhaupt eine Mitteilung geschickt hat. BlueFerry holt App-Mitteilun
 nur, solange **All iPhone Notifications** gewählt ist; mit einer anderen
 Richtlinie enthält die Liste nur die stummgeschalteten Apps.
 
-Der KDE-, der GTK- und der Terminal-Client zeigen dieselbe Liste als **Muted
-apps** unter **Settings › Notifications**, das Quickshell-Panel unter **iPhone
-settings › Notifications**; jede App hat dort **Mute** / **Unmute** (siehe
-[Clients](clients.md)).
+Das Quickshell-Panel zeigt dieselbe Liste als **Muted apps** unter **iPhone
+settings › Notifications**, jede App mit **Mute** / **Unmute** (siehe
+[Clients](clients.md)). Der KDE-, der GTK- und der Terminal-Client bekommen
+sie mit einer separaten Änderung; bis dahin nutze die Kommandozeile.
 
 ## Was Stummschalten tut und was nicht
 

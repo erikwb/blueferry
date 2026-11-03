@@ -212,9 +212,9 @@ anbietet.
 
 | | Qt | GTK | TUI | Quickshell | CLI |
 |---|---|---|---|---|---|
-| iPhone-Lautstärkeknöpfe und Pegel | ✓ | ✓ | ✓ | ✓ Wiedergabestreifen | ✓ `blueferry media volume up\|down` |
-| Mitteilungen anheften/lösen | ✓ | ✓ | ✓ | ✓ Show Recent Notifications | ✓ `blueferry notifications pin\|unpin KEY` |
-| Apps stummschalten | ✓ | ✓ | ✓ | ✓ iPhone settings › Notifications | ✓ `blueferry notifications apps\|mute\|unmute` |
+| iPhone-Lautstärkeknöpfe und Pegel | noch nicht | noch nicht | noch nicht | ✓ Wiedergabestreifen | ✓ `blueferry media volume up\|down` |
+| Mitteilungen anheften/lösen | noch nicht | noch nicht | noch nicht | ✓ Show Recent Notifications | ✓ `blueferry notifications pin\|unpin KEY` |
+| Apps stummschalten | noch nicht | noch nicht | noch nicht | ✓ iPhone settings › Notifications | ✓ `blueferry notifications apps\|mute\|unmute` |
 
 Die Mitteilungsliste des Panels hat keine weiteren Aktionen pro Eintrag (sie
 öffnet und beantwortet keine Mitteilungen), daher sieht eine Mitteilung, auf
@@ -251,7 +251,7 @@ anderen Clients:
 | Begleitwerkzeuge | Desktop-Helfer richtet man einmal ein; das ist keine Aufgabe für ein Panel | Qt- oder GTK-Einstellungen, `blueferry tools` |
 | Nachrichtenverlauf löschen | Bietet auch der Terminal-Client nicht an | `blueferry history-clear` |
 | Click Rules, letzte Anrufe, das Anruf-Panel | Noch nicht im Quickshell-Client | Qt-, GTK- oder Terminal-Client |
-| Kontaktfotos, Einträge einer Karte kopieren, eine E-Mail schreiben (Mail-Programm), einen Anruf-Treffer in den letzten Anrufen öffnen | Die Suche im Panel findet nur einen Kontakt zum Anrufen oder Schreiben; eine Liste der letzten Anrufe hat das Panel nicht | Qt-, GTK- oder Terminal-Client, `blueferry contacts show --photo` |
+| Kontaktfotos, Einträge einer Karte kopieren, eine E-Mail schreiben (Mail-Programm), einen Anruf-Treffer in den letzten Anrufen öffnen | Die Suche im Panel findet nur einen Kontakt zum Anrufen oder Schreiben; eine Liste der letzten Anrufe hat das Panel nicht | `blueferry contacts show --photo`; die letzten Anrufe im Qt-, GTK- oder Terminal-Client |
 
 Das Panel lädt keinen Übersetzungskatalog, seine eigenen Beschriftungen
 sind deshalb englisch. Texte aus dem gemeinsamen BlueFerry-Code, etwa der

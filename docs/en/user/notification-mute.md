@@ -19,10 +19,10 @@ You can also mute an app before it ever sent a notification, by its bundle
 ID. BlueFerry fetches app notifications only while **All iPhone Notifications** is
 selected, so with another policy the list holds only muted apps.
 
-The KDE, GTK and terminal clients show the same list as **Muted apps** under
-**Settings › Notifications**, the Quickshell panel under **iPhone settings ›
-Notifications**; each app there has **Mute** / **Unmute** (see
-[Clients](clients.md)).
+The Quickshell panel shows the same list as **Muted apps** under **iPhone
+settings › Notifications**, each app with **Mute** / **Unmute** (see
+[Clients](clients.md)). The KDE, GTK and terminal clients get it in a
+separate change; until then use the command line.
 
 ## What muting does and doesn't do
 

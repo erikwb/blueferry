@@ -203,9 +203,9 @@ app does not offer volume control.
 
 | | Qt | GTK | TUI | Quickshell | CLI |
 |---|---|---|---|---|---|
-| iPhone volume buttons and level | ✓ | ✓ | ✓ | ✓ now-playing strip | ✓ `blueferry media volume up\|down` |
-| Pin / unpin notifications | ✓ | ✓ | ✓ | ✓ Show Recent Notifications | ✓ `blueferry notifications pin\|unpin KEY` |
-| Mute apps | ✓ | ✓ | ✓ | ✓ iPhone settings › Notifications | ✓ `blueferry notifications apps\|mute\|unmute` |
+| iPhone volume buttons and level | not yet | not yet | not yet | ✓ now-playing strip | ✓ `blueferry media volume up\|down` |
+| Pin / unpin notifications | not yet | not yet | not yet | ✓ Show Recent Notifications | ✓ `blueferry notifications pin\|unpin KEY` |
+| Mute apps | not yet | not yet | not yet | ✓ iPhone settings › Notifications | ✓ `blueferry notifications apps\|mute\|unmute` |
 
 The panel's notification list has no other row actions (it does not open or
 answer notifications), so a notification the iPhone can no longer act on
@@ -239,7 +239,7 @@ Quickshell is a compact panel, so some parts stay with the other clients:
 | Companion tools | Setting up desktop helpers is a one-time job, not a panel task | Qt or GTK settings, `blueferry tools` |
 | Clearing the message history | Not offered by the terminal client either | `blueferry history-clear` |
 | Click Rules, recent calls, the calls panel | Not in the Quickshell client yet | Qt, GTK or terminal client |
-| Contact photos, copying card entries, writing an email (mail app), opening a call hit in the recent calls | The panel's search only finds a contact to call or write; it has no recent-calls list | Qt, GTK or terminal client, `blueferry contacts show --photo` |
+| Contact photos, copying card entries, writing an email (mail app), opening a call hit in the recent calls | The panel's search only finds a contact to call or write; it has no recent-calls list | `blueferry contacts show --photo`; recent calls in the Qt, GTK or terminal client |
 
 The panel loads no translation catalog, so its own labels are English.
 Texts that come from the shared BlueFerry code, such as the reconnect hint,
