@@ -115,6 +115,15 @@ class FakeClient:
         self.calls.append(("set_phone_audio_route", route))
         return route
 
+    def call_audio_devices(self):
+        self.calls.append(("call_audio_devices",))
+        return {"outputs": [{"name": "alsa_output.a50", "description": "A50", "default": True}],
+                "inputs": []}
+
+    def set_call_audio_device(self, direction, name):
+        self.calls.append(("set_call_audio_device", direction, name))
+        return {f"calls_audio_{direction}": name}
+
 
 def test_bridge_dispatches_private_values_without_command_arguments() -> None:
     client = FakeClient()
@@ -1176,6 +1185,40 @@ def test_bridge_stops_diagnostics_when_quickshell_terminates_it(monkeypatch, num
         os.close(write_end)
     assert timed_out == []
     assert stopped == [True]
+
+
+def test_bridge_returns_the_call_audio_rows_and_saves_a_device() -> None:
+    client = FakeClient()
+    bridge = QuickshellBridge(client)  # type: ignore[arg-type]
+
+    # Calls off or an older daemon: no rows, and PipeWire is not asked.
+    assert bridge.dispatch("call_audio_settings", {})["supported"] is False
+    assert client.calls == []
+
+    client.status = lambda: SimpleNamespace(to_dict=lambda: {
+        "daemon": True, "calls_audio_output": "alsa_output.a50", "calls_audio_input": "",
+    })
+    view = bridge.dispatch("call_audio_settings", {})
+    assert view["supported"] is True
+    assert view["rows"][0]["label"] == "Speaker for calls"
+    assert view["rows"][0]["index"] == 1
+    assert bridge.dispatch("set_call_audio_device", {"direction": "input", "name": ""}) == {
+        "calls_audio_input": "",
+    }
+    assert client.calls == [("call_audio_devices",), ("set_call_audio_device", "input", "")]
+
+
+@pytest.mark.parametrize("args", [
+    {}, {"direction": "speaker", "name": "x"}, {"direction": "output"},
+    {"direction": "output", "name": 5},
+])
+def test_bridge_rejects_malformed_call_audio_requests(args) -> None:
+    client = FakeClient()
+    bridge = QuickshellBridge(client)  # type: ignore[arg-type]
+
+    with pytest.raises(ValueError):
+        bridge.dispatch("set_call_audio_device", args)
+    assert client.calls == []
 
 
 # ---- Welle B: pinned notifications and muted apps -----------------------------

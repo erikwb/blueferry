@@ -3045,6 +3045,41 @@ def test_quickshell_phone_calls_checkbox_is_opt_in(qml_engine, quickshell_setup)
     close()
 
 
+def test_quickshell_call_audio_rows_save_the_chosen_device(qml_engine, quickshell_setup):
+    base = {"notification_policy": "all", "contacts_only_notifications": False,
+            "calls_enabled": True}
+    page, calls, close = _quickshell_settings_page(qml_engine, quickshell_setup, base)
+    rows = {"supported": True, "hint": "Used only for phone calls.", "rows": [
+        {"direction": "output", "label": "Speaker for calls", "index": 1, "selected": "a50",
+         "options": [{"value": "", "label": "Same as system"},
+                     {"value": "a50", "label": "A50 Chat"}]},
+        {"direction": "input", "label": "Microphone for calls", "index": 0, "selected": "",
+         "options": [{"value": "", "label": "Same as system"},
+                     {"value": "cam", "label": "Webcam"}]},
+    ]}
+    page.setProperty("callAudio", rows)
+    QGuiApplication.processEvents()
+    # An older daemon (no calls_audio_output): nothing is shown.
+    assert _visual_find(page, "callAudioCombo_output") is None
+    assert page.findChild(QObject, "callAudioHint").property("visible") is False
+
+    page.setProperty("status", {**base, "calls_audio_output": "a50", "calls_audio_input": ""})
+    QGuiApplication.processEvents()
+    speaker = _visual_find(page, "callAudioCombo_output")
+    microphone = _visual_find(page, "callAudioCombo_input")
+    assert speaker.property("currentText") == "A50 Chat"
+    assert microphone.property("currentText") == "Same as system"
+    assert page.findChild(QObject, "callAudioHint").property("text") == "Used only for phone calls."
+    page.setProperty("busy", {"callAudio": True})
+    QGuiApplication.processEvents()
+    assert microphone.property("enabled") is False
+    page.setProperty("busy", {})
+    QGuiApplication.processEvents()
+    QMetaObject.invokeMethod(microphone, "activated", Q_ARG(int, 1))
+    assert calls == [("set_call_audio_device", {"direction": "input", "name": "cam"})]
+    close()
+
+
 def test_quickshell_saved_choice_is_not_undone_by_a_late_status(qml_engine) -> None:
     component = _component(qml_engine, "data/quickshell/SavedChoice.qml")
     choice = component.create()
@@ -7165,6 +7200,21 @@ Item {
         phoneSettingsPage.operationRequested("doctor", {})
         check(backendBridge.take("doctor") === 1, "diagnostics ran twice")
 
+        // Call speaker and microphone: read while Settings shows and the
+        // daemon offers them; a save rereads the rows and the status.
+        backendBridge.take("")
+        backendBridge.response("status", 10, {daemon: true, calls_enabled: true, calls_audio_output: ""})
+        check(backendBridge.take("latest:call_audio_settings") === 1, "call audio not read")
+        backendBridge.response("call_audio_settings", 11, {supported: true, hint: "h", rows: []})
+        check(phoneSettingsPage.callAudio.supported === true, "call audio rows ignored")
+        phoneSettingsPage.operationRequested("set_call_audio_device", {direction: "output", name: "x"})
+        check(root.callAudioBusy, "call audio save not busy")
+        backendBridge.response("set_call_audio_device", 12, {calls_audio_output: "x"})
+        check(!root.callAudioBusy, "call audio save stays busy")
+        check(backendBridge.take("latest:call_audio_settings") === 1, "rows not reread after saving")
+        phoneSettingsPage.operationRequested("set_call_audio_device", {direction: "input", name: "y"})
+        backendBridge.failure("set_call_audio_device", 13, "nope")
+        check(!root.callAudioBusy && root.errorText === "nope", "call audio failure lost")
         // Muted apps: read on a daemon that can mute, reread on the event.
         backendBridge.take("")
         backendBridge.response("status", 30, {daemon: true, notification_muted_app_count: 0})
