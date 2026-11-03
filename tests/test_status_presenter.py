@@ -933,7 +933,7 @@ def test_gtk_phone_audio_switch_follows_the_reported_route():
            "phone_audio_delay_reporting": True})
     assert page._phone_audio_row.subtitle == (
         "iPhone sound plays on this computer.\n"
-        "A/V sync: 110 ms delay reported to the iPhone."
+        "A/V sync: this computer reports 110 ms."
     )
     apply({"phone_audio_route": "pc"}, reachable=False)
     assert page._phone_audio_row.sensitive is False
@@ -1217,6 +1217,11 @@ def test_gtk_quick_sound_switch_shows_the_av_sync_line():
     assert subtitle == (
         "iPhone sound plays on this computer.\n"
         "A/V sync: delay reporting not negotiated; video may be out of sync."
+    )
+    status.update(phone_audio_delay_reporting=True, phone_audio_delay_ms=110)
+    assert PhoneAudioSwitch._view(None, status)[1] == (
+        "iPhone sound plays on this computer.\n"
+        "A/V sync: this computer reports 110 ms."
     )
     status["phone_audio_delay_reporting"] = None
     assert PhoneAudioSwitch._view(None, status)[1] == "iPhone sound plays on this computer."
