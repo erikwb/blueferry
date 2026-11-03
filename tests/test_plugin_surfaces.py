@@ -85,6 +85,30 @@ def test_invoke_checks_open_uri_and_explains_failures(tmp_path) -> None:
         "Example could not do that.")
 
 
+@pytest.mark.parametrize(("load", "method", "reply"), [
+    (surfaces.load_cards, "GetCardItems", '{"items": []}'),
+    (surfaces.load_targets, "ShareTargets", '{"targets": []}'),
+])
+def test_a_plugin_disabled_while_another_answers_is_not_asked(load, method, reply, tmp_path,
+                                                              monkeypatch) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    asked: list[str] = []
+
+    def disable_webdav(*_args):
+        # `blueferry plugins disable` or another client, mid-load.
+        (tmp_path / "blueferry").mkdir(exist_ok=True)
+        (tmp_path / "blueferry" / "plugins.json").write_text(
+            json.dumps({"disabled": [WEBDAV.id]}))
+        return reply
+
+    def make(plugin):
+        asked.append(plugin.id)
+        return PluginClient(plugin, transport=ScriptedTransport({method: disable_webdav}))
+
+    load([LOCALSEND, WEBDAV], client_factory=make)
+    assert asked == [LOCALSEND.id]
+
+
 def test_share_targets_resolve_by_id_alias_and_target() -> None:
     targets = surfaces.load_targets([LOCALSEND, WEBDAV], client_factory=_factory({
         LOCALSEND.id: {"ShareTargets": json.dumps({"targets": [

@@ -230,14 +230,14 @@ class CallHistorySync:
             self._records = []
             self._on_changed()
 
-    def clear(self) -> None:
+    def clear(self, *, discard_damaged: bool = False) -> None:
         """Erase history and invalidate pulls and writes already in flight."""
         # A worker may be committing when ClearHistory arrives. Wait for that
         # commit before erasing, and prevent queued old writes from following.
         with self._store_lock:
             self._cache_generation += 1
             self._clear_generation += 1
-            clear_call_history()
+            clear_call_history(discard_damaged=discard_damaged)
         self._synced = False
         self._resync = False
         self._resync_full = False
