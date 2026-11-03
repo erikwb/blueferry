@@ -23,6 +23,8 @@
                   value="InvalidArgs,NotFound,NotReady,ConfirmationRequired,SendFailed,SendOutcomeUnknown"/>
     </method>
     <method name="SendToThreadChecked">
+      <annotation name="org.freedesktop.DBus.Description"
+                  value="Reply to a thread. A group reply passes the roster token the client displayed. A direct thread whose latest message may be from a group is answered only with confirm_group and its sender_reply_token."/>
       <arg name="thread_key" type="s" direction="in"/>
       <arg name="body" type="s" direction="in"/>
       <arg name="confirm_group" type="b" direction="in"/>

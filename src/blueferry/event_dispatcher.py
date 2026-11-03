@@ -56,10 +56,7 @@ _ANCS_FINGERPRINT_FIELDS = (
 
 
 def _ancs_fingerprint(event) -> bytes:
-    if isinstance(event, dict):
-        values = [event.get(field) for field in _ANCS_FINGERPRINT_FIELDS]
-    else:
-        values = [getattr(event, field, None) for field in _ANCS_FINGERPRINT_FIELDS]
+    values = [getattr(event, field, None) for field in _ANCS_FINGERPRINT_FIELDS]
     encoded = json.dumps(values, ensure_ascii=False, separators=(",", ":"), default=str).encode(
         "utf-8"
     )
@@ -72,7 +69,6 @@ class EventDispatcher:
         contacts,
         *,
         defer_mark_read: Callable[[str], None],
-        historical_ancs=(),
         notification_policy=None,
         contacts_only_notifications=None,
         notification_open_target=None,
@@ -123,16 +119,9 @@ class EventDispatcher:
         self._notification_retry_id: int | None = None
         self._setup_complete = False
         self._setup_logged = False
+        # Events already delivered in the current ANCS session. Replays of
+        # older notifications are flagged PreExisting and never get here.
         self._seen_ancs: OrderedDict[bytes, None] = OrderedDict()
-        self.seed_historical_ancs(historical_ancs)
-
-    def seed_historical_ancs(self, events) -> None:
-        """Add retained correlation fingerprints without emitting events."""
-        for event in events:
-            if isinstance(event, dict) and event.get("kind") == "ancs_notification":
-                self._seen_ancs[_ancs_fingerprint(event)] = None
-        while len(self._seen_ancs) > MAX_ANCS_FINGERPRINTS:
-            self._seen_ancs.popitem(last=False)
 
     def setup(self) -> None:
         if self._setup_complete:
@@ -354,7 +343,9 @@ class EventDispatcher:
         self._fan_out("close_removed_ancs_popup", notification_id)
 
     def ancs_session_reset(self) -> None:
-        """Forget popup UIDs of an ended ANCS session (they may be reused)."""
+        """Forget UIDs of an ended ANCS session (they may be reused)."""
+        # A reused UID with the same text is a new notification, not a replay.
+        self._seen_ancs.clear()
         self._fan_out("forget_ancs_popups")
 
     def _fan_out(self, method: str, *args: int) -> None:

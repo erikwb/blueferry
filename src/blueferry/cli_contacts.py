@@ -15,6 +15,9 @@ from blueferry.contact_photos import image_type
 from blueferry.events import canonical_address
 from blueferry.text_safety import terminal_text
 
+# While the daemon can't read its saved choice (contact_photos_state).
+UNKNOWN_REASON = "settings.json cannot be read; repair or remove the file"
+
 contact_photos_app = typer.Typer(
     help="Show the iPhone's contact photos as avatars (opt-in).",
     no_args_is_help=True,
@@ -68,6 +71,9 @@ def contact_photos_status() -> None:
         raise typer.Exit(code=3) from None
     if "contact_photos" not in status:
         typer.echo("This backend does not offer contact photos.")
+        return
+    if status.get("contact_photos_state") == "unknown":
+        typer.echo(f"Contact photos: unknown, {UNKNOWN_REASON}")
         return
     if status.get("contact_photos") is not True:
         typer.echo("Contact photos: disabled")
@@ -146,11 +152,14 @@ def contacts_photo(
     setup_logging(verbose)
     client = BackendClient()
     try:
-        enabled = bool(client.status().to_dict().get("contact_photos"))
+        status = client.status().to_dict()
     except BackendError as error:
         typer.echo(typer.style(f"Backend unavailable: {error}", fg=typer.colors.RED), err=True)
         raise typer.Exit(code=3) from None
-    if not enabled:
+    if status.get("contact_photos_state") == "unknown":
+        typer.echo(f"Contact photos are unavailable: {UNKNOWN_REASON}.", err=True)
+        raise typer.Exit(code=2)
+    if not status.get("contact_photos"):
         typer.echo(
             "Contact photos are off. Turn them on with 'blueferry contact-photos "
             "enable' or the clients' settings; they arrive with the next contact sync.",

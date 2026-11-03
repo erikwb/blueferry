@@ -11,6 +11,7 @@ from blueferry.audio_activity import audio_activity
 from blueferry.errors import InvalidArgumentsError, NotReadyError
 from blueferry.phone_audio_route import PhoneAudioRoute
 from blueferry.phone_audio_settings import CHOICES, PhoneAudioSettings
+from blueferry.settings_store import UnreadableSettingsError
 
 log = logging.getLogger(__name__)
 Configure = Callable[[bool, Callable[[str | Exception], None]], None]
@@ -129,6 +130,9 @@ class PhoneAudioPreference:
         request, self._request = self._request, None
         try:
             self.settings.set(choice)
+        except UnreadableSettingsError as error:
+            if request is not None:
+                request.failure(error)
         except (OSError, ValueError) as error:
             if request is not None:
                 request.failure(NotReadyError(f"could not save the audio preference: {error}"))

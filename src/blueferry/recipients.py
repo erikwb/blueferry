@@ -1,6 +1,8 @@
 """Transport-neutral validation for Messages recipient addresses."""
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from collections.abc import Iterable
 
@@ -69,3 +71,22 @@ def group_confirmation_token(
     """Bind approval to the displayed roster; preserve address spelling."""
     identities = sorted({str(value) for value in recipients if str(value)})
     return "\n".join((str(roster_warning_id or ""), *identities))
+
+
+# Marks a sender_reply_token, so a client can word a stale confirmation.
+SENDER_REPLY_TOKEN_PREFIX = "sender:"  # nosec B105
+
+
+def sender_reply_token(address: str, messages: Iterable[dict]) -> str:
+    """Bind a sender-only reply to the address and the messages it answers.
+
+    Any further message that may belong to a group changes the token, so an
+    earlier confirmation cannot cover it.
+    """
+    evidence = [address, *sorted(
+        [str(message.get("handle") or ""), str(message.get("timestamp") or "")]
+        for message in messages
+    )]
+    return SENDER_REPLY_TOKEN_PREFIX + hashlib.sha256(
+        json.dumps(evidence, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
