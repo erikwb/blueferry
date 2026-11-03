@@ -69,6 +69,14 @@ def _audio_playing(value: Any) -> str | None:
     return value if value in PHONE_AUDIO_PLAYING else "unknown"
 
 
+CONTACT_PHOTO_STATES = frozenset({"on", "off", "unknown"})
+
+
+def _contact_photos_state(value: Any) -> str | None:
+    """A known ``contact_photos_state``; otherwise clients use ``contact_photos``."""
+    return value if value in CONTACT_PHOTO_STATES else None
+
+
 @dataclass(frozen=True, slots=True)
 class BackendStatus:
     daemon: bool = False
@@ -120,6 +128,9 @@ class BackendStatus:
     phone_profile_id: str | None = None
     # None when the daemon predates the contact-photo setting.
     contact_photos: bool | None = None
+    # "on", "off", or "unknown" while settings.json can't be read; None when
+    # the daemon predates the key.
+    contact_photos_state: str | None = None
     extra: Mapping[str, Any] = field(default_factory=dict, repr=False)
 
     @property
@@ -172,6 +183,7 @@ class BackendStatus:
             "phone_audio_playing",
             "phone_profile_id",
             "contact_photos",
+            "contact_photos_state",
         }
         return cls(
             daemon=_bool(value.get("daemon")),
@@ -220,6 +232,7 @@ class BackendStatus:
             contact_photos=(
                 _bool(value["contact_photos"]) if "contact_photos" in value else None
             ),
+            contact_photos_state=_contact_photos_state(value.get("contact_photos_state")),
             extra={key: item for key, item in value.items() if key not in known},
         )
 
@@ -233,6 +246,8 @@ class BackendStatus:
         # Likewise the contact-photo opt-in.
         if self.contact_photos is not None:
             reported["contact_photos"] = self.contact_photos
+        if self.contact_photos_state is not None:
+            reported["contact_photos_state"] = self.contact_photos_state
         # Likewise the one-time code opt-in.
         if self.otp_autocopy is not None:
             reported["otp_autocopy"] = self.otp_autocopy
@@ -608,8 +623,17 @@ class Thread:
     def confirmation_token(self) -> str:
         return (
             group_confirmation_token(self.recipients, self.roster_warning_id)
-            if self.is_group else ""
+            if self.is_group else self.sender_reply_token
         )
+
+    @property
+    def sender_reply_token(self) -> str:
+        """Set while the latest message may be from a group.
+
+        The user can still confirm a reply to its sender alone.
+        """
+        value = self.extra.get("sender_reply_token")
+        return value if isinstance(value, str) and not self.is_group else ""
 
     @property
     def roster_warning_key(self) -> str:
@@ -617,8 +641,16 @@ class Thread:
 
     @property
     def can_compose(self) -> bool:
-        """Whether a reply can be typed; a group may first need its members."""
-        return self.reply_ready or (self.is_group and self.participants_required)
+        """Whether a reply can be typed.
+
+        A group may first need its members, and a message that may be from a
+        group a confirmation that the reply goes to its sender alone.
+        """
+        return (
+            self.reply_ready
+            or (self.is_group and self.participants_required)
+            or bool(self.sender_reply_token)
+        )
 
     @property
     def missing_members(self) -> tuple[str, ...]:
@@ -744,6 +776,12 @@ class CallHistoryEntry:
     @property
     def missed(self) -> bool:
         return self.direction == "missed"
+
+    @property
+    def call_id(self) -> str:
+        """The opaque entry id a Search call hit refers to; "" from older daemons."""
+        value = self.extra.get("id")
+        return value if isinstance(value, str) else ""
 
     @property
     def display_caller(self) -> str:

@@ -19,6 +19,10 @@ ShellRoot {
   property var participantEntries: []
   property string groupParticipantsDraft: ""
   property var rosterChangedThread: null
+  // A reply held while asking whether it goes to the sender only, and the
+  // conversation as shown when it asked.
+  property var senderConfirmThread: null
+  property string senderConfirmDraft: ""
   property string errorText: ""
   property bool phoneSettingsVisible: false
   property var backendStatus: ({})
@@ -72,10 +76,43 @@ ShellRoot {
   // Recent iPhone notifications: private, read only while the settings
   // page shows the list in a visible window, forgotten otherwise.
   property var notificationList: ({})
+  property bool notificationPinBusy: false
+  // Muted iPhone apps: the bridge's list with its wording, read when
+  // Settings opens on a daemon that can mute and again on
+  // NotificationAppsChanged; forgotten when Settings closes.
+  property var notificationApps: ({})
+  property bool notificationAppsBusy: false
+  readonly property bool notificationAppsWanted: root.featuresWanted
+    && typeof root.backendStatus.notification_muted_app_count === "number"
+  onNotificationAppsWantedChanged: root.loadNotificationApps()
+  property string notificationPinError: ""
   readonly property bool notificationListWatched: window.visible && root.phoneSettingsVisible
     && phoneSettingsPage.notificationsExpanded
   property bool storagePolicyBusy: false
   property bool storageUnlockBusy: false
+  property bool storageResetBusy: false
+  property string storageResetNotice: ""
+  // Contact cards and the global search: read only while the search popup
+  // is open and forgotten when it closes. The epoch changes when card ids
+  // may no longer resolve (daemon restart, contact reload).
+  property var contactCards: ({})
+  property var contactCard: ({})
+  property var searchResults: ({})
+  property string searchQuery: ""
+  property string searchError: ""
+  // NotReady answers retried for the current query (search_model.BUSY_RETRIES).
+  property int searchBusyRetries: 0
+  property bool contactCardsBusy: false
+  property bool dialBusy: false
+  property var contactCardEpoch: undefined
+  // search_model.SOURCE_KEYS of the last status: a change means the shown
+  // hits may name data that is gone or locked.
+  property string searchSources: ""
+  readonly property bool contactCardsSupported:
+    typeof root.backendStatus.contact_card_count === "number"
+  readonly property bool searchSupported:
+    typeof root.backendStatus.search_result_limit === "number"
+    && root.backendStatus.search_result_limit > 0
 
   ConversationLogic { id: conversationLogic }
 
@@ -141,6 +178,17 @@ ShellRoot {
     }
   }
 
+  // Like the other clients: only while the daemon offers the reset, and
+  // only from the confirmation popup.
+  function resetStorage() {
+    if (!storageResetPopup.offered || storageResetBusy || storagePolicyBusy) return
+    // The reset obtains its own key, so skip the automatic unlock.
+    storageUnlockAttempted = true
+    storageResetBusy = true
+    storageResetNotice = ""
+    backendBridge.request("reset_storage", {confirmed: true})
+  }
+
   // Qt 6.12 hands arrays in a var signal argument over as sequence wrappers,
   // nested ones included, which fail Array.isArray. A JSON round trip gives
   // the handlers the plain JavaScript values the backend sent.
@@ -183,6 +231,15 @@ ShellRoot {
   onFeaturesWantedChanged: if (root.featuresWanted) root.loadFeatures()
   onNotificationListWatchedChanged: root.refreshNotificationList()
 
+  function loadNotificationApps() {
+    if (root.notificationAppsWanted) {
+      backendBridge.requestLatest("notification_apps", {})
+    } else {
+      backendBridge.cancelLatest("notification_apps")
+      root.notificationApps = ({})
+    }
+  }
+
   function loadFeatures() {
     if (setupController.configured) backendBridge.requestLatest("features", {})
   }
@@ -195,6 +252,7 @@ ShellRoot {
     } else {
       backendBridge.cancelLatest("notifications")
       root.notificationList = ({})
+      root.notificationPinError = ""
     }
   }
 
@@ -275,12 +333,35 @@ ShellRoot {
       openGroupParticipants(thread, composer.text)
       return
     }
+    if (conversationLogic.needsSenderConfirmation(thread)) {
+      senderConfirmThread = thread
+      senderConfirmDraft = composer.text
+      senderConfirmPopup.open()
+      return
+    }
     sendBusy = true
     backendBridge.request("send_to_thread", {
       thread_key: thread.key,
       body: composer.text,
       confirm_group: thread.is_group,
       expected_group_token: groupSignature(thread)
+    })
+  }
+
+  // The answer covers only the messages shown when it asked; the backend
+  // refuses it once another message that may be from a group arrives.
+  function sendToSenderOnly() {
+    const thread = senderConfirmThread
+    const selected = selectedThread()
+    senderConfirmPopup.close()
+    if (!thread || !selected || selected.key !== thread.key
+        || composer.text !== senderConfirmDraft) return
+    sendBusy = true
+    backendBridge.request("send_to_thread", {
+      thread_key: thread.key,
+      body: senderConfirmDraft,
+      confirm_group: true,
+      expected_group_token: String(thread.sender_reply_token || "")
     })
   }
 
@@ -328,6 +409,73 @@ ShellRoot {
   BackendBridge { id: backendBridge; desktopClient: true }
   AvatarCache { id: avatars; bridge: backendBridge; backendStatus: root.backendStatus }
 
+  // An empty or one-letter query lists (or filters) the contact cards; a
+  // longer one searches everything when the daemon can.
+  function searchesEverything(query) {
+    return root.searchSupported && (query.length >= 2 || !root.contactCardsSupported)
+  }
+
+  function runSearch(query) {
+    root.searchQuery = query
+    root.searchError = ""
+    if (root.searchesEverything(query)) {
+      backendBridge.cancelLatest("contact_cards")
+      root.contactCardsBusy = false
+      backendBridge.requestLatest("search", {query: query})
+    } else {
+      backendBridge.cancelLatest("search")
+      root.searchResults = ({})
+      if (root.contactCardsSupported) root.loadContactCards(0)
+    }
+  }
+
+  // The searched data changed (search_model.GlobalSearch.invalidate): drop
+  // the shown hits and an answer still on its way, then search again after
+  // the typing delay, so a burst of change signals searches once.
+  function invalidateSearch() {
+    if (!searchPopup.visible || !root.searchesEverything(root.searchQuery)) return
+    backendBridge.cancelLatest("search")
+    root.searchResults = ({})
+    root.searchError = ""
+    root.searchBusyRetries = 0
+    searchTimer.restart()
+  }
+
+  function loadContactCards(offset) {
+    root.contactCardsBusy = true
+    backendBridge.requestLatest("contact_cards", {query: root.searchQuery, offset: offset})
+  }
+
+  function applyContactCards(result) {
+    root.contactCardsBusy = false
+    if (!searchPopup.visible || typeof result !== "object" || result === null) return
+    if (result.offset > 0 && root.contactCards.rows) {
+      // A further page: append the rows the list does not have yet.
+      const seen = {}
+      const rows = Array.prototype.slice.call(root.contactCards.rows)
+      rows.forEach(row => { seen[row.id] = true })
+      Array.prototype.slice.call(result.rows || []).forEach(row => {
+        if (!seen[row.id]) rows.push(row)
+      })
+      root.contactCards = Object.assign({}, result, {rows: rows})
+    } else {
+      root.contactCards = result
+    }
+  }
+
+  function forgetSearch() {
+    backendBridge.cancelLatest("search")
+    backendBridge.cancelLatest("contact_cards")
+    backendBridge.cancelLatest("contact_card")
+    root.contactCards = ({})
+    root.contactCard = ({})
+    root.searchResults = ({})
+    root.searchQuery = ""
+    root.searchError = ""
+    root.searchBusyRetries = 0
+    root.contactCardsBusy = false
+  }
+
   IpcHandler {
     target: "blueferry"
     function open(): void { root.presentWindow() }
@@ -355,6 +503,29 @@ ShellRoot {
         const daemonReturned = result.daemon === true && root.backendStatus.daemon !== true
         root.backendStatus = result
         if (daemonReturned && root.featuresWanted) root.loadFeatures()
+        let searchedAgain = false
+        if (result.contact_card_epoch !== root.contactCardEpoch) {
+          // Card ids from the old epoch may be gone: read the list again.
+          const epochWasKnown = root.contactCardEpoch !== undefined
+          root.contactCardEpoch = result.contact_card_epoch
+          if (epochWasKnown && searchPopup.visible) {
+            // The old rows, hits and card go at once, with any card or
+            // page still on its way (contacts_model.ContactBook).
+            backendBridge.cancelLatest("contact_card")
+            backendBridge.cancelLatest("contact_cards")
+            root.contactCard = ({})
+            root.contactCards = ({})
+            if (root.searchesEverything(root.searchQuery)) root.invalidateSearch()
+            else root.runSearch(root.searchQuery)
+            searchedAgain = true
+          }
+        }
+        const sources = JSON.stringify(["storage_policy", "storage_state",
+          "call_history_enabled", "contact_card_epoch", "contact_photos",
+          "contact_photos_state"].map(key => result[key]))
+        const sourcesChanged = root.searchSources !== "" && sources !== root.searchSources
+        root.searchSources = sources
+        if (sourcesChanged && !searchedAgain) root.invalidateSearch()
         if (typeof result.bluetooth_restart_command === "string")
           root.bluetoothRestartCommand = result.bluetooth_restart_command
         var policy = result.notification_policy || "messages"
@@ -527,6 +698,14 @@ ShellRoot {
           root.storageDetail = result.storage_detail || root.storageDetail
         }
         root.reload()
+      } else if (method === "reset_storage") {
+        root.storageResetBusy = false
+        if (typeof result === "object" && result !== null) {
+          root.storageState = result.storage_state || root.storageState
+          root.storageDetail = result.storage_detail || root.storageDetail
+        }
+        root.storageResetNotice = "Local storage reset"
+        root.reload()
       } else if (method === "set_phone_battery_warning") {
         root.batteryWarning.saved(result === true, root.statusBusy)
         root.reload()
@@ -557,6 +736,46 @@ ShellRoot {
       } else if (method === "notifications") {
         if (root.notificationListWatched)
           root.notificationList = typeof result === "object" && result !== null ? result : ({})
+      } else if (method === "notification_apps") {
+        if (root.notificationAppsWanted)
+          root.notificationApps = typeof result === "object" && result !== null ? result : ({})
+      } else if (method === "toggle_notification_app") {
+        // The reply is the reread list, with the reason when nothing changed.
+        root.notificationAppsBusy = false
+        if (root.notificationAppsWanted && typeof result === "object" && result !== null)
+          root.notificationApps = result
+      } else if (method === "set_notification_pinned") {
+        // A saved pin sends NotificationsChanged, which rereads the list;
+        // only a refusal rereads it here.
+        root.notificationPinBusy = false
+        const saved = typeof result === "object" && result !== null && result.saved === true
+        root.notificationPinError = typeof result === "object" && result !== null
+          ? String(result.error || "") : ""
+        if (!saved) root.refreshNotificationList()
+      } else if (method === "contact_cards") {
+        root.applyContactCards(result)
+      } else if (method === "contact_card") {
+        if (!searchPopup.visible) return
+        root.contactCard = typeof result === "object" && result !== null ? result : ({})
+        // A stale id: the shared text is shown and the list is read again.
+        if (root.contactCard.found !== true) root.runSearch(root.searchQuery)
+      } else if (method === "search") {
+        if (!searchPopup.visible || typeof result !== "object" || result === null) return
+        if (result.busy === true) {
+          // The daemon's search queue is full: the same query again after
+          // the typing delay, three times, then the shared busy text.
+          if (root.searchBusyRetries < 3) {
+            root.searchBusyRetries += 1
+            searchTimer.restart()
+          } else {
+            root.searchError = String(result.error || "")
+          }
+          return
+        }
+        root.searchResults = result
+      } else if (method === "dial") {
+        root.dialBusy = false
+        dialConfirmPopup.close()
       }
     }
 
@@ -656,6 +875,12 @@ ShellRoot {
       } else if (method === "unlock_storage") {
         root.storageUnlockBusy = false
         root.errorText = message
+      } else if (method === "reset_storage") {
+        root.storageResetBusy = false
+        // Beside the button: a reload clears the error banner.
+        root.storageResetNotice = "Could not reset local storage: "
+          + (message || "BlueFerry is unavailable")
+        root.reload()
       } else if (method === "set_phone_battery_warning") {
         root.batteryWarning.failed(root.backendStatus.phone_battery_warning === true)
         root.errorText = message || "Could not save the battery warning preference"
@@ -683,11 +908,28 @@ ShellRoot {
       } else if (method === "doctor") {
         root.doctor = {running: false, ran: true, ok: false, level: "error",
                        summary: "One or more checks failed.", text: message}
+      } else if (method === "notification_apps") {
+        root.notificationApps = ({})
+      } else if (method === "toggle_notification_app") {
+        // The bridge answers daemon failures in its reply with translated
+        // text; what lands here is its own (or the bridge process's) error.
+        root.notificationAppsBusy = false
+        root.errorText = message
+        root.loadNotificationApps()
+      } else if (method === "set_notification_pinned") {
+        root.notificationPinBusy = false
+        root.notificationPinError = message
+        root.refreshNotificationList()
       } else if (method === "notifications") {
         if (root.notificationListWatched)
-          root.notificationList = {rows: [], failed: true,
-            title: "Notifications Are Unavailable",
-            explanation: message || "Notifications are unavailable"}
+          root.notificationList = {rows: [], failed: true, explanation: message}
+      } else if (method === "contact_cards" || method === "contact_card" || method === "search") {
+        root.contactCardsBusy = false
+        if (searchPopup.visible) root.searchError = message || "Search failed"
+      } else if (method === "dial") {
+        root.dialBusy = false
+        dialConfirmPopup.close()
+        root.errorText = message || "Could not start the call"
       } else {
         avatars.disconnected()
         root.statusBusy = false
@@ -701,6 +943,10 @@ ShellRoot {
         root.contactsOnlyNotificationsBusy = false
         root.ancsActionsBusy = false
         root.phoneAudioBusy = false
+        root.notificationPinBusy = false
+        root.notificationAppsBusy = false
+        root.contactCardsBusy = false
+        root.dialBusy = false
         if (root.mediaControl.busy)
           root.mediaControl.failed(root.backendStatus.media_control_enabled === true)
         if (root.mprisPlayer.busy)
@@ -721,6 +967,7 @@ ShellRoot {
           root.otpAutocopy.failed(root.backendStatus.otp_autocopy === true)
         root.storagePolicyBusy = false
         root.storageUnlockBusy = false
+        root.storageResetBusy = false
         if (root.batteryWarning.busy)
           root.batteryWarning.failed(root.backendStatus.phone_battery_warning === true)
         if (root.mirrorRemovals.busy)
@@ -737,10 +984,20 @@ ShellRoot {
     function onEventReceived(name, data) {
       data = root.plainValue(data)
       if (name === "open-message") root.openMessage(String(data || ""))
-      else if (name === "history-changed" || name === "status-changed") root.reload()
+      else if (name === "history-changed" || name === "status-changed") {
+        // Messages changed: hits for them may be gone (GlobalSearch.invalidate).
+        if (name === "history-changed") root.invalidateSearch()
+        root.reload()
+      }
+      else if (name === "call-history-changed") root.invalidateSearch()
       else if (name === "now-playing-changed") root.refreshNowPlaying()
       else if (name === "notifications-changed" && root.notificationListWatched)
         root.refreshNotificationList()
+      else if (name === "notification-apps-changed") {
+        // Muting also dims the app's rows in a shown list.
+        if (root.notificationAppsWanted) root.loadNotificationApps()
+        if (root.notificationListWatched) root.refreshNotificationList()
+      }
       else if (name === "host" && data && typeof data.bluetooth_restart_command === "string")
         root.bluetoothRestartCommand = data.bluetooth_restart_command
       else if (name === "tether-changed") backendBridge.requestLatest("tether_state", {})
@@ -945,6 +1202,18 @@ ShellRoot {
                   font.bold: true
                   font.letterSpacing: 1
                   leftPadding: theme.scaled(4)
+                }
+                FerryButton {
+                  objectName: "searchButton"
+                  ferryTheme: theme
+                  text: "⌕"
+                  implicitWidth: implicitHeight
+                  visible: root.contactCardsSupported || root.searchSupported
+                  Accessible.name: root.searchSupported ? "Search" : "Contacts"
+                  ToolTip.visible: hovered
+                  ToolTip.text: (root.searchSupported
+                    ? "Search messages, contacts and calls" : "Search contacts") + " (Ctrl+F)"
+                  onClicked: searchPopup.open()
                 }
                 FerryButton {
                   ferryTheme: theme
@@ -1399,7 +1668,10 @@ ShellRoot {
           featurePending: root.featurePending
           doctor: root.doctor
           notificationList: root.notificationList
+          notificationPinError: root.notificationPinError
+          notificationApps: root.notificationApps
           contactsSyncNotice: root.contactsSyncNotice
+          storageResetNotice: root.storageResetNotice
           busy: ({notifications: root.notificationPolicyBusy,
                   contactsOnly: root.contactsOnlyNotificationsBusy,
                   ancsActions: root.ancsActionsBusy,
@@ -1419,12 +1691,16 @@ ShellRoot {
                   syncContacts: root.syncContactsBusy,
                   features: Object.keys(root.featurePending).length > 0,
                   restart: root.restartBusy,
-                  storage: root.storagePolicyBusy})
+                  pin: root.notificationPinBusy,
+                  notificationApps: root.notificationAppsBusy,
+                  storage: root.storagePolicyBusy || root.storageResetBusy,
+                  storageReset: root.storageResetBusy})
           visible: root.phoneSettingsVisible
           Layout.fillWidth: true
           Layout.fillHeight: true
           onCloseRequested: root.phoneSettingsVisible = false
           onPairingIssueRequested: pairingIssuePopup.open()
+          onStorageResetRequested: if (storageResetPopup.offered) storageResetPopup.open()
           onErrorRequested: message => root.errorText = message
           onReloadRequested: root.reload()
           onOperationRequested: (method, args) => {
@@ -1444,6 +1720,15 @@ ShellRoot {
               root.featurePending = pending
             }
             if (method === "restart_backend") root.restartBusy = true
+            if (method === "toggle_notification_app") {
+              if (root.notificationAppsBusy) return
+              root.notificationAppsBusy = true
+            }
+            if (method === "set_notification_pinned") {
+              if (root.notificationPinBusy) return
+              root.notificationPinBusy = true
+              root.notificationPinError = ""
+            }
             if (method === "doctor") {
               if (root.doctor.running === true) return
               root.doctor = Object.assign({}, root.doctor, {running: true})
@@ -1591,6 +1876,74 @@ ShellRoot {
       }
 
       Popup {
+        id: storageResetPopup
+        objectName: "storageResetPopup"
+        // The popup goes away with the offer, such as when the data opens
+        // again or the daemon stops, so a stale one cannot erase anything.
+        readonly property bool offered: root.backendStatus.daemon === true
+          && root.backendStatus.storage_reset === true
+        onOfferedChanged: if (!offered) close()
+        parent: applicationSurface
+        x: Math.max(0, (applicationSurface.width - width) / 2)
+        y: Math.max(0, (applicationSurface.height - height) / 2)
+        width: Math.min(theme.scaled(440), applicationSurface.width - theme.scaled(24))
+        modal: true
+        focus: true
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        padding: theme.scaled(18)
+
+        background: Rectangle {
+          color: theme.windowSurface
+          border.color: theme.divider
+          radius: theme.panelRadius
+        }
+
+        Overlay.modal: Rectangle {
+          color: Qt.rgba(theme.windowSurface.r, theme.windowSurface.g,
+                         theme.windowSurface.b, 0.72)
+        }
+
+        contentItem: ColumnLayout {
+          spacing: theme.scaled(12)
+          FerryLabel {
+            ferryTheme: theme
+            text: "Reset local storage?"
+            font.bold: true
+            font.pixelSize: theme.headingSize
+          }
+          FerryLabel {
+            ferryTheme: theme
+            Layout.fillWidth: true
+            wrapMode: Text.Wrap
+            text: "This permanently deletes local message history, cached contacts, call history and conversation preferences, and replaces BlueFerry's keyring key. Nothing is deleted from the iPhone."
+          }
+          RowLayout {
+            Layout.alignment: Qt.AlignRight
+            FerryButton {
+              id: storageResetCancelButton
+              objectName: "storageResetCancelButton"
+              ferryTheme: theme
+              text: "Cancel"
+              onClicked: storageResetPopup.close()
+            }
+            FerryButton {
+              id: storageResetConfirmButton
+              objectName: "storageResetConfirmButton"
+              ferryTheme: theme
+              text: "Erase and start over"
+              highlighted: true
+              enabled: storageResetPopup.offered && !root.storageResetBusy
+                && !root.storagePolicyBusy
+              onClicked: {
+                root.resetStorage()
+                storageResetPopup.close()
+              }
+            }
+          }
+        }
+      }
+
+      Popup {
         id: deleteThreadsPopup
         property string threadKey: ""
         parent: applicationSurface
@@ -1678,8 +2031,181 @@ ShellRoot {
         }
       }
 
+      Shortcut {
+        // Find has several bindings (Ctrl+F, F3 …); bind every one of them.
+        sequences: [StandardKey.Find]
+        enabled: root.contactCardsSupported || root.searchSupported
+        onActivated: searchPopup.open()
+      }
+
+      Popup {
+        id: searchPopup
+        objectName: "searchPopup"
+        parent: applicationSurface
+        x: Math.max(0, (applicationSurface.width - width) / 2)
+        y: Math.max(0, (applicationSurface.height - height) / 2)
+        width: Math.min(theme.scaled(560), applicationSurface.width - theme.scaled(24))
+        height: Math.min(theme.scaled(560), applicationSurface.height - theme.scaled(24))
+        modal: true
+        focus: true
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        padding: theme.scaled(18)
+
+        onOpened: {
+          searchPanel.clear()
+          root.contactCard = ({})
+          root.runSearch("")
+          searchPanel.focusField()
+        }
+        onClosed: {
+          searchTimer.stop()
+          root.forgetSearch()
+        }
+
+        Timer {
+          id: searchTimer
+          // search_view.TYPING_DELAY_MS
+          interval: 250
+          onTriggered: root.runSearch(searchPanel.query)
+        }
+
+        background: Rectangle {
+          color: theme.windowSurface
+          border.color: theme.divider
+          radius: theme.panelRadius
+        }
+
+        Overlay.modal: Rectangle {
+          color: Qt.rgba(theme.windowSurface.r, theme.windowSurface.g,
+                         theme.windowSurface.b, 0.72)
+        }
+
+        contentItem: ColumnLayout {
+          spacing: theme.scaled(8)
+          RowLayout {
+            Layout.fillWidth: true
+            FerryLabel {
+              ferryTheme: theme
+              Layout.fillWidth: true
+              text: root.searchSupported ? "Search" : "Contacts"
+              font.bold: true
+              font.pixelSize: theme.headingSize
+            }
+            FerryButton {
+              ferryTheme: theme
+              text: "Close"
+              onClicked: searchPopup.close()
+            }
+          }
+          QuickshellSearch {
+            id: searchPanel
+            objectName: "searchPanel"
+            ferryTheme: theme
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            contacts: root.contactCards
+            results: root.searchResults
+            card: root.contactCard
+            searchSupported: root.searchSupported
+            contactsSupported: root.contactCardsSupported
+            busy: root.contactCardsBusy
+            error: root.searchError
+            dialHint: String(root.backendStatus.dial_hint || "")
+            onQueryEdited: {
+              root.searchBusyRetries = 0
+              searchTimer.restart()
+            }
+            onMoreContactsRequested: root.loadContactCards(Number(root.contactCards.next_offset || 0))
+            onContactRequested: contactId => backendBridge.requestLatest("contact_card", {id: contactId})
+            onCardClosed: {
+              backendBridge.cancelLatest("contact_card")
+              root.contactCard = ({})
+            }
+            onConversationRequested: (threadKey, handle) => {
+              searchPopup.close()
+              if (handle !== "") root.openMessage(handle)
+              else root.openThread(threadKey)
+            }
+            onCallRequested: number => {
+              dialConfirmPopup.number = number
+              dialConfirmPopup.open()
+            }
+            onMessageRequested: address => {
+              searchPopup.close()
+              newMessagePopup.presetRecipient = address
+              newMessagePopup.open()
+            }
+          }
+        }
+      }
+
+      // Every call is confirmed first, as in the other clients. The panel
+      // has no calls view: the running call stays on the iPhone and in the
+      // other BlueFerry clients.
+      Popup {
+        id: dialConfirmPopup
+        objectName: "dialConfirmPopup"
+        property string number: ""
+        parent: applicationSurface
+        x: Math.max(0, (applicationSurface.width - width) / 2)
+        y: Math.max(0, (applicationSurface.height - height) / 2)
+        width: Math.min(theme.scaled(420), applicationSurface.width - theme.scaled(24))
+        modal: true
+        focus: true
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        padding: theme.scaled(18)
+
+        background: Rectangle {
+          color: theme.windowSurface
+          border.color: theme.divider
+          radius: theme.panelRadius
+        }
+
+        Overlay.modal: Rectangle {
+          color: Qt.rgba(theme.windowSurface.r, theme.windowSurface.g,
+                         theme.windowSurface.b, 0.72)
+        }
+
+        contentItem: ColumnLayout {
+          spacing: theme.scaled(12)
+          FerryLabel {
+            ferryTheme: theme
+            text: "Call " + dialConfirmPopup.number + "?"
+            font.bold: true
+            font.pixelSize: theme.headingSize
+          }
+          FerryLabel {
+            ferryTheme: theme
+            Layout.fillWidth: true
+            wrapMode: Text.Wrap
+            text: "The iPhone places the call. Answer, hold and hang up on the iPhone or in another BlueFerry client."
+          }
+          RowLayout {
+            Layout.alignment: Qt.AlignRight
+            FerryButton {
+              ferryTheme: theme
+              text: "Cancel"
+              onClicked: dialConfirmPopup.close()
+            }
+            FerryButton {
+              objectName: "dialConfirmCall"
+              ferryTheme: theme
+              text: root.dialBusy ? "Calling…" : "Call"
+              highlighted: true
+              enabled: !root.dialBusy && dialConfirmPopup.number !== ""
+              onClicked: {
+                root.dialBusy = true
+                backendBridge.request("dial", {number: dialConfirmPopup.number})
+              }
+            }
+          }
+        }
+      }
+
       Popup {
         id: newMessagePopup
+        // A recipient chosen elsewhere (the contact search) for the next opening.
+        property string presetRecipient: ""
         parent: applicationSurface
         x: Math.max(0, (applicationSurface.width - width) / 2)
         y: Math.max(0, (applicationSurface.height - height) / 2)
@@ -1690,10 +2216,12 @@ ShellRoot {
         padding: theme.scaled(18)
 
         onOpened: {
-          newRecipient.text = ""
+          newRecipient.text = newMessagePopup.presetRecipient
+          newMessagePopup.presetRecipient = ""
           newMessageBody.text = ""
           root.searchContacts("")
-          newRecipient.forceActiveFocus()
+          if (newRecipient.text !== "") newMessageBody.forceActiveFocus()
+          else newRecipient.forceActiveFocus()
         }
 
         Timer {
@@ -1809,6 +2337,67 @@ ShellRoot {
                   body: newMessageBody.text
                 })
               }
+            }
+          }
+        }
+      }
+
+      Popup {
+        id: senderConfirmPopup
+        objectName: "senderConfirmPopup"
+        parent: applicationSurface
+        x: Math.max(0, (applicationSurface.width - width) / 2)
+        y: Math.max(0, (applicationSurface.height - height) / 2)
+        width: Math.min(theme.scaled(500), applicationSurface.width - theme.scaled(24))
+        modal: true
+        focus: true
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        padding: theme.scaled(18)
+
+        background: Rectangle {
+          color: theme.windowSurface
+          border.color: theme.divider
+          radius: theme.panelRadius
+        }
+
+        Overlay.modal: Rectangle {
+          color: Qt.rgba(theme.windowSurface.r, theme.windowSurface.g,
+                         theme.windowSurface.b, 0.72)
+        }
+
+        contentItem: ColumnLayout {
+          spacing: theme.scaled(12)
+          FerryLabel {
+            ferryTheme: theme
+            Layout.fillWidth: true
+            wrapMode: Text.Wrap
+            text: root.senderConfirmThread
+              ? "Reply to " + root.senderConfirmThread.name + " only?" : ""
+            font.bold: true
+            font.pixelSize: theme.headingSize
+          }
+          FerryLabel {
+            ferryTheme: theme
+            Layout.fillWidth: true
+            wrapMode: Text.Wrap
+            text: root.senderConfirmThread
+              ? "The latest message may have been sent in a group. Your reply goes only to "
+                + (root.senderConfirmThread.recipients || []).join(", ") + "."
+              : ""
+          }
+          RowLayout {
+            Layout.alignment: Qt.AlignRight
+            FerryButton {
+              ferryTheme: theme
+              text: "Cancel"
+              onClicked: senderConfirmPopup.close()
+            }
+            FerryButton {
+              ferryTheme: theme
+              objectName: "senderConfirmSend"
+              text: "Reply only to sender"
+              highlighted: true
+              onClicked: root.sendToSenderOnly()
             }
           }
         }

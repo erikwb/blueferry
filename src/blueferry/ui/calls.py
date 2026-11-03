@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from gi.repository import Adw, Gdk, GLib, Gtk, Pango
+from gi.repository import Adw, Gdk, GLib, Graphene, Gtk, Pango
 
 from blueferry import phone_link_view
 from blueferry import phone_overview as overview
@@ -69,6 +69,10 @@ class CallsPage(Gtk.Box):
         self._typed = True  # entry changes come from the keyboard
         self._active_call = ""
         self._search_draft = False
+        # A recent call picked in the global search (a ListCallHistory id):
+        # marked while the tab stays shown, scrolled to once.
+        self._focused_call = ""
+        self._focus_pending = False
         # The readiness hint the recent-call rows were built with.
         self._rows_hint: str | None = None
         self._search_timer = (timer or glib_timer)(self._search_contacts)
@@ -304,6 +308,7 @@ class CallsPage(Gtk.Box):
             self._render_calls()
             return
         self._forget_contacts()
+        self._focused_call, self._focus_pending = "", False
         self._forget_calls()
         self._render_calls()
 
@@ -333,6 +338,15 @@ class CallsPage(Gtk.Box):
     def _schedule_search(self) -> None:
         if self._search_draft and self._can_search() and len(self.entry.get_text().strip()) >= 2:
             self._search_timer.start(SEARCH_DELAY_MS)
+
+    def focus_call(self, call_id: str) -> None:
+        """Show and mark the recent call a search hit points at."""
+        self._focused_call = call_id
+        self._focus_pending = bool(call_id)
+        if self.missed_filter.get_active():
+            self.all_filter.set_active(True)  # re-renders through "toggled"
+        else:
+            self._render_calls()
 
     # ---- dialing --------------------------------------------------------
 
@@ -524,13 +538,33 @@ class CallsPage(Gtk.Box):
         ready = not self._rows_hint
         group: Adw.PreferencesGroup | None = None
         day = None
+        focused = None
         for item in groups:
             if group is None or item["day"] != day:
                 day = item["day"]
                 group = Adw.PreferencesGroup(title=GLib.markup_escape_text(day))
                 self.recent_list.append(group)
-            group.add(self._call_row(item, ready))
+            row = self._call_row(item, ready)
+            if self._focused_call and self._focused_call in item.get("ids", []):
+                row.add_css_class("call-focused")
+                focused = row
+            group.add(row)
         self.recent_stack.set_visible_child_name("list")
+        # Scrolled to once; later renders (a refresh, the filter) keep the
+        # mark but leave the scroll position to the user.
+        if focused is not None and self._focus_pending:
+            self._focus_pending = False
+            self._scroll_to_row(focused)
+
+    def _scroll_to_row(self, row: Gtk.Widget) -> None:
+        def scroll() -> bool:
+            found, point = row.compute_point(self.recent_list, Graphene.Point())
+            if found:
+                adj = self.recent_scroll.get_vadjustment()
+                adj.set_value(max(0.0, point.y - adj.get_page_size() / 2))
+            return False
+
+        GLib.idle_add(scroll)
 
     def _call_row(self, item: dict, ready: bool) -> Adw.ActionRow:
         row = Adw.ActionRow(

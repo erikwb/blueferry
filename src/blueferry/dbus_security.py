@@ -57,11 +57,13 @@ _RULES: dict[str, tuple[RateRule, ...]] = {
     "media-command": (RateRule(60, 60), RateRule(1_200, 3_600)),
     # Optional HFP calls. Dialing is consequential (it can cost money), so it
     # is bounded like message sends. Answering moves a call's audio to this
-    # computer; a person answers a few calls a minute at most. Hanging up and
-    # DTMF share a generous bucket so ending a call is never blocked.
+    # computer; a person answers a few calls a minute at most. DTMF and
+    # swapping share a generous bucket. Hanging up has its own, so a flood of
+    # tones or swaps can never stop anyone ending a call.
     "calls-dial": (RateRule(6, 60), RateRule(60, 3_600)),
     "calls-answer": (RateRule(10, 60), RateRule(120, 3_600)),
     "calls-control": (RateRule(60, 60), RateRule(600, 3_600)),
+    "calls-hangup": (RateRule(60, 60), RateRule(600, 3_600)),
     # Each tether command pages the phone and may create a NetworkManager
     # profile; toggling is interactive, so allow bursts but not a stream.
     "tether": (RateRule(10, 60), RateRule(60, 3_600)),
@@ -70,6 +72,9 @@ _RULES: dict[str, tuple[RateRule, ...]] = {
     "audio-route": (RateRule(20, 60), RateRule(120, 3_600)),
     # The in-memory notification list is cheap but carries app content.
     "notifications-read": (RateRule(240, 60),),
+    # Pinning writes the encrypted settings entry; a person pins a few
+    # notifications at a time, never a stream.
+    "notifications-pin": (RateRule(30, 60), RateRule(300, 3_600)),
     # Feature switches are written to settings.json and need a restart;
     # a settings page flips a few at a time, never a stream.
     "feature": (RateRule(20, 60), RateRule(120, 3_600)),

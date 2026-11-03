@@ -228,7 +228,7 @@ class AncsClient:
         on_status: Callable[[], None] | None = None,
         include_non_message_notifications: Callable[[], bool] | None = None,
         include_app_notification: Callable[[str], bool] | None = None,
-        on_transport_failure: Callable[[], None] | None = None,
+        on_transport_failure: Callable[[], object] | None = None,
         *,
         on_call_activity: Callable[[str], None] | None = None,
         previously_authorized: bool = False,
@@ -1364,6 +1364,7 @@ class AncsClient:
             if request.action is not None:
                 self._finish_active_request()
                 self._action_failed(request.action, error)
+                self._observe_permission_error(error)
                 if _connection_was_lost(error):
                     self._mark_transport_failed()
                     return
@@ -1440,6 +1441,15 @@ class AncsClient:
             word in detail for word in ("not authorized", "permission denied", "forbidden")
         ):
             self.permission_denied = True
+            # iOS answers this way once the user turns off notification
+            # sharing for this computer, without dropping the link. Stop
+            # reporting ANCS as working and probe until access returns.
+            if self._authorized:
+                self._authorized = False
+                log.info("ANCS notification access revoked for %s", self.device_path)
+                if self.on_status is not None:
+                    self.on_status()
+            self._schedule_authorization_retry()
 
     def _request_timed_out(self) -> bool:
         request = self._active_request
@@ -1506,6 +1516,9 @@ class AncsClient:
         self._notify_refreshes += 1
         # The probe is written again once both CCCs are re-enabled.
         self._finish_active_request()
+        # The old UID session ends here, before events of the new
+        # subscription can arrive: a reused UID is a new notification.
+        self._end_session()
         token = object()
         self._notify_refresh = token
         generation = self._bluez_owner_generation

@@ -19,6 +19,8 @@ from blueferry.history import (
     read_events,
     scrub_unprotected_events,
 )
+from blueferry.notification_apps import MutedAppsStore
+from blueferry.notification_pins import PinnedNotificationsStore
 from blueferry.starred_threads import StarredThreadsStore
 from blueferry.storage_security import NO_STORAGE, CorruptStorageError, StorageSecurity
 
@@ -26,7 +28,6 @@ from blueferry.storage_security import NO_STORAGE, CorruptStorageError, StorageS
 @dataclass
 class PreparedStorage:
     contacts: ContactsResolver
-    historical_ancs: list[dict]
     has_messages: bool
     call_history: list[CallRecord] = field(default_factory=list)
 
@@ -39,7 +40,9 @@ def prepare_storage(
     ``photos`` is the daemon's contact-photo setting for the prepared cache.
     """
     StarredThreadsStore(storage.settings_path, storage=storage).migrate()
+    MutedAppsStore(storage.settings_path, storage=storage).migrate()
     ConfirmedGroupsStore(storage.settings_path, storage=storage).migrate()
+    PinnedNotificationsStore(storage.settings_path, storage=storage).migrate()
     routes = GroupRoutesStore(storage.settings_path, storage=storage)
     routes.migrate()
     calls: list[CallRecord] = []
@@ -55,11 +58,10 @@ def prepare_storage(
         minimize_ancs_history(storage=storage)
         calls = _prepare_call_history(storage)
     contacts = ContactsResolver(storage=storage, strict=True, photos=photos)
-    historical = read_events(kinds={"ancs_notification"}, limit=2_000, storage=storage)
     has_messages = bool(read_events(kinds={"sms_received"}, limit=1, storage=storage))
     if storage.status.state == "error":
         raise CorruptStorageError(storage.status.detail)
-    return PreparedStorage(contacts, historical, has_messages, calls)
+    return PreparedStorage(contacts, has_messages, calls)
 
 
 def _prepare_call_history(storage: StorageSecurity) -> list[CallRecord]:

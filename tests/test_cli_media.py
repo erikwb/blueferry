@@ -90,11 +90,77 @@ def test_unavailable_status_explains_why(backend, detail, expected) -> None:
     assert expected in result.output
 
 
-@pytest.mark.parametrize("action", ["play", "pause", "next", "previous", "volume-up", "volume-down"])
+@pytest.mark.parametrize("action", ["play", "pause", "next", "previous"])
 def test_commands_are_forwarded(backend, action) -> None:
     result = CliRunner().invoke(app, ["media", action])
     assert result.exit_code == 0
     assert backend.sent == [action]
+
+
+VOLUME = {**PLAYING, "supported_commands": ["next", "volume-down", "volume-up"]}
+
+
+@pytest.mark.parametrize("args,command,word", [
+    (["volume", "up"], "volume-up", "up"),
+    (["volume", "DOWN"], "volume-down", "down"),
+    (["volume-up"], "volume-up", "up"),
+    (["volume-down"], "volume-down", "down"),
+])
+def test_volume_steps_report_the_previous_level(backend, args, command, word) -> None:
+    backend.snapshot = VOLUME
+    result = CliRunner().invoke(app, ["media", *args])
+    assert result.exit_code == 0, result.output
+    assert backend.sent == [command]
+    assert result.output.strip() == f"Turned the iPhone volume {word} (was 42%)."
+
+
+def test_volume_step_without_a_known_level(backend) -> None:
+    backend.snapshot = {
+        **VOLUME, "player": {"state": "playing"},
+        "supported_commands": [], "supported_commands_known": False,
+    }
+    result = CliRunner().invoke(app, ["media", "volume", "up"])
+    assert result.exit_code == 0
+    assert backend.sent == ["volume-up"]
+    assert result.output.strip() == "Turned the iPhone volume up."
+
+
+def test_volume_step_the_player_does_not_offer_is_not_sent(backend) -> None:
+    result = CliRunner().invoke(app, ["media", "volume", "up"])
+    assert result.exit_code == 2
+    assert backend.sent == []
+    assert "does not offer volume control" in result.output
+
+
+def test_volume_step_explains_when_media_control_is_off(backend) -> None:
+    backend.snapshot = {"enabled": False, "available": False, "detail": "disabled"}
+    result = CliRunner().invoke(app, ["media", "volume", "down"])
+    assert result.exit_code == 2
+    assert backend.sent == []
+    assert "blueferry media enable" in result.output
+
+
+@pytest.mark.parametrize("args", [["volume", "loud"], ["play", "up"], ["volume-up", "up"]])
+def test_bad_volume_arguments_are_rejected_before_calling_the_backend(backend, args) -> None:
+    result = CliRunner().invoke(app, ["media", *args])
+    assert result.exit_code == 2
+    assert backend.sent == []
+
+
+def test_volume_without_direction_shows_the_level(backend) -> None:
+    result = CliRunner().invoke(app, ["media", "volume"])
+    assert result.exit_code == 0
+    assert result.output.strip() == "iPhone volume: 42%"
+    assert backend.sent == []
+    result = CliRunner().invoke(app, ["media", "volume", "--json"])
+    assert json.loads(result.output) == {"available": True, "level": 42}
+    backend.snapshot = {**PLAYING, "player": {"state": "playing"}}
+    result = CliRunner().invoke(app, ["media", "volume"])
+    assert "unknown" in result.output
+    backend.snapshot = {"enabled": True, "available": False, "detail": "waiting-for-iphone"}
+    result = CliRunner().invoke(app, ["media", "volume"])
+    assert result.exit_code == 1
+    assert "Waiting for the iPhone" in result.output
 
 
 def test_unknown_action_is_rejected_before_calling_the_backend(backend) -> None:
