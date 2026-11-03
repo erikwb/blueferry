@@ -115,6 +115,10 @@ class SearchDialog(Adw.Dialog):
     def apply_status(self, status: dict) -> None:
         self.model.apply_status(status)
 
+    def invalidate(self) -> None:
+        """History or call history changed: drop the shown hits, search again."""
+        self.model.invalidate()
+
     def open(self, parent: Gtk.Widget) -> None:
         self.entry.set_text("")
         self.present(parent)

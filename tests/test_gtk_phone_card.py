@@ -15,7 +15,7 @@ from tests.gtk_broadway import run_scenario
     "scenario", [
         "layout", "card", "quick-settings", "dial-pad", "running-calls", "call-tones",
         "keypad-tones", "recent-calls",
-        "notifications", "close", "volume", "pins", "contacts", "search",
+        "notifications", "close", "volume", "pins", "contacts", "contact-photo", "search",
     ],
 )
 def test_gtk_phone_card(tmp_path, scenario):
@@ -61,7 +61,19 @@ class FakeClient:
 
     # reads the scenarios answer later
     def get_status_async(self, on_ok, on_err=None):
-        self.calls.append(("status", on_ok, on_err))
+        # Like DaemonClient: every answer is also sent as "status-read".
+        from blueferry.models import BackendStatus
+
+        def loaded(status):
+            self.emit("status-read", status.to_dict())
+            on_ok(status)
+
+        def failed(message):
+            self.emit("status-read", BackendStatus().to_dict())
+            if on_err is not None:
+                on_err(message)
+
+        self.calls.append(("status", loaded, failed))
 
     def now_playing_async(self, on_ok, on_err=None):
         self.calls.append(("media", on_ok, on_err))
@@ -1179,6 +1191,64 @@ def _exercise_contacts():
     window.destroy()
 
 
+def _png() -> bytes:
+    from gi.repository import GdkPixbuf
+
+    pixels = GdkPixbuf.Pixbuf.new(GdkPixbuf.Colorspace.RGB, False, 8, 8, 8)
+    pixels.fill(0x3366ccff)
+    ok, data = pixels.save_to_bufferv("png", [], [])
+    assert ok
+    return bytes(data)
+
+
+def _exercise_contact_photo():
+    from blueferry.models import BackendStatus
+
+    photos_on = {**CARDS_ON, "contact_photos": True, "contact_photos_state": "on"}
+    window, client = _window(photos_on)
+    page = window.contacts
+    decoder = client.runners["contact-photo"]
+    window.show_tab("contacts")
+    _settle()
+    client.take(("cards", 0, ""))[1](_cards_page())
+    page.open_contact("c1")
+    client.take(("card", "c1"))[1]((ADA_CARD, _png()))
+    # The bytes are decoded on a worker, never on the GTK thread.
+    assert page.book.photo and page.avatar.get_custom_image() is None
+    assert len(decoder.pending) == 1
+    decoder.run_tasks()
+    assert page.avatar.get_custom_image() is not None
+
+    # Any status answer that turns photos off drops the shown photo, even one
+    # the Messages tab asked for and with the card itself unchanged.
+    window.messages._refresh_status()
+    client.take("status")[1](BackendStatus.from_dict(
+        {**CARDS_ON, "contact_photos": False}))
+    assert page.book.photo == b"" and page.book.card["open"]
+    assert page.avatar.get_custom_image() is None
+
+    # Back on: the card is read again; a decode that finishes after photos
+    # became unknown shows nothing.
+    client.answer_status(photos_on)
+    client.take(("card", "c1"))[1]((ADA_CARD, _png()))
+    while ("cards", 0, "") in client.names():
+        client.take(("cards", 0, ""))
+    assert len(decoder.pending) == 1
+    client.answer_status({**photos_on, "contact_photos_state": "unknown"})
+    decoder.run_tasks()
+    assert page.book.photo == b"" and page.avatar.get_custom_image() is None
+
+    # A failed status read counts as unknown too.
+    client.answer_status(photos_on)
+    client.take(("card", "c1"))[1]((ADA_CARD, _png()))
+    decoder.run_tasks()
+    assert page.avatar.get_custom_image() is not None
+    window.messages._refresh_status()
+    client.take("status")[2]("Timed out")
+    assert page.avatar.get_custom_image() is None
+    window.destroy()
+
+
 SEARCH_ANSWER = {
     "query": "noon", "limit": 20,
     "conversations": {"total": 1, "results": [
@@ -1216,6 +1286,28 @@ def _exercise_search():
     groups = [w.get_title() for w in _descendants(search.groups)
               if type(w).__name__ == "PreferencesGroup"]
     assert groups == ["Conversations", "Messages · 2 more matches", "Contacts", "Calls"]
+
+    # Changed history or call history drops the shown hits and searches again.
+    for signal in ("history-changed", "call-history-changed"):
+        if signal == "history-changed":
+            client.emit(signal, {})
+        else:
+            client.emit(signal)
+        assert _rows(search.groups) == [], signal
+        assert search.stack.get_visible_child_name() == "loading"
+        runner.fire_timers()
+        client.take(("search", "noon"))[1](SEARCH_ANSWER)
+        assert len(_rows(search.groups)) == 4
+    # So does a changed source in any status answer, here the Messages tab's.
+    from blueferry.models import BackendStatus
+
+    window.messages._refresh_status()
+    client.take("status")[1](BackendStatus.from_dict(
+        {**CARDS_ON, "call_history_enabled": False}))
+    assert _rows(search.groups) == []
+    runner.fire_timers()
+    client.take(("search", "noon"))[1](SEARCH_ANSWER)
+    rows = _rows(search.groups)
 
     # A message hit opens its conversation; closing forgets the query.
     rows[1].emit("activated")
@@ -1284,6 +1376,7 @@ def _exercise_search():
 if __name__ == "__main__":
     {
         "contacts": _exercise_contacts,
+        "contact-photo": _exercise_contact_photo,
         "search": _exercise_search,
         "volume": _exercise_volume,
         "pins": _exercise_pins,

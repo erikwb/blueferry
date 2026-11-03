@@ -8,8 +8,10 @@ card and its photo, when it is hidden. The search field reloads the list
 after a short pause; further pages load when the list is scrolled to its
 end. **Call** goes through the window's confirmation dialog, **Message**
 opens the conversation with that number or a new message. Every field
-comes from the iPhone and is shown as plain text; the photo is decoded by
-the bounded avatar decoder.
+comes from the iPhone and is shown as plain text. The photo arrives as
+bytes over D-Bus (never a path) and is decoded by the bounded avatar decoder
+on a worker; it goes as soon as the book drops it, and a late decode of a
+dropped photo is ignored.
 """
 
 from __future__ import annotations
@@ -82,6 +84,10 @@ class ContactsPage(Gtk.Box):
         self._message = message
         self._shown_rows: list[dict[str, Any]] = []
         self._shown_card: dict[str, Any] | None = None
+        self._shown_photo = b""
+        self._photo_serial = 0
+        # Decoding is not for the GTK thread.
+        self._decoder = client.task_runner("contact-photo")
         self.book = ContactBook(
             runner=client, timer=timer or glib_timer,
             fetch_page=client.contact_cards, fetch_card=client.contact,
@@ -280,6 +286,7 @@ class ContactsPage(Gtk.Box):
         self.more_button.set_visible(view["has_more"])
         self.more_button.set_sensitive(not view["loading"])
         self._render_rows(view["rows"])
+        self._render_photo()
         if view["rows"]:
             self.list_stack.set_visible_child_name("list")
         elif view["loading"]:
@@ -334,8 +341,6 @@ class ContactsPage(Gtk.Box):
         self.subtitle_label.set_visible(bool(card["subtitle"]))
         self.avatar.set_text(avatar_text(card["initials"]))
         self.avatar.set_show_initials(bool(card["initials"]))
-        photo = self.book.photo
-        self.avatar.set_custom_image(decode_avatar(photo) if photo else None)
         child = self.sections.get_first_child()
         while child is not None:
             self.sections.remove(child)
@@ -347,6 +352,24 @@ class ContactsPage(Gtk.Box):
             self.sections.append(group)
         self._render_card_actions(card)
         self.card_stack.set_visible_child_name("card")
+
+    def _render_photo(self) -> None:
+        """Follow the book's photo, which can go while the card stays."""
+        photo = self.book.photo if self.book.card["open"] else b""
+        if photo == self._shown_photo:
+            return
+        self._shown_photo = photo
+        self._photo_serial += 1
+        self.avatar.set_custom_image(None)
+        if not photo:
+            return
+        serial = self._photo_serial
+
+        def decoded(texture) -> None:
+            if serial == self._photo_serial:
+                self.avatar.set_custom_image(texture)
+
+        self._decoder.submit(lambda: decode_avatar(photo), decoded, lambda _message: None)
 
     def _render_card_actions(self, card: dict[str, Any]) -> None:
         # Calling asks first and explains when calls are off or not ready.

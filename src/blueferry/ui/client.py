@@ -60,7 +60,7 @@ def _plain(value):
 
 # The D-Bus errors SetNotificationPinned itself answers with; the shared pin
 # wording covers them. Anything else (no daemon, no reply, ...) keeps its text.
-_PIN_ERROR_SUFFIXES = (".UnknownMethod", ".NotReady", ".InvalidArgs")
+_PIN_ERROR_SUFFIXES = (".UnknownMethod", ".NotReady", ".InvalidArgs", ".Configuration")
 
 
 def _pin_error(error: BaseException) -> str:
@@ -82,6 +82,10 @@ class DaemonClient(GObject.Object):
     __gsignals__: ClassVar = {
         "history-changed": (GObject.SignalFlags.RUN_FIRST, None, (object,)),
         "status-invalidated": (GObject.SignalFlags.RUN_FIRST, None, ()),
+        # Every GetStatus answer as ``BackendStatus.to_dict()``, whoever asked;
+        # a failed read sends the empty status. Models that must drop data
+        # as soon as any answer says so (contact photos, search) listen here.
+        "status-read": (GObject.SignalFlags.RUN_FIRST, None, (object,)),
         "availability-changed": (GObject.SignalFlags.RUN_FIRST, None, (bool,)),
         "open-message-requested": (GObject.SignalFlags.RUN_FIRST, None, (str,)),
         "tether-invalidated": (GObject.SignalFlags.RUN_FIRST, None, ()),
@@ -428,10 +432,19 @@ class DaemonClient(GObject.Object):
         )
 
     def get_status_async(self, on_ok, on_err=None) -> None:
+        def loaded(status: BackendStatus) -> None:
+            self.emit("status-read", status.to_dict())
+            on_ok(status)
+
+        def failed(message: str) -> None:
+            self.emit("status-read", BackendStatus().to_dict())
+            if on_err is not None:
+                on_err(message)
+
         self._submit(
             lambda: self._call_backend(lambda backend: backend.status()),
-            on_ok,
-            on_err,
+            loaded,
+            failed,
         )
 
     def clear_history_async(self, on_ok, on_err) -> None:

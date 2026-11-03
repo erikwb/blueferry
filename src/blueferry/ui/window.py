@@ -117,9 +117,13 @@ class MainWindow(Adw.ApplicationWindow):
         self.phone_card = PhoneCard(client, self.toast, name_loader=name_loader)
         self.phone_card.add_status_listener(self.calls.apply_status)
         self.phone_card.add_status_listener(self.notifications.apply_status)
-        self.phone_card.add_status_listener(self.contacts.apply_status)
         self.search = SearchDialog(client, activate=self.open_search_target, timer=timer)
-        self.phone_card.add_status_listener(self.search.apply_status)
+        # Every GetStatus answer, not only the card's: the contact book drops
+        # photos and cards, and the search its answer, as soon as one says so.
+        client.connect("status-read", self._status_read)
+        # A shown search answer may name deleted messages or calls.
+        client.connect("history-changed", lambda *_args: self.search.invalidate())
+        client.connect("call-history-changed", lambda *_args: self.search.invalidate())
 
         # "From Plugins" and "Tools": below the card strip, on demand.
         self._auto_extras = False
@@ -336,6 +340,10 @@ class MainWindow(Adw.ApplicationWindow):
         """The conversation with ``address``, or a new message to it."""
         self.show_tab("messages")
         self.messages.open_or_compose(address)
+
+    def _status_read(self, _client, status: dict) -> None:
+        self.contacts.apply_status(status)
+        self.search.apply_status(status)
 
     # ---- global search --------------------------------------------------
 
