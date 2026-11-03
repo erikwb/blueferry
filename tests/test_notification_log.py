@@ -29,8 +29,13 @@ def test_log_skips_messages_hides_content_and_signals() -> None:
     assert changes == [1]
     assert log.snapshot(10) == [{
         "id": 2, "app_id": "com.example.chat", "app_name": "Chat",
-        "time": WHEN.isoformat(),
+        "time": WHEN.isoformat(), "key": snapshot_key(log),
+        "removed": False, "pinned": False, "actionable": True,
     }]
+
+
+def snapshot_key(log: NotificationLog) -> object:
+    return log.snapshot(1)[0]["key"]
 
 
 def test_log_keeps_content_when_allowed_is_bounded_and_newest_first() -> None:
@@ -46,8 +51,12 @@ def test_log_keeps_content_when_allowed_is_bounded_and_newest_first() -> None:
     assert log.snapshot(10) == []
 
 
-def ops(log=None, *, readable=True, content=False) -> BackendOperations:
-    storage = SimpleNamespace(status=SimpleNamespace(can_read=readable, detail="locked"))
+def ops(
+    log=None, *, readable=True, content=False, policy="encrypted",
+) -> BackendOperations:
+    storage = SimpleNamespace(status=SimpleNamespace(
+        policy=policy, can_read=readable, detail="locked",
+    ))
     return BackendOperations(object(), BackendDependencies(  # type: ignore[arg-type]
         notification_log=log, notification_content=content, storage=storage,  # type: ignore[arg-type]
     ))
@@ -64,6 +73,13 @@ def test_list_notifications_fails_closed_while_storage_is_locked() -> None:
     log.handle_ancs(event(1))
     with pytest.raises(NotReadyError):
         ops(log, readable=False).list_notifications(5)
+
+
+def test_list_notifications_works_when_local_data_is_not_retained() -> None:
+    log = NotificationLog(show_content=True)
+    log.handle_ancs(event(1))
+    listed = ops(log, readable=False, policy="none").list_notifications(5)
+    assert [record["id"] for record in listed["notifications"]] == [1]  # type: ignore[union-attr]
 
 
 def test_list_notifications_bounds_limit_and_clear_history_empties_it(monkeypatch) -> None:

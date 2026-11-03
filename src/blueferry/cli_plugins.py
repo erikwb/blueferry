@@ -259,11 +259,15 @@ def _config(manager: PluginManager, plugin_id: str, assignments: Sequence[str],
                   f"{', '.join(f.key for f in plugin.config if f.secret)}", 2)
             return
         update[key] = _hooks["secret"](f"{field.label} (input hidden): ").strip()
+    # The plugin may have been disabled elsewhere during a prompt.
+    if plugin.id in manager.disabled():
+        _fail(_disabled_note(plugin.name, plugin.id), 2)
+        return
     if test:
         _test_config(client, update)
         return
     if login:
-        _sign_in(client, update)
+        _sign_in(plugin, client, update, manager.disabled)
     try:
         if update and not login:
             result = client.set_config(update)
@@ -326,9 +330,23 @@ def _test_config(client: PluginClient, update: dict[str, object]) -> None:
         raise typer.Exit(code=1)
 
 
-def _sign_in(client: PluginClient, update: dict[str, object]) -> None:
-    """``--login``: the plugin's browser sign-in, e.g. Nextcloud Login Flow v2."""
+def _sign_in(plugin: PluginManifest, client: PluginClient, update: dict[str, object],
+             disabled: Callable[[], frozenset[str]]) -> None:
+    """``--login``: the plugin's browser sign-in, e.g. Nextcloud Login Flow v2.
+
+    The saved list is read again before every call: the plugin may be
+    disabled elsewhere while this waits, and a call would start it again.
+    """
+    def enabled() -> bool:
+        return plugin.id not in disabled()
+
+    def refuse() -> None:
+        _fail(_disabled_note(plugin.name, plugin.id), 2)
+
     try:
+        if not enabled():
+            refuse()
+            return
         step = client.config_login(update)
         if step.state == "open":
             _echo(f"Opening the sign-in page: {step.open_uri}")
@@ -342,13 +360,18 @@ def _sign_in(client: PluginClient, update: dict[str, object]) -> None:
             try:
                 while not step.final:
                     if time.monotonic() > deadline:
-                        client.config_login_cancel(login_id)
+                        if enabled():
+                            client.config_login_cancel(login_id)
                         _fail("The sign-in expired. Start it again.")
                         return
                     _hooks["sleep"](LOGIN_POLL_SECONDS)
+                    if not enabled():
+                        refuse()
+                        return
                     step = client.config_login_status(login_id)
             except KeyboardInterrupt:
-                client.config_login_cancel(login_id)
+                if enabled():
+                    client.config_login_cancel(login_id)
                 _fail("Cancelled.")
                 return
     except PluginError as error:
