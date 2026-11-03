@@ -276,6 +276,9 @@ class MainWindow(Adw.ApplicationWindow):
                 shown and self.is_active() and self.extras.get_reveal_child())
         for name, set_watched in self._watchers.items():
             set_watched(shown and name == visible)
+        if hasattr(self, "search") and not shown:
+            # Like the tabs: no query or hits kept for a window nobody sees.
+            self.search.dismiss()
 
     def _extras_toggled(self, button: Gtk.ToggleButton) -> None:
         self.extras.set_reveal_child(button.get_active())

@@ -332,6 +332,11 @@ class ContactsPage(Gtk.Box):
         self.card_banner.set_title(card["error"])
         self.card_banner.set_revealed(card["open"] and bool(card["error"]))
         if not card["open"]:
+            # Forgotten by the book: nothing of it stays in hidden widgets.
+            self.title_label.set_label("")
+            self.subtitle_label.set_label("")
+            self.avatar.set_text("")
+            self._clear_sections()
             self.card_stack.set_visible_child_name("empty")
             self.card_header.set_visible(False)
             return
@@ -341,10 +346,7 @@ class ContactsPage(Gtk.Box):
         self.subtitle_label.set_visible(bool(card["subtitle"]))
         self.avatar.set_text(avatar_text(card["initials"]))
         self.avatar.set_show_initials(bool(card["initials"]))
-        child = self.sections.get_first_child()
-        while child is not None:
-            self.sections.remove(child)
-            child = self.sections.get_first_child()
+        self._clear_sections()
         for section in card["sections"]:
             group = Adw.PreferencesGroup(title=GLib.markup_escape_text(section["title"]))
             for item in section["rows"]:
@@ -352,6 +354,12 @@ class ContactsPage(Gtk.Box):
             self.sections.append(group)
         self._render_card_actions(card)
         self.card_stack.set_visible_child_name("card")
+
+    def _clear_sections(self) -> None:
+        child = self.sections.get_first_child()
+        while child is not None:
+            self.sections.remove(child)
+            child = self.sections.get_first_child()
 
     def _render_photo(self) -> None:
         """Follow the book's photo, which can go while the card stays."""

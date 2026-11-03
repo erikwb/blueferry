@@ -124,6 +124,12 @@ class SearchDialog(Adw.Dialog):
         self.present(parent)
         self.entry.grab_focus()
 
+    def dismiss(self) -> None:
+        """The window is no longer shown: close and forget the search."""
+        if self.get_root() is not None:
+            self.close()
+        self._forget()
+
     def activate_row(self, index: int) -> None:
         """Open hit ``index`` (in display order) and close the search."""
         target = self.model.target_at(index)

@@ -1024,6 +1024,25 @@ def _exercise_pins():
     })
     _pin_buttons(_rows(page.list)[1])[0].emit("clicked")
     client.take(("pin", "k2", True))[1](True)
+    # Storage locks or the content is hidden: the records go with the rows.
+    for changed in ({"storage_state": "locked"},
+                    {"notification_content_shown": False}):
+        client.answer_status(status)
+        while "notifications" in client.names():
+            client.take("notifications")[1]({
+                "enabled": True, "content": True, "pins_max": 20,
+                "notifications": _pin_records(),
+            })
+        assert page._snapshot and page.history.rows
+        client.answer_status({**status, **changed})
+        assert page._snapshot == {}, changed
+        while "notifications" in client.names():
+            client.take("notifications")
+    client.answer_status(status)
+    while "notifications" in client.names():
+        client.take("notifications")[1]({
+            "enabled": True, "content": True, "pins_max": 20, "notifications": _pin_records(),
+        })
     # Hidden: records and muted apps are forgotten, nothing is read.
     window.show_tab("messages")
     _settle()
@@ -1188,6 +1207,9 @@ def _exercise_contacts():
     window.show_tab("messages")
     _settle()
     assert _rows(page.list) == [] and page.book.photo == b""
+    # Nothing of the card stays in the hidden widgets either.
+    assert page.title_label.get_label() == "" and page.subtitle_label.get_label() == ""
+    assert page.avatar.get_text() == "" and page.sections.get_first_child() is None
     window.destroy()
 
 
@@ -1305,6 +1327,23 @@ def _exercise_search():
     client.take("status")[1](BackendStatus.from_dict(
         {**CARDS_ON, "call_history_enabled": False}))
     assert _rows(search.groups) == []
+    runner.fire_timers()
+    client.take(("search", "noon"))[1](SEARCH_ANSWER)
+    # A window nobody sees closes the search and forgets it; a late answer
+    # brings nothing back.
+    client.emit("history-changed", {})
+    runner.fire_timers()
+    late = client.take(("search", "noon"))[1]
+    window.set_visible(False)
+    _settle()
+    late(SEARCH_ANSWER)
+    assert search.entry.get_text() == "" and search.model.query == ""
+    assert _rows(search.groups) == [] and search.get_root() is None
+    window.present()
+    _settle()
+    window.open_search()
+    _settle()
+    search.entry.set_text("noon")
     runner.fire_timers()
     client.take(("search", "noon"))[1](SEARCH_ANSWER)
     rows = _rows(search.groups)
