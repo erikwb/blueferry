@@ -307,7 +307,10 @@ ColumnLayout {
                   FerryLabel {
                     objectName: "searchSnippetBefore" + hit.index
                     ferryTheme: root.ferryTheme
-                    Layout.maximumWidth: implicitWidth
+                    // Whole pixels: the layout rounds the fractional text
+                    // width down, which elided the first words with room
+                    // to spare.
+                    Layout.maximumWidth: Math.ceil(implicitWidth)
                     Layout.fillWidth: true
                     elide: Text.ElideLeft
                     font.pixelSize: root.ferryTheme.bodySmallSize

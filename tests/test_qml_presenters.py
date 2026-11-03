@@ -7405,6 +7405,38 @@ def test_quickshell_search_shows_grouped_hits_and_opens_them(qml_engine) -> None
         close()
 
 
+def test_quickshell_search_snippet_is_not_cut_with_room_to_spare(qml_engine) -> None:
+    # The layout rounds the text's fractional width down; the part before
+    # the match must not elide its first words because of that.
+    from blueferry.quickshell_bridge import search_reply
+
+    results = search_reply({
+        "query": "ana", "limit": 10,
+        "messages": {"total": 1, "results": [
+            {"thread_key": "t1", "handle": "h1", "thread_name": "Ana",
+             "timestamp": "2026-10-01T10:00:00+00:00",
+             "snippet": "Shall we meet with Ana tomorrow?", "match_start": 19,
+             "match_length": 3},
+        ]},
+    })
+    panel, _signals, close = _quickshell_search(
+        qml_engine, contactsSupported=True, searchSupported=True, results=results,
+    )
+    try:
+        panel.findChild(QObject, "searchField").setProperty("text", "ana")
+        _settle()
+        parts = [
+            _quickshell_items(panel, name + "0")[0]
+            for name in ("searchSnippetBefore", "searchSnippetMatch", "searchSnippetAfter")
+        ]
+        assert "".join(part.property("text") for part in parts) == (
+            "Shall we meet with Ana tomorrow?"
+        )
+        assert [part.property("truncated") for part in parts] == [False, False, False]
+    finally:
+        close()
+
+
 def test_quickshell_search_without_contact_cards_shows_the_search_hint(qml_engine) -> None:
     from blueferry.quickshell_bridge import search_reply
 
