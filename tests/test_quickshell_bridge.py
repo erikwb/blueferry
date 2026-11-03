@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from blueferry import notification_pin_view
 from blueferry.models import Thread
 from blueferry.quickshell_bridge import QuickshellBridge, RequestError, _RequestWorkers
 
@@ -1363,7 +1364,7 @@ def test_bridge_words_a_refused_pin_with_the_shared_texts(name, message, text) -
 
 def test_bridge_shows_why_a_pin_was_refused_while_settings_cannot_be_read() -> None:
     # SetNotificationPinned answers Configuration while settings.json can't be
-    # read; the daemon's message names the file and the fix.
+    # read; the shared text names the file and the fix, as in the other clients.
     client = NotificationAppsClient()
     message = (
         "settings.json could not be read, so the change was not saved; "
@@ -1373,7 +1374,10 @@ def test_bridge_shows_why_a_pin_was_refused_while_settings_cannot_be_read() -> N
     reply = QuickshellBridge(client).dispatch(  # type: ignore[arg-type]
         "set_notification_pinned", {"key": "k1", "pinned": False}
     )
-    assert reply == {"saved": False, "pinned": True, "error": message}
+    assert reply == {
+        "saved": False, "pinned": True,
+        "error": notification_pin_view.UNREADABLE_SETTINGS_TEXT,
+    }
 
 
 def test_bridge_lists_the_notification_apps_with_the_shared_wording() -> None:

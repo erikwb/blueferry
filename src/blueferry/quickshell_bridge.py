@@ -520,12 +520,7 @@ class QuickshellBridge:
             state = self.client.set_notification_pinned(key, pinned)
         except BackendError as error:
             name, message = _dbus_error(error)
-            if name.endswith(".Configuration"):
-                # settings.json can't be read: the daemon's message says so
-                # and how to fix it; the shared wording has no case for it.
-                text = message
-            else:
-                text = notification_pin_view.pin_error_text(name, message)
+            text = notification_pin_view.pin_error_text(name, message)
             return {"saved": False, "pinned": not pinned, "error": text}
         return {"saved": True, "pinned": state is True, "error": ""}
 

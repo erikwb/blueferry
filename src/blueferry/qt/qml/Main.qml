@@ -18,6 +18,12 @@ Kirigami.ApplicationWindow {
     property bool firstRunRedirected: false
     property var iphoneSettingsPage: null
     property string pendingMessageHandle: ""
+    // A conversation or message chosen in the search that was not loaded yet.
+    property string pendingThreadKey: ""
+    // The message a search hit pointed at: scrolled to and marked.
+    property string focusedMessageHandle: ""
+    // The recent call a search hit pointed at (a ListCallHistory id).
+    property string focusedCallId: ""
     // Conversation list filter: "all", "unread" or "starred".
     property string threadFilter: "all"
 
@@ -65,6 +71,68 @@ Kirigami.ApplicationWindow {
         selectedThreadKey = thread.key
         pendingMessageHandle = ""
         return true
+    }
+
+    function selectThreadKey(key) {
+        showTab(messagesTab)
+        if (threadByKey(key)) {
+            selectedThreadKey = key
+            pendingThreadKey = ""
+            return true
+        }
+        pendingThreadKey = key
+        bridge.refresh()
+        return false
+    }
+
+    function openSearch() {
+        searchDialog.open()
+    }
+
+    // Where a search_view target lives: conversation, message, contact or call.
+    function openSearchTarget(target) {
+        if (!target)
+            return
+        if (target.kind === "conversation") {
+            focusedMessageHandle = ""
+            selectThreadKey(target.thread_key)
+        } else if (target.kind === "message") {
+            // Cleared first, so picking the same hit again scrolls to it again.
+            focusedMessageHandle = ""
+            focusedMessageHandle = target.handle
+            if (!selectMessage(target.handle))
+                selectThreadKey(target.thread_key)
+        } else if (target.kind === "contact") {
+            showTab(contactsTab)
+            bridge.openContact(target.contact_id)
+        } else if (target.kind === "call") {
+            focusedCallId = ""  // the same hit again scrolls to it again
+            focusedCallId = target.call_id
+            // Search covers every retained call; the page reads the newest.
+            bridge.revealCall(target.call_id)
+            openRecentCalls()
+        }
+    }
+
+    // Message from the contact card: the existing direct conversation with
+    // that number or address, else a new message to it.
+    function messageAddress(address) {
+        const threads = bridge.threads || []
+        for (let index = 0; index < threads.length; ++index) {
+            const thread = threads[index]
+            if (!thread.is_group && (thread.recipients || []).length === 1
+                    && thread.recipients[0] === address) {
+                focusedMessageHandle = ""
+                selectThreadKey(thread.key)
+                return
+            }
+        }
+        newMessageDialog.recipient = address
+        newMessageDialog.open()
+    }
+
+    function dialable(value) {
+        return String(value || "").replace(/[^0-9+*#]/g, "").slice(0, 32)
     }
 
     function htmlEscape(value) {
@@ -121,6 +189,13 @@ Kirigami.ApplicationWindow {
         iphoneSettingsPage = pageStack.push(iphonePageLoader.item)
     }
 
+    function openPluginSettings() {
+        openPhoneSettings()
+        const page = iphonePageLoader.item as SettingsPage
+        if (page)
+            page.open("plugins")
+    }
+
     function closePhoneSettings() {
         if (iphoneSettingsPage === null)
             return
@@ -134,16 +209,20 @@ Kirigami.ApplicationWindow {
     // Height shared by the conversation list header and the chat header.
     readonly property real paneHeaderHeight: Kirigami.Units.gridUnit * 3
     readonly property int messagesTab: 0
-    readonly property int callsTab: 1
-    readonly property int notificationsTab: 2
-    readonly property int photosTab: 3
+    readonly property int contactsTab: 1
+    readonly property int callsTab: 2
+    readonly property int notificationsTab: 3
+    readonly property int photosTab: 4
     property int currentTab: messagesTab
+    property bool contactsWatched: false
     property bool callHistoryWatched: false
     property bool notificationsWatched: false
     property bool photosWatched: false
     readonly property bool tabsVisible: root.visible && root.visibility !== Window.Minimized
         && root.iphoneSettingsPage === null && tabsContent.visible
     onCurrentTabChanged: {
+        if (root.currentTab !== root.callsTab)
+            root.focusedCallId = ""
         root.syncWatches()
         Qt.callLater(root.markSelectedThreadRead)
     }
@@ -153,6 +232,12 @@ Kirigami.ApplicationWindow {
     }
 
     function syncWatches() {
+        const contacts = root.tabsVisible && root.currentTab === root.contactsTab
+            && bridge.contactsSupported === true
+        if (contacts !== root.contactsWatched) {
+            root.contactsWatched = contacts
+            bridge.watchContacts(contacts)
+        }
         const calls = root.tabsVisible && root.currentTab === root.callsTab
             && bridge.callHistoryEnabled === true
         if (calls !== root.callHistoryWatched) {
@@ -204,6 +289,10 @@ Kirigami.ApplicationWindow {
             root.selectedThreadKey = selected ? selected.key : ""
             if (root.pendingMessageHandle !== "")
                 root.selectMessage(root.pendingMessageHandle)
+            if (root.pendingThreadKey !== "" && root.threadByKey(root.pendingThreadKey)) {
+                root.selectedThreadKey = root.pendingThreadKey
+                root.pendingThreadKey = ""
+            }
             root.warnAboutRosterChanges()
             root.markSelectedThreadRead()
         }
@@ -243,6 +332,11 @@ Kirigami.ApplicationWindow {
         sequence: "Ctrl+?"
         onActivated: shortcutsDialog.open()
     }
+    Shortcut {
+        objectName: "searchShortcut"
+        sequences: ["Ctrl+K", StandardKey.Find]
+        onActivated: root.openSearch()
+    }
 
     // During an active call, 0-9, * and # (number pad included) are keypad
     // tones. Text fields claim printable keys first (ShortcutOverride), so
@@ -270,6 +364,44 @@ Kirigami.ApplicationWindow {
     ToneShortcut { key: "#" }
 
     pageStack.initialPage: messagesPage
+
+    // Files dragged anywhere onto the window go to a "Send to…" target
+    // (file_drop_view.py). Below the pages: a plugin card item that takes
+    // files keeps its own DropArea.
+    DropArea {
+        id: windowDropArea
+        objectName: "windowDropArea"
+        anchors.fill: parent
+        z: -1
+        onEntered: drag => {
+            if (!drag.hasUrls)
+                drag.accepted = false
+        }
+        onDropped: drop => {
+            if (!drop.hasUrls)
+                return
+            drop.acceptProposedAction()
+            root.bridge.dropFiles(drop.urls)
+        }
+    }
+
+    FileDropLayer {
+        id: fileDropLayer
+        anchors.fill: parent
+        z: 1000
+        bridge: root.bridge
+        active: windowDropArea.containsDrag
+        onPluginSettingsRequested: root.openPluginSettings()
+    }
+
+    Connections {
+        target: root.bridge
+        // Older or test bridges have no drop zone.
+        ignoreUnknownSignals: true
+        function onFileDropNotice(text, ok) {
+            root.showPassiveNotification(text, ok ? "short" : "long")
+        }
+    }
 
     Kirigami.PromptDialog {
         id: rosterChangedDialog
@@ -388,7 +520,7 @@ Kirigami.ApplicationWindow {
     Kirigami.PromptDialog {
         id: shortcutsDialog
         title: qsTr("Keyboard Shortcuts")
-        subtitle: qsTr("Refresh — Ctrl+R\nQuit — Ctrl+Q\nKeyboard Shortcuts — Ctrl+?")
+        subtitle: qsTr("Search — Ctrl+K or Ctrl+F\nRefresh — Ctrl+R\nQuit — Ctrl+Q\nKeyboard Shortcuts — Ctrl+?")
         standardButtons: Kirigami.Dialog.Close
     }
 
@@ -416,8 +548,16 @@ Kirigami.ApplicationWindow {
         bridge: root.bridge
     }
 
-    // A clicked tel:/callto: link; asks before dialing, and explains when
-    // calls are off, so it exists whether or not calls are enabled.
+    SearchDialog {
+        id: searchDialog
+        objectName: "searchDialog"
+        bridge: root.bridge
+        onTargetActivated: target => root.openSearchTarget(target)
+    }
+
+    // A clicked tel:/callto: link or a contact card's Call; asks before
+    // dialing, and explains when calls are off, so it exists whether or not
+    // calls are enabled.
     DialLinkDialog {
         id: dialLinkDialog
         bridge: root.bridge
@@ -445,6 +585,13 @@ Kirigami.ApplicationWindow {
                 checked: messagesPage.cardOpen
                 displayHint: Kirigami.DisplayHint.IconOnly
                 onToggled: messagesPage.cardOpen = checked
+            },
+            Kirigami.Action {
+                text: qsTr("Search")
+                icon.name: "edit-find"
+                displayHint: Kirigami.DisplayHint.IconOnly
+                visible: root.bridge.searchSupported === true
+                onTriggered: root.openSearch()
             },
             Kirigami.Action {
                 text: qsTr("New Message")
@@ -591,6 +738,11 @@ Kirigami.ApplicationWindow {
                                 icon.name: "dialog-messages"
                             }
                             Controls.TabButton {
+                                objectName: "contactsTabButton"
+                                text: qsTr("Contacts")
+                                icon.name: "view-pim-contacts"
+                            }
+                            Controls.TabButton {
                                 objectName: "callsTabButton"
                                 text: qsTr("Calls")
                                 icon.name: "call-start"
@@ -707,7 +859,10 @@ Kirigami.ApplicationWindow {
                                                         ? threadDelegate.modelData.recipients[0] : ""
                                                 }
                                             }
-                                            onClicked: root.selectedThreadKey = modelData.key
+                                            onClicked: {
+                                                root.focusedMessageHandle = ""
+                                                root.selectedThreadKey = modelData.key
+                                            }
 
                                             Controls.ToolButton {
                                                 icon.name: threadDelegate.modelData.starred
@@ -872,12 +1027,45 @@ Kirigami.ApplicationWindow {
                                         )
                                         model: messagesPage.thread ? messagesPage.thread.messages : []
                                         Controls.ScrollBar.vertical: Controls.ScrollBar {}
+                                        // A message picked in the search is shown in the
+                                        // middle once (it stays marked); otherwise, and on
+                                        // every later change, the newest message is.
+                                        readonly property string focusHandle: root.focusedMessageHandle
+                                        property bool focusPending: false
+                                        onFocusHandleChanged: {
+                                            focusPending = focusHandle !== ""
+                                            Qt.callLater(settle)
+                                        }
+
+                                        function settle() {
+                                            const messages = messagesPage.thread
+                                                ? messagesPage.thread.messages : []
+                                            if (focusPending) {
+                                                for (let index = 0; index < messages.length; ++index) {
+                                                    if (messages[index].handle === focusHandle) {
+                                                        focusPending = false
+                                                        positionViewAtIndex(index, ListView.Center)
+                                                        return
+                                                    }
+                                                }
+                                            }
+                                            positionViewAtEnd()
+                                        }
 
                                         delegate: Item {
                                             id: messageDelegate
                                             required property var modelData
                                             width: messageList.width
                                             implicitHeight: bubble.implicitHeight
+
+                                            Rectangle {
+                                                objectName: "focusedMessageMark"
+                                                anchors.fill: parent
+                                                visible: messageList.focusHandle !== ""
+                                                    && messageDelegate.modelData.handle === messageList.focusHandle
+                                                color: Qt.alpha(Kirigami.Theme.highlightColor, 0.15)
+                                                radius: Kirigami.Units.cornerRadius
+                                            }
 
                                             MessageBubble {
                                                 id: bubble
@@ -900,8 +1088,8 @@ Kirigami.ApplicationWindow {
                                                 ? qsTr("Select a Conversation") : qsTr("No Messages")
                                         }
 
-                                        onCountChanged: Qt.callLater(positionViewAtEnd)
-                                        onModelChanged: Qt.callLater(positionViewAtEnd)
+                                        onCountChanged: Qt.callLater(settle)
+                                        onModelChanged: Qt.callLater(settle)
                                     }
 
                                     Kirigami.InlineMessage {
@@ -978,8 +1166,17 @@ Kirigami.ApplicationWindow {
                                 }
                             }
 
+                            ContactsTab {
+                                bridge: root.bridge
+                                // Asks first, like a tel: link (dialLinkDialog).
+                                onCallRequested: number => root.bridge.requestDialLink(
+                                    "tel:" + root.dialable(number))
+                                onMessageRequested: address => root.messageAddress(address)
+                            }
+
                             CallsTab {
                                 bridge: root.bridge
+                                focusedCallId: root.focusedCallId
                                 onMessageRequested: address => {
                                     newMessageDialog.recipient = address
                                     newMessageDialog.open()

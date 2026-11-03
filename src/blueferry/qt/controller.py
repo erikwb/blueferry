@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import threading
 from collections import OrderedDict
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Any
 
 from PySide6.QtCore import (
@@ -20,15 +20,22 @@ from PySide6.QtDBus import QDBusConnection
 
 from blueferry import (
     __version__,
+    contacts_view,
     doctor_report,
     features_view,
+    file_drop_view,
+    media_volume_view,
+    notification_apps_view,
+    notification_pin_view,
     phone_audio_view,
     phone_link_view,
     phone_overview,
+    search_view,
 )
 from blueferry.backend_lifecycle import ensure_backend_current, restart_backend
 from blueferry.bluetooth_devices import iphone_candidates
-from blueferry.client import BackendClient, TetherUnsupportedError
+from blueferry.client import BackendClient, BackendError, TetherUnsupportedError
+from blueferry.contacts_model import ContactBook
 from blueferry.conversation_state import (
     ConversationSnapshot,
     ConversationState,
@@ -37,6 +44,7 @@ from blueferry.conversation_state import (
 )
 from blueferry.doctor_report import DoctorReport, DoctorRunner
 from blueferry.i18n import _
+from blueferry.limits import MAX_CALL_HISTORY_QUERY_LIMIT
 from blueferry.models import BackendStatus, CallsSnapshot, Thread
 from blueferry.notification_history import NotificationHistory
 from blueferry.onboarding import OnboardingState, effective_compatibility
@@ -50,6 +58,7 @@ from blueferry.qt.tasks import QtTaskRunner, Task, qt_timers
 from blueferry.qt.thumbnails import thumbnail_url
 from blueferry.quirks_report import issue_report, issue_url
 from blueferry.reconnect_view import ManualReconnect, reconnect_view
+from blueferry.search_model import GlobalSearch
 from blueferry.service_manager import bluetooth_restart_command
 from blueferry.setup_client import (
     DISCOVERY_SECONDS,
@@ -58,6 +67,18 @@ from blueferry.setup_client import (
 )
 from blueferry.tel_links import dial_request, known_contact_name
 from blueferry.tether_status import TetherStatus
+
+
+def _pin_failure_text(error: BackendError) -> str:
+    """The shared pin error text, from the D-Bus error behind ``error``."""
+    cause = error.__cause__
+    get_name = getattr(cause, "get_dbus_name", None)
+    get_message = getattr(cause, "get_dbus_message", None)
+    if callable(get_name):
+        message = get_message() if callable(get_message) else ""
+        return notification_pin_view.pin_error_text(get_name(), message)
+    return notification_pin_view.pin_error_text("", str(error))
+
 
 # Bounds on the per-window avatar cache (least recently used entries are
 # dropped). The count covers a long list of small photos; the byte bound
@@ -69,6 +90,9 @@ MAX_CACHED_AVATAR_BYTES = 16 * 1024 * 1024
 MAX_PENDING_AVATARS = 32
 AVATAR_RETRY_SECONDS = 30
 AVATAR_RETRY_MAX_SECONDS = 600
+# Avatar-provider key of the open contact card's photo; never a phone number
+# or e-mail address, so it cannot collide with a conversation avatar.
+CARD_PHOTO_PREFIX = "contact-card:"
 
 
 class _WorkerRunner:
@@ -109,6 +133,80 @@ class _WorkerRunner:
         controller._run(operation, done, failed, busy=self._busy)
 
 
+# Private key of the muted app IDs added to a ListNotifications answer.
+# Calls the Recent Calls page reads at first.
+CALL_HISTORY_PAGE = 200
+_MUTED_APPS_KEY = "_blueferry_muted_apps"
+
+
+# What the rows need from the raw ListNotifications answer: never the titles
+# or bodies, which go with the shared model's rows.
+_RECORD_PIN_FIELDS = ("key", "pinned", "removed", "actionable", "app_id")
+
+
+def _pin_fields(value: object) -> dict:
+    """The pin keys, flags and app IDs of one ListNotifications answer."""
+    if not isinstance(value, dict):
+        return {}
+    records = value.get("notifications")
+    return {
+        "pins_max": value.get("pins_max"),
+        _MUTED_APPS_KEY: value.get(_MUTED_APPS_KEY) or frozenset(),
+        "notifications": [
+            {name: record[name] for name in _RECORD_PIN_FIELDS if name in record}
+            if isinstance(record, Mapping) else None
+            for record in records
+        ] if isinstance(records, list) else [],
+    }
+
+
+class _NotificationRunner:
+    """The TaskRunner of the Notifications tab's shared model.
+
+    On the GUI thread it decides, before the work is queued, whether the
+    muted apps are read too, and keeps each raw ListNotifications answer
+    beside the model's display rows: the answer is taken just before the
+    model sees it (the model re-renders from inside ``on_done``) and put
+    back to the previous one when the model drops the reply (tab hidden
+    meanwhile, or a newer read superseded it), so rows and pin keys always
+    come from the same answer.
+    """
+
+    def __init__(self, controller: BridgeController) -> None:
+        self._controller = controller
+        self._runner = _WorkerRunner(controller)
+
+    def submit(
+        self,
+        operation: Callable[[], object],
+        on_done: Callable[[Any], None] | None = None,
+        on_error: Callable[[str], None] | None = None,
+        on_finished: Callable[[], None] | None = None,
+    ) -> None:
+        controller = self._controller
+        # Read GetStatus here, never on the D-Bus worker.
+        controller._notifications_with_muted_apps = notification_apps_view.supported(
+            controller._status
+        )
+
+        def deliver(value: object, callback: Callable[[], None]) -> None:
+            history = controller._notification_history
+            rows = history.rows
+            previous = controller._notification_reply
+            controller._notification_reply = _pin_fields(value)
+            callback()
+            if history.rows is rows:
+                controller._notification_reply = previous
+
+        def done(value: object) -> None:
+            deliver(value, lambda: on_done(value) if on_done is not None else None)
+
+        def failed(message: str) -> None:
+            deliver(None, lambda: on_error(message) if on_error is not None else None)
+
+        self._runner.submit(operation, done, failed, on_finished)
+
+
 class BridgeController(QObject):
     threadsChanged = Signal()
     contactResultsChanged = Signal()
@@ -140,6 +238,12 @@ class BridgeController(QObject):
     companionToolsChanged = Signal()
     pluginSettingsChanged = Signal()
     pluginSurfacesChanged = Signal()
+    fileDropChanged = Signal()
+    # A short notice about files dropped on the window: text, ok.
+    fileDropNotice = Signal(str, bool)
+    notificationAppsChanged = Signal()
+    contactsChanged = Signal()
+    searchChanged = Signal()
     phoneIdentityChanged = Signal()
     featuresChanged = Signal()
     doctorChanged = Signal()
@@ -255,6 +359,8 @@ class BridgeController(QObject):
         self._call_history_again = False
         # Only a visible Recent Calls page keeps call records in this process.
         self._call_history_watched = False
+        # Recent calls read per load; a search hit can reach further back.
+        self._call_history_limit = CALL_HISTORY_PAGE
         self._call_history_timer = QTimer(self)
         self._call_history_timer.setSingleShot(True)
         self._call_history_timer.setInterval(100)
@@ -267,11 +373,20 @@ class BridgeController(QObject):
         self._now_playing_timer.setInterval(150)
         self._now_playing_timer.timeout.connect(self.refreshNowPlaying)
         # Opt-in app-notification list: fetched only while its tab is shown.
+        # The shared model keeps display rows; the raw answer (pin keys and
+        # flags, in row order) and the muted apps are kept beside it.
+        self._notification_reply: dict = {}
+        self._notification_snapshot: dict = {}
+        self._notification_rows: list[dict] = []
+        self._pin_error = ""
+        self._notifications_with_muted_apps = False
         self._notification_history = NotificationHistory(
-            runner=_WorkerRunner(self), timer=qt_timers(self),
-            fetch=lambda limit: self._backend.notifications(limit),
-            on_change=self.notificationsChanged.emit,
+            runner=_NotificationRunner(self),
+            timer=qt_timers(self),
+            fetch=self._fetch_notifications,
+            on_change=self._notifications_updated,
         )
+        self._notifications_info: dict = self._compose_notifications_info()
         self.statusChanged.connect(
             lambda: self._notification_history.sync_status(self._status))
         self.devicesChanged.connect(self.phoneIdentityChanged)
@@ -290,6 +405,30 @@ class BridgeController(QObject):
         # Plugin management runs git, pip and plugin calls on its own queue.
         self._plugin_settings = plugin_settings or PluginSettings(parent=self)
         self._plugin_settings.changed.connect(self.pluginSettingsChanged)
+        # Settings > Notifications > Muted apps: fetched only while shown.
+        self._notification_apps: dict = self._empty_notification_apps()
+        self._notification_apps_watched = False
+        self._notification_apps_timer = QTimer(self)
+        self._notification_apps_timer.setSingleShot(True)
+        self._notification_apps_timer.setInterval(150)
+        self._notification_apps_timer.timeout.connect(self.refreshNotificationApps)
+        # Contacts tab (read only while shown) and the global search; both
+        # use the shared models, the D-Bus calls run on the worker.
+        self._card_photo: tuple[str, bytes] = ("", b"")
+        self._card_photo_serial = 0
+        self._contact_book = ContactBook(
+            runner=_WorkerRunner(self), timer=qt_timers(self),
+            fetch_page=lambda offset, limit, query: self._backend.contact_cards(
+                offset, limit, query),
+            fetch_card=lambda contact_id: self._backend.contact(contact_id),
+            on_change=self._contacts_updated,
+        )
+        self._search = GlobalSearch(
+            runner=_WorkerRunner(self), timer=qt_timers(self),
+            fetch=lambda query, limit: self._backend.search(query, limit),
+            on_change=self.searchChanged.emit,
+        )
+        self.statusChanged.connect(self._status_for_contacts)
         self._tether: dict = {"available": False}
         self._tether_pending = False
         self._tether_timer = QTimer(self)
@@ -302,6 +441,8 @@ class BridgeController(QObject):
             bus=self._bus, parent=self,
         )
         self._plugin_surfaces.changed.connect(self.pluginSurfacesChanged)
+        self._plugin_surfaces.dropChanged.connect(self.fileDropChanged)
+        self._plugin_surfaces.dropNotice.connect(self.fileDropNotice)
         # Enabling, installing or removing a plugin changes the card. None
         # until the first plugin list has loaded; an empty tuple means "no
         # plugin installed", so installing the very first one still reloads.
@@ -370,6 +511,7 @@ class BridgeController(QObject):
             "hint": audio["hint"],
             "playing": audio["playing"],
             "mismatch": audio["mismatch"],
+            "sync": audio["sync"],
         }
 
     @Property("QVariantMap", notify=statusChanged)
@@ -536,6 +678,9 @@ class BridgeController(QObject):
     def avatar_bytes(self, address: str) -> bytes | None:
         """Thread-safe lookup used by :class:`AvatarImageProvider`."""
         with self._avatar_lock:
+            if address.startswith(CARD_PHOTO_PREFIX):
+                key, data = self._card_photo
+                return data if data and address == key else None
             return self._avatars.get(address)
 
     def _sync_avatars(self) -> None:
@@ -739,6 +884,32 @@ class BridgeController(QObject):
         self._plugin_surfaces.send_from_card(
             str(plugin_id), str(target_id), str(label), list(urls or []))
 
+    @Property("QVariantMap", notify=fileDropChanged)
+    def fileDrop(self):
+        """Files dropped on the window (file_drop_view.py): phase (idle,
+        checking, picking, none, sending), choices with key/label/icon,
+        selected, title, body and the fixed texts; all plain text."""
+        return {
+            **self._plugin_surfaces.file_drop.state(),
+            "overlayTitle": file_drop_view.overlay_title(),
+            "overlaySubtitle": file_drop_view.overlay_subtitle(),
+            "settingsLabel": file_drop_view.settings_label(),
+            "sendLabel": file_drop_view.send_label(),
+        }
+
+    @Slot("QVariantList")
+    def dropFiles(self, urls: list) -> None:
+        """Files dropped anywhere on the main window."""
+        self._plugin_surfaces.drop(list(urls or []))
+
+    @Slot(str)
+    def pickDropTarget(self, key: str) -> None:
+        self._plugin_surfaces.file_drop.pick(str(key))
+
+    @Slot()
+    def cancelDrop(self) -> None:
+        self._plugin_surfaces.file_drop.cancel()
+
     @Property("QVariantMap", notify=companionToolsChanged)
     def companionTools(self):
         return self._companion.state()
@@ -774,18 +945,82 @@ class BridgeController(QObject):
         """Download the original (plugin) and open it in the default viewer."""
         self._photos.open(photo_id)
 
+    def _fetch_notifications(self, limit: int) -> object:
+        """ListNotifications plus, on daemons that can mute, the muted apps
+        (to dim their rows); runs on the D-Bus worker."""
+        snapshot = self._backend.notifications(limit)
+        if not isinstance(snapshot, dict) or not self._notifications_with_muted_apps:
+            return snapshot
+        try:
+            muted = notification_apps_view.muted_ids(self._backend.notification_apps())
+        except BackendError:
+            muted = frozenset()
+        return {**snapshot, _MUTED_APPS_KEY: muted}
+
+    def _notifications_updated(self) -> None:
+        """The shared model changed: add the pin fields and the muted flag
+        to its display rows (same order as the raw records)."""
+        history = self._notification_history
+        if not history.rows:
+            # Forgotten rows (tab hidden, storage locked, list off) take
+            # their keys along.
+            self._notification_reply = {}
+        snapshot = self._notification_reply
+        records = snapshot.get("notifications")
+        records = [r for r in records if isinstance(r, Mapping)] if isinstance(
+            records, list
+        ) else []
+        muted = snapshot.get(_MUTED_APPS_KEY) or frozenset()
+        rows: list[dict] = []
+        for index, row in enumerate(history.rows):
+            record = records[index] if index < len(records) else {}
+            app_id = record.get("app_id")
+            app_id = app_id if isinstance(app_id, str) else ""
+            rows.append({
+                **notification_pin_view.pin_row_extras(record),
+                **row,
+                "app_id": app_id,
+                "muted": bool(app_id) and app_id in muted,
+            })
+        self._notification_rows = rows
+        self._notification_snapshot = snapshot
+        self._update_notifications_info()
+
+    def _compose_notifications_info(self) -> dict:
+        snapshot = self._notification_snapshot
+        return {
+            **self._notification_history.info,
+            "pinLimitReached": notification_pin_view.pin_limit_reached(snapshot),
+            "pinLimitText": notification_pin_view.pin_limit_text(snapshot.get("pins_max")),
+            "pinError": self._pin_error,
+        }
+
+    def _update_notifications_info(self) -> None:
+        self._notifications_info = self._compose_notifications_info()
+        self.notificationsChanged.emit()
+
     @Property("QVariantList", notify=notificationsChanged)
     def notifications(self):
-        return self._notification_history.rows
+        return self._notification_rows
 
     @Property("QVariantMap", notify=notificationsChanged)
     def notificationsInfo(self):
-        return self._notification_history.info
+        return self._notifications_info
 
     @Slot(bool)
     def watchNotifications(self, watched: bool) -> None:
         """The Notifications tab became visible (load) or hidden (forget)."""
-        self._notification_history.watch(bool(watched))
+        if watched:
+            self._notification_history.watch(True)
+            return
+        # Titles and bodies of the raw answer go with the rows.
+        self._notification_reply = {}
+        self._pin_error = ""
+        rows = self._notification_history.rows
+        self._notification_history.watch(False)
+        if self._notification_history.rows is rows:
+            # The model had no rows to forget and so reported no change.
+            self._notifications_updated()
 
     @Slot()
     def refreshNotifications(self) -> None:
@@ -794,6 +1029,223 @@ class BridgeController(QObject):
     @Slot()
     def _notificationsInvalidated(self) -> None:
         self._notification_history.invalidated()
+
+    def _set_pin_error(self, text: str) -> None:
+        if text != self._pin_error:
+            self._pin_error = text
+            self._update_notifications_info()
+
+    @Slot(str, bool)
+    def setNotificationPinned(self, key: str, pinned: bool) -> None:
+        """Pin or unpin one listed notification (Messages1.SetNotificationPinned)."""
+        selected = str(key or "")
+        if not selected:
+            return
+        wanted = bool(pinned)
+
+        def operation() -> object:
+            try:
+                return self._backend.set_notification_pinned(selected, wanted)
+            except BackendError as error:
+                raise BackendError(_pin_failure_text(error)) from error
+
+        def completed(_value: object) -> None:
+            self._set_pin_error("")
+            self.refreshNotifications()
+
+        def failed(message: str) -> None:
+            self._set_pin_error(message or notification_pin_view.GENERIC_ERROR_TEXT)
+            # An unknown key means the list moved on; show the current one.
+            self.refreshNotifications()
+
+        self._run(operation, completed, failed, busy=False)
+
+    @staticmethod
+    def _empty_notification_apps() -> dict:
+        return {
+            "loaded": False,
+            "available": False,
+            "label": notification_apps_view.section_label(),
+            "description": notification_apps_view.section_description(),
+            "hint": "",
+            "rows": [],
+            "count": 0,
+            "error": "",
+        }
+
+    @Property(bool, notify=statusChanged)
+    def notificationAppsSupported(self) -> bool:
+        """Whether the running daemon can mute single iPhone apps."""
+        return notification_apps_view.supported(self._status)
+
+    @Property("QVariantMap", notify=notificationAppsChanged)
+    def notificationApps(self):
+        return self._notification_apps
+
+    @Slot(bool)
+    def watchNotificationApps(self, watched: bool) -> None:
+        """Settings > Notifications shows (load) or hides (forget) the muted apps."""
+        self._notification_apps_watched = bool(watched)
+        if self._notification_apps_watched:
+            self.refreshNotificationApps()
+            return
+        self._notification_apps_timer.stop()
+        if self._notification_apps != self._empty_notification_apps():
+            self._notification_apps = self._empty_notification_apps()
+            self.notificationAppsChanged.emit()
+
+    @Slot()
+    def refreshNotificationApps(self) -> None:
+        self._read_notification_apps(keep_error=False)
+
+    def _read_notification_apps(self, *, keep_error: bool) -> None:
+        if not self._notification_apps_watched or not self.notificationAppsSupported:
+            return
+
+        def completed(value: object) -> None:
+            if not self._notification_apps_watched:
+                return
+            view = notification_apps_view.list_view(value)
+            error = self._notification_apps.get("error", "") if keep_error else ""
+            self._notification_apps = {**view, "loaded": True, "error": error}
+            self.notificationAppsChanged.emit()
+
+        def failed(message: str) -> None:
+            if not self._notification_apps_watched:
+                return
+            self._notification_apps = {
+                **self._empty_notification_apps(),
+                "error": message or _("Could not read the muted apps."),
+            }
+            self.notificationAppsChanged.emit()
+
+        self._run(self._backend.notification_apps, completed, failed, busy=False)
+
+    @Slot()
+    def _notificationAppsInvalidated(self) -> None:
+        # Content-free signal: refetch only what is on screen.
+        if self._notification_apps_watched:
+            self._notification_apps_timer.start()
+        self._notification_history.invalidated()
+
+    @Slot(str, bool)
+    def setNotificationAppMuted(self, app_id: str, muted: bool) -> None:
+        """Mute or unmute the desktop popups of one iPhone app."""
+        selected = str(app_id or "")
+        if not selected:
+            return
+        wanted = bool(muted)
+
+        def completed(_value: object) -> None:
+            self._notification_apps = {**self._notification_apps, "error": ""}
+            self.refreshNotificationApps()
+            self._notificationsInvalidated()
+
+        def failed(message: str) -> None:
+            # Re-emit so the switch shows the saved state again.
+            self._notification_apps = {
+                **self._notification_apps,
+                "error": notification_apps_view.change_failed_text(message),
+            }
+            self.notificationAppsChanged.emit()
+            # Muting may have become unavailable (settings.json unreadable,
+            # storage locked): read the list again for its switches and hint.
+            self._read_notification_apps(keep_error=True)
+
+        self._run(
+            lambda: self._backend.set_notification_app_muted(selected, wanted),
+            completed,
+            failed,
+        )
+
+    # ---- Contacts tab and global search ---------------------------------
+
+    @Slot()
+    def _status_for_contacts(self) -> None:
+        self._contact_book.apply_status(self._status)
+        self._search.apply_status(self._status)
+
+    def _contacts_updated(self) -> None:
+        book = self._contact_book
+        photo = book.photo if book.card["open"] else b""
+        with self._avatar_lock:
+            if not photo:
+                self._card_photo = ("", b"")
+            elif photo is not self._card_photo[1]:
+                # A new key per photo, so QML never shows a cached older one.
+                self._card_photo_serial += 1
+                self._card_photo = (f"{CARD_PHOTO_PREFIX}{self._card_photo_serial}", photo)
+        self.contactsChanged.emit()
+
+    @Property(bool, notify=statusChanged)
+    def contactsSupported(self) -> bool:
+        """Whether the running daemon offers contact cards."""
+        return contacts_view.supported(self._status)
+
+    @Property("QVariantMap", notify=contactsChanged)
+    def contacts(self):
+        """The Contacts list: rows, count and empty texts, paging state."""
+        return self._contact_book.view()
+
+    @Property("QVariantMap", notify=contactsChanged)
+    def contactCard(self):
+        """The open card (``contacts_view.card_view``) and its photo URL."""
+        key = self._card_photo[0]
+        return {
+            **self._contact_book.card,
+            "photo": avatar_url(key, 0) if key else "",
+        }
+
+    @Slot(bool)
+    def watchContacts(self, watched: bool) -> None:
+        """The Contacts tab is shown (load) or hidden (forget the cards)."""
+        self._contact_book.watch(watched)
+
+    @Slot(str)
+    def setContactQuery(self, query: str) -> None:
+        self._contact_book.set_query(query)
+
+    @Slot()
+    def reloadContacts(self) -> None:
+        self._contact_book.reload()
+
+    @Slot()
+    def loadMoreContacts(self) -> None:
+        self._contact_book.load_more()
+
+    @Slot(str)
+    def openContact(self, contact_id: str) -> None:
+        self._contact_book.open(contact_id)
+
+    @Slot()
+    def closeContact(self) -> None:
+        self._contact_book.close()
+
+    @Property(bool, notify=statusChanged)
+    def searchSupported(self) -> bool:
+        """Whether the running daemon offers the global search."""
+        return search_view.supported(self._status)
+
+    @Property("QVariantMap", notify=searchChanged)
+    def searchResults(self):
+        """``search_view.search_view`` plus state; highlights as [start, length]."""
+        view = self._search.view()
+        sections = [
+            {**section, "rows": [
+                {**row, "highlight": list(row["highlight"] or [])}
+                for row in section["rows"]
+            ]}
+            for section in view["sections"]
+        ]
+        return {**view, "sections": sections}
+
+    @Slot(str)
+    def setSearchQuery(self, query: str) -> None:
+        self._search.set_query(query)
+
+    @Slot()
+    def clearSearch(self) -> None:
+        self._search.clear()
 
     @Property(str, notify=callHistoryChanged)
     def callHistoryError(self) -> str:
@@ -805,6 +1257,11 @@ class BridgeController(QObject):
     @Property("QVariantMap", notify=nowPlayingChanged)
     def nowPlaying(self):
         return self._now_playing
+
+    @Property("QVariantMap", notify=nowPlayingChanged)
+    def mediaVolume(self):
+        """iPhone volume buttons and level (blueferry.media_volume_view)."""
+        return media_volume_view.volume_controls(self._now_playing)
 
     @Property("QVariantMap", notify=tetherChanged)
     def tether(self):
@@ -1002,6 +1459,14 @@ class BridgeController(QObject):
             BUS_NAME,
             OBJECT_PATH,
             EVENTS_IFACE,
+            "NotificationAppsChanged",
+            self,
+            SLOT("_notificationAppsInvalidated()"),
+        )
+        self._bus.connect(
+            BUS_NAME,
+            OBJECT_PATH,
+            EVENTS_IFACE,
             "CallHistoryChanged",
             self,
             SLOT("_callHistoryInvalidated()"),
@@ -1083,6 +1548,8 @@ class BridgeController(QObject):
         self._refresh_timer.start()
         # ClearHistory also empties the notification list.
         self._notificationsInvalidated()
+        # Shown search hits may name messages that changed or are gone.
+        self._search.invalidate()
 
     @Slot()
     def _statusInvalidated(self) -> None:
@@ -1101,6 +1568,8 @@ class BridgeController(QObject):
 
     @Slot()
     def _callHistoryInvalidated(self) -> None:
+        # Search hits may name calls that are gone.
+        self._search.invalidate()
         # The signal carries nothing; only a shown list is refetched.
         if self.callHistoryEnabled and self._call_history_watched:
             self._call_history_timer.start()
@@ -1112,6 +1581,7 @@ class BridgeController(QObject):
         if self._call_history_watched:
             self.loadCallHistory()
             return
+        self._call_history_limit = CALL_HISTORY_PAGE
         self._call_history_timer.stop()
         self._call_history_again = False
         if self._call_history or self._call_history_error:
@@ -1119,6 +1589,19 @@ class BridgeController(QObject):
             self._call_history_rows = {}
             self._call_history_error = ""
             self.callHistoryChanged.emit()
+
+    @Slot(str)
+    def revealCall(self, call_id: str) -> None:
+        """A search hit names this call: read every retained call unless
+        the shown list already holds it (Search covers all of them)."""
+        selected = str(call_id or "")
+        if not selected or self._call_history_limit >= MAX_CALL_HISTORY_QUERY_LIMIT:
+            return
+        if any(selected in (row.get("ids") or [])
+               for row in self._call_history_rows.get("all") or []):
+            return
+        self._call_history_limit = MAX_CALL_HISTORY_QUERY_LIMIT
+        self.loadCallHistory()
 
     @Slot()
     def loadCallHistory(self) -> None:
@@ -1129,9 +1612,10 @@ class BridgeController(QObject):
             self._call_history_again = True
             return
         self._call_history_loading = True
+        limit = self._call_history_limit
 
         def operation() -> tuple[list[dict], dict]:
-            entries = self._backend.call_history(200)
+            entries = self._backend.call_history(limit)
             rows = {
                 "all": phone_overview.call_groups(entries),
                 "missed": phone_overview.call_groups(entries, missed_only=True),

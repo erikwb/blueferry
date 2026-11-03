@@ -75,13 +75,26 @@ it. If the app that is playing does not offer volume control, BlueFerry says
 so and sends nothing. The older spellings `volume-up` and `volume-down` still
 work.
 
+In the Kirigami client the **Now Playing** part of the phone card has a
+second row under the transport buttons: the level the iPhone last reported
+("Volume 40%") and **Volume Down** / **Volume Up** buttons, one step per
+click. They are greyed out, with a short note, while the playing app offers
+no volume control. The GTK client has the same steps as two buttons next to
+play/pause on its phone card, with the last reported level between them; a
+button is greyed out, with the reason in its tooltip, when the app that is
+playing does not offer that step. The Quickshell client puts the two
+buttons and the last reported level in its now-playing strip; they are
+greyed out when the playing app does not offer volume control. The terminal
+client's volume keys are listed below.
+
 In the Kirigami client a small bar with title, artist and
 previous/play-pause/next buttons appears above the conversations while
 something is playing. The Quickshell client shows the same strip under its
 header, the GTK client on the phone card above its tabs, and
 the terminal client in a line under the status pills, where `p`, `[` and `]`
-play/pause, go back and skip. None of them is shown, and no client asks the
-backend, while the option is off.
+play/pause, go back and skip, and `-` and `+` (or `=`) step the volume (its
+iPhone overview has Volume Down, Play/Pause and Volume Up buttons). None of
+them is shown, and no client asks the backend, while the option is off.
 
 ```mermaid
 flowchart LR
