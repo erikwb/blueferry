@@ -2385,6 +2385,8 @@ class BackendOperations:
         audio = self._call_audio()
         try:
             return dict(audio.set_preferred(direction, name))
+        except UnreadableSettingsError:
+            raise
         except ValueError as error:
             raise InvalidArgumentsError(str(error)) from error
         except OSError as error:
