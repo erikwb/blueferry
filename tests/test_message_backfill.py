@@ -408,6 +408,23 @@ def test_results_for_a_lost_or_replaced_session_are_dropped():
     assert harness.writes == []
 
 
+def test_a_live_message_after_the_reconnect_does_not_hide_the_gap():
+    harness = Harness(listing=[_entry("message1", body="missed", minutes_ago=24 * 60)])
+    harness.coordinator.request("MAP connected")
+    # Days offline, then a live message is stored before the listing runs.
+    harness.stored = [
+        _stored("message0", body="before", minutes_ago=3 * 24 * 60),
+        _stored("message2", body="live", minutes_ago=0),
+    ]
+    harness.fire()
+    harness.worker.run_next()
+    since = harness.calls[1][2]
+    assert since == NOW - timedelta(days=3) - backfill.SAFETY_MARGIN
+    harness.worker.run_next()
+    [(payloads, _handles)] = harness.writes
+    assert [payload["body"] for payload in payloads] == ["missed"]
+
+
 def test_stop_cancels_a_pending_timer():
     harness = Harness()
     harness.coordinator.request("MAP connected")

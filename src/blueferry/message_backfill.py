@@ -167,12 +167,16 @@ def backfill_since(
     now: datetime,
     retention_days: int,
     floor: datetime | None = None,
+    live_after: datetime | None = None,
 ) -> datetime:
     """The oldest message time worth listing.
 
     Messages older than retention would be pruned at once, and messages
     older than the floor were erased by the user. With received messages in
-    history, listing starts a safety margin before the newest one.
+    history, listing starts a safety margin before the newest one. Messages
+    that arrived live at or after ``live_after`` (this connection) do not
+    count: a message delivered just after a reconnect says nothing about
+    the gap before it.
     """
     lower = now - timedelta(days=retention_days)
     if floor is not None:
@@ -180,6 +184,9 @@ def backfill_since(
     newest: datetime | None = None
     for event in history:
         if event.get("kind") != "sms_received":
+            continue
+        arrived = _parse_time(event.get("seen_at"))
+        if live_after is not None and arrived is not None and arrived >= live_after:
             continue
         when = _stored_time(event)
         if when is None or when > now + FUTURE_TOLERANCE:
@@ -400,6 +407,8 @@ class MessageBackfill:
         self._busy = False
         self._rerun = False
         self._generation = 0
+        # When this connection's live deliveries began (see backfill_since).
+        self._live_after: datetime | None = None
         # Live messages (handle, sender) seen while a listing is in flight.
         self._live: set[tuple[str, str | None]] | None = None
         # Backfilled messages, so a late live copy is not stored twice.
@@ -411,6 +420,8 @@ class MessageBackfill:
         """Schedule a backfill after a MAP or MNS (re)connect."""
         if not self._enabled() or not self._session_path():
             return
+        if self._live_after is None:
+            self._live_after = self._now()
         if self._busy:
             self._rerun = True
             return
@@ -424,6 +435,7 @@ class MessageBackfill:
         self._generation += 1
         self._rerun = False
         self._live = None
+        self._live_after = None
         self._remembered.clear()
         self._busy = False
         if self._timer is not None:
@@ -466,11 +478,13 @@ class MessageBackfill:
         collect = self._collect
         now = self._now()
         retention = self._retention_days()
+        live_after = self._live_after
 
         def operation() -> tuple[BackfillPlan, datetime]:
             history, floor = collect()
             since = backfill_since(
                 history, now=now, retention_days=retention, floor=floor,
+                live_after=live_after,
             )
             listed = parse_listing(
                 list_inbox(session, since, MAX_BACKFILL_MESSAGES), now=now,

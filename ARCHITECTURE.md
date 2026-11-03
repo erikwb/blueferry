@@ -892,7 +892,7 @@ A change to these rules has to be made in both places.
   worker (`MaxCount` ≤ 200, `PeriodBegin`, and a client-side time filter).
   It runs only while message history is kept and unlocked; that opt-in is
   the only switch. The window starts two hours before the newest stored
-  received message, bounded by retention and by an erase floor that history
+  received message that did not arrive live on this connection, bounded by retention and by an erase floor that history
   clears, storage-mode changes and conversation deletion raise in the
   history `meta` table (a time, no content; a damaged database deleted by a
   storage reset loses it). The write checks that floor in its transaction,
