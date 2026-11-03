@@ -742,7 +742,7 @@ ShellRoot {
         // A saved pin sends NotificationsChanged, which rereads the list;
         // only a refusal rereads it here.
         root.notificationPinBusy = false
-        var saved = typeof result === "object" && result !== null && result.saved === true
+        const saved = typeof result === "object" && result !== null && result.saved === true
         root.notificationPinError = typeof result === "object" && result !== null
           ? String(result.error || "") : ""
         if (!saved) root.refreshNotificationList()
