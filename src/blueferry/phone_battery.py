@@ -8,7 +8,7 @@ Where BlueZ's battery plugin claims that service, it reads and subscribes to
 the characteristic itself and publishes ``org.bluez.Battery1.Percentage``
 with ``Source`` "GATT Battery Service" on the device. BlueFerry then follows
 only that property and leaves the characteristic alone: its own ReadValue
-and StartNotify competed with the plugin's (``Failed``, ``InProgress``) and
+and StartNotify were seen to fail there (``Failed``, ``InProgress``) and
 could leave a frozen reading. Without such a ``Battery1`` (no battery
 plugin, or a ``Battery1`` from another source such as hands-free), BlueFerry
 reads the characteristic once and follows its notifications, and any other
@@ -132,6 +132,8 @@ class PhoneBattery:
         # That Battery1 outlived an LE disconnect, so it may be the stale
         # object bluetoothd 5.87 failed to replace ("path exists").
         self._battery1_suspect = False
+        # An InterfacesAdded signal already said where Battery1 comes from.
+        self._battery1_source_known = False
         # The characteristic is left to BlueZ: no reads, no notify session.
         self._deferring = False
         self._publishing = False
@@ -160,6 +162,7 @@ class PhoneBattery:
         self._running = True
         self._generation += 1
         self._discovery_changes = set()
+        self._battery1_source_known = False
         try:
             bus = self._bus_factory()
             for signal, handler in (
@@ -267,7 +270,7 @@ class PhoneBattery:
         on_error: Callable[[Exception], None],
         *,
         characteristic: bool = False,
-        on_stale_reply: Callable[[], None] | None = None,
+        on_stale: Callable[[Exception | None], None] | None = None,
     ) -> None:
         generation = self._generation
         char_generation = self._char_generation
@@ -282,20 +285,26 @@ class PhoneBattery:
                 ))
             )
 
-        def replied(*values: Any) -> None:
-            if current():
-                on_reply(*values)
-            elif (
-                on_stale_reply is not None and self._running
+        def stale(result: Exception | None) -> None:
+            if (
+                on_stale is not None and self._running
                 and generation == self._generation
                 and char_generation == self._char_generation
             ):
                 # Same bluetoothd and characteristic object, older session.
-                on_stale_reply()
+                on_stale(result)
+
+        def replied(*values: Any) -> None:
+            if current():
+                on_reply(*values)
+            else:
+                stale(None)
 
         def failed(error: Exception) -> None:
             if current():
                 on_error(error)
+            else:
+                stale(error)
 
         try:
             self._bus_factory().call_async(
@@ -382,7 +391,7 @@ class PhoneBattery:
             elif (
                 str(path) == self.device_path and isinstance(interfaces, Mapping)
                 and isinstance(interfaces.get(BATTERY1_IFACE), Mapping)
-                and self._battery1 is not None and not self._battery1_plugin
+                and self._battery1 is not None and not self._battery1_source_known
             ):
                 # A newer PropertiesChanged kept the level; Source comes from here.
                 with self._publish():
@@ -410,6 +419,7 @@ class PhoneBattery:
         if path == self.device_path and isinstance(battery, Mapping):
             with self._publish():
                 self._battery1_plugin = _is_plugin(battery)
+                self._battery1_source_known = True
                 self._battery1_suspect = False
                 self._set_battery1(parse_battery1_percentage(battery.get("Percentage")))
                 self._sync_source()
@@ -529,14 +539,17 @@ class PhoneBattery:
         def started(*_values: Any) -> None:
             self._notifying = True
 
-        def started_late() -> None:
-            # Battery1 took over while StartNotify was in flight.
+        def started_late(error: Exception | None) -> None:
+            # Battery1 took over while StartNotify was in flight; InProgress
+            # is a session of ours too.
+            if error is not None and _dbus_name(error) != "org.bluez.Error.InProgress":
+                return
             if self._deferring:
                 self._stop_notify(path)
 
         self._call(
             path, GATT_CHAR_IFACE, "StartNotify", "", (), started, notify_failed,
-            characteristic=True, on_stale_reply=started_late,
+            characteristic=True, on_stale=started_late,
         )
 
     def _on_char_changed(self, interface: object, changed: object, invalidated=None) -> None:

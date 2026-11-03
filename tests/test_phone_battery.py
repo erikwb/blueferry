@@ -631,3 +631,40 @@ def test_a_notify_session_left_from_before_the_reconnect_counts_as_ours() -> Non
     assert (watcher.percent, watcher.source) == (79, "gatt")
     watcher.stop()
     assert bus.take("StopNotify")[0] == CHAR
+
+
+def test_a_late_in_progress_after_the_switch_still_ends_our_session() -> None:
+    watcher, bus, _changes = _battery()
+    watcher.start()
+    bus.take("GetManagedObjects")[5]({dbus.ObjectPath(CHAR): _char(80)})
+    bus.take("ReadValue")[5]([80])
+    bus.take("StartNotify")[5]()
+    watcher.link_down()
+    watcher.link_up()
+    bus.take("ReadValue")
+    notify = bus.take("StartNotify")
+
+    bus.emit("InterfacesAdded", dbus.ObjectPath(DEVICE), _plugin_battery(79))
+    assert bus.calls == []
+    # BlueZ kept the session from before the reconnect.
+    notify[6](dbus.exceptions.DBusException("busy", name="org.bluez.Error.InProgress"))
+    assert bus.take("StopNotify")[0] == CHAR
+    assert (watcher.percent, watcher.source) == (79, "bluez")
+
+
+def test_snapshot_does_not_relabel_a_newer_battery1_from_another_source() -> None:
+    watcher, bus, _changes = _battery()
+    watcher.start()
+    initial = bus.take("GetManagedObjects")
+    # BlueZ replaced the plugin's Battery1 before the snapshot arrived; the new
+    # one names no Source (e.g. a hands-free battery provider).
+    bus.emit("InterfacesRemoved", dbus.ObjectPath(DEVICE), [BATTERY1_IFACE])
+    bus.emit("InterfacesAdded", dbus.ObjectPath(DEVICE),
+             {BATTERY1_IFACE: {"Percentage": dbus.Byte(70)}})
+    initial[5]({
+        dbus.ObjectPath(DEVICE): _plugin_battery(90),
+        dbus.ObjectPath(CHAR): _char(),
+    })
+    bus.take("ReadValue")[5]([72])
+    bus.take("StartNotify")[5]()
+    assert (watcher.percent, watcher.source) == (72, "gatt")
