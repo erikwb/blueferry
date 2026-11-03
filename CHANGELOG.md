@@ -4,6 +4,48 @@
 
 ### Added
 
+- Contact cards: the contact cache now keeps each number with its iPhone
+  label, labelled email addresses, postal addresses, company and job title,
+  inside the encrypted contact records only. `Messages1.ListContactCards`
+  pages through the cards (optionally filtered, no photo bytes) and
+  `GetContact` returns one card with its photo; `GetStatus` reports
+  `contact_card_count` and `contact_card_epoch` (changes when card ids may
+  no longer resolve). Card queries ignore case, accents and Unicode forms.
+  CLI: `blueferry contacts list|show`.
+- Global search: `Messages1.Search` looks through conversations, messages,
+  contact cards and call history in one call and groups the hits with the
+  ids to open them. It searches only the decrypted data the daemon already
+  holds in memory; there is no search index on disk. `ListCallHistory`
+  entries gain an opaque `id`, and `GetStatus` reports `search_result_limit`.
+  CLI: `blueferry search`.
+- Client models: `contacts_model` and `search_model` hold the paging,
+  typing delay, stale-id and busy handling of the contact list and the
+  global search for the KDE, GTK and terminal clients, drop contact photos
+  once the option is off and search results once their data changes
+  (`GlobalSearch.invalidate`); recent-call rows
+  from `phone_overview.call_groups` carry the ids of the folded calls.
+- Mute the desktop popups of single iPhone apps: `Messages1.ListNotificationApps`
+  lists the apps seen since the daemon started (memory only) plus the muted
+  ones, `SetNotificationAppMuted` saves a choice under the storage policy, and
+  `Events1.NotificationAppsChanged` invalidates the list. CLI:
+  `blueferry notifications apps|mute|unmute`. The environment allowlist and
+  blocklist stay a hard filter in front of it.
+- `blueferry media volume up|down` sends one iPhone volume step and confirms
+  it with the last reported level; `blueferry media volume` prints the level.
+  A shared presenter (`media_volume_view`) prepares the volume buttons for the
+  graphical and terminal clients.
+- Shared presenter `file_drop_view` for the coming drop zones of the KDE
+  and GTK main windows; nothing changes for users until those land. It
+  holds the decisions and texts, so both clients will send dropped files to
+  a **Send to…** target the same way (the only target at once, a picker for
+  several with the session's last pick preselected, or an explanation when
+  no `share` plugin is there). Only local files, 1 to 64; folders and
+  remote URIs are skipped with a note, and a client never runs two
+  `SendFiles` at once across "Send to…", card sends and drops.
+- Report the A/V sync delay of the iPhone's audio stream in `GetStatus`
+  (`phone_audio_delay_ms`, `phone_audio_delay_reporting`; the delay only while
+  the stream is active), show it next to the iPhone sound status, and check
+  AVDTP delay reporting in `blueferry doctor`.
 - Catch up on incoming messages that arrived while the iPhone was
   disconnected. After each MAP or MNS reconnect, and only while message
   history is kept and unlocked, the backend lists the iPhone's inbox once
@@ -80,6 +122,10 @@
 - OpenRC support, English and German documentation, and WSL2 setup guidance.
 - Report a stable opaque phone profile ID in `GetStatus` for clients that need
   to scope local per-phone metadata.
+- Pin entries of the opt-in iPhone notification list so they stay listed,
+  also across restarts, until unpinned (`Messages1.SetNotificationPinned`,
+  `blueferry notifications pin`/`unpin`). Pins are saved under the local data
+  policy, at most 20; entries removed on the iPhone are marked as such.
 
 ### Fixed
 

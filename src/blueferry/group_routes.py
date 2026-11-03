@@ -12,7 +12,11 @@ from pathlib import Path
 
 from blueferry import config
 from blueferry.limits import MAX_GROUP_ROUTES, MAX_THREAD_KEY_CHARS
-from blueferry.named_groups import route_version, stored_named_group_key
+from blueferry.named_groups import (
+    is_legacy_unnamed_group_key,
+    route_version,
+    stored_named_group_key,
+)
 from blueferry.private_preferences import PrivatePreference
 from blueferry.storage_security import StorageSecurity
 
@@ -42,6 +46,9 @@ def _route(value: object) -> dict | None:
     recipients = _strings(value.get("group_recipients"))
     members = _strings(value.get("group_members") or [])
     if not key or len(key) > MAX_THREAD_KEY_CHARS or not name or not recipients:
+        return None
+    if is_legacy_unnamed_group_key(key):
+        # The old key cannot say which group the roster was saved for.
         return None
     route = {
         "kind": "group_route",
@@ -82,6 +89,22 @@ class GroupRoutesStore:
 
     def migrate(self) -> None:
         self._preference.migrate()
+        self._discard_legacy_unnamed_rosters()
+
+    def _discard_legacy_unnamed_rosters(self) -> None:
+        """Remove rosters saved under the unversioned unnamed-group key.
+
+        Reading already ignores them; this keeps them out of settings.json.
+        """
+        raw = self._preference.read()
+        if not self._preference.writable or not isinstance(raw, dict):
+            return
+        if any(
+            isinstance(value, dict)
+            and is_legacy_unnamed_group_key(_text(value.get("group_key")))
+            for value in raw.values()
+        ):
+            self._preference.write(self._mapping())
 
     def _mapping(self) -> dict[str, dict]:
         raw = self._preference.read()
@@ -158,27 +181,35 @@ class GroupRoutesStore:
             self._preference.write(current)
         return added
 
-    def hold_roster_warning(
-        self, thread_keys: Iterable[str], warning_id: str, sender: str,
+    def hold_roster_warnings(
+        self, warnings: Iterable[tuple[Iterable[str], str, str]],
     ) -> None:
-        """Keep a roster warning until the user saves the members again.
+        """Keep roster warnings until the user saves the members again.
 
-        A warning names the save it was raised against, so one computed
-        before a newer save never blocks that save.
+        Each warning is ``(thread_keys, warning_id, sender)``. A warning
+        names the save it was raised against, so one computed before a newer
+        save never blocks that save. All of them share one settings read and
+        at most one write, since a listing holds every warning it shows.
         """
-        keys = {str(key) for key in thread_keys}
-        current = self._mapping()
-        for route in current.values():
-            if not _belongs(route, keys) or not warning_id.startswith(
-                route_version(route) + ":"
-            ):
-                continue
-            if route.get("group_roster_warning_id") == warning_id:
-                return
-            route["group_roster_warning_id"] = warning_id
-            route["group_unexpected_sender"] = _text(sender)
-            self._preference.write(current)
+        selected = [({str(key) for key in keys}, warning_id, sender)
+                    for keys, warning_id, sender in warnings]
+        if not selected:
             return
+        current = self._mapping()
+        changed = False
+        for keys, warning_id, sender in selected:
+            for route in current.values():
+                if not _belongs(route, keys) or not warning_id.startswith(
+                    route_version(route) + ":"
+                ):
+                    continue
+                if route.get("group_roster_warning_id") != warning_id:
+                    route["group_roster_warning_id"] = warning_id
+                    route["group_unexpected_sender"] = _text(sender)
+                    changed = True
+                break
+        if changed:
+            self._preference.write(current)
 
     def discard(self, thread_keys: Iterable[str]) -> None:
         remove = {str(key) for key in thread_keys}

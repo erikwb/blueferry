@@ -8,6 +8,7 @@ import pytest
 from blueferry import backend_operations, config
 from blueferry.backend_operations import BackendDependencies, BackendOperations
 from blueferry.confirmed_groups import ConfirmedGroupsStore
+from blueferry.contact_details import EMPTY as EMPTY_DETAILS
 from blueferry.contact_repository import ContactRepository
 from blueferry.contacts import ContactsResolver
 from blueferry.dbus_service import MessagesService
@@ -1299,8 +1300,8 @@ def test_service_actions_cannot_affect_a_person_with_the_same_keypad_digits(
     path = tmp_path / "events.sqlite"
     monkeypatch.setattr(config, "EVENTS_DB", path)
     monkeypatch.setattr(config, "PHONE_REGION", region)
-    monkeypatch.setattr(ContactRepository, "load", lambda _self, **_kwargs: [
-        ("Person", [number], []),
+    monkeypatch.setattr(ContactRepository, "load_cards", lambda _self, **_kwargs: [
+        (("Person", [number], []), None, EMPTY_DETAILS),
     ])
     contacts = ContactsResolver(photos=lambda: False)
     append_event({

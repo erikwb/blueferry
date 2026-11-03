@@ -931,3 +931,46 @@ def test_policy_change_after_settings_reads_again_uses_the_saved_policy(
     assert outcomes[-1]["storage_state"] == "ready"
     assert _event_rows() == 0
     assert SettingsStore(config.SETTINGS_JSON).read()["local_data"] == "encrypted"
+
+
+def test_photos_show_after_settings_read_again_during_preparation(make_daemon, monkeypatch):
+    from tests.photo_fixtures import png
+
+    monkeypatch.setattr(config, "CONTACT_PHOTOS", False)
+    monkeypatch.setattr(GLib, "timeout_add_seconds", lambda *_args: 1)
+    monkeypatch.setattr(GLib, "source_remove", lambda _source: True)
+    wallet = _Wallet()
+    monkeypatch.setattr(daemon_mod, "ObexWorker", _Queue)
+    monkeypatch.setattr(
+        daemon_mod, "StorageSecurity",
+        lambda **kwargs: StorageSecurity(key_provider=wallet, **kwargs),
+    )
+    path = config.SETTINGS_JSON
+    SettingsStore(path).update(local_data="plaintext", contact_photos=True)
+    seeded = StorageSecurity(key_provider=wallet, initialize=False)
+    ContactRepository(seeded).replace([("Alice", ["15551112222"], [])], photos=[png()])
+    saved = path.read_bytes()
+    path.write_bytes(b"{ damaged")
+    daemon = make_daemon()
+    monkeypatch.setattr(daemon, "_emit_status", lambda: None)
+    operations = BackendOperations(daemon.sessions, BackendDependencies(
+        storage=daemon.storage, contacts=daemon.contacts,
+        prepare_storage=lambda storage: preparation_mod.prepare_storage(
+            storage, photos=daemon._contact_photos_enabled,
+        ),
+        on_storage_prepared=daemon._apply_storage_preparation,
+        on_storage_changed=daemon._on_storage_changed,
+    ))
+    path.write_bytes(saved)
+    # Preparation reads the repaired file and builds the cache before the
+    # retry tick has read the photo choice; the tick runs before it lands.
+    queue = _Queue()
+    operations.change_storage_async(
+        queue.submit, lambda _status: None, lambda error: pytest.fail(str(error)),
+    )
+    operation, handlers = queue.jobs.pop(0)
+    prepared = operation()
+    daemon._retry_storage()
+    handlers["on_success"](prepared)
+    assert daemon.storage.status.can_read
+    assert daemon.contacts.photo("+15551112222") is not None

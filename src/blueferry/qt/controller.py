@@ -47,6 +47,7 @@ from blueferry.qt.companion import CompanionTools
 from blueferry.qt.plugin_settings import PluginSettings
 from blueferry.qt.plugin_surfaces import PluginSurfaces
 from blueferry.qt.tasks import QtTaskRunner, Task, qt_timers
+from blueferry.qt.thumbnails import thumbnail_url
 from blueferry.quirks_report import issue_report, issue_url
 from blueferry.reconnect_view import ManualReconnect, reconnect_view
 from blueferry.service_manager import bluetooth_restart_command
@@ -280,7 +281,7 @@ class BridgeController(QObject):
         self._photos_pool.setMaxThreadCount(1)
         self._photos = PhotosTabModel(
             runner=QtTaskRunner(self._photos_pool),
-            url=_file_url, open_file=_open_file,
+            url=_file_url, thumbnail_url=thumbnail_url, open_file=_open_file,
             on_change=self.photosChanged.emit, on_error=self._operation_failed,
         )
         # UxPlay, LocalSend and iPhone photos: client-side, no daemon involved.

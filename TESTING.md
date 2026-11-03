@@ -218,7 +218,9 @@ group members, blocking during edits or roster review, and the exact roster toke
 sent with each reply. Backend tests reject that token after the members change.
 The shell test also delivers pre-save snapshots and failures before or after
 the fresh snapshot, verifies immediate replies use the saved roster, and checks
-that interrupted reads cannot restore history after a reset.
+that interrupted reads cannot restore history after a reset. Another shell
+test sends a storage reset only from its confirmation popup and only while the
+daemon offers it; the popup closes when the offer ends or the daemon goes away.
 
 The optional oFono call controller is tested against a recording fake
 transport and a manual timer queue: discovery, the Powered/Online bring-up,

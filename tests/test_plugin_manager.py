@@ -1,8 +1,11 @@
 """Plugin installs from Git URLs with fake git and venv; no process, no network."""
 from __future__ import annotations
 
+import builtins
+import io
 import json
 import os
+import stat
 import threading
 from pathlib import Path
 
@@ -320,6 +323,7 @@ def test_a_failed_reinstall_publication_restores_all_metadata(setup, monkeypatch
     manifest = manager.manifest_path(original.id)
     service = manager.service_path(parse_manifest(manifest.read_text()))
     before = manifest.read_text(), service.read_text()
+    kept = [(os.stat(path).st_mode, os.stat(path).st_mtime_ns) for path in (manifest, service)]
     write = plugin_manager._write_text
     failing_path = service if publication == "service" else manager.root / "installs.json"
 
@@ -333,6 +337,8 @@ def test_a_failed_reinstall_publication_restores_all_metadata(setup, monkeypatch
         manager.commit(manager.prepare(URL))
     assert program.read_text() == "working installation"
     assert (manifest.read_text(), service.read_text()) == before
+    assert [(os.stat(path).st_mode, os.stat(path).st_mtime_ns)
+            for path in (manifest, service)] == kept
     assert manager.records()[original.id] == original
     assert manager.stopper.calls == []
     assert list((manager.root / "venvs").iterdir()) == [Path(original.venv)]
@@ -463,6 +469,23 @@ def test_a_fifo_state_file_reads_as_empty_without_waiting_for_a_writer(setup, st
     assert disabled == (frozenset() if state == "settings" else {"io.example.demo"})
 
 
+def test_clients_read_a_fifo_plugin_settings_file_as_empty_without_waiting(tmp_path) -> None:
+    from blueferry.plugin_prefs import disabled_plugins
+
+    path = tmp_path / "plugins.json"
+    os.mkfifo(path, 0o600)
+    result = []
+    reader = threading.Thread(target=lambda: result.append(disabled_plugins(path)), daemon=True)
+    reader.start()
+    reader.join(timeout=5)
+    if reader.is_alive():
+        # Release the blocked open so the hang fails this test only.
+        os.close(os.open(path, os.O_WRONLY | os.O_NONBLOCK))
+        reader.join(timeout=5)
+        pytest.fail("reading a FIFO blocked until a writer appeared")
+    assert result == [frozenset()]
+
+
 def test_install_replaces_a_manually_installed_manifest(setup, monkeypatch) -> None:
     """The pre-store Immich setup wrote its own manifest; install takes it over."""
     manager, _runner = setup
@@ -566,6 +589,151 @@ def test_a_symlinked_or_oversized_manifest_is_refused(setup, tmp_path) -> None:
     with pytest.raises(InstallError, match="too large"):
         manager.prepare(URL)
     assert not list((manager.root / "src").glob(".staging-*"))
+
+
+def test_a_manifest_swapped_for_a_fifo_before_it_is_opened_is_refused(setup, monkeypatch) -> None:
+    manager, _runner = setup
+    swapped: list[Path] = []
+
+    def swapping(real):
+        def open_(path, *args, **kwargs):
+            # Replaced by a FIFO after every check, right before the open.
+            candidate = Path(os.fsdecode(path)) if not isinstance(path, int) else Path()
+            if (not swapped and candidate.suffix == ".plugin"
+                    and ".staging-" in str(candidate) and candidate.is_file()):
+                candidate.unlink()
+                os.mkfifo(candidate, 0o600)
+                swapped.append(candidate)
+            return real(path, *args, **kwargs)
+        return open_
+
+    monkeypatch.setattr(os, "open", swapping(os.open))
+    monkeypatch.setattr(io, "open", swapping(io.open))
+    result: list[Exception] = []
+
+    def prepare() -> None:
+        try:
+            manager.prepare(URL)
+        except Exception as error:
+            result.append(error)
+
+    installer = threading.Thread(target=prepare, daemon=True)
+    installer.start()
+    installer.join(timeout=5)
+    if installer.is_alive():
+        # Release the blocked open so the hang fails this test only.
+        os.close(os.open(swapped[0], os.O_WRONLY | os.O_NONBLOCK))
+        installer.join(timeout=5)
+        pytest.fail("install blocked on a FIFO manifest until a writer appeared")
+    assert swapped
+    assert len(result) == 1 and isinstance(result[0], InstallError)
+    assert "regular file" in str(result[0])
+    assert not list((manager.root / "src").glob(".staging-*"))
+
+
+def test_a_fifo_at_the_old_temporary_name_does_not_block_an_install(setup) -> None:
+    manager, _runner = setup
+    manager.root.mkdir(parents=True)
+    manifest = manager.manifest_path("io.example.demo")
+    # Where earlier versions wrote the manifest before renaming it.
+    fifo = manifest.with_name(f".{manifest.name}.tmp")
+    os.mkfifo(fifo, 0o600)
+    result: list[object] = []
+
+    def install() -> None:
+        try:
+            result.append(manager.commit(manager.prepare(URL)))
+        except Exception as error:
+            result.append(error)
+
+    installer = threading.Thread(target=install, daemon=True)
+    installer.start()
+    installer.join(timeout=5)
+    if installer.is_alive():
+        # Release the blocked open so the hang fails this test only.
+        os.close(os.open(fifo, os.O_RDONLY | os.O_NONBLOCK))
+        installer.join(timeout=5)
+        pytest.fail("install blocked on a FIFO at the manifest's temporary name")
+    assert len(result) == 1 and not isinstance(result[0], Exception)
+    service = manager.service_path(parse_manifest(manifest.read_text()))
+    manager.set_enabled("io.example.demo", False)
+    modes = {path: stat.S_IMODE(os.stat(path).st_mode) for path in (
+        manifest, service, manager.root / "installs.json", manager.settings_path)}
+    assert modes == {manifest: 0o644, service: 0o644, manager.root / "installs.json": 0o644,
+                     manager.settings_path: 0o600}
+    assert stat.S_ISFIFO(os.lstat(fifo).st_mode)
+    leftovers = [path for directory in (manager.root, service.parent, manager.settings_path.parent)
+                 for path in directory.iterdir()
+                 if path.name.startswith(".") and path not in (fifo, manager.root / ".lock")]
+    assert leftovers == []
+
+
+def test_a_failed_write_keeps_the_old_file_and_leaves_no_temporary_file(tmp_path) -> None:
+    path = tmp_path / "io.example.demo.plugin"
+    path.write_text("old")
+    path.chmod(0o644)
+    with pytest.raises(UnicodeEncodeError):
+        plugin_manager._write_text(path, "new \udcff")
+    assert path.read_text() == "old"
+    assert stat.S_IMODE(os.stat(path).st_mode) == 0o644
+    assert list(tmp_path.iterdir()) == [path]
+
+
+def test_a_manifest_swapped_for_a_fifo_before_its_backup_does_not_block(setup, monkeypatch) -> None:
+    manager, runner = setup
+    original = manager.commit(manager.prepare(URL))
+    manifest = manager.manifest_path(original.id)
+    runner.tags["v0.2.0"] = NEW
+    prepared = manager.prepare(URL)
+    armed: list[bool] = []
+    swapped: list[Path] = []
+    run = runner.run
+
+    def last_step_arms(argv, **kwargs):
+        # The import check is the last step before publication; earlier
+        # opens of the manifest are reads that already refuse a FIFO.
+        if argv[1] == "-c":
+            armed.append(True)
+        return run(argv, **kwargs)
+
+    def swapping(real):
+        def open_(path, *args, **kwargs):
+            # Replaced by a FIFO after every check, right before the open.
+            if (armed and not swapped and not isinstance(path, int)
+                    and Path(os.fsdecode(path)) == manifest and manifest.is_file()):
+                manifest.unlink()
+                os.mkfifo(manifest, 0o644)
+                swapped.append(manifest)
+            return real(path, *args, **kwargs)
+        return open_
+
+    monkeypatch.setattr(runner, "run", last_step_arms)
+    monkeypatch.setattr(os, "open", swapping(os.open))
+    monkeypatch.setattr(io, "open", swapping(io.open))
+    monkeypatch.setattr(builtins, "open", swapping(builtins.open))
+    result: list[Exception] = []
+
+    def commit() -> None:
+        try:
+            manager.commit(prepared)
+        except Exception as error:
+            result.append(error)
+
+    installer = threading.Thread(target=commit, daemon=True)
+    installer.start()
+    installer.join(timeout=5)
+    if installer.is_alive():
+        # Release the blocked open so the hang fails this test only.
+        os.close(os.open(manifest, os.O_WRONLY | os.O_NONBLOCK))
+        installer.join(timeout=5)
+        pytest.fail("install blocked backing up a manifest swapped for a FIFO")
+    monkeypatch.undo()
+    assert swapped
+    assert len(result) == 1 and isinstance(result[0], InstallError)
+    assert "regular file" in str(result[0])
+    assert manager.records()[original.id] == original
+    assert list((manager.root / "venvs").iterdir()) == [Path(original.venv)]
+    assert not list(manager.root.glob(".*.backup-*"))
 
 
 def _write_records(manager, plugins) -> None:

@@ -637,10 +637,7 @@ class SettingsDialog(Adw.PreferencesDialog):
                 "contact sync. Turning this off erases them."
             ),
         )
-        self._photos_row = Adw.ActionRow(
-            title=_("Show Contact Photos"),
-            subtitle=_("Avatars in notifications and conversations"),
-        )
+        self._photos_row = Adw.ActionRow(title=_("Show Contact Photos"))
         self._photos_switch = Gtk.Switch(valign=Gtk.Align.CENTER)
         self._photos_switch.connect("notify::active", self._contact_photos_changed)
         self._photos_row.add_suffix(self._photos_switch)
@@ -2001,7 +1998,15 @@ class SettingsDialog(Adw.PreferencesDialog):
             self._photos_switch, self._photos_choice, status.contact_photos is True,
         )
         self._applying_saved_switches = False
-        self._photos_row.set_sensitive(reachable and not self._photos_choice.saving)
+        # While settings.json can't be read the saved choice is unknown.
+        unknown = status.contact_photos_state == "unknown"
+        self._photos_row.set_subtitle(
+            _("Unavailable while settings.json cannot be read") if unknown
+            else _("Avatars in notifications and conversations")
+        )
+        self._photos_row.set_sensitive(
+            reachable and not unknown and not self._photos_choice.saving
+        )
 
     def _contact_photos_changed(self, switch, _property) -> None:
         self._save_switch(

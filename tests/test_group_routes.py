@@ -1,18 +1,24 @@
 """Saved named-group rosters outlive the history window and retention (#174)."""
 from __future__ import annotations
 
+import hashlib
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
 
-from blueferry import backend_operations, config
+from blueferry import backend_operations, config, settings_store
 from blueferry.backend_operations import BackendDependencies, BackendOperations
 from blueferry.confirmed_groups import ConfirmedGroupsStore
 from blueferry.group_routes import GroupRoutesStore
 from blueferry.history import append_event, prune_events, read_events
 from blueferry.limits import MAX_GROUP_ROUTES
-from blueferry.named_groups import legacy_named_group_key, named_group_key
+from blueferry.named_groups import (
+    legacy_named_group_key,
+    named_group_key,
+    unnamed_group_key,
+)
+from blueferry.private_preferences import PrivatePreference
 from blueferry.recipients import group_confirmation_token
 from blueferry.settings_store import SettingsStore
 from blueferry.starred_threads import StarredThreadsStore
@@ -339,3 +345,245 @@ def test_a_full_store_never_evicts_a_roster_still_in_use(isolated_state):
     with pytest.raises(ValueError):
         store.save(route)
     assert KEY not in store.keys() and len(store.keys()) == MAX_GROUP_ROUTES
+
+
+_GROUPS = ("Golf", "Tennis", "Chess")
+_RUN = lambda job, on_success, on_error: on_success(job())  # noqa: E731
+
+
+def _warn_every_group(backend: BackendOperations, storage=None) -> None:
+    for group in _GROUPS:
+        _retain(_group_message(1, group=group), storage=storage)
+        backend.set_group_participants(named_group_key(group), [ALICE, BOB])
+    for group in _GROUPS:
+        _retain(_group_message(2, CAROL, group=group), storage=storage)
+    backend.invalidate_conversations()
+    backend.prepare_conversations(_RUN, lambda: None, pytest.fail)
+
+
+def _count_route_reads_and_writes(storage, monkeypatch) -> tuple[list, list]:
+    reads, writes = [], []
+    decrypt = storage.decrypt
+    write = settings_store.atomic_write_private_text
+
+    def counted_decrypt(value, *, purpose):
+        if purpose == "named_group_routes-v1":
+            reads.append(purpose)
+        return decrypt(value, purpose=purpose)
+
+    def counted_write(*args, **kwargs):
+        writes.append(args)
+        return write(*args, **kwargs)
+
+    monkeypatch.setattr(storage, "decrypt", counted_decrypt)
+    monkeypatch.setattr(settings_store, "atomic_write_private_text", counted_write)
+    return reads, writes
+
+
+def test_listing_saves_every_roster_warning_with_one_read_and_write(
+    encrypted, monkeypatch,
+):
+    backend = _backend(encrypted)
+    _warn_every_group(backend, encrypted)
+    reads, writes = _count_route_reads_and_writes(encrypted, monkeypatch)
+
+    warned = [thread for thread in backend.list_threads(100) if thread["roster_changed"]]
+
+    assert len(warned) == len(_GROUPS)
+    assert (len(reads), len(writes)) == (1, 1)
+    saved = {
+        route["group_key"]: route.get("group_roster_warning_id")
+        for route in GroupRoutesStore(storage=encrypted).routes()
+    }
+    assert saved == {thread["key"]: thread["roster_warning_id"] for thread in warned}
+
+    # Once saved, listing again reads the rosters once and writes nothing.
+    reads.clear()
+    writes.clear()
+    backend.list_threads(100)
+    assert (len(reads), len(writes)) == (1, 0)
+
+
+def test_roster_check_saves_every_warning_with_one_write(encrypted, monkeypatch):
+    backend = _backend(encrypted)
+    _warn_every_group(backend, encrypted)
+    _reads, writes = _count_route_reads_and_writes(encrypted, monkeypatch)
+
+    backend.hold_roster_warnings(_RUN)
+
+    assert len(writes) == 1
+    assert all(
+        route.get("group_roster_warning_id")
+        for route in GroupRoutesStore(storage=encrypted).routes()
+    )
+
+
+def test_a_failed_save_of_roster_warnings_is_retried_by_the_next_listing(
+    isolated_state, monkeypatch,
+):
+    backend = _backend()
+    _warn_every_group(backend)
+
+    def full(*_args, **_kwargs):
+        raise OSError("no space left on device")
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(settings_store, "atomic_write_private_text", full)
+        assert len(backend.list_threads(100)) == len(_GROUPS)
+    assert not any(
+        route.get("group_roster_warning_id") for route in GroupRoutesStore().routes()
+    )
+
+    backend.list_threads(100)
+    assert all(
+        route.get("group_roster_warning_id") for route in GroupRoutesStore().routes()
+    )
+
+
+def test_holding_warnings_skips_saved_and_outdated_ones(isolated_state, monkeypatch):
+    store = GroupRoutesStore()
+    for group in _GROUPS:
+        store.save({
+            "group_key": named_group_key(group), "group_name": group,
+            "group_recipients": [ALICE, BOB], "seen_at": f"{group}-save",
+        })
+    golf, tennis, chess = ([named_group_key(group)] for group in _GROUPS)
+    store.hold_roster_warnings([(golf, "Golf-save:carol", "Carol")])
+    writes = []
+    write = settings_store.atomic_write_private_text
+    monkeypatch.setattr(
+        settings_store, "atomic_write_private_text",
+        lambda *args, **kwargs: (writes.append(args), write(*args, **kwargs)),
+    )
+
+    store.hold_roster_warnings([
+        (golf, "Golf-save:carol", "Carol"),  # Already saved.
+        (tennis, "older-save:carol", "Carol"),  # Raised against an older save.
+    ])
+    assert writes == []
+
+    store.hold_roster_warnings([
+        (golf, "Golf-save:dana", "Dana"),  # The newest warning replaces it.
+        (chess, "Chess-save:carol", "Carol"),
+    ])
+    assert len(writes) == 1
+    held = {
+        route["group_name"]: (
+            route.get("group_roster_warning_id"), route.get("group_unexpected_sender"),
+        )
+        for route in store.routes()
+    }
+    assert held == {
+        "Golf": ("Golf-save:dana", "Dana"),
+        "Tennis": (None, None),
+        "Chess": ("Chess-save:carol", "Carol"),
+    }
+
+
+# 0.9.1 keyed an unnamed group by its casefolded member names joined with "|".
+OLD_CREW = "group:participants:alice|bob"
+CREW = unnamed_group_key(["Alice", "Bob"])
+
+
+def _crew_message(index: int) -> list[dict]:
+    stamp, body = _stamp(minute=index), f"crew {index}"
+    return [{
+        "kind": "sms_received", "handle": f"crew-{index}", "body": body,
+        "sender_address": ALICE, "contact_name": "Alice", "seen_at": stamp,
+    }, {
+        "kind": "ancs_notification", "app_id": "com.apple.MobileSMS",
+        "title": "Alice", "subtitle": "To you & Bob", "body": body, "seen_at": stamp,
+    }]
+
+
+def _crew_route(key: str) -> dict:
+    return {
+        "kind": "group_route", "group_key": key, "group_name": "Alice, Bob",
+        "group_members": ["Alice", "Bob"], "group_recipients": [ALICE, BOB],
+        "seen_at": _stamp(),
+    }
+
+
+def _starred(backend: BackendOperations) -> dict[str, bool]:
+    return {thread["key"]: thread["starred"] for thread in backend.list_threads(100)}
+
+
+def test_a_star_saved_under_the_old_unnamed_key_stars_the_new_conversation(encrypted):
+    _retain(_crew_message(1), storage=encrypted)
+    stars = StarredThreadsStore(storage=encrypted)
+    stars.set_starred(OLD_CREW, True)
+    backend = _backend(encrypted)
+    assert _starred(backend) == {CREW: False}
+
+    prepare_storage(encrypted)
+    backend.invalidate_conversations()
+
+    assert stars.keys() == [OLD_CREW, CREW]
+    assert _starred(backend) == {CREW: True}
+    # Carried once: a star removed from the new conversation stays removed.
+    backend.set_thread_starred(CREW, False)
+    prepare_storage(encrypted)
+    assert stars.keys() == [OLD_CREW]
+
+
+def test_a_new_conversation_already_starred_is_carried_once_too(encrypted):
+    _retain(_crew_message(1), storage=encrypted)
+    stars = StarredThreadsStore(storage=encrypted)
+    stars.set_starred(OLD_CREW, True)
+    stars.set_starred(CREW, True)
+    prepare_storage(encrypted)
+
+    _backend(encrypted).set_thread_starred(CREW, False)
+    prepare_storage(encrypted)
+
+    assert stars.keys() == [OLD_CREW]
+
+
+def test_a_roster_saved_under_the_old_unnamed_key_is_dropped(encrypted):
+    sent = {
+        **_crew_route(OLD_CREW), "kind": "sms_sent", "handle": "sent-1",
+        "body": "on my way", "group_reply_ready": True,
+    }
+    _retain([sent, *_crew_message(1)], storage=encrypted)
+    token = group_confirmation_token([ALICE, BOB])
+    digest = hashlib.sha256(token.encode()).hexdigest()
+    PrivatePreference(config.SETTINGS_JSON, "named_group_routes", encrypted).write({
+        OLD_CREW: _crew_route(OLD_CREW), KEY: {**_crew_route(KEY), "group_name": "Golf"},
+    })
+    raw_confirmed = PrivatePreference(
+        config.SETTINGS_JSON, "confirmed_group_rosters", encrypted,
+    )
+    raw_confirmed.write({OLD_CREW: digest, KEY: digest})
+    confirmed = ConfirmedGroupsStore(storage=encrypted)
+    backend = _backend(encrypted)
+
+    # Ignored before it is removed: neither conversation replies to it.
+    threads = {thread["key"]: thread for thread in backend.list_threads(100)}
+    assert threads[OLD_CREW]["reply_ready"] is False
+    assert threads[OLD_CREW]["participants_required"] is False
+    assert threads[CREW]["participants_required"] is True
+    assert not confirmed.matches(OLD_CREW, token)
+    assert confirmed.matches(KEY, token)
+
+    prepare_storage(encrypted)
+
+    routes = PrivatePreference(config.SETTINGS_JSON, "named_group_routes", encrypted)
+    assert set(routes.read()) == {KEY}
+    assert set(raw_confirmed.read()) == {KEY}
+    backend.invalidate_conversations()
+    assert {thread["key"]: thread["reply_ready"] for thread in backend.list_threads(100)} \
+        == {OLD_CREW: False, CREW: False}
+
+
+def test_nothing_is_written_while_settings_json_cannot_be_read(encrypted):
+    _retain(_crew_message(1), storage=encrypted)
+    StarredThreadsStore(storage=encrypted).set_starred(OLD_CREW, True)
+    PrivatePreference(config.SETTINGS_JSON, "named_group_routes", encrypted).write(
+        {OLD_CREW: _crew_route(OLD_CREW)},
+    )
+    damaged = config.SETTINGS_JSON.read_bytes()[:-20]
+    config.SETTINGS_JSON.write_bytes(damaged)
+
+    prepare_storage(encrypted)
+
+    assert config.SETTINGS_JSON.read_bytes() == damaged

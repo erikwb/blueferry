@@ -125,34 +125,52 @@ def _webp_dimensions(data: bytes) -> tuple[int, int] | None:
     return None
 
 
+def read_thumbnail(
+    path: str | os.PathLike[str] | None, limit: int | None = None,
+) -> bytes | None:
+    """*Blocking (file I/O).* The bytes of ``path`` if it is a regular file
+    of at most :data:`MAX_THUMBNAIL_BYTES` (only its first ``limit`` bytes
+    when given); otherwise ``None``.
+
+    Image loaders get these bytes, never the path: a path checked earlier
+    may have been swapped since, and a FIFO would block a loader that opens
+    it. Here the open neither follows a symlink nor waits on a FIFO, and the
+    file actually opened is checked."""
+    if not path:
+        return None
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except (OSError, ValueError):  # ValueError: a NUL in the path
+        return None
+    try:
+        with os.fdopen(fd, "rb") as stream:
+            info = os.fstat(stream.fileno())
+            if not stat.S_ISREG(info.st_mode) or not 0 < info.st_size <= MAX_THUMBNAIL_BYTES:
+                return None
+            # One byte over the cap tells a file that grew since the fstat.
+            data = stream.read(MAX_THUMBNAIL_BYTES + 1 if limit is None else limit)
+    except OSError:
+        return None
+    return data if data and len(data) <= MAX_THUMBNAIL_BYTES else None
+
+
+def thumbnail_fits(head: bytes) -> bool:
+    """Whether a PNG, JPEG or WebP header declares at most
+    :data:`MAX_THUMBNAIL_PIXELS` (``False`` for anything else)."""
+    dimensions = thumbnail_dimensions(head)
+    if dimensions is None:
+        return False
+    width, height = dimensions
+    return 0 < width and 0 < height and width * height <= MAX_THUMBNAIL_PIXELS
+
+
 def safe_thumbnail(path: Path | None) -> Path | None:
     """*Blocking (file I/O).* ``path`` if it is a regular file of at most
     :data:`MAX_THUMBNAIL_BYTES` whose PNG, JPEG or WebP header declares at
     most :data:`MAX_THUMBNAIL_PIXELS`; otherwise ``None`` (a placeholder).
     Reads only the head of the file and never decodes pixels."""
-    if path is None:
-        return None
-    try:
-        # Non-blocking, so a FIFO swapped in cannot hang the worker.
-        fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK)
-    except OSError:
-        return None
-    try:
-        info = os.fstat(fd)
-        if not stat.S_ISREG(info.st_mode) or not 0 < info.st_size <= MAX_THUMBNAIL_BYTES:
-            return None
-        head = os.read(fd, min(info.st_size, _THUMBNAIL_HEAD_BYTES))
-    except OSError:
-        return None
-    finally:
-        os.close(fd)
-    dimensions = thumbnail_dimensions(head)
-    if dimensions is None:
-        return None
-    width, height = dimensions
-    if width <= 0 or height <= 0 or width * height > MAX_THUMBNAIL_PIXELS:
-        return None
-    return path
+    head = read_thumbnail(path, _THUMBNAIL_HEAD_BYTES)
+    return path if head is not None and thumbnail_fits(head) else None
 
 
 def with_safe_thumbnails(snapshot: PhotosSnapshot) -> PhotosSnapshot:
@@ -203,30 +221,37 @@ def fetch_current_original(plugin_id: str, photo_id: str) -> Path | None:
 
 
 # The Photos tab's state map, the same for every client. ``url`` turns a
-# local path into the client's file URL ("" for none).
+# local path into the client's file URL ("" for none); ``thumbnail_url``,
+# when given, does so for thumbnails only.
 
 def initial_state() -> dict[str, object]:
     return {"present": False, "ready": False, "loaded": False, "hint": "", "items": []}
 
 
-def photo_item(photo: Photo, url: Callable[[object], str]) -> dict[str, object]:
+def photo_item(
+    photo: Photo, url: Callable[[object], str],
+    thumbnail_url: Callable[[object], str] | None = None,
+) -> dict[str, object]:
     """One grid cell; paths become file URLs, text stays plain."""
     return {
         "id": photo.id,
         "label": label(photo),
         "video": photo.type == "video",
-        "thumbnail": url(photo.thumbnail),
+        "thumbnail": (thumbnail_url or url)(photo.thumbnail),
         "original": url(photo.original),
     }
 
 
-def loaded_state(snapshot: PhotosSnapshot, url: Callable[[object], str]) -> dict[str, object]:
+def loaded_state(
+    snapshot: PhotosSnapshot, url: Callable[[object], str],
+    thumbnail_url: Callable[[object], str] | None = None,
+) -> dict[str, object]:
     return {
         "present": snapshot.present,
         "ready": snapshot.ready,
         "loaded": True,
         "hint": snapshot.hint,
-        "items": [photo_item(photo, url) for photo in snapshot.photos],
+        "items": [photo_item(photo, url, thumbnail_url) for photo in snapshot.photos],
     }
 
 

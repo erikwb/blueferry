@@ -20,7 +20,7 @@ from blueferry.client_wire import (
     decode_threads,
 )
 from blueferry.contact_photos import valid_photo
-from blueferry.errors import BlueFerryError
+from blueferry.errors import BlueFerryError, NotFoundError
 from blueferry.limits import MAX_CONTACT_PAGE
 from blueferry.models import (
     BackendStatus,
@@ -37,6 +37,7 @@ from blueferry.protocol import (
     CLEAR_CALL_TIMEOUT_SEC,
     CONTACT_CALL_TIMEOUT_SEC,
     DELETE_CALL_TIMEOUT_SEC,
+    ERROR_PREFIX,
     GROUP_ROUTE_CALL_TIMEOUT_SEC,
     MEDIA_CALL_TIMEOUT_SEC,
     MEDIA_IFACE,
@@ -83,6 +84,50 @@ def _open_map_error(error: Exception) -> BackendError:
     ):
         return BackendError(
             "the running backend does not support notification click rules; "
+            "restart it after upgrading"
+        )
+    return BackendError(_dbus_message(error))
+
+
+class ContactNotFoundError(BackendError):
+    """The card id no longer resolves (changed card or restarted daemon)."""
+
+
+def _contact_cards_error(error: Exception) -> BackendError:
+    if (
+        isinstance(error, dbus.exceptions.DBusException)
+        and error.get_dbus_name() == f"{ERROR_PREFIX}.{NotFoundError.dbus_suffix}"
+    ):
+        return ContactNotFoundError(_dbus_message(error))
+    if (
+        isinstance(error, dbus.exceptions.DBusException)
+        and error.get_dbus_name() == "org.freedesktop.DBus.Error.UnknownMethod"
+    ):
+        return BackendError(
+            "the running backend cannot show contact cards; "
+            "restart it after upgrading"
+        )
+    return BackendError(_dbus_message(error))
+
+
+def _search_error(error: Exception) -> BackendError:
+    if (
+        isinstance(error, dbus.exceptions.DBusException)
+        and error.get_dbus_name() == "org.freedesktop.DBus.Error.UnknownMethod"
+    ):
+        return BackendError(
+            "the running backend cannot search; restart it after upgrading"
+        )
+    return BackendError(_dbus_message(error))
+
+
+def _notification_apps_error(error: Exception) -> BackendError:
+    if (
+        isinstance(error, dbus.exceptions.DBusException)
+        and error.get_dbus_name() == "org.freedesktop.DBus.Error.UnknownMethod"
+    ):
+        return BackendError(
+            "the running backend cannot mute notification apps; "
             "restart it after upgrading"
         )
     return BackendError(_dbus_message(error))
@@ -302,6 +347,47 @@ class BackendClient:
                 else str(error)
             ) from error
 
+    def search(self, query: str, limit: int = 20) -> dict:
+        """``Search``: conversations, messages, contacts and calls matching ``query``.
+
+        Shape it with ``blueferry.search_view`` for display.
+        """
+        try:
+            return decode_mapping(self._iface(MESSAGES_IFACE).Search(
+                query, dbus.UInt32(max(0, limit)), timeout=SNAPSHOT_CALL_TIMEOUT_SEC,
+            ))
+        except (dbus.exceptions.DBusException, ValueError) as error:
+            raise _search_error(error) from error
+
+    def contact_cards(
+        self, offset: int = 0, limit: int = MAX_CONTACT_PAGE, query: str = "",
+    ) -> dict:
+        """``ListContactCards``: one page of cards with ids, optionally filtered.
+
+        Shape it with ``blueferry.contacts_view`` for display.
+        """
+        try:
+            return decode_mapping(self._iface(MESSAGES_IFACE).ListContactCards(
+                dbus.UInt32(max(0, offset)), dbus.UInt32(max(0, limit)), query,
+                timeout=CONTACT_CALL_TIMEOUT_SEC,
+            ))
+        except (dbus.exceptions.DBusException, ValueError) as error:
+            raise _contact_cards_error(error) from error
+
+    def contact(self, contact_id: str) -> tuple[dict, bytes]:
+        """``GetContact``: every detail of one card and its photo bytes.
+
+        The photo is checked like :meth:`contact_photo`; decode it only with a
+        hardened image loader.
+        """
+        try:
+            document, photo = self._iface(MESSAGES_IFACE).GetContact(
+                contact_id, timeout=CONTACT_CALL_TIMEOUT_SEC, byte_arrays=True,
+            )
+            return decode_mapping(document), valid_photo(bytes(photo)) or b""
+        except (dbus.exceptions.DBusException, ValueError) as error:
+            raise _contact_cards_error(error) from error
+
     def contact_photo(self, address: str) -> bytes:
         """Raw avatar bytes for one address, or ``b""`` when none is available.
 
@@ -466,6 +552,20 @@ class BackendClient:
         except (dbus.exceptions.DBusException, ValueError) as error:
             raise BackendError(_dbus_message(error)) from error
 
+    def set_notification_pinned(self, key: str, pinned: bool) -> bool:
+        """Pin or unpin a listed iPhone notification; returns the new state."""
+        try:
+            return bool(self._iface(MESSAGES_IFACE).SetNotificationPinned(
+                str(key), dbus.Boolean(pinned), timeout=POLICY_CALL_TIMEOUT_SEC,
+            ))
+        except dbus.exceptions.DBusException as error:
+            if error.get_dbus_name() == "org.freedesktop.DBus.Error.UnknownMethod":
+                raise BackendError(
+                    "the running backend cannot pin notifications; "
+                    "restart it after upgrading"
+                ) from error
+            raise BackendError(_dbus_message(error)) from error
+
     def features(self) -> dict:
         """Allowlisted local.env switches (Messages1.GetFeatures)."""
         try:
@@ -584,6 +684,27 @@ class BackendClient:
             ))
         except (dbus.exceptions.DBusException, ValueError) as error:
             raise _open_map_error(error) from error
+
+    def notification_apps(self) -> dict:
+        """``ListNotificationApps``: seen iPhone apps and the muted ones.
+
+        Shape it with ``blueferry.notification_apps_view`` for display.
+        """
+        try:
+            return decode_mapping(self._iface(MESSAGES_IFACE).ListNotificationApps(
+                timeout=POLICY_CALL_TIMEOUT_SEC
+            ))
+        except (dbus.exceptions.DBusException, ValueError) as error:
+            raise _notification_apps_error(error) from error
+
+    def set_notification_app_muted(self, app_id: str, muted: bool) -> bool:
+        """Hide or show the desktop popups of one iPhone app; the new state."""
+        try:
+            return bool(self._iface(MESSAGES_IFACE).SetNotificationAppMuted(
+                app_id, dbus.Boolean(muted), timeout=POLICY_CALL_TIMEOUT_SEC
+            ))
+        except dbus.exceptions.DBusException as error:
+            raise _notification_apps_error(error) from error
 
     def open_notification_click(self, click_id: str, token: str) -> bool:
         try:

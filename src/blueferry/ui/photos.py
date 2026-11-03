@@ -20,15 +20,17 @@ from typing import Any, Protocol
 
 from gi.repository import Adw, Gdk, GdkPixbuf, Gio, GLib, Gtk, Pango
 
+from blueferry import photos_view
 from blueferry.client_tasks import TaskRunner
 from blueferry.i18n import _
 from blueferry.photos_model import PhotosTabModel
+from blueferry.ui.tasks import WorkerRunner
 
 THUMBNAIL_SIZE = 256
 # A thumbnail is small; a larger file or canvas is skipped before decoding,
 # so a hostile cache file cannot make the client allocate gigabytes.
-MAX_THUMBNAIL_BYTES = 8 * 1024 * 1024
-MAX_THUMBNAIL_PIXELS = 40_000_000
+MAX_THUMBNAIL_BYTES = photos_view.MAX_THUMBNAIL_BYTES
+MAX_THUMBNAIL_PIXELS = photos_view.MAX_THUMBNAIL_PIXELS
 CELL_SIZE = 132
 FILTERS = ("all", "photos", "videos")
 # Enough of a file to tell WebP (RIFF....WEBP) and AVIF/HEIF (....ftypBRND).
@@ -100,96 +102,88 @@ def placeholder(state: dict, kind: str) -> tuple[str, str]:
     return title, str(state.get("hint") or "")
 
 
-def load_thumbnail(uri: str, cancellable: Gio.Cancellable, done: ThumbnailDone) -> None:
-    """Decode a local thumbnail asynchronously (GIO and GdkPixbuf threads).
+def decode_thumbnail(data: bytes) -> tuple[Gdk.Texture | None, str]:
+    """*Blocking (decoding).* A thumbnail texture scaled into
+    :data:`THUMBNAIL_SIZE`, or ``None`` and the name of a missing loader.
 
-    The file's size and the declared canvas are checked first; anything over
-    :data:`MAX_THUMBNAIL_BYTES` or :data:`MAX_THUMBNAIL_PIXELS` stays a
-    placeholder. A file GdkPixbuf cannot read is sniffed (its first
-    :data:`SNIFF_BYTES`) to tell a missing loader from a broken file.
+    Only a PNG, JPEG or WebP whose header declares at most
+    :data:`MAX_THUMBNAIL_PIXELS` is decoded; glycin-based GdkPixbuf
+    allocates the whole canvas even when asked to stop at ``size-prepared``.
+    Bytes that are not decoded are sniffed (their first :data:`SNIFF_BYTES`)
+    to tell a missing loader from a broken file."""
+    if photos_view.thumbnail_dimensions(data) is None:
+        return None, missing_loader(data[:SNIFF_BYTES])
+    if not photos_view.thumbnail_fits(data):
+        return None, ""
+    too_large = False
+
+    def prepared(loader: GdkPixbuf.PixbufLoader, width: int, height: int) -> None:
+        nonlocal too_large
+        if width <= 0 or height <= 0 or width * height > MAX_THUMBNAIL_PIXELS:
+            too_large = True  # the decoder disagrees with the header
+            loader.set_size(0, 0)  # older loaders stop instead of allocating
+            return
+        scale = min(THUMBNAIL_SIZE / width, THUMBNAIL_SIZE / height)
+        loader.set_size(max(1, round(width * scale)), max(1, round(height * scale)))
+
+    loader = GdkPixbuf.PixbufLoader()
+    loader.connect("size-prepared", prepared)
+    try:
+        # A failed write closes the loader itself.
+        loader.write_bytes(GLib.Bytes.new(data))
+        loader.close()
+        pixbuf = loader.get_pixbuf()
+    except GLib.Error:
+        pixbuf = None
+    if pixbuf is None or too_large:
+        return None, "" if too_large else missing_loader(data[:SNIFF_BYTES])
+    memory = (Gdk.MemoryFormat.R8G8B8A8 if pixbuf.get_has_alpha()
+              else Gdk.MemoryFormat.R8G8B8)
+    return Gdk.MemoryTexture.new(
+        pixbuf.get_width(), pixbuf.get_height(), memory, pixbuf.read_pixel_bytes(),
+        pixbuf.get_rowstride(),
+    ), ""
+
+
+def read_and_decode(path: str, cancellable: Gio.Cancellable) -> tuple[Gdk.Texture | None, str]:
+    """*Blocking (file I/O and decoding).* :func:`decode_thumbnail` on the
+    bytes :func:`photos_view.read_thumbnail` read from ``path``."""
+    if cancellable.is_cancelled():
+        return None, ""
+    data = photos_view.read_thumbnail(path)
+    if data is None or cancellable.is_cancelled():
+        return None, ""
+    return decode_thumbnail(data)
+
+
+@functools.cache
+def _thumbnail_runner() -> WorkerRunner:
+    return WorkerRunner("thumbnails", workers=2)
+
+
+def load_thumbnail(uri: str, cancellable: Gio.Cancellable, done: ThumbnailDone) -> None:
+    """Read and decode a local thumbnail on a worker; ``done`` runs on the
+    GTK thread.
+
+    The file is read once, through :func:`photos_view.read_thumbnail`, and
+    decoded from those bytes: GdkPixbuf never opens the path, so a file
+    swapped for a FIFO cannot block it. Files over :data:`MAX_THUMBNAIL_BYTES`
+    or canvases over :data:`MAX_THUMBNAIL_PIXELS` stay placeholders.
     """
-    if not uri.startswith("file:"):
-        done(None)
-        return
-    file = Gio.File.new_for_uri(uri)
-    path = file.get_path()
+    path = Gio.File.new_for_uri(uri).get_path() if uri.startswith("file:") else None
     if path is None:
         done(None)
         return
 
-    def sniffed(stream: Gio.InputStream, result) -> None:
-        try:
-            head = stream.read_bytes_finish(result).get_data() or b""
-        except GLib.Error:
-            head = b""
-        stream.close_async(GLib.PRIORITY_LOW, None, None)
-        done(None, missing_loader(head))
+    def decoded(result: tuple[Gdk.Texture | None, str]) -> None:
+        texture, missing = result
+        if missing:
+            done(None, missing)
+        else:
+            done(texture)
 
-    def opened_for_sniff(file: Gio.File, result) -> None:
-        try:
-            stream = file.read_finish(result)
-        except GLib.Error:
-            done(None)
-            return
-        stream.read_bytes_async(SNIFF_BYTES, GLib.PRIORITY_LOW, cancellable, sniffed)
-
-    def unreadable() -> None:
-        """GdkPixbuf refused the file: a missing loader, or a broken file?"""
-        if cancellable.is_cancelled():
-            done(None)
-            return
-        file.read_async(GLib.PRIORITY_LOW, cancellable, opened_for_sniff)
-
-    def decoded(_source, result) -> None:
-        try:
-            pixbuf = GdkPixbuf.Pixbuf.new_from_stream_finish(result)
-        except GLib.Error:
-            unreadable()
-            return
-        memory = (Gdk.MemoryFormat.R8G8B8A8 if pixbuf.get_has_alpha()
-                  else Gdk.MemoryFormat.R8G8B8)
-        done(Gdk.MemoryTexture.new(
-            pixbuf.get_width(), pixbuf.get_height(), memory, pixbuf.read_pixel_bytes(),
-            pixbuf.get_rowstride(),
-        ))
-
-    def opened(file: Gio.File, result) -> None:
-        try:
-            stream = file.read_finish(result)
-        except GLib.Error:
-            done(None)
-            return
-        GdkPixbuf.Pixbuf.new_from_stream_at_scale_async(
-            stream, THUMBNAIL_SIZE, THUMBNAIL_SIZE, True, cancellable, decoded)
-
-    def measured(_source, result) -> None:
-        try:
-            found, width, height = GdkPixbuf.Pixbuf.get_file_info_finish(result)
-        except GLib.Error:
-            unreadable()
-            return
-        if found is None:  # no loader recognized the header
-            unreadable()
-            return
-        if width <= 0 or height <= 0 or width * height > MAX_THUMBNAIL_PIXELS:
-            done(None)
-            return
-        file.read_async(GLib.PRIORITY_LOW, cancellable, opened)
-
-    def sized(_file: Gio.File, result) -> None:
-        try:
-            info = file.query_info_finish(result)
-        except GLib.Error:
-            done(None)
-            return
-        if info.get_size() > MAX_THUMBNAIL_BYTES:
-            done(None)
-            return
-        GdkPixbuf.Pixbuf.get_file_info_async(path, cancellable, measured)
-
-    file.query_info_async(
-        Gio.FILE_ATTRIBUTE_STANDARD_SIZE, Gio.FileQueryInfoFlags.NONE, GLib.PRIORITY_LOW,
-        cancellable, sized,
+    _thumbnail_runner().submit(
+        lambda: read_and_decode(path, cancellable), decoded, lambda _message: done(None),
     )
 
 

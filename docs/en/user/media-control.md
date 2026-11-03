@@ -48,7 +48,8 @@ precedence.
 blueferry media                # what is playing (same as "status")
 blueferry media toggle         # play/pause
 blueferry media next           # also: play, pause, previous
-blueferry media volume-up      # also: volume-down (one iPhone step)
+blueferry media volume up      # also: volume down (one iPhone step)
+blueferry media volume         # the volume the iPhone last reported
 blueferry media skip-forward   # also: skip-backward (the app's fixed skip)
 blueferry media like           # also: dislike, bookmark, repeat, shuffle
 blueferry media --json         # the raw status for scripts
@@ -62,6 +63,17 @@ reconnect it sometimes doesn't. BlueFerry then asks once more on that
 connection. Until the list arrives, `blueferry media` shows the commands as
 unknown, and BlueFerry sends a command as asked; the iPhone ignores or
 refuses one the app lacks.
+
+### Volume
+
+`blueferry media volume up` and `volume down` move the iPhone's volume by one
+step, as the iPhone's own volume buttons do, and confirm with the level the
+iPhone reported before the step, for example "Turned the iPhone volume up
+(was 40%)." Apple's media service has no "set volume to 60 %"; the new
+level shows up in `blueferry media` a moment later, once the iPhone reports
+it. If the app that is playing does not offer volume control, BlueFerry says
+so and sends nothing. The older spellings `volume-up` and `volume-down` still
+work.
 
 In the Kirigami client a small bar with title, artist and
 previous/play-pause/next buttons appears above the conversations while
