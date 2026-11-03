@@ -65,6 +65,83 @@ ColumnLayout {
         }
     }
 
+    // Muted apps (Messages1.ListNotificationApps): only for daemons that
+    // report notification_muted_app_count. The list is read while the
+    // section exists and forgotten when it goes; texts and rows come from
+    // blueferry.notification_apps_view.
+    Loader {
+        objectName: "notificationAppsLoader"
+        Layout.fillWidth: true
+        active: section.bridge.status.daemon === true
+            && section.bridge.notificationAppsSupported === true
+        visible: active
+        sourceComponent: Component {
+            ColumnLayout {
+                id: apps
+                objectName: "notificationAppsSection"
+                spacing: Kirigami.Units.smallSpacing
+                readonly property var view: section.bridge.notificationApps || ({})
+                readonly property var rows: apps.view.rows || []
+
+                function watch() {
+                    section.bridge.watchNotificationApps(apps.visible)
+                }
+                onVisibleChanged: apps.watch()
+                Component.onCompleted: apps.watch()
+                Component.onDestruction: section.bridge.watchNotificationApps(false)
+
+                Kirigami.Heading {
+                    text: apps.view.label || ""
+                    level: 3
+                }
+                Controls.Label {
+                    Layout.fillWidth: true
+                    wrapMode: Text.Wrap
+                    textFormat: Text.PlainText
+                    text: apps.view.description || ""
+                }
+                Kirigami.InlineMessage {
+                    objectName: "notificationAppsError"
+                    Layout.fillWidth: true
+                    visible: (apps.view.error || "") !== ""
+                    type: Kirigami.MessageType.Error
+                    text: apps.view.error || ""
+                }
+                Controls.Label {
+                    objectName: "notificationAppsHint"
+                    Layout.fillWidth: true
+                    visible: text !== ""
+                    wrapMode: Text.Wrap
+                    textFormat: Text.PlainText
+                    color: Kirigami.Theme.disabledTextColor
+                    text: apps.view.hint || ""
+                }
+                Repeater {
+                    model: apps.rows
+                    delegate: SubtitleSwitch {
+                        id: appRow
+                        required property var modelData
+                        objectName: "notificationAppSwitch"
+                        Layout.fillWidth: true
+                        horizontalPadding: 0
+                        // On = muted. The name and subtitle are the iPhone's
+                        // plain text (SubtitleSwitch renders PlainText).
+                        text: appRow.modelData.name
+                        subtitle: appRow.modelData.subtitle || ""
+                        checked: appRow.modelData.muted === true
+                        enabled: appRow.modelData.enabled === true && !section.bridge.busy
+                        Accessible.name: appRow.modelData.toggle_label + ": " + appRow.modelData.name
+                        onToggled: {
+                            section.bridge.setNotificationAppMuted(appRow.modelData.app_id, checked)
+                            // Show the saved state until the list is read again.
+                            checked = Qt.binding(() => appRow.modelData.muted === true)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     Kirigami.Heading { text: qsTr("Content and Actions"); level: 2 }
     FeatureSwitch {
         Layout.fillWidth: true

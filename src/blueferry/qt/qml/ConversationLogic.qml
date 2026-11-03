@@ -45,10 +45,18 @@ QtObject {
     }
 
     // A group whose members are unconfirmed can be written to; Send then
-    // asks for its members (conversation_state.NEEDS_PARTICIPANTS).
+    // asks for its members (conversation_state.NEEDS_PARTICIPANTS). So can a
+    // conversation whose latest message may be from a group; Send then asks
+    // whether to reply to the sender only (CONFIRM_SENDER).
     function canCompose(thread) {
         return !!thread && (thread.reply_ready === true
-            || (thread.is_group === true && thread.participants_required === true))
+            || (thread.is_group === true && thread.participants_required === true)
+            || needsSenderConfirmation(thread))
+    }
+
+    function needsSenderConfirmation(thread) {
+        return !!thread && thread.is_group !== true && thread.reply_ready !== true
+            && String(thread.sender_reply_token || "") !== ""
     }
 
     // The members editor, like conversation_state.ParticipantDraft. Entries

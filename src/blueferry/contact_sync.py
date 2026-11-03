@@ -16,6 +16,7 @@ from gi.repository import GLib
 from blueferry import contacts as contacts_module
 from blueferry.contacts import ContactsResolver, clear_contact_cache
 from blueferry.limits import MAX_OBEX_PENDING_OPERATIONS
+from blueferry.settings_store import UnreadableSettingsError
 from blueferry.storage_security import StorageSecurity, StorageSupersededError
 
 if TYPE_CHECKING:
@@ -50,10 +51,11 @@ class ContactSync:
         pull: Pull | None = None,
         schedule: Callable[[int, Callable[[], bool]], int] | None = None,
         cancel: Callable[[int], object] | None = None,
-        photos: Callable[[], bool] | None = None,
+        photos: Callable[[], bool | None] | None = None,
     ) -> None:
         self._sessions = sessions
-        # The daemon's contact-photo setting, read when a pull is queued.
+        # The daemon's contact-photo setting, read when a pull is queued;
+        # ``None`` while settings.json can't be read.
         self._photos = photos
         self._storage = storage
         self._contacts = contacts
@@ -158,6 +160,19 @@ class ContactSync:
             self._waiters.append((success, failure))
         if self._pending:
             return
+        photos = None if self._photos is None else self._photos()
+        if self._photos is not None and photos is None:
+            # A pull would store photos, or erase them with the old contact
+            # rows, while the saved choice is unknown. Pull once it reads.
+            self._deferred = True
+            waiters, self._waiters = self._waiters, []
+            error = UnreadableSettingsError(
+                "settings.json can't be read, so contacts were not synced; "
+                "repair or remove the file and try again"
+            )
+            for _success, failure in waiters:
+                failure(error)
+            return
         self._pending = True
         generation = self._generation
         # The download can take minutes. Give it a private key buffer: the
@@ -168,7 +183,7 @@ class ContactSync:
         revision = self._storage.revision
         storage = self._storage.snapshot(follow=True)
         pull = self._pull or contacts_module.pull_phonebook
-        options = {} if self._photos is None else {"photos": bool(self._photos())}
+        options = {} if photos is None else {"photos": photos}
         photos_revision = self._photos_revision
 
         def download() -> int:

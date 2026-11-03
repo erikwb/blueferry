@@ -12,6 +12,11 @@ Calls & Audio, Security and About.
   Qt and GTK). Older daemons show them disabled with the variable to set.
   A change the running service has not picked up yet shows the restart
   notice with "Restart Service".
+- Notifications > Muted apps lists the iPhone apps from
+  ``Messages1.ListNotificationApps`` with a checkbox each
+  (:mod:`blueferry.notification_apps_view`, shared with Qt, GTK and
+  Quickshell), shown only while the daemon supports muting and read again
+  on ``NotificationAppsChanged``.
 - The per-key actions (reconnect ``b``, click rules ``l``) have buttons in
   their category; the sound route ``a`` and automatic reset ``B`` are
   checkboxes there. Diagnostics opens :class:`~blueferry.tui_doctor.DoctorScreen`.
@@ -30,11 +35,12 @@ from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.css.query import NoMatches
 from textual.screen import ModalScreen
 from textual.widgets import Button, Checkbox, Select, Static, TabbedContent, TabPane
 from textual.widgets.select import NoSelection
 
-from blueferry import __version__, call_audio_view, features_view
+from blueferry import __version__, call_audio_view, features_view, notification_apps_view
 from blueferry.backend_lifecycle import restart_backend
 from blueferry.doctor_report import DoctorReport
 from blueferry.i18n import _, ngettext
@@ -45,7 +51,7 @@ from blueferry.reconnect_view import reconnect_view
 from blueferry.text_safety import terminal_text
 from blueferry.tui_call_audio import DeviceSelect
 from blueferry.tui_doctor import DoctorScreen
-from blueferry.tui_tasks import TextualTaskRunner, TextualTimer
+from blueferry.tui_tasks import TextualTaskRunner, TextualTimer, tearing_down
 
 Values = Mapping[str, Any]
 
@@ -64,6 +70,11 @@ class OptionsClient(Protocol):
     def set_notification_policy(self, policy: str) -> str: ...
 
     def sync_contacts(self) -> int: ...
+
+    # Messages1.ListNotificationApps / SetNotificationAppMuted.
+    def notification_apps(self) -> dict: ...
+
+    def set_notification_app_muted(self, app_id: str, muted: bool) -> bool: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -144,6 +155,27 @@ def _ancs_actions_editable(values: Values) -> bool:
     )
 
 
+def _phone_audio_caption(values: Values) -> str:
+    """Where the sound plays, and the A/V sync line under it while a stream
+    is open (as under the Qt and GTK switches)."""
+    audio = phone_audio(values)
+    return "\n".join(line for line in (str(audio["hint"]), str(audio["sync"])) if line)
+
+
+def _contact_photos_unknown(values: Values) -> bool:
+    return values.get("contact_photos_state") == "unknown"
+
+
+def _contact_photos_caption(values: Values) -> str:
+    if _contact_photos_unknown(values):
+        return _("Unavailable while settings.json cannot be read")
+    return _(
+        "Photos are kept with your contacts and arrive with the next contact "
+        "sync. The terminal can't draw them; other clients and popups show "
+        "them. Turning this off erases them."
+    )
+
+
 def _battery_caption(values: Values) -> str:
     percent = values.get("phone_battery_warning_percent", 20)
     return _("One desktop notification per discharge, at {percent} % or less.").format(
@@ -192,12 +224,9 @@ SAVED_SWITCHES: dict[str, SavedSwitch] = {
         SavedSwitch(
             key="contact_photos",
             label=_("Show Contact Photos"),
-            caption=_text(_(
-                "Photos are kept with your contacts and arrive with the next contact "
-                "sync. The terminal can't draw them; other clients and popups show "
-                "them. Turning this off erases them."
-            )),
+            caption=_contact_photos_caption,
             shown=_saved_opt_in("contact_photos"),
+            editable=lambda values: not _contact_photos_unknown(values),
             save=lambda client, enabled, _values: client.set_contact_photos(enabled),
         ),
         SavedSwitch(
@@ -278,7 +307,7 @@ SAVED_SWITCHES: dict[str, SavedSwitch] = {
             # Not a saved preference: the checkbox follows bluetoothd's route.
             key="phone_audio",
             label=_("Play the iPhone's Sound on This Computer"),
-            caption=lambda values: str(phone_audio(values)["hint"]),
+            caption=_phone_audio_caption,
             shown=lambda values: phone_audio(values)["supported"] is True,
             value=lambda values: phone_audio(values)["on_pc"] is True,
             editable=lambda values: phone_audio(values)["available"] is True,
@@ -350,7 +379,7 @@ FEATURE_ROWS: dict[str, FeatureRow] = {
             "notification_history", _("Keep Recent iPhone Notifications"),
             _(
                 "Keeps other apps' notifications in memory for the clients that "
-                "list them; the terminal client does not list them yet."
+                "list them, like iPhone Notifications in the command palette."
             ),
         ),
     )
@@ -378,6 +407,8 @@ GROUPS: tuple[Group, ...] = (
     Group("photos", "phone", _("Contact Photos"), ("opt:contact_photos",)),
     Group("desktop-notifications", "notifications", _("Desktop Notifications"),
           ("row:policy", "opt:contacts_only_notifications", "row:click-rules")),
+    Group("muted-apps", "notifications", notification_apps_view.section_label(),
+          ("row:muted-apps",)),
     Group("content", "notifications", _("Content and Actions"), (
         "feature:show_notification_content", "opt:ancs_actions_preference",
         "opt:mirror_iphone_removals", "feature:mark_read_on_dismiss",
@@ -422,6 +453,16 @@ class PolicySelect(Select[str]):
             return
         with self.prevent(Select.Changed):
             super()._watch_value(value)
+
+
+class MuteCheckbox(Checkbox):
+    """One app's mute switch in Notifications > Muted apps."""
+
+    def __init__(self, row: Mapping[str, Any]) -> None:
+        self.app_id = str(row["app_id"])
+        # A Text label: the app name comes from the iPhone.
+        super().__init__(Text(_one_line(row["name"])), value=row["muted"] is True,
+                         classes="options-mute")
 
 
 class RestartState:
@@ -483,6 +524,17 @@ class OptionsScreen(ModalScreen[None]):
         # ListCallAudioDevices, read when the daemon offers the choice.
         self.call_audio_devices: dict[str, Any] = {}
         self._call_audio_loading = False
+        # Muted apps: the last ListNotificationApps answer (normalized), and
+        # the changes being stored with the user's choice until the answer.
+        self.apps: dict[str, Any] | None = None
+        self.muting: dict[str, bool] = {}
+        self._apps_loading = False
+        self._apps_again = False
+        # The last ListNotificationApps failed: keep the earlier answer (or
+        # none) and show only the error, never an empty "locked" list.
+        self._apps_failed = False
+        self._apps_shown: tuple[str, ...] | None = None
+        self._apps_tasks = TextualTaskRunner(self, group="options-apps")
         self._status_timer = TextualTimer(self, self.load_status)
         self._features_timer = TextualTimer(self, self.load_features)
 
@@ -568,6 +620,11 @@ class OptionsScreen(ModalScreen[None]):
                     classes="options-action-text",
                 )
                 yield Button(_("Click Rules"), id="options-click-rules")
+        elif name == "muted-apps":
+            yield Static(Text(notification_apps_view.section_description()),
+                         classes="options-caption")
+            yield Static("", id="options-muted-apps-hint", classes="options-caption")
+            yield Vertical(id="options-muted-apps-list")
         elif name == "storage":
             yield Static("", id="options-storage", classes="options-caption")
         elif name == "version":
@@ -647,6 +704,7 @@ class OptionsScreen(ModalScreen[None]):
                     shown[item] for item in group.items
                 )
         self._render_rows(values, daemon)
+        self._render_apps(values, daemon)
         restart = self.query_one("#options-restart")
         restart.display = feature_view["restart_pending"] is True
         self.query_one("#options-restart-notice", Static).update(
@@ -674,7 +732,8 @@ class OptionsScreen(ModalScreen[None]):
             _held(switch.key, self.pending) or not daemon or not switch.editable(values)
         )
         text = switch.caption(values)
-        caption.update(Text(_one_line(text)))
+        # A caption may have a few lines of its own; each stays one line.
+        caption.update(Text("\n".join(_one_line(line) for line in text.split("\n"))))
         caption.display = visible and bool(text)
         return visible
 
@@ -720,11 +779,12 @@ class OptionsScreen(ModalScreen[None]):
                     "blueferry storage-policy-set encrypted|plaintext|none.").format(
             policy=_STORAGE.get(storage, storage or "…"), state=storage_state or "…",
         )
+        detail = str(values.get("storage_detail") or "").rstrip(".")
+        if detail and storage_state not in {"ready", "disabled"}:
+            # Why local data is unavailable, such as an unreadable settings file.
+            caption += f" {detail}."
         if values.get("storage_reset") is True:
-            # The explanation, and the way out when the saved data's key is lost.
-            detail = str(values.get("storage_detail") or "").rstrip(".")
-            if detail:
-                caption += f" {detail}."
+            # The way out when the saved data's key is lost.
             caption += " " + _(
                 "To erase local data and start over, run blueferry storage-reset."
             )
@@ -790,10 +850,139 @@ class OptionsScreen(ModalScreen[None]):
             lambda: self.client.set_call_audio_device(direction, name), saved, failed, finished,
         )
 
+    # ---- muted apps -------------------------------------------------------
+
+    def _apps_supported(self) -> bool:
+        return self.values is not None and notification_apps_view.supported(self.values)
+
+    def apps_changed(self) -> None:
+        """``NotificationAppsChanged``: read the list again while it is shown."""
+        if self._apps_supported():
+            self.load_apps()
+
+    def load_apps(self) -> None:
+        if self._closed:
+            return
+        if self._apps_loading:
+            self._apps_again = True
+            return
+        self._apps_loading = True
+
+        def loaded(value: object) -> None:
+            if not self._apps_again:
+                self.apps = notification_apps_view.normalize(value)
+                self._apps_failed = False
+
+        def failed(message: str) -> None:
+            if not self._apps_again:
+                self._apps_failed = True
+                self.error = _one_line(notification_apps_view.change_failed_text(message))
+
+        def finished() -> None:
+            self._apps_loading = False
+            if self._apps_again:
+                self._apps_again = False
+                self.load_apps()
+            self._render_state()
+
+        self._apps_tasks.submit(self.client.notification_apps, loaded, failed, finished)
+
+    def _render_apps(self, values: Values, daemon: bool) -> None:
+        group = self.query_one("#options-group-muted-apps")
+        group.display = supported = self._apps_supported()
+        if not supported:
+            return
+        hint = self.query_one("#options-muted-apps-hint", Static)
+        if self.apps is None:
+            # After a failure the error says why; NotificationAppsChanged or
+            # reopening the options reads the list again.
+            if not self._apps_loading and not self._apps_failed:
+                self.load_apps()
+            hint.update(Text(_("Loading…")))
+            hint.display = not self._apps_failed
+            return
+        text = notification_apps_view.apps_hint(self.apps)
+        hint.update(Text(_one_line(text)))
+        hint.display = bool(text)
+        rows = notification_apps_view.app_rows(self.apps)
+        ids = tuple(row["app_id"] for row in rows)
+        if ids != self._apps_shown:
+            self._apps_shown = ids
+
+            async def rebuild() -> None:
+                try:
+                    await self._rebuild_apps(rows)
+                except NoMatches:
+                    # Only while the screen closes; otherwise it is a bug.
+                    if not tearing_down(self):
+                        raise
+
+            # Textual's overloads infer Never for an async function.
+            self.run_worker(rebuild, group="options-apps-render", exclusive=True)  # type: ignore[arg-type]
+            return
+        self._apply_apps(rows, daemon)
+
+    async def _rebuild_apps(self, rows: list[dict[str, Any]]) -> None:
+        container = self.query_one("#options-muted-apps-list", Vertical)
+        await container.remove_children()
+        widgets: list[Static | MuteCheckbox] = []
+        for row in rows:
+            widgets.append(MuteCheckbox(row))
+            widgets.append(Static(Text(_one_line(row["subtitle"])),
+                                  classes="options-caption options-mute-caption"))
+        if widgets:
+            await container.mount_all(widgets)
+        values = self.values or {}
+        self._apply_apps(rows, values.get("daemon") is True)
+
+    def _apply_apps(self, rows: list[dict[str, Any]], daemon: bool) -> None:
+        by_id = {row["app_id"]: row for row in rows}
+        for checkbox in self.query(MuteCheckbox):
+            row = by_id.get(checkbox.app_id)
+            if row is None:
+                continue
+            saving = checkbox.app_id in self.muting
+            with self.prevent(Checkbox.Changed):
+                checkbox.value = self.muting[checkbox.app_id] if saving else row["muted"]
+            checkbox.disabled = saving or not daemon or row["enabled"] is not True
+
+    def _set_muted(self, app_id: str, muted: bool) -> None:
+        if self.apps is None or app_id in self.muting:
+            return
+        rows = notification_apps_view.app_rows(self.apps)
+        index = next((i for i, row in enumerate(rows) if row["app_id"] == app_id), -1)
+        if index < 0 or rows[index]["muted"] == muted:
+            return
+        target = notification_apps_view.toggle_at(self.apps, index)
+        if target is None:  # disabled meanwhile: show the daemon's state again
+            self._render_state()
+            return
+        self.muting[app_id] = muted
+
+        def saved(_result: object) -> None:
+            self.error = ""
+
+        def failed(message: str) -> None:
+            self.error = _one_line(notification_apps_view.change_failed_text(message))
+
+        def finished() -> None:
+            self.muting.pop(app_id, None)
+            # NotificationAppsChanged follows too; this covers a lost signal.
+            self.load_apps()
+            self._render_state()
+
+        self._render_state()
+        self._apps_tasks.submit(
+            lambda: self.client.set_notification_app_muted(*target), saved, failed, finished,
+        )
+
     # ---- saved switches ---------------------------------------------------
 
     @on(Checkbox.Changed)
     def checkbox_changed(self, event: Checkbox.Changed) -> None:
+        if isinstance(event.checkbox, MuteCheckbox):
+            self._set_muted(event.checkbox.app_id, event.value)
+            return
         checkbox_id = event.checkbox.id or ""
         if checkbox_id.startswith("opt-"):
             self._save_switch(checkbox_id.removeprefix("opt-"), event.value)
@@ -803,6 +992,12 @@ class OptionsScreen(ModalScreen[None]):
     def _save_switch(self, key: str, enabled: bool) -> None:
         switch = SAVED_SWITCHES.get(key)
         if switch is None or self.values is None or _held(key, self.pending):
+            return
+        if key == "contact_photos" and _contact_photos_unknown(self.values):
+            # A toggle queued before the status went unknown; the daemon would refuse it.
+            self.app.notify(_contact_photos_caption(self.values), severity="warning",
+                            markup=False)
+            self._render_state()
             return
         if enabled == switch.active(self.values):
             return

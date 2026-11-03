@@ -36,6 +36,7 @@ from typing import Any
 
 from blueferry.plugin_api.manifest import version_tuple
 from blueferry.plugin_manager import InstallError, InstallRecord, check_url
+from blueferry.private_files import atomic_write_private_text, read_private_text
 
 DEFAULT_INDEX_URL = (
     "https://raw.githubusercontent.com/joshii-h/blueferry-plugins-index/main/plugins-index.json"
@@ -272,9 +273,10 @@ class PluginIndex:
         cached: bytes | None = None
         age = None
         try:
-            cached = path.read_bytes()[: MAX_INDEX_BYTES + 1]
+            # A FIFO, symlink or oversized file in its place counts as no cache.
+            cached = read_private_text(path, maximum_bytes=MAX_INDEX_BYTES).encode()
             age = self._clock() - path.stat().st_mtime
-        except OSError:
+        except (OSError, ValueError):
             pass
         if cached is not None and age is not None and 0 <= age < self._ttl and not refresh:
             try:
@@ -291,10 +293,8 @@ class PluginIndex:
                 except IndexFetchError:
                     pass
             raise
-        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        temporary = path.with_name(path.name + ".tmp")
-        temporary.write_bytes(data)
-        os.replace(temporary, path)
+        # A fresh temporary name, so nothing planted beside the cache can block it.
+        atomic_write_private_text(path, data.decode("utf-8"), maximum_bytes=MAX_INDEX_BYTES)
         return entries, ""
 
     def catalog(

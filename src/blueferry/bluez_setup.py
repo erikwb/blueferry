@@ -37,6 +37,7 @@ from blueferry import config, service_manager
 from blueferry.bluetooth_capabilities import BTMGMT_STDIN
 from blueferry.bus import bluez, get_system_bus
 from blueferry.commands import run_command
+from blueferry.dbus_object import StrictObject
 from blueferry.errors import CommandError, PairingError
 
 log = logging.getLogger(__name__)
@@ -368,7 +369,7 @@ def _advert_payload_rejected(error: dbus.exceptions.DBusException) -> bool:
     )
 
 
-class _AncsAdvert(dbus.service.Object):
+class _AncsAdvert(StrictObject):
     """LEAdvertisement1 object shaped like a real ANCS accessory.
 
     SolicitUUIDs is the meaningful protocol field.  The otherwise inert
