@@ -37,6 +37,7 @@ from blueferry.tether_status import TetherStatus
 from blueferry.ui.call_audio import DeviceRow
 from blueferry.ui.doctor import DoctorSection
 from blueferry.ui.feature_switches import FeatureSwitches
+from blueferry.ui.notification_apps import MutedApps
 from blueferry.ui.notification_rules import NotificationRules
 from blueferry.ui.plugin_settings import ModelFactory, PluginSettingsPage, default_model
 from blueferry.ui.saved_choice import SavedChoice
@@ -417,6 +418,7 @@ class SettingsDialog(Adw.PreferencesDialog):
         self._ancs_actions_row.set_activatable_widget(self._ancs_actions_switch)
 
         self.notification_rules = NotificationRules(client, self._toast)
+        self.muted_apps = MutedApps(client, self._toast, is_open=self.get_mapped)
 
         content_group = Adw.PreferencesGroup(title=_("Content and Actions"))
         content_group.add(self.features.row(
@@ -482,6 +484,7 @@ class SettingsDialog(Adw.PreferencesDialog):
         self._phone_audio_group.set_visible(False)
         self._phone_audio_row = Adw.ActionRow(
             title=_("Play the iPhone's Sound on This Computer"),
+            use_markup=False,
         )
         self._phone_audio_switch = Gtk.Switch(valign=Gtk.Align.CENTER)
         self._phone_audio_switch.connect("notify::active", self._phone_audio_changed)
@@ -653,10 +656,7 @@ class SettingsDialog(Adw.PreferencesDialog):
                 "contact sync. Turning this off erases them."
             ),
         )
-        self._photos_row = Adw.ActionRow(
-            title=_("Show Contact Photos"),
-            subtitle=_("Avatars in notifications and conversations"),
-        )
+        self._photos_row = Adw.ActionRow(title=_("Show Contact Photos"))
         self._photos_switch = Gtk.Switch(valign=Gtk.Align.CENTER)
         self._photos_switch.connect("notify::active", self._contact_photos_changed)
         self._photos_row.add_suffix(self._photos_switch)
@@ -694,7 +694,7 @@ class SettingsDialog(Adw.PreferencesDialog):
             ]
         )
         self._storage_policy_row = Adw.ComboRow(
-            title=_("Storage"),
+            title=_("Storage"), use_markup=False,
             subtitle=_("Protects message history and cached contacts"),
             model=history_model,
         )
@@ -757,8 +757,8 @@ class SettingsDialog(Adw.PreferencesDialog):
                 contacts_group, self._photos_group,
             )),
             ("notifications", (
-                notification_group, *self.notification_rules.groups, content_group,
-                history_group,
+                notification_group, self.muted_apps.group,
+                *self.notification_rules.groups, content_group, history_group,
             )),
             ("calls", (
                 self._calls_group, self._call_audio_group, self._call_history_group,
@@ -815,6 +815,7 @@ class SettingsDialog(Adw.PreferencesDialog):
         if category:
             self.set_visible_page_name(category)
         self.features.load()
+        self.muted_apps.load()
         self._load_call_audio_devices()
         self.present(parent)
 
@@ -1519,6 +1520,7 @@ class SettingsDialog(Adw.PreferencesDialog):
         self._applying_contacts_only_notifications = False
         self._apply_ancs_actions(status, reachable)
         self.notification_rules.apply(status, reachable)
+        self.muted_apps.apply(status, reachable)
         self._apply_mirror_removals(status, reachable)
         self._apply_battery_warning(status, values, reachable)
         self._apply_media_switches(status, reachable)
@@ -1568,7 +1570,15 @@ class SettingsDialog(Adw.PreferencesDialog):
         self._storage_policy_row.set_sensitive(reachable)
         self._applying_storage_policy = False
         locked = status.storage_policy == "encrypted" and status.storage_state != "ready"
-        self._storage_reset_row.set_visible(status.extra.get("storage_reset") is True)
+        offered = status.extra.get("storage_reset") is True
+        # Why local data is unavailable, such as an unreadable settings file;
+        # the reset row carries it when it is shown.
+        unavailable = reachable and status.storage_state not in {"ready", "disabled"}
+        self._storage_policy_row.set_subtitle(
+            status.storage_detail if unavailable and status.storage_detail and not offered
+            else _("Protects message history and cached contacts")
+        )
+        self._storage_reset_row.set_visible(offered)
         self._storage_reset_row.set_subtitle(status.storage_detail)
         self._storage_reset_button.set_sensitive(reachable)
         if reachable and locked and not self._storage_unlock_attempted:
@@ -1827,7 +1837,10 @@ class SettingsDialog(Adw.PreferencesDialog):
         self._applying_phone_audio = True
         self._phone_audio_switch.set_active(audio["on_pc"])
         self._applying_phone_audio = False
-        self._phone_audio_row.set_subtitle(audio["hint"])
+        # The A/V sync line follows the route wording while a stream is open.
+        self._phone_audio_row.set_subtitle(
+            "\n".join(line for line in (audio["hint"], audio["sync"]) if line)
+        )
         self._phone_audio_row.set_sensitive(reachable and audio["available"])
 
     def _phone_audio_changed(self, switch, _property) -> None:
@@ -2060,7 +2073,15 @@ class SettingsDialog(Adw.PreferencesDialog):
             self._photos_switch, self._photos_choice, status.contact_photos is True,
         )
         self._applying_saved_switches = False
-        self._photos_row.set_sensitive(reachable and not self._photos_choice.saving)
+        # While settings.json can't be read the saved choice is unknown.
+        unknown = status.contact_photos_state == "unknown"
+        self._photos_row.set_subtitle(
+            _("Unavailable while settings.json cannot be read") if unknown
+            else _("Avatars in notifications and conversations")
+        )
+        self._photos_row.set_sensitive(
+            reachable and not unknown and not self._photos_choice.saving
+        )
 
     def _contact_photos_changed(self, switch, _property) -> None:
         self._save_switch(

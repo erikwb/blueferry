@@ -15,7 +15,7 @@ from tests.gtk_broadway import run_scenario
     "scenario", [
         "layout", "card", "quick-settings", "dial-pad", "running-calls", "call-tones",
         "call-audio", "keypad-tones", "recent-calls",
-        "notifications", "close",
+        "notifications", "close", "volume", "pins", "contacts", "contact-photo", "search",
     ],
 )
 def test_gtk_phone_card(tmp_path, scenario):
@@ -26,6 +26,14 @@ CALLS_READY = {
     "daemon": True, "map": True, "calls_enabled": True, "calls_state": "ready",
     "storage_state": "ready",
 }
+
+
+class _Read(Exception):
+    """Raised by the blocking reads so :meth:`FakeClient.submit` can name them."""
+
+    def __init__(self, name):
+        super().__init__(str(name))
+        self.name = name
 
 
 class FakeClient:
@@ -53,7 +61,19 @@ class FakeClient:
 
     # reads the scenarios answer later
     def get_status_async(self, on_ok, on_err=None):
-        self.calls.append(("status", on_ok, on_err))
+        # Like DaemonClient: every answer is also sent as "status-read".
+        from blueferry.models import BackendStatus
+
+        def loaded(status):
+            self.emit("status-read", status.to_dict())
+            on_ok(status)
+
+        def failed(message):
+            self.emit("status-read", BackendStatus().to_dict())
+            if on_err is not None:
+                on_err(message)
+
+        self.calls.append(("status", loaded, failed))
 
     def now_playing_async(self, on_ok, on_err=None):
         self.calls.append(("media", on_ok, on_err))
@@ -100,7 +120,13 @@ class FakeClient:
     def set_proximity_lock_async(self, enabled, grace, on_ok, on_err):
         self.calls.append((("proximity", enabled, grace), on_ok, on_err))
 
-    # TaskRunner for NotificationHistory
+    def notification_apps_async(self, on_ok, on_err=None):
+        self.calls.append(("apps", on_ok, on_err))
+
+    def set_notification_pinned_async(self, key, pinned, on_ok, on_err):
+        self.calls.append((("pin", key, pinned), on_ok, on_err))
+
+    # TaskRunner for the shared models: the blocking reads name themselves.
     def submit(self, operation, on_done=None, on_error=None, on_finished=None):
         # Like the real runner: on_finished follows either answer.
         def answered(callback):
@@ -111,7 +137,14 @@ class FakeClient:
                     on_finished()
             return deliver
 
-        self.calls.append(("notifications", answered(on_done), answered(on_error)))
+        try:
+            value = operation()
+        except _Read as read:
+            self.calls.append((read.name, answered(on_done), answered(on_error)))
+        except AssertionError:
+            self.calls.append(("notifications", answered(on_done), answered(on_error)))
+        else:  # answered at once (a stale card id)
+            answered(on_done)(value)
 
     def notifications(self, limit):
         raise AssertionError("only called through submit")
@@ -122,12 +155,28 @@ class FakeClient:
 
         return self.runners.setdefault(name, ManualRunner())
 
+    def contact_cards(self, offset, limit, query):
+        raise _Read(("cards", offset, query))
+
+    def contact(self, contact_id):
+        if contact_id == "gone":
+            from blueferry.client import ContactNotFoundError
+
+            raise ContactNotFoundError("unknown contact")
+        raise _Read(("card", contact_id))
+
+    def search(self, query, limit):
+        raise _Read(("search", query))
+
     # the Messages tab's reads stay unanswered
     def list_threads_async(self, *_args, **_kwargs):
         pass
 
     def contact_photo_async(self, address, on_ok, on_err=None):
         self.calls.append((("photo", address), on_ok, on_err))
+
+    def mark_thread_read_async(self, *_args, **_kwargs):
+        pass
 
     def names(self):
         return [call[0] for call in self.calls]
@@ -194,6 +243,22 @@ def _window(status=None, *, width=940, timer=None):
     return window, client
 
 
+def _recording(factory):
+    """A timer factory that remembers which callback each timer runs."""
+    made = []
+
+    def timer(callback):
+        made.append((callback, factory(callback)))
+        return made[-1][1]
+
+    return timer, made
+
+
+def _timer_for(made, callback):
+    [timer] = [timer for owner, timer in made if owner == callback]
+    return timer
+
+
 def _settle():
     import time
 
@@ -232,9 +297,9 @@ def _exercise_layout():
 
     window, _client = _window(CALLS_READY)
     assert [page.get_name() for page in window.stack.get_pages()] == [
-        "messages", "calls", "notifications", "photos"]
+        "messages", "contacts", "calls", "notifications", "photos"]
     assert [page.get_title() for page in window.stack.get_pages()] == [
-        "Messages", "Calls", "Notifications", "Photos"]
+        "Messages", "Contacts", "Calls", "Notifications", "Photos"]
     assert window.header.get_title_widget() is window.switcher
     assert not window.switcher_bar.get_reveal()
     assert window.stack.get_visible_child_name() == "messages"
@@ -849,12 +914,15 @@ def _exercise_notifications():
 
 def _exercise_close():
     # With the real GLib timer: closing the window removes the armed source.
-    window, client = _window(NOTIFICATIONS_ON)
+    from blueferry.ui.util import glib_timer
+
+    factory, made = _recording(glib_timer)
+    window, client = _window(NOTIFICATIONS_ON, timer=factory)
     window.show_tab("notifications")
     _settle()
     client.take("notifications")[1]({"enabled": True, "content": True, "notifications": []})
     client.emit("notifications-changed")
-    timer = window.notifications.history._timer
+    timer = _timer_for(made, window.notifications.history.refresh)
     assert timer.active
     window.close()
     _settle()
@@ -864,8 +932,560 @@ def _exercise_close():
     assert not timer.active and not window.phone_card._status_read.pending
 
 
+def _exercise_volume():
+    window, client = _window()
+    card = window.phone_card
+    down, up, level = card.volume_buttons["down"], card.volume_buttons["up"], card.volume_level
+    # Media control off: neither the buttons nor the level.
+    assert not down.get_visible() and not up.get_visible() and not level.get_visible()
+    client.answer_status({**CALLS_READY, "media_control_enabled": True})
+    assert not up.get_visible(), "waiting for the media service"
+    client.take("media")[1]({
+        "available": True, "player": {"state": "playing", "volume": 0.4},
+        "track": {"title": "Song"}, "supported_commands": ["pause", "volume-up"],
+    })
+    assert down.get_visible() and up.get_visible()
+    assert level.get_visible() and level.get_label() == "Volume 40%"
+    assert up.get_sensitive() and not down.get_sensitive()
+    assert up.get_tooltip_text() == "Turn the iPhone volume up"
+    assert down.get_tooltip_text() == (
+        "The current iPhone player does not offer volume control")
+    # The buttons sit between the transport buttons and the hint.
+    order = []
+    child = card.media_box.get_first_child()
+    while child is not None:
+        order.append(child)
+        child = child.get_next_sibling()
+    assert order.index(card.media_buttons["next"]) < order.index(down) < order.index(
+        level) < order.index(up) < order.index(card.media_hint)
+    up.emit("clicked")
+    client.take(("media-command", "volume-up"))[1](None)
+    down.emit("clicked")  # not offered: nothing is sent
+    assert ("media-command", "volume-down") not in client.names()
+    # A refused step says why and reads the player again.
+    toasts = []
+    card._toast = toasts.append
+    up.emit("clicked")
+    client.take(("media-command", "volume-up"))[2]("Not ready")
+    assert toasts == ["Not ready"]
+    # Commands not known yet: both offered; no level reported: no label.
+    client.take("media")[1]({
+        "available": True, "player": {"state": "paused"}, "track": {"title": "Song"},
+        "supported_commands_known": False,
+    })
+    assert up.get_sensitive() and down.get_sensitive() and not level.get_visible()
+    down.emit("clicked")
+    client.take(("media-command", "volume-down"))
+    # The media service went away: hidden again.
+    client.emit("now-playing-changed")
+    client.take("media")[1]({"available": False})
+    assert not up.get_visible() and not down.get_visible() and not level.get_visible()
+    window.destroy()
+
+
+def _pin_records(*, removed=True):
+    return [
+        {"key": "k1", "id": 1, "app_id": "com.example.Mail", "app_name": "Mail",
+         "title": "Invoice", "time": "2026-10-26T09:00:00+00:00",
+         "pinned": True, "removed": removed, "actionable": False},
+        {"key": "k2", "id": 2, "app_id": "com.example.Chat", "app_name": "<b>Chat</b>",
+         "title": "Kim", "time": "2026-10-26T10:00:00+00:00",
+         "pinned": False, "removed": False, "actionable": True},
+        {"app_name": "Old", "time": "2026-10-26T08:00:00+00:00"},  # an older daemon
+    ]
+
+
+def _pin_buttons(row):
+    from gi.repository import Gtk
+
+    return [w for w in _descendants(row)
+            if isinstance(w, Gtk.Button) and w.get_icon_name() == "view-pin-symbolic"]
+
+
+def _exercise_pins():
+    from blueferry import notification_pin_view as pins
+    from tests.client_fakes import ManualRunner
+
+    runner = ManualRunner()
+    status = {
+        **NOTIFICATIONS_ON, "notification_muted_app_count": 1,
+        "notification_content_shown": True,
+    }
+    factory, made = _recording(runner.timer)
+    window, client = _window(status, timer=factory)
+    page = window.notifications
+    timer = _timer_for(made, page.history.refresh)
+    toasts = []
+    page._toast = toasts.append
+    assert "apps" not in client.names(), "hidden tab: the muted apps are not read"
+    window.show_tab("notifications")
+    _settle()
+    client.take("apps")[1]({"apps": [
+        {"app_id": "com.example.Chat", "app_name": "<b>Chat</b>", "muted": True, "seen": True},
+    ], "mute_available": True})
+    client.take("notifications")[1]({
+        "enabled": True, "content": True, "pins_max": 20, "notifications": _pin_records(),
+    })
+    mail, chat, old = _rows(page.list)
+    # Pinned and removed on the iPhone: marked, dimmed, Unpin offered.
+    assert mail.has_css_class("dim-label")
+    assert mail.get_subtitle() == "Invoice\nRemoved on iPhone"
+    [unpin] = _pin_buttons(mail)
+    assert unpin.get_tooltip_text() == pins.UNPIN_TOOLTIP and unpin.has_css_class("accent")
+    assert unpin.get_sensitive()
+    # A muted app's row is dimmed; it can still be pinned.
+    assert chat.has_css_class("dim-label") and chat.get_title() == "<b>Chat</b>"
+    [pin] = _pin_buttons(chat)
+    assert pin.get_tooltip_text() == pins.PIN_TOOLTIP and not pin.has_css_class("accent")
+    # Without a key (older daemon): no pin control, not dimmed.
+    assert _pin_buttons(old) == [] and not old.has_css_class("dim-label")
+
+    # Pinning: one call per row at a time, then a read; errors as toasts.
+    pin.emit("clicked")
+    [pin] = _pin_buttons(_rows(page.list)[1])
+    assert not pin.get_sensitive()
+    pin.emit("clicked")
+    _name, _ok, failed = client.take(("pin", "k2", True))
+    assert ("pin", "k2", True) not in client.names()
+    failed(pins.FULL_TEXT)
+    assert toasts == [pins.FULL_TEXT] and timer.active
+    assert _pin_buttons(_rows(page.list)[1])[0].get_sensitive()
+    [unpin] = _pin_buttons(_rows(page.list)[0])
+    unpin.emit("clicked")
+    client.take(("pin", "k1", False))[1](False)
+    timer.fire()
+
+    # At the limit: Pin is greyed out with the reason, Unpin still works.
+    client.take("notifications")[1]({
+        "enabled": True, "content": True, "pins_max": 1,
+        "notifications": _pin_records(removed=False),
+    })
+    mail, chat, _old = _rows(page.list)
+    assert not mail.has_css_class("dim-label")
+    assert _pin_buttons(mail)[0].get_sensitive()
+    [pin] = _pin_buttons(chat)
+    assert not pin.get_sensitive() and pin.get_tooltip_text() == pins.pin_limit_text(1)
+
+    # NotificationAppsChanged rereads the muted apps while the tab is shown.
+    client.emit("notification-apps-changed")
+    client.take("apps")[1]({"apps": [], "mute_available": True})
+    assert not _rows(page.list)[1].has_css_class("dim-label")
+    # An answer the model drops keeps the pin keys of the rows on screen.
+    _check_dropped_answers()
+    page.refresh_button.emit("clicked")
+    _call, late, _failed = client.take("notifications")
+    window.show_tab("messages")
+    _settle()
+    late({"enabled": True, "content": True, "pins_max": 20, "notifications": [
+        {**record, "key": "late"} for record in _pin_records()
+    ]})
+    assert page._snapshot == {} and page.history.rows == []
+    window.show_tab("notifications")
+    _settle()
+    client.take("apps")[1]({"apps": [], "mute_available": True})
+    client.take("notifications")[1]({
+        "enabled": True, "content": True, "pins_max": 20, "notifications": _pin_records(),
+    })
+    _pin_buttons(_rows(page.list)[1])[0].emit("clicked")
+    client.take(("pin", "k2", True))[1](True)
+    # Storage locks or the content is hidden: the records go with the rows.
+    for changed in ({"storage_state": "locked"},
+                    {"notification_content_shown": False}):
+        client.answer_status(status)
+        while "notifications" in client.names():
+            client.take("notifications")[1]({
+                "enabled": True, "content": True, "pins_max": 20,
+                "notifications": _pin_records(),
+            })
+        assert page._snapshot and page.history.rows
+        client.answer_status({**status, **changed})
+        assert page._snapshot == {}, changed
+        while "notifications" in client.names():
+            client.take("notifications")
+    client.answer_status(status)
+    while "notifications" in client.names():
+        client.take("notifications")[1]({
+            "enabled": True, "content": True, "pins_max": 20, "notifications": _pin_records(),
+        })
+    # Hidden: records and muted apps are forgotten, nothing is read.
+    window.show_tab("messages")
+    _settle()
+    assert page._snapshot == {} and page.history.rows == []
+    client.emit("notification-apps-changed")
+    assert "apps" not in client.names()
+    window.destroy()
+
+
+def _check_dropped_answers():
+    """The pin records follow only the answers the shared model takes."""
+    from blueferry import notification_pin_view as pins
+    from blueferry.ui.notifications import _SnapshotRunner
+
+    class Queue:
+        def submit(self, _operation, done, failed, _finished):
+            self.done, self.failed = done, failed
+
+    def records(prefix):
+        return {"notifications": [
+            {**record, "key": f"{prefix}-{record['key']}"} if "key" in record else record
+            for record in _pin_records()
+        ]}
+
+    def keys():
+        return [pins.pin_row_extras(record)["key"] for record in state["snapshot"][
+            "notifications"]]
+
+    state = {"rows": ["on screen"], "snapshot": records("shown")}
+    queue = Queue()
+    runner = _SnapshotRunner(
+        queue, rows=lambda: state["rows"], get=lambda: state["snapshot"],
+        put=lambda value: state.__setitem__("snapshot", value),
+    )
+    seen = []
+
+    def accept(_value):
+        state["rows"] = ["new rows"]
+
+    # Superseded or unwatched: the model keeps its rows, so the old records stay.
+    runner.submit(None, lambda _value: seen.append(keys()))
+    queue.done(records("superseded"))
+    assert seen == [["superseded-k1", "superseded-k2", ""]], "visible while rendering"
+    assert keys() == ["shown-k1", "shown-k2", ""]
+    runner.submit(None, None, lambda _message: None)
+    queue.failed("Timed out")
+    assert keys() == ["shown-k1", "shown-k2", ""]
+    # Taken: the new records belong to the new rows.
+    runner.submit(None, accept)
+    queue.done(records("taken"))
+    assert keys() == ["taken-k1", "taken-k2", ""]
+    runner.submit(None, None, lambda _message: accept(None))
+    queue.failed("Timed out")
+    assert state["snapshot"] == {}
+
+
+CARDS_ON = {**CALLS_READY, "contact_card_count": 2, "contact_card_epoch": 1,
+            "search_result_limit": 50}
+
+
+def _cards_page(offset=0, total=2, query=""):
+    cards = [
+        {"id": "c1", "name": "<b>Ada</b> Lovelace", "primary": "+15550001",
+         "phone_count": 1},
+        {"id": "c2", "name": "Bob", "organization": "Example Inc."},
+    ]
+    return {"contacts": cards[offset:], "total": total, "offset": offset, "query": query}
+
+
+ADA_CARD = {
+    "id": "c1", "name": "<b>Ada</b> Lovelace", "organization": "Analytical",
+    "title": "Countess",
+    "phones": [{"kind": "mobile", "label": "", "value": "+1 555 0001",
+                "number": "+15550001"}],
+    "emails": [{"kind": "work", "label": "", "value": "ada@example.org"}],
+    "addresses": [{"kind": "home", "label": "", "street": "1 Main St",
+                   "locality": "London", "postal_code": "N1"}],
+}
+
+
+def _exercise_contacts():
+    from tests.client_fakes import ManualRunner
+
+    runner = ManualRunner()
+    window, client = _window(timer=runner.timer)
+    page = window.contacts
+    client.answer_status(CARDS_ON)
+    assert not [n for n in client.names() if isinstance(n, tuple) and n[0] == "cards"], (
+        "hidden tab: nothing is read")
+    window.show_tab("contacts")
+    _settle()
+    client.take(("cards", 0, ""))[1](_cards_page(total=3))
+    assert page.list_stack.get_visible_child_name() == "list"
+    rows = _rows(page.list)
+    # Plain text, never markup.
+    assert [row.get_title() for row in rows] == ["<b>Ada</b> Lovelace", "Bob"]
+    assert not rows[0].get_use_markup()
+    # The avatars show the presenter's initials (contacts_view.initials).
+    avatars = [w for row in rows for w in _descendants(row) if type(w).__name__ == "Avatar"]
+    assert [a.get_text() for a in avatars] == ["L", "B"]
+    assert page.count_label.get_label() == "3 contacts"
+    assert page.more_button.get_visible()
+    page.more_button.emit("clicked")
+    client.take(("cards", 2, ""))[1]({"contacts": [{"id": "c3", "name": "Chloé"}],
+                                      "total": 3, "offset": 2, "query": ""})
+    assert [row.get_title() for row in _rows(page.list)] == [
+        "<b>Ada</b> Lovelace", "Bob", "Chloé"]
+    assert _rows(page.list)[0] is rows[0], "a further page keeps the shown rows"
+    assert not page.more_button.get_visible()
+
+    # Typing waits for a pause, then reads the first page for the query.
+    page.search_entry.set_text("ad")
+    assert not [n for n in client.names() if isinstance(n, tuple) and n[0] == "cards"]
+    runner.fire_timers()
+    client.take(("cards", 0, "ad"))[1]({"contacts": [], "total": 0, "offset": 0,
+                                        "query": "ad"})
+    assert page.list_stack.get_visible_child_name() == "placeholder"
+    assert page.list_placeholder.get_title() == "No Matching Contacts"
+    page.search_entry.set_text("")
+    runner.fire_timers()
+    client.take(("cards", 0, ""))[1](_cards_page())
+
+    # Opening a card shows every detail; Call asks first, Message opens New Message.
+    page.list.emit("row-activated", _rows(page.list)[0])
+    client.take(("card", "c1"))[1]((ADA_CARD, b""))
+    assert page.card_stack.get_visible_child_name() == "card"
+    assert page.title_label.get_label() == "<b>Ada</b> Lovelace"
+    assert page.avatar.get_text() == "L"
+    assert page.subtitle_label.get_label() == "Countess · Analytical"
+    details = [(row.get_subtitle(), row.get_title()) for row in _rows(page.sections)]
+    assert details == [("Mobile", "+1 555 0001"), ("Work", "ada@example.org"),
+                       ("Home", "1 Main St\nN1 London")]
+    page.call_button.emit("clicked")
+    client.answer_status(CARDS_ON)
+    _settle()
+    assert "+15550001" in window._dial_dialog.get_body()
+    window._dial_dialog.force_close()
+    page.message_button.emit("clicked")
+    _settle()
+    assert window.stack.get_visible_child_name() == "messages"
+    assert window.messages._new_recipient.get_text() == "+15550001"
+    window.messages._new_message_dialog.force_close()
+
+    # A new epoch reloads the list and reads the open card again; a stale
+    # id says so.
+    window.show_tab("contacts")
+    _settle()
+    while any(isinstance(n, tuple) and n[0] == "cards" for n in client.names()):
+        client.take(next(n for n in client.names() if isinstance(n, tuple) and n[0] == "cards"))
+    page.open_contact("c1")
+    client.take(("card", "c1"))[1]((ADA_CARD, b""))
+    client.answer_status({**CARDS_ON, "contact_card_epoch": 2})
+    client.take(("cards", 0, ""))[1](_cards_page())
+    client.take(("card", "c1"))[1]((ADA_CARD, b""))
+    page.open_contact("gone")
+    assert page.card_banner.get_revealed()
+    assert page.card_banner.get_title() == (
+        "This contact changed or was removed. Reload the list.")
+    assert ("cards", 0, "") in client.names(), "the list is read again"
+
+    # Leaving the tab forgets the cards.
+    page.open_contact("c1")
+    client.take(("card", "c1"))[1]((ADA_CARD, b""))
+    assert page.title_label.get_label() == "<b>Ada</b> Lovelace"
+    window.show_tab("messages")
+    _settle()
+    assert _rows(page.list) == [] and page.book.photo == b""
+    # Nothing of the card stays in the hidden widgets either.
+    assert page.title_label.get_label() == "" and page.subtitle_label.get_label() == ""
+    assert page.avatar.get_text() == "" and page.sections.get_first_child() is None
+    window.destroy()
+
+
+def _png() -> bytes:
+    from gi.repository import GdkPixbuf
+
+    pixels = GdkPixbuf.Pixbuf.new(GdkPixbuf.Colorspace.RGB, False, 8, 8, 8)
+    pixels.fill(0x3366ccff)
+    ok, data = pixels.save_to_bufferv("png", [], [])
+    assert ok
+    return bytes(data)
+
+
+def _exercise_contact_photo():
+    from blueferry.models import BackendStatus
+
+    photos_on = {**CARDS_ON, "contact_photos": True, "contact_photos_state": "on"}
+    window, client = _window(photos_on)
+    page = window.contacts
+    decoder = client.runners["contact-photo"]
+    window.show_tab("contacts")
+    _settle()
+    client.take(("cards", 0, ""))[1](_cards_page())
+    page.open_contact("c1")
+    client.take(("card", "c1"))[1]((ADA_CARD, _png()))
+    # The bytes are decoded on a worker, never on the GTK thread.
+    assert page.book.photo and page.avatar.get_custom_image() is None
+    assert len(decoder.pending) == 1
+    decoder.run_tasks()
+    assert page.avatar.get_custom_image() is not None
+
+    # Any status answer that turns photos off drops the shown photo, even one
+    # the Messages tab asked for and with the card itself unchanged.
+    window.messages._refresh_status()
+    client.take("status")[1](BackendStatus.from_dict(
+        {**CARDS_ON, "contact_photos": False}))
+    assert page.book.photo == b"" and page.book.card["open"]
+    assert page.avatar.get_custom_image() is None
+
+    # Back on: the card is read again; a decode that finishes after photos
+    # became unknown shows nothing.
+    client.answer_status(photos_on)
+    client.take(("card", "c1"))[1]((ADA_CARD, _png()))
+    while ("cards", 0, "") in client.names():
+        client.take(("cards", 0, ""))
+    assert len(decoder.pending) == 1
+    client.answer_status({**photos_on, "contact_photos_state": "unknown"})
+    decoder.run_tasks()
+    assert page.book.photo == b"" and page.avatar.get_custom_image() is None
+
+    # A failed status read counts as unknown too.
+    client.answer_status(photos_on)
+    client.take(("card", "c1"))[1]((ADA_CARD, _png()))
+    decoder.run_tasks()
+    assert page.avatar.get_custom_image() is not None
+    window.messages._refresh_status()
+    client.take("status")[2]("Timed out")
+    assert page.avatar.get_custom_image() is None
+    window.destroy()
+
+
+SEARCH_ANSWER = {
+    "query": "noon", "limit": 20,
+    "conversations": {"total": 1, "results": [
+        {"thread_key": "t1", "name": "Ada", "is_group": False}]},
+    "messages": {"total": 3, "results": [
+        {"thread_key": "t1", "handle": "h9", "thread_name": "Ada", "sender": "Ada",
+         "snippet": "<i>at</i> noon", "match_start": 10, "match_length": 4}]},
+    "contacts": {"total": 1, "results": [{"id": "c1", "name": "Ada Lovelace"}]},
+    "calls": {"total": 1, "results": [
+        {"id": "call-1", "direction": "missed", "timestamp": "2026-10-06T14:36:00",
+         "address": "+41790000001", "name": "Anna"}]},
+}
+
+
+def _exercise_search():
+    from blueferry.ui.search import snippet_markup
+    from tests.client_fakes import ManualRunner
+
+    runner = ManualRunner()
+    window, client = _window(timer=runner.timer)
+    client.answer_status({**CARDS_ON, "call_history_enabled": True})
+    search = window.search
+    window.activate_action("win.search", None)
+    _settle()
+    assert search.get_root() is window, "presented over the window"
+    search.entry.set_text("noon")
+    assert ("search", "noon") not in client.names(), "waits for a pause"
+    runner.fire_timers()
+    client.take(("search", "noon"))[1](SEARCH_ANSWER)
+    rows = _rows(search.groups)
+    assert len(rows) == 4
+    # Escaped, with only the match in bold.
+    assert rows[1].get_subtitle() == "Ada\n&lt;i&gt;at&lt;/i&gt; <b>noon</b>"
+    assert snippet_markup("<a> b", (4, 1)) == "&lt;a&gt; <b>b</b>"
+    groups = [w.get_title() for w in _descendants(search.groups)
+              if type(w).__name__ == "PreferencesGroup"]
+    assert groups == ["Conversations", "Messages · 2 more matches", "Contacts", "Calls"]
+
+    # Changed history or call history drops the shown hits and searches again.
+    for signal in ("history-changed", "call-history-changed"):
+        if signal == "history-changed":
+            client.emit(signal, {})
+        else:
+            client.emit(signal)
+        assert _rows(search.groups) == [], signal
+        assert search.stack.get_visible_child_name() == "loading"
+        runner.fire_timers()
+        client.take(("search", "noon"))[1](SEARCH_ANSWER)
+        assert len(_rows(search.groups)) == 4
+    # So does a changed source in any status answer, here the Messages tab's.
+    from blueferry.models import BackendStatus
+
+    window.messages._refresh_status()
+    client.take("status")[1](BackendStatus.from_dict(
+        {**CARDS_ON, "call_history_enabled": False}))
+    assert _rows(search.groups) == []
+    runner.fire_timers()
+    client.take(("search", "noon"))[1](SEARCH_ANSWER)
+    # A window nobody sees closes the search and forgets it; a late answer
+    # brings nothing back.
+    client.emit("history-changed", {})
+    runner.fire_timers()
+    late = client.take(("search", "noon"))[1]
+    window.set_visible(False)
+    _settle()
+    late(SEARCH_ANSWER)
+    assert search.entry.get_text() == "" and search.model.query == ""
+    assert _rows(search.groups) == [] and search.get_root() is None
+    window.present()
+    _settle()
+    window.open_search()
+    _settle()
+    search.entry.set_text("noon")
+    runner.fire_timers()
+    client.take(("search", "noon"))[1](SEARCH_ANSWER)
+    rows = _rows(search.groups)
+
+    # A message hit opens its conversation; closing forgets the query.
+    rows[1].emit("activated")
+    _settle()
+    assert search.entry.get_text() == "" and search.model.query == ""
+    assert window.stack.get_visible_child_name() == "messages"
+    assert window.messages._focused_handle == "h9"
+    assert window.messages._pending_thread_key == "t1"
+
+    # The hit is centred once and stays marked; another conversation forgets it.
+    from blueferry.models import Thread
+
+    def thread(key, handles):
+        return Thread.from_dict({
+            "key": key, "name": key, "is_group": False, "recipients": [f"+4179{key}"],
+            "reply_ready": True, "last_ts": "2026-10-06T14:36:00",
+            "messages": [{"handle": h, "body": h, "timestamp": "2026-10-06T14:36:00"}
+                         for h in handles]})
+
+    messages = window.messages
+    messages._apply_threads([thread("t1", ["h1", "h9"]), thread("t2", ["h2"])])
+    messages._select_pending_thread()
+    _settle()
+    assert messages._state.selected_key == "t1"
+    assert messages._focused_handle == "h9" and messages._focus_pending is False
+    messages.open_thread("t2")
+    _settle()
+    assert messages._focused_handle == "" and messages._focus_pending is False
+
+    window.open_search_target({"kind": "contact", "contact_id": "c1"})
+    _settle()
+    assert window.stack.get_visible_child_name() == "contacts"
+    assert ("card", "c1") in client.names()
+
+    window.open_search_target({"kind": "call", "call_id": "call-1"})
+    _settle()
+    assert window.stack.get_visible_child_name() == "calls"
+    from blueferry.models import CallHistoryEntry
+
+    client.take(("calls", 200))[1]([CallHistoryEntry.from_dict({
+        "direction": "missed", "timestamp": "2026-10-06T14:36:00",
+        "address": "+41790000001", "name": "Anna", "id": "call-1"})])
+    [row] = _rows(window.calls.recent_list)
+    assert row.has_css_class("call-focused")
+    assert window.calls._focus_pending is False, "scrolled to once"
+    window.calls.missed_filter.set_active(True)
+    window.calls.all_filter.set_active(True)
+    [row] = _rows(window.calls.recent_list)
+    assert row.has_css_class("call-focused"), "a re-render keeps the mark"
+    window.show_tab("messages")
+    _settle()
+    assert window.calls._focused_call == "", "leaving the tab forgets the hit"
+
+    # A daemon without Search says so instead of searching.
+    client.answer_status({"daemon": True, "map": True})
+    window.open_search()
+    _settle()
+    search.entry.set_text("noon")
+    runner.fire_timers()
+    assert ("search", "noon") not in client.names()
+    assert search.placeholder.get_title() == "Search Unavailable"
+    search.close()
+    window.destroy()
+
+
 if __name__ == "__main__":
     {
+        "contacts": _exercise_contacts,
+        "contact-photo": _exercise_contact_photo,
+        "search": _exercise_search,
+        "volume": _exercise_volume,
+        "pins": _exercise_pins,
         "layout": _exercise_layout,
         "card": _exercise_card,
         "dial-pad": _exercise_dial_pad,
