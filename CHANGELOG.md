@@ -4,13 +4,14 @@
 
 ### Added
 
-- Shared presenter `file_drop_view` for files dropped on the KDE and GTK
-  main windows: it holds the decisions and texts, so both clients send the
-  files to a **Send to…** target the same way (the only target at once, a
-  picker for several with the session's last pick preselected, or an
-  explanation when no `share` plugin is there). Only local files, 1 to 64;
-  folders and remote URIs are skipped with a note, and a drop waits while
-  "Send to…" is sending.
+- Shared presenter `file_drop_view` for the coming drop zones of the KDE
+  and GTK main windows; nothing changes for users until those land. It
+  holds the decisions and texts, so both clients will send dropped files to
+  a **Send to…** target the same way (the only target at once, a picker for
+  several with the session's last pick preselected, or an explanation when
+  no `share` plugin is there). Only local files, 1 to 64; folders and
+  remote URIs are skipped with a note, and a client never runs two
+  `SendFiles` at once across "Send to…", card sends and drops.
 
 ## [0.9.1](https://github.com/erikwb/blueferry/releases/tag/v0.9.1) - 2026-10-30
 
