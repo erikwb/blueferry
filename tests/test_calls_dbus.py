@@ -554,6 +554,9 @@ def test_call_audio_methods_reject_wrongly_typed_arguments(calls_service) -> Non
         ("SetCallAudioDeviceForCall", (True, "x"), "bs"),
         ("SetCallAudioDeviceForCall", ("input", ["x"]), "sas"),
         ("ListCallAudioDevices", ("output",), "s"),
+        # bool() would read the string "false" as muting.
+        ("SetCallMuted", ("false",), "s"),
+        ("SetCallMuted", (0,), "i"),
     ):
         outcome = _raw_call(name, CALLS_IFACE, method, args, signature)
         assert outcome == {"error": "org.freedesktop.DBus.Error.InvalidArgs"}, (method, signature)
