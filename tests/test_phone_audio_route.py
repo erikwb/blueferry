@@ -1060,26 +1060,33 @@ def test_delay_follows_properties_changed_and_announces_it():
     bus.receivers["TransportPropertiesChanged"](
         FD, "org.bluez.MediaTransport1", {"Delay": 10984}, [])
     assert len(changes) == before + 1
-    # Invalidated without a value: still reporting, the last value stays.
+    # BlueZ invalidates Delay only once the transport stops exporting it.
     bus.receivers["TransportPropertiesChanged"](
         FD, "org.bluez.MediaTransport1", {}, ["Delay"])
-    assert _delay(subject) == (1098, True)
-    assert len(changes) == before + 1
+    assert _delay(subject) == (None, False)
+    assert len(changes) == before + 2
 
 
-def test_an_invalidated_delay_without_a_value_still_reports():
-    bus = Bus(tree(transport=True, state="active"))
+@pytest.mark.parametrize("state", ["active", "idle"])
+def test_an_invalidated_delay_counts_as_no_delay_reporting(state):
+    bus = Bus(tree(transport=True, state=state, delay=500))
     subject, _timers, changes = route(bus)
     subject.start()
-    assert _delay(subject) == (None, False)
+    assert _delay(subject)[1] is True
     before = len(changes)
     bus.receivers["TransportPropertiesChanged"](
         FD, "org.bluez.MediaTransport1", {}, ["Delay"])
-    assert _delay(subject) == (None, True)
+    assert _delay(subject) == (None, False)
     assert len(changes) == before + 1
+    # Invalidated again while already absent: nothing to announce.
     bus.receivers["TransportPropertiesChanged"](
-        FD, "org.bluez.MediaTransport1", {"Delay": 500}, [])
-    assert _delay(subject) == (50, True)
+        FD, "org.bluez.MediaTransport1", {}, ["Delay"])
+    assert len(changes) == before + 1
+    # The property comes back with a value.
+    bus.receivers["TransportPropertiesChanged"](
+        FD, "org.bluez.MediaTransport1", {"Delay": 700, "State": "active"}, [])
+    assert _delay(subject) == (70, True)
+    assert len(changes) == before + 2
 
 
 def test_delay_ignores_other_transports_and_bad_values():
@@ -1187,4 +1194,4 @@ def test_audio_status_command_prints_the_av_sync_delay(monkeypatch) -> None:
     monkeypatch.setattr(cli_audio, "BackendClient", Client)
     result = CliRunner().invoke(app, ["audio", "status"], env={"COLUMNS": "200"})
     assert result.exit_code == 0, result.output
-    assert "A/V sync: 110 ms delay reported to the iPhone." in result.output
+    assert "A/V sync: this computer reports 110 ms." in result.output

@@ -73,8 +73,8 @@ def av_sync(status: Mapping[str, Any], *, terse: bool = False) -> str:
     """The A/V sync delay of the iPhone's audio stream, as one plain line.
 
     Empty while no stream is open (``phone_audio_delay_reporting`` is null or
-    missing). With delay reporting the line names the delay the phone shifts
-    its video by; without it, it warns that video may run ahead of the sound.
+    missing). With delay reporting the line names the delay this computer
+    reports; without it, it warns that video may run ahead of the sound.
     ``terse`` gives a short fragment without a full stop for one-line
     summaries such as the terminal client's status line.
     """
@@ -90,7 +90,7 @@ def av_sync(status: Mapping[str, Any], *, terse: bool = False) -> str:
         return _("A/V sync: reporting") if terse else _("A/V sync: delay reporting active.")
     if terse:
         return _("A/V sync: {delay} ms").format(delay=delay)
-    return _("A/V sync: {delay} ms delay reported to the iPhone.").format(delay=delay)
+    return _("A/V sync: this computer reports {delay} ms.").format(delay=delay)
 
 
 def _playing_hint(playing: str, *, mismatch: bool) -> str:

@@ -71,12 +71,13 @@ Andere Audioregeln und die angebotenen Audiorollen bleiben erhalten.
 Spielt das iPhone ein Video mit dem Ton auf diesem Computer, verzögert es das
 Bild um die Latenz, die dieser Computer über Bluetooth meldet
 (AVDTP-Delay-Reporting). Die Clients zeigen die gemeldete Verzögerung neben dem
-iPhone-Ton-Status an, zum Beispiel *A/V sync: 110 ms delay reported to the
-iPhone.* Die Verzögerung erscheint nur, solange der Ton zu diesem Computer
+iPhone-Ton-Status an, zum Beispiel *A/V sync: this computer reports 110 ms.*
+Die Verzögerung erscheint nur, solange der Ton zu diesem Computer
 fließt; sonst steht dort nur *A/V sync: delay reporting active.* `blueferry
 doctor` prüft sie, während der Ton hier spielt.
-Meldet er, dass Delay-Reporting nicht ausgehandelt ist, sind Adapter oder BlueZ
-dafür zu alt und das Video kann dem Ton vorauslaufen.
+Warnt er, dass BlueZ keine Verzögerung exportiert, meldet BlueZ (5.70 bis 5.77
+nur, solange sie über null liegt) oder der Audioserver keine, und das Video kann
+dem Ton vorauslaufen.
 
 ## Datenschutz
 

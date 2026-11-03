@@ -493,7 +493,7 @@ def test_doctor_skips_the_hfp_plugin_check_without_calls(monkeypatch, caplog) ->
         ),
         (
             {"phone_audio_delay_reporting": False, "phone_audio_delay_ms": None},
-            "delay reporting not negotiated (older adapter or BlueZ)",
+            "BlueZ exports no delay for the iPhone's audio stream",
             False,
         ),
         (

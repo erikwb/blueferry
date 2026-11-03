@@ -904,8 +904,9 @@ Updates follow `PropertiesChanged` (`State` and `Delay`). The delay is only
 reported while the transport's `State` is `active`; an idle or pending
 transport reports `phone_audio_delay_ms` as `null`, because its last value
 would be stale, and `phone_audio_delay_reporting` still says whether `Delay`
-exists. An invalidated `Delay` keeps the last report. Observed 2026-10-30 (iPhone, AAC, Intel
-AX200, BlueZ 5.87, PipeWire 1.6.9): `Delay` went 0 → 316 → 1098 (later up to
+exists. BlueZ invalidates `Delay` only once it no longer exists, so an
+invalidated `Delay` reads like a transport without it. Observed 2026-10-30
+(iPhone, AAC, Intel AX200, BlueZ 5.87, PipeWire 1.6.9): `Delay` went 0 → 316 → 1098 (later up to
 1298) as PipeWire reported latency.
 A follow-up test on 2026-11-02 (iPhone, video playing through the PC,
 transport `active`, BlueZ 5.87, PipeWire 1.6.9) showed that the
