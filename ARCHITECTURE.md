@@ -296,12 +296,13 @@ All paths are relative to `src/blueferry/` unless noted.
 | `qt/qml/NewMessageDialog.qml` | New message composition. |
 | `qt/qml/FileDropLayer.qml` | The window drop zone's overlay, target picker and "no target" explanation over `file_drop_view.py`; the `DropArea` itself sits in `Main.qml` below the pages, so card items that take files keep their own drop. `qt/plugin_surfaces.py` runs the shared `FileDrop` on its pool. |
 | `qt/qml/PhoneCard.qml` | The phone card left of the tabs: name, connection, battery/signal, now playing and quick switches (sound, away lock); opt-ins that are off stay greyed out with a hint. Folds behind a header button in a narrow window. |
-| `qt/qml/CallsTab.qml` | Calls tab: running calls as cards (answer, hold, hang up), dial pad, and the day-grouped recent calls (`RecentCallsPage.qml`). |
+| `qt/qml/CallsTab.qml` | Calls tab: running calls as cards (answer, hold, hang up), their speaker and microphone with a switch for this call only, dial pad, and the day-grouped recent calls (`RecentCallsPage.qml`). |
 | `qt/qml/NotificationsTab.qml` | Notifications tab: the opt-in recent-notification list, loaded only while shown. |
 | `qt/qml/ui/` | Shared building blocks of the design: `SectionHeader`, `ListRow`, `CardFrame`, `FilterBar`, `EmptyState`, `Notice`. |
 | `qt/qml/ContactPhotoSettings.qml` | Contact-photo checkbox; loaded only for daemons that report `contact_photos`. |
 | `qt/qml/OtpAutocopySettings.qml` | One-time code auto-copy checkbox; loaded only for daemons that report `otp_autocopy`. |
 | `qt/qml/PhoneCallsSettings.qml` | Phone-calls opt-in checkbox; loaded only for daemons that report `calls_enabled`. |
+| `qt/qml/CallAudioSettings.qml` | Speaker and microphone for calls (`call_audio_view.settings_view`); loaded only for daemons that report `calls_audio_output`. |
 | `qt/qml/PhoneStatusIndicator.qml` | Optional iPhone battery/signal indicator (loaded only when values are known; plain-text tooltip). |
 | `qt/qml/ExpandingMessageComposer.qml` | Growing message editor. |
 | `qt/qml/MessageBubble.qml` | Message bubble. |
@@ -408,6 +409,8 @@ dbus-python; the guard tolerates that.
   `CallsUnavailable`.
   Its `CallsChanged` invalidation on `Events1` has no arguments; caller
   numbers and names are only returned by the rate-limited `ListCalls`.
+  `ListCallAudioDevices`, `SetCallAudioDevice` and
+  `SetCallAudioDeviceForCall` choose the call speaker and microphone.
   Dialing has its own strict quota. Adding it did not change the API
   generation.
 
@@ -773,6 +776,23 @@ A change to these rules has to be made in both places.
   own experimental HFP plugin is active (`-E` without `-P hfp`, read from
   bluetoothd's argv by process name), the state becomes `bluez_conflict`
   and paging stops until the Classic link returns or oFono makes progress.
+- `calls.audio_devices` picks the call speaker and microphone. With the oFono
+  backend PipeWire shows a running call as two streams of the selected phone
+  (`bluez_input.<MAC>` playing to a sink, `bluez_output.<MAC>` recording from
+  a source), matched by `api.bluez5.address`/node name. While the controller
+  reports a call, the router reads `pw-dump` on its own worker (every second
+  for up to 20 s, re-armed on every call change, then every 5 s for
+  hot-plugged devices) and writes or deletes only those streams'
+  `target.object` in the `default` metadata with `pw-metadata`, after
+  checking that the node ID still has the stream's `object.serial`; system
+  defaults and other streams are never written. One failed read keeps the
+  last report and retries after a second; a second one (or a missing
+  `pw-dump`) reports `unavailable`. Switching calls off deletes the streams'
+  targets once more.
+  The saved choice (`calls_audio_output`/`_input`, a `node.name`) lives in
+  `settings.json`; a per-call choice is kept in memory and dropped when no
+  call is left. Results carry a generation, so a finished call's check is
+  ignored. Clients share `call_audio_view.py` for the wording.
 - `stop()` (daemon exit or switching calls off) sends `Powered=false`,
   flushed and without awaiting a reply, for the modem BlueFerry powered
   itself; a modem another oFono client powered is left alone.

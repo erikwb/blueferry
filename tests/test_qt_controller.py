@@ -1554,6 +1554,71 @@ def test_keypad_tones_are_cleaned_sent_to_the_call_and_clear_the_draft():
     assert controller.callTonesDraft == "" and drafts == ["12*#", ""]
 
 
+def test_call_audio_devices_are_read_saved_and_switched_per_call(monkeypatch):
+    from blueferry.models import CallsSnapshot
+
+    class AudioBackend:
+        def __init__(self):
+            self.requests = []
+
+        def call_audio_devices(self):
+            self.requests.append(("devices",))
+            return {"outputs": [{"name": "alsa_output.a50", "description": "A50"}],
+                    "inputs": [], "output": "", "input": ""}
+
+        def set_call_audio_device(self, direction, name):
+            self.requests.append(("save", direction, name))
+            return {"calls_audio_output": name, "calls_audio_input": ""}
+
+        def set_call_audio_device_for_call(self, direction, name):
+            self.requests.append(("call", direction, name))
+
+        def calls(self):
+            return CallsSnapshot()
+
+    backend = AudioBackend()
+    controller = BridgeController(backend=backend, setup=object(), subscribe=False, autostart=False)
+    monkeypatch.setattr(
+        controller,
+        "_run",
+        lambda operation, on_done=None, *_args, **_kwargs: (
+            on_done(operation()) if on_done is not None else operation()
+        ),
+    )
+    devices_changed = []
+    controller.callAudioDevicesChanged.connect(lambda: devices_changed.append(True))
+
+    controller.loadCallAudioDevices()  # an older or calls-off daemon: nothing is read
+    assert backend.requests == []
+
+    controller._status = {"calls_enabled": True, "calls_audio_output": "", "calls_audio_input": ""}
+    controller.loadCallAudioDevices()
+    controller.loadCallAudioDevices()
+    assert controller.callAudioDevices["outputs"][0]["name"] == "alsa_output.a50"
+    assert devices_changed == [True]  # an unchanged list is not announced again
+
+    controller.setCallAudioDevice("output", "alsa_output.a50")
+    assert controller.status["calls_audio_output"] == "alsa_output.a50"
+    settings = controller.callAudioSettingsView(controller.status, controller.callAudioDevices)
+    assert settings["rows"][0]["index"] == 1
+
+    controller.setCallAudioDeviceForCall("input", "")
+    assert backend.requests[-1] == ("call", "input", "")
+
+    # A call with audio starts: its switch gets fresh device lists.
+    backend.requests.clear()
+    controller._apply_calls(CallsSnapshot.from_dict({"state": "ready", "calls": [
+        {"call_id": "voicecall01", "state": "active"},
+    ], "audio": {"state": "ready", "output": {"stream": True, "description": "A50",
+                                               "selected": "alsa_output.a50"}}}))
+    assert backend.requests == [("devices",)]
+    view = controller.callAudioView(controller.phoneCallAudio, controller.callAudioDevices)
+    assert view["rows"][0]["using"] == "In use: A50"
+    controller._calls_unavailable()
+    assert controller.phoneCallAudio == {}
+    assert controller.callAudioView({}, {})["supported"] is False
+
+
 def test_keypad_clicks_go_to_the_active_call_in_order(monkeypatch):
     from blueferry.models import CallsSnapshot
 
