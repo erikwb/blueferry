@@ -483,6 +483,7 @@ class SettingsDialog(Adw.PreferencesDialog):
         self._phone_audio_group.set_visible(False)
         self._phone_audio_row = Adw.ActionRow(
             title=_("Play the iPhone's Sound on This Computer"),
+            use_markup=False,
         )
         self._phone_audio_switch = Gtk.Switch(valign=Gtk.Align.CENTER)
         self._phone_audio_switch.connect("notify::active", self._phone_audio_changed)
@@ -1812,7 +1813,10 @@ class SettingsDialog(Adw.PreferencesDialog):
         self._applying_phone_audio = True
         self._phone_audio_switch.set_active(audio["on_pc"])
         self._applying_phone_audio = False
-        self._phone_audio_row.set_subtitle(audio["hint"])
+        # The A/V sync line follows the route wording while a stream is open.
+        self._phone_audio_row.set_subtitle(
+            "\n".join(line for line in (audio["hint"], audio["sync"]) if line)
+        )
         self._phone_audio_row.set_sensitive(reachable and audio["available"])
 
     def _phone_audio_changed(self, switch, _property) -> None:

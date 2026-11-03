@@ -48,6 +48,12 @@
   preselected), or an explanation with a button to Settings › Plugins when
   no `share` plugin is there. Only local `file://` URIs, 1 to 64 files;
   folders and remote URIs are skipped.
+- Report the A/V sync delay of the iPhone's audio stream in `GetStatus`
+  (`phone_audio_delay_ms`, `phone_audio_delay_reporting`; the delay only while
+  the stream is active), show it next to the iPhone sound status, and check
+  AVDTP delay reporting in `blueferry doctor`.
+- GTK client: the iPhone sound rows in Settings and the quick switches show
+  the A/V sync line under the sound status.
 - Client models: `contacts_model` and `search_model` hold the paging,
   typing delay, stale-id and busy handling of the contact list and the
   global search for the KDE, GTK and terminal clients; recent-call rows

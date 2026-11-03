@@ -944,6 +944,29 @@ moves its `State` from `active` to `idle` while AMS still reports playback;
 GetStatus then reports route `pc` with `phone_audio_playing` `phone`, and
 picking this computer again returns to `pc`.
 
+A/V sync: when the phone and BlueZ negotiate AVDTP Delay Reporting,
+bluetoothd exports `MediaTransport1.Delay` (unit 1/10 ms) and sends the
+audio server's latency to the phone, which shifts video by it. GetStatus
+reports it as `phone_audio_delay_ms` with `phone_audio_delay_reporting`
+`true`; a transport without `Delay` reports `false`, no transport `null`.
+Updates follow `PropertiesChanged` (`State` and `Delay`). The delay is only
+reported while the transport's `State` is `active`; an idle or pending
+transport reports `phone_audio_delay_ms` as `null`, because its last value
+would be stale, and `phone_audio_delay_reporting` still says whether `Delay`
+exists. An invalidated `Delay` keeps the last report. Observed 2026-10-30 (iPhone, AAC, Intel
+AX200, BlueZ 5.87, PipeWire 1.6.9): `Delay` went 0 → 316 → 1098 (later up to
+1298) as PipeWire reported latency.
+A follow-up test on 2026-11-02 (iPhone, video playing through the PC,
+transport `active`, BlueZ 5.87, PipeWire 1.6.9) showed that the
+`bluez_input` node has no `latencyOffsetNsec`, only channel and resample
+properties plus a writable `ProcessLatency`. Setting `ProcessLatency` to
+50 ms left `Delay` at 1098 for 20 s; after pause and play PipeWire rebuilt
+the node, the override was gone, and `Delay` read 1298, the same +20 ms
+already seen on 2026-10-31 without any intervention, which comes from
+PipeWire's own buffering. PipeWire therefore reports only its own buffer at
+stream start; a user offset is not included and does not survive a stream
+restart, so BlueFerry offers no fine-tuning control for the delay.
+
 Hardware validation on 2026-10-25 UTC (MediaTek, BlueZ 5.87, PipeWire 1.6.9,
 WirePlumber 0.5.18): with normal adapter roles and a rule matching only the
 selected phone's `api.bluez5.address` with `bluez5.auto-connect = [ ]`, an

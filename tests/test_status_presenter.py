@@ -928,6 +928,13 @@ def test_gtk_phone_audio_switch_follows_the_reported_route():
     assert page._phone_audio_switch.active is True
     assert page._phone_audio_row.sensitive is True
     assert "own speaker" in page._phone_audio_row.subtitle
+    assert "A/V sync" not in page._phone_audio_row.subtitle
+    apply({"phone_audio_route": "pc", "phone_audio_delay_ms": 110,
+           "phone_audio_delay_reporting": True})
+    assert page._phone_audio_row.subtitle == (
+        "iPhone sound plays on this computer.\n"
+        "A/V sync: 110 ms delay reported to the iPhone."
+    )
     apply({"phone_audio_route": "pc"}, reachable=False)
     assert page._phone_audio_row.sensitive is False
     # Showing a status never switches anything.
@@ -1175,3 +1182,20 @@ def test_gtk_one_time_code_switch_is_not_undone_by_a_late_status():
     assert page.refreshes  # asks again instead of trusting the stale status
     page._apply_otp_autocopy(BackendStatus.from_dict({"otp_autocopy": True}), reachable=True)
     assert page._otp_switch.active is True and page._otp_row.sensitive is True
+
+
+def test_gtk_quick_sound_switch_shows_the_av_sync_line():
+    from blueferry.ui.quick_switches import PhoneAudioSwitch
+
+    status = {
+        "daemon": True, "phone_audio_route": "pc",
+        "phone_audio_delay_ms": None, "phone_audio_delay_reporting": False,
+    }
+    active, subtitle, sensitive = PhoneAudioSwitch._view(None, status)
+    assert active is True and sensitive is True
+    assert subtitle == (
+        "iPhone sound plays on this computer.\n"
+        "A/V sync: delay reporting not negotiated; video may be out of sync."
+    )
+    status["phone_audio_delay_reporting"] = None
+    assert PhoneAudioSwitch._view(None, status)[1] == "iPhone sound plays on this computer."
