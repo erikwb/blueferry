@@ -94,3 +94,34 @@ def test_switching_off_during_a_call_closes_its_desktop_view() -> None:
 
     assert [event.kind for event in events] == ["call_incoming", "call_ended"]
     assert controller.calls() == []
+
+
+def test_call_audio_devices_default_to_the_system_and_persist(tmp_path) -> None:
+    from blueferry.calls.settings import CallAudioSettings
+
+    path = tmp_path / "settings.json"
+    path.write_text('{"calls_enabled": true}')
+    path.chmod(0o600)
+    assert CallAudioSettings(path).get("output") == ""
+
+    CallAudioSettings(path).set("output", "alsa_output.usb-A50.stereo-chat")
+    CallAudioSettings(path).set("input", "")
+
+    saved = json.loads(path.read_text())
+    assert saved["calls_enabled"] is True
+    assert saved["calls_audio_output"] == "alsa_output.usb-A50.stereo-chat"
+    reread = CallAudioSettings(path)
+    assert (reread.get("output"), reread.get("input")) == ("alsa_output.usb-A50.stereo-chat", "")
+    with pytest.raises(ValueError):
+        reread.set("speaker", "x")
+
+
+def test_corrupt_call_audio_devices_read_as_the_system(tmp_path) -> None:
+    from blueferry.calls.settings import CallAudioSettings
+
+    path = tmp_path / "settings.json"
+    path.write_text(json.dumps({"calls_audio_output": 5, "calls_audio_input": "a\nb"}))
+    path.chmod(0o600)
+
+    settings = CallAudioSettings(path)
+    assert (settings.get("output"), settings.get("input")) == ("", "")

@@ -458,6 +458,30 @@
       <annotation name="io.weirdware.BlueFerry.Errors"
                   value="InvalidArgs,CallsUnavailable,CallFailed"/>
     </method>
+    <method name="ListCallAudioDevices">
+      <annotation name="org.freedesktop.DBus.Description"
+                  value="Speakers (outputs) and microphones (inputs) a call can use, read from PipeWire, with the saved choices; JSON"/>
+      <arg name="json" type="s" direction="out"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="NotReady,ResponseTooLarge"/>
+    </method>
+    <method name="SetCallAudioDevice">
+      <annotation name="org.freedesktop.DBus.Description"
+                  value="Save the device for every call: direction output or input, a PipeWire node.name or empty for the system default; returns the calls_audio_* GetStatus keys as JSON"/>
+      <arg name="direction" type="s" direction="in"/>
+      <arg name="name" type="s" direction="in"/>
+      <arg name="status_json" type="s" direction="out"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="InvalidArgs,NotReady"/>
+    </method>
+    <method name="SetCallAudioDeviceForCall">
+      <annotation name="org.freedesktop.DBus.Description"
+                  value="Use another device until no call is left: direction output or input, a node.name or empty for the system default; the result shows in ListCalls audio"/>
+      <arg name="direction" type="s" direction="in"/>
+      <arg name="name" type="s" direction="in"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="InvalidArgs,NotReady"/>
+    </method>
   </interface>
   <interface name="io.weirdware.BlueFerry.Events1">
     <annotation name="org.freedesktop.DBus.Description"

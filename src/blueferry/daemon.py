@@ -25,6 +25,7 @@ from blueferry.ancs.client import ACTION_DISCONNECTED, AncsClient
 from blueferry.audio_activity import audio_activity
 from blueferry.backend_lifecycle import installed_release
 from blueferry.backend_operations import BackendDependencies
+from blueferry.background_worker import BackgroundWorker
 from blueferry.bearer_supervisor import BearerSupervisor
 from blueferry.bluetooth_capabilities import (
     ancs_limited_vendor,
@@ -55,9 +56,10 @@ from blueferry.call_history import (
 from blueferry.call_history_repository import clear_call_history
 from blueferry.call_history_settings import CallHistorySettings
 from blueferry.call_history_sync import CallHistorySync
+from blueferry.calls.audio_devices import CallAudioRouter
 from blueferry.calls.controller import CallController
 from blueferry.calls.phone_status import SOURCE_HFP, LowBatteryMonitor, PhoneStatus
-from blueferry.calls.settings import CallsSettings
+from blueferry.calls.settings import CallAudioSettings, CallsSettings
 from blueferry.commands import run_command
 from blueferry.confirmed_groups import ConfirmedGroupsStore
 from blueferry.connectivity import Connectivity
@@ -373,7 +375,7 @@ class Daemon:
             mac=config.IPHONE_MAC,
             adapter=config.ADAPTER,
             resolve_contact=self.contacts.resolve,
-            on_calls_changed=self._emit_calls_changed,
+            on_calls_changed=self._calls_changed,
             on_state_changed=self._emit_status_soon,
             on_event=self.events.call,
             phone_reachable=lambda: self.bearers.bredr_connected,
@@ -396,6 +398,18 @@ class Daemon:
                 pins=pins,
             )
             if config.NOTIFICATION_HISTORY else None
+        )
+        # The speaker and microphone a call uses; inert while no call runs.
+        # pw-dump/pw-metadata run on their own worker.
+        self._call_audio_worker = BackgroundWorker("blueferry-call-audio", maximum=4)
+        self.call_audio = CallAudioRouter(
+            settings=CallAudioSettings(),
+            mac=config.IPHONE_MAC,
+            submit=self._call_audio_worker.submit,
+            run=run_command,
+            schedule=GLib.timeout_add_seconds,
+            cancel=GLib.source_remove,
+            on_changed=self._emit_calls_changed,
         )
         # Where the iPhone's media playback goes, using the desktop's roles.
         self.phone_audio_route = PhoneAudioRoute(
@@ -705,6 +719,10 @@ class Daemon:
 
     def _set_calls_enabled(self, enabled: bool) -> dict:
         selected = self.calls_settings.set(enabled)
+        if not selected:
+            # Queue the release before the hands-free link goes: the call
+            # streams (and their remembered target) still exist now.
+            self.call_audio.release()
         self.calls.set_enabled(selected)
         log.info("phone calls %s", "enabled" if selected else "disabled")
         self._emit_status()
@@ -766,6 +784,10 @@ class Daemon:
             version = str(stack.get("bluez_version") or "")
         finally:
             self._bluez_version = version
+
+    def _calls_changed(self) -> None:
+        self.call_audio.calls_changed(self.calls.in_call)
+        self._emit_calls_changed()
 
     def _emit_calls_changed(self) -> None:
         emit = getattr(self._dbus_service, "emit_calls_changed", None)
@@ -984,6 +1006,7 @@ class Daemon:
                 set_media_control=self._set_media_control,
                 calls=self.calls,
                 set_calls_enabled=self._set_calls_enabled,
+                call_audio=self.call_audio,
                 set_phone_battery_warning=self._set_battery_warning,
                 set_auto_profile_reset=self._set_auto_profile_reset,
                 set_media_mpris=self._set_media_mpris,
@@ -2239,6 +2262,8 @@ class Daemon:
         self.proximity.stop()
         self.recovery.stop()
         self.calls.stop()
+        self.call_audio.stop()
+        self._call_audio_worker.close()
         self.phone_battery.stop()
         self.audio_preference.stop()
         self.phone_audio_route.stop()

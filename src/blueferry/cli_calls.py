@@ -184,6 +184,89 @@ def calls_hold_answer() -> None:
     typer.echo("Answered the waiting call.")
 
 
+audio_app = typer.Typer(
+    help="Speaker and microphone for calls (the rest of the system is not changed).",
+    invoke_without_command=True,
+    no_args_is_help=False,
+)
+calls_app.add_typer(audio_app, name="audio")
+
+_SYSTEM_WORDS = {"system", "default", ""}
+
+
+def _device_line(choice: str, devices: list, direction_word: str) -> str:
+    if not choice:
+        return f"{direction_word}: same as system"
+    known = {str(item.get("name")): str(item.get("description") or "") for item in devices
+             if isinstance(item, dict)}
+    shown = terminal_text(known.get(choice) or choice)
+    suffix = "" if choice in known else " (not connected)"
+    return f"{direction_word}: {shown}{suffix}"
+
+
+@audio_app.callback()
+def calls_audio(ctx: typer.Context) -> None:
+    """Show the saved call speaker and microphone, the devices, and the running call."""
+    if ctx.invoked_subcommand is not None:
+        return
+    devices = _run(lambda: _client().call_audio_devices(), "Could not read audio devices")
+    outputs = [item for item in devices.get("outputs") or [] if isinstance(item, dict)]
+    inputs = [item for item in devices.get("inputs") or [] if isinstance(item, dict)]
+    typer.echo(_device_line(str(devices.get("output") or ""), outputs, "Speaker"))
+    typer.echo(_device_line(str(devices.get("input") or ""), inputs, "Microphone"))
+    audio = _snapshot().audio
+    if audio is not None and audio.state != "idle":
+        typer.echo(f"Running call ({audio.state}):")
+        for word, route in (("Speaker", audio.output), ("Microphone", audio.input)):
+            used = terminal_text(route.description or route.device or "not connected yet")
+            note = " — chosen device missing, using the system default" if route.missing else ""
+            typer.echo(f"  {word}: {used}{note}")
+    for title, items in (("Speakers", outputs), ("Microphones", inputs)):
+        typer.echo(f"{title}:")
+        for item in items:
+            mark = " (system default)" if item.get("default") else ""
+            typer.echo(
+                f"  {terminal_text(str(item.get('name') or ''))}  "
+                f"{terminal_text(str(item.get('description') or ''))}{mark}"
+            )
+
+
+def _choose(direction: str, name: str, this_call: bool) -> None:
+    selected = "" if name.strip().lower() in _SYSTEM_WORDS else name.strip()
+    word = "Speaker" if direction == "output" else "Microphone"
+    shown = terminal_text(selected) if selected else "same as system"
+    if this_call:
+        _run(lambda: _client().set_call_audio_device_for_call(direction, selected),
+             "Could not change the call audio")
+        typer.echo(typer.style(f"{word} for this call: {shown}.", fg=typer.colors.GREEN))
+        return
+    _run(lambda: _client().set_call_audio_device(direction, selected),
+         "Could not save the setting")
+    typer.echo(typer.style(f"{word} for calls: {shown}.", fg=typer.colors.GREEN))
+
+
+_DEVICE_HELP = "PipeWire node name from 'blueferry calls audio', or 'system'"
+_THIS_CALL_HELP = "Only for the running call instead of saving it"
+
+
+@audio_app.command("output")
+def calls_audio_output(
+    name: str = typer.Argument(..., help=_DEVICE_HELP),
+    this_call: bool = typer.Option(False, "--this-call", help=_THIS_CALL_HELP),
+) -> None:
+    """Choose the speaker for calls."""
+    _choose("output", name, this_call)
+
+
+@audio_app.command("input")
+def calls_audio_input(
+    name: str = typer.Argument(..., help=_DEVICE_HELP),
+    this_call: bool = typer.Option(False, "--this-call", help=_THIS_CALL_HELP),
+) -> None:
+    """Choose the microphone for calls."""
+    _choose("input", name, this_call)
+
+
 def phone_status(
     as_json: bool = typer.Option(False, "--json", help="Print the raw status keys as JSON"),
     warn: Optional[bool] = typer.Option(  # noqa: UP045 - typer needs Optional here

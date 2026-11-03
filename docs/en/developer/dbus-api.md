@@ -214,7 +214,10 @@ opt-in; clients show the switch only when `phone_audio_route` exists):
 are off, every method except `SetCallsEnabled` fails with `CallsDisabled`, and
 `GetStatus` reports only `calls_enabled: false`. With calls on, `GetStatus`
 adds `calls_state` (`unavailable`, `searching`, `connecting`, `ready`,
-`bluez_conflict`) and `calls_available`. See the
+`bluez_conflict`) and `calls_available`, and, from daemons that can choose
+call audio devices, `calls_audio_output` and `calls_audio_input`: the saved
+PipeWire `node.name` of the call speaker and microphone, `""` for "same as
+the system". Their presence tells clients the choice is offered. See the
 [phone calls guide](../user/calls.md).
 
 | Method | Arguments → result | Notes |
@@ -228,6 +231,18 @@ adds `calls_state` (`unavailable`, `searching`, `connecting`, `ready`,
 | `SendTones` | `s call_id, s tones` | DTMF on the active call: `0-9`, `*`, `#`. Requests are played one after another in arrival order (at most 32 waiting); the log records only how many tones went out |
 | `SwapCalls` | | Swap active and held |
 | `HoldAndAnswer` | | Hold the active call and answer the waiting one. 10 per minute |
+| `ListCallAudioDevices` | → `s json` | `outputs` and `inputs` (each `name`, `description`, `default`) read from PipeWire, plus the saved `output`/`input`. The phone's own nodes are left out. "read" rate limit |
+| `SetCallAudioDevice` | `s direction, s name` → `s status_json` | `output` or `input`; a `node.name` or `""` (system). Saved for every call; returns the `calls_audio_*` keys. "settings" rate limit |
+| `SetCallAudioDeviceForCall` | `s direction, s name` | Same, but only until no call is left; `NotReady` without a call. "calls-control" rate limit |
+
+With a backend that offers the choice, `ListCalls` also returns `audio`:
+`state` (`idle`, `waiting` until PipeWire shows the call audio, `ready`,
+`unavailable` when `pw-dump` fails) and per direction (`output`, `input`)
+`selected` (the `node.name` in effect, `""` for the system), `origin`
+(`call`, `settings`, `system`), `device`/`description` of the device the
+call actually uses, `stream` (the call audio exists) and `missing` (the
+chosen device is not connected, so the system's device is used). A change
+emits `CallsChanged`.
 
 ## Events1 signals
 
