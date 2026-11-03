@@ -80,6 +80,7 @@ from blueferry.history import (
     mark_event_handles_read,
 )
 from blueferry.media import MediaController, MediaControlSettings
+from blueferry.notification_apps import MutedAppsStore, NotificationApps
 from blueferry.notification_log import NotificationLog
 from blueferry.notification_policy import (
     ALL_NOTIFICATIONS,
@@ -212,6 +213,13 @@ class Daemon:
         self.connectivity = Connectivity()
         self.notification_policy = NotificationPolicyStore()
         self.starred_threads = StarredThreadsStore(storage=self.storage)
+        # Seen iPhone apps (memory only) and the saved muted ones.
+        self.notification_apps = NotificationApps(
+            MutedAppsStore(storage=self.storage),
+            policy=lambda: self.notification_policy.value,
+            on_changed=self._notification_apps_changed,
+            on_muted_changed=self._emit_status,
+        )
         self.confirmed_groups = ConfirmedGroupsStore(storage=self.storage)
         self.group_routes = GroupRoutesStore(storage=self.storage)
         self.setup_verification = SetupVerification(config.IPHONE_MAC)
@@ -229,6 +237,8 @@ class Daemon:
             on_incoming_message=lambda: self._verify_setup_task(MESSAGE_NOTIFICATIONS),
             perform_ancs_action=self._perform_ancs_action,
             ancs_actions_enabled=self._ancs_actions_active,
+            ancs_app_seen=self.notification_apps.observe,
+            ancs_app_muted=self.notification_apps.is_muted,
             on_call_action=self._notification_call_action,
             # Always wired, so switching photos on needs no new sink; it
             # returns no icon while photos are off.
@@ -924,6 +934,7 @@ class Daemon:
                 notification_policy=self.notification_policy,
                 on_notification_policy_changed=self._notification_policy_changed,
                 starred_threads=self.starred_threads,
+                notification_apps=self.notification_apps,
                 confirmed_groups=self.confirmed_groups,
                 group_routes=self.group_routes,
                 storage=self.storage,
@@ -1311,6 +1322,8 @@ class Daemon:
         self.contact_sync.storage_changed()
         if self.call_history is not None:
             self.call_history.storage_changed()
+        # Saved mutes become readable (or unreadable) with the storage.
+        self.notification_apps.storage_changed()
         self._emit_status()
 
     def _initialize(self) -> bool:
@@ -1791,7 +1804,14 @@ class Daemon:
         ancs = self.ancs
         if ancs is not None:
             ancs.notification_actions_changed()
+        # The app list reports the policy ("all_notifications").
+        self._notification_apps_changed()
         self._emit_status()
+
+    def _notification_apps_changed(self) -> None:
+        emit = getattr(getattr(self, "_dbus_service", None), "emit_notification_apps_changed", None)
+        if emit is not None:
+            emit()
 
     def _perform_ancs_action(
         self, notification_id, positive, token, on_result=None

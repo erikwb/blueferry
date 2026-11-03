@@ -178,6 +178,22 @@
       <annotation name="io.weirdware.BlueFerry.Errors"
                   value="InvalidArgs,NotReady"/>
     </method>
+    <method name="ListNotificationApps">
+      <annotation name="org.freedesktop.DBus.Description"
+                  value="JSON with apps (app_id, app_name, muted, seen, last_seen), muted_count, max_muted, mute_available, all_notifications, env_allowlist, env_blocklist; seen apps are kept in memory only"/>
+      <arg name="apps_json" type="s" direction="out"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="NotReady,ResponseTooLarge"/>
+    </method>
+    <method name="SetNotificationAppMuted">
+      <annotation name="org.freedesktop.DBus.Description"
+                  value="Hide or show the desktop popups of one non-Messages iPhone app; returns the new muted state"/>
+      <arg name="app_id" type="s" direction="in"/>
+      <arg name="muted" type="b" direction="in"/>
+      <arg name="selected" type="b" direction="out"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="InvalidArgs,NotReady"/>
+    </method>
     <method name="RemoveNotificationOpenTarget">
       <arg name="bundle_id" type="s" direction="in"/>
       <arg name="removed" type="b" direction="out"/>
@@ -424,6 +440,10 @@
     <signal name="NowPlayingChanged">
       <annotation name="org.freedesktop.DBus.Description"
                   value="Content-free; fetch details with Media1.GetNowPlaying"/>
+    </signal>
+    <signal name="NotificationAppsChanged">
+      <annotation name="org.freedesktop.DBus.Description"
+                  value="Content-free; fetch the list with Messages1.ListNotificationApps"/>
     </signal>
     <signal name="CallsChanged">
       <annotation name="org.freedesktop.DBus.Description"
