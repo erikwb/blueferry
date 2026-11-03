@@ -248,12 +248,16 @@ def notification_apps_reply(
 def contact_cards_reply(payload: object) -> dict[str, Any]:
     """``contacts_view.list_view`` for the panel's contact search.
 
-    Rows carry ``id``, ``title``, ``subtitle``, ``initials`` and
-    ``has_photo``; ``offset`` is the page's start (0 replaces the list,
-    more appends) and ``next_offset`` asks for the following page.
+    Rows carry ``id``, ``title``, ``subtitle`` and ``initials``;
+    ``offset`` is the page's start (0 replaces the list, more appends) and
+    ``next_offset`` asks for the following page. The panel shows no card
+    photos, so ``has_photo`` is always False: no photo hint reaches it,
+    whatever the contact-photo option.
     """
+    view = contacts_view.list_view(payload)
     return {
-        **contacts_view.list_view(payload),
+        **view,
+        "rows": [{**row, "has_photo": False} for row in view["rows"]],
         "offset": contacts_view.normalize_page(payload)["offset"],
     }
 
@@ -605,11 +609,8 @@ class QuickshellBridge:
             state = self.client.set_notification_pinned(key, pinned)
         except BackendError as error:
             name, message = _dbus_error(error)
-            return {
-                "saved": False,
-                "pinned": not pinned,
-                "error": notification_pin_view.pin_error_text(name, message),
-            }
+            text = notification_pin_view.pin_error_text(name, message)
+            return {"saved": False, "pinned": not pinned, "error": text}
         return {"saved": True, "pinned": state is True, "error": ""}
 
     def _notification_apps(self) -> dict[str, Any]:
@@ -660,6 +661,13 @@ class QuickshellBridge:
             try:
                 muted = self.client.set_notification_app_muted(*target)
             except BackendError as error:
+                # Refused, e.g. with Configuration while settings.json can't
+                # be read: reread so the rows show whether muting is still
+                # available, and keep the list read before the write if not.
+                try:
+                    payload = notification_apps_view.normalize(self.client.notification_apps())
+                except BackendError:
+                    pass
                 return notification_apps_reply(
                     payload, error=notification_apps_view.change_failed_text(error)
                 )
@@ -833,6 +841,11 @@ class QuickshellBridge:
             return self.client.set_storage_policy(_text(args, "policy"))
         if method == "unlock_storage":
             return self.client.unlock_storage()
+        if method == "reset_storage":
+            # Like ResetStorage itself: only the shell's confirmation sends it.
+            if not _boolean(args, "confirmed"):
+                raise RequestError("reset_storage requires confirmation")
+            return self.client.reset_storage()
         if method == "set_phone_battery_warning":
             return self.client.set_phone_battery_warning(_boolean(args, "enabled"))
         if method == "set_mirror_notification_removals":
@@ -1046,6 +1059,12 @@ def _install_signal_receivers(bridge: QuickshellBridge) -> list[object]:
         bus.add_signal_receiver(
             lambda: bridge.emit_event("notifications-changed"),
             signal_name="NotificationsChanged",
+            **common,
+        ),
+        # Content-free; the shell searches again while its search is shown.
+        bus.add_signal_receiver(
+            lambda: bridge.emit_event("call-history-changed"),
+            signal_name="CallHistoryChanged",
             **common,
         ),
         # Content-free; the shell rereads the muted apps while Settings shows.

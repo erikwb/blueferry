@@ -1,12 +1,14 @@
 """The iPhone overview, opt-in now playing and recent calls in the Textual client.
 
 - A line under the service pills shows what the iPhone plays while media
-  control is on; ``p``, ``[`` and ``]`` control playback.
+  control is on; ``p``, ``[`` and ``]`` control playback and ``-`` and ``+``
+  step the iPhone volume (``media_volume_view``).
 - :class:`PhoneOverviewScreen` (command palette "iPhone Overview") is the
   terminal's counterpart of the Qt and GTK phone card: the phone's name,
   connection, battery, signal, network and now playing, and for each opt-in
   feature that is off the setting that turns it on
-  (``phone_link_view.feature_hints``). Its buttons open the notification
+  (``phone_link_view.feature_hints``). Volume down, Play/Pause and volume
+  up sit under now playing. Its other buttons open the notification
   list, the recent calls, the calls panel and Settings.
 - :class:`RecentCallsScreen` (``h``) lists the iPhone's recent calls grouped
   by day (``phone_overview.call_groups``), with call back and message.
@@ -28,9 +30,10 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, ListItem, ListView, Static
 
-from blueferry import phone_link_view
+from blueferry import media_volume_view, phone_link_view
 from blueferry import phone_overview as overview
 from blueferry.i18n import _
+from blueferry.limits import MAX_CALL_HISTORY_QUERY_LIMIT
 from blueferry.models import BackendStatus, CallHistoryEntry, phone_status_fields
 from blueferry.text_safety import terminal_text
 from blueferry.tui_tasks import TextualTaskRunner
@@ -65,16 +68,31 @@ def load_phone_name() -> str:
     return phone_link_view.phone_name(devices, mac)
 
 
-def now_playing_text(view: overview.NowPlaying) -> Text:
-    """One line: play state, title and the keys that work right now."""
+def volume_controls(snapshot: object = None) -> dict[str, Any]:
+    """``media_volume_view.volume_controls`` for one ``GetNowPlaying`` snapshot."""
+    return media_volume_view.volume_controls(snapshot)
+
+
+def now_playing_text(
+    view: overview.NowPlaying, volume: Mapping[str, Any] | None = None,
+) -> Text:
+    """One line: play state, title, the volume and the keys that work right now."""
     if not view.visible:
         return Text()
+    volume = volume or {}
     keys = [
         key for key, command in (("[", "previous"), ("p", "toggle"), ("]", "next"))
         if command in view.commands
     ]
+    keys += [
+        key for key, enabled in (("-", "down_enabled"), ("+", "up_enabled"))
+        if volume.get("visible") and volume.get(enabled)
+    ]
     text = Text(f"{'▶' if view.playing else '⏸'}  ")
     text.append(_plain(view.title))
+    level = _plain(volume.get("level_text") or "") if volume.get("visible") else ""
+    if level:
+        text.append(f"  ·  {level}", style="dim")
     if keys:
         text.append(f"   {' '.join(keys)}", style="dim")
     return text
@@ -103,14 +121,17 @@ def phone_status_text(status: Mapping[str, Any]) -> str:
     )
 
 
-def media_text(status: Mapping[str, Any], view: overview.NowPlaying) -> Text:
+def media_text(
+    status: Mapping[str, Any], view: overview.NowPlaying,
+    volume: Mapping[str, Any] | None = None,
+) -> Text:
     """Now playing, or the setting that turns it on, or that it is waiting."""
     hint = phone_link_view.feature_hints(status).get("media", "")
     if hint:
         return Text(_plain(hint), style="dim")
     if not view.visible:
         return Text(_("Waiting for the iPhone's media service."), style="dim")
-    return now_playing_text(view)
+    return now_playing_text(view, volume)
 
 
 def hints_text(status: Mapping[str, Any]) -> Text:
@@ -133,7 +154,9 @@ class PhoneOverviewScreen(ModalScreen[str | None]):
 
     The result is ``notifications``, ``recent_calls``, ``calls``, ``options``
     or ``None``. The app keeps it current through :meth:`status_changed`,
-    :meth:`now_playing_changed` and :meth:`name_loaded`.
+    :meth:`now_playing_changed` and :meth:`name_loaded`. The media buttons
+    call ``send_media`` with ``toggle``, ``volume-down`` or ``volume-up``
+    and leave the dialog open.
     """
 
     BINDINGS: ClassVar[list[BindingType]] = [
@@ -148,11 +171,15 @@ class PhoneOverviewScreen(ModalScreen[str | None]):
         *,
         load_name: Callable[[], str] | None = None,
         on_name: Callable[[str], None] | None = None,
+        volume: Mapping[str, Any] | None = None,
+        send_media: Callable[[str], None] | None = None,
     ) -> None:
         super().__init__()
         self._shown = False  # composed and mounted; widgets exist
         self.status: Mapping[str, Any] = dict(status)
         self.now_playing = now_playing
+        self.volume: Mapping[str, Any] = dict(volume or volume_controls())
+        self._send_media = send_media
         self.phone_name = name or "iPhone"
         self._load_name = load_name
         self._on_name = on_name
@@ -164,6 +191,11 @@ class PhoneOverviewScreen(ModalScreen[str | None]):
             yield Static("", id="phone-overview-connection", classes="phone-overview-line")
             yield Static("", id="phone-overview-status", classes="phone-overview-line")
             yield Static("", id="phone-overview-media", classes="phone-overview-line")
+            labels = volume_controls()  # the shared short button names
+            with Horizontal(id="phone-overview-media-controls"):
+                yield Button(f"{labels['down_label']}  -", id="phone-overview-volume-down")
+                yield Button(_("Play/Pause  p"), id="phone-overview-play")
+                yield Button(f"{labels['up_label']}  +", id="phone-overview-volume-up")
             yield Static("", id="phone-overview-hints", classes="phone-overview-hint")
             with Horizontal(classes="dialog-actions"):
                 yield Button(_("Close"), id="phone-overview-close")
@@ -186,8 +218,12 @@ class PhoneOverviewScreen(ModalScreen[str | None]):
         self.status = dict(status)
         self._update_view()
 
-    def now_playing_changed(self, view: overview.NowPlaying) -> None:
+    def now_playing_changed(
+        self, view: overview.NowPlaying, volume: Mapping[str, Any] | None = None,
+    ) -> None:
         self.now_playing = view
+        if volume is not None:
+            self.volume = dict(volume)
         self._update_view()
 
     def _name_read(self, value: object) -> None:
@@ -214,8 +250,9 @@ class PhoneOverviewScreen(ModalScreen[str | None]):
             Text(_plain(phone_status_text(status)))
         )
         self.query_one("#phone-overview-media", Static).update(
-            media_text(status, self.now_playing)
+            media_text(status, self.now_playing, self.volume)
         )
+        self._update_media_controls()
         hints = hints_text(status)
         widget = self.query_one("#phone-overview-hints", Static)
         widget.update(hints)
@@ -223,6 +260,38 @@ class PhoneOverviewScreen(ModalScreen[str | None]):
         feature = phone_link_view.feature_hints(status)
         self.query_one("#phone-overview-recent", Button).disabled = "callHistory" in feature
         self.query_one("#phone-overview-calls", Button).disabled = "calls" in feature
+
+    def _update_media_controls(self) -> None:
+        view, volume = self.now_playing, self.volume
+        hidden = bool(phone_link_view.feature_hints(self.status).get("media"))
+        self.query_one("#phone-overview-media-controls").display = (
+            view.visible and not hidden and self._send_media is not None
+        )
+        play = self.query_one("#phone-overview-play", Button)
+        play.disabled = "toggle" not in view.commands
+        for direction in ("down", "up"):
+            button = self.query_one(f"#phone-overview-volume-{direction}", Button)
+            button.display = volume.get("visible") is True
+            button.disabled = volume.get(f"{direction}_enabled") is not True
+            tooltip = _plain(volume.get(f"{direction}_tooltip") or "")
+            # A Text, never a str: Textual parses a str tooltip as markup.
+            button.tooltip = Text(tooltip) if tooltip else None
+
+    def _media(self, command: str) -> None:
+        if self._send_media is not None:
+            self._send_media(command)
+
+    @on(Button.Pressed, "#phone-overview-play")
+    def play_button(self) -> None:
+        self._media("toggle")
+
+    @on(Button.Pressed, "#phone-overview-volume-down")
+    def volume_down_button(self) -> None:
+        self._media(str(self.volume.get("down_command") or media_volume_view.VOLUME_DOWN))
+
+    @on(Button.Pressed, "#phone-overview-volume-up")
+    def volume_up_button(self) -> None:
+        self._media(str(self.volume.get("up_command") or media_volume_view.VOLUME_UP))
 
     @on(Button.Pressed, "#phone-overview-notifications")
     def notifications_button(self) -> None:
@@ -297,10 +366,14 @@ class RecentCallsScreen(ModalScreen[RecentCallsResult]):
 
     def __init__(
         self, client: CallHistoryClient, *, status: Mapping[str, Any] | None = None,
-        now: Callable[[], Any] | None = None,
+        now: Callable[[], Any] | None = None, focus_call_id: str = "",
     ) -> None:
         super().__init__()
         self._shown = False  # composed and mounted; widgets exist
+        # A search hit's call id; its row is highlighted once the list loads.
+        # Search covers every retained call, so that list reads them all.
+        self._focus_call_id = focus_call_id
+        self._limit = MAX_CALL_HISTORY_QUERY_LIMIT if focus_call_id else MAX_CALLS
         self._client = client
         self._status: Mapping[str, Any] = dict(status or {})
         self._now = now
@@ -353,7 +426,7 @@ class RecentCallsScreen(ModalScreen[RecentCallsResult]):
             return
         self._loading = True
         self._runner.submit(
-            lambda: self._client.call_history(MAX_CALLS),
+            lambda: self._client.call_history(self._limit),
             self._show, self._show_error, self._loaded,
         )
 
@@ -416,10 +489,22 @@ class RecentCallsScreen(ModalScreen[RecentCallsResult]):
             items.append(CallGroupItem(row))
         if items:
             await listing.extend(items)
-            listing.index = 1
+            listing.index = self._focus_index(items)
         state.display = not items
         listing.display = bool(items)
         self._render_buttons()
+
+    def _focus_index(self, items: list[ListItem]) -> int:
+        """The row folding the searched call (its ``ids``), else the first row."""
+        call_id, self._focus_call_id = self._focus_call_id, ""
+        if not call_id:
+            return 1
+        for index, item in enumerate(items):
+            if isinstance(item, CallGroupItem) and call_id in item.row.get("ids", ()):
+                return index
+        if self.loaded and not self.error:
+            self.notify(_("This call is no longer in the recent calls."), markup=False)
+        return 1
 
     def _selected(self) -> dict[str, Any] | None:
         listing = self.query_one("#recent-calls-list", ListView)

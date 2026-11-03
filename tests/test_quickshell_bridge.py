@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from blueferry import notification_pin_view
 from blueferry.models import Thread
 from blueferry.quickshell_bridge import QuickshellBridge, RequestError, _RequestWorkers
 
@@ -625,6 +626,13 @@ def test_status_carries_the_shared_sound_switch_wording() -> None:
     view = QuickshellBridge(client).dispatch("status", {})["phone_audio_view"]  # type: ignore[arg-type]
     assert view["available"] is True and view["mismatch"] is True
     assert "own speaker" in view["hint"]
+    assert view["sync"] == ""
+    client.status = lambda **_kwargs: BackendStatus.from_dict({  # type: ignore[method-assign]
+        "daemon": True, "phone_audio_route": "pc",
+        "phone_audio_delay_ms": 110, "phone_audio_delay_reporting": True,
+    })
+    view = QuickshellBridge(client).dispatch("status", {})["phone_audio_view"]  # type: ignore[arg-type]
+    assert view["sync"] == "A/V sync: this computer reports 110 ms."
     # Older daemons: no key, no view.
     assert "phone_audio_view" not in QuickshellBridge(FakeClient()).dispatch(  # type: ignore[arg-type]
         "status", {},
@@ -813,6 +821,21 @@ def test_bridge_saves_the_one_time_code_opt_in() -> None:
         assert str(error) == "enabled must be a boolean"
     else:
         raise AssertionError("non-boolean preference was accepted")
+
+
+def test_bridge_resets_storage_only_when_the_request_is_confirmed() -> None:
+    client = FakeClient()
+    client.reset_storage = lambda: (  # type: ignore[attr-defined]
+        client.calls.append(("reset_storage",)) or {"storage_state": "ready"}
+    )
+    bridge = QuickshellBridge(client)  # type: ignore[arg-type]
+
+    for args in ({}, {"confirmed": False}, {"confirmed": "yes"}, {"confirmed": 1}):
+        with pytest.raises(RequestError):
+            bridge.dispatch("reset_storage", args)
+    assert client.calls == []
+    assert bridge.dispatch("reset_storage", {"confirmed": True}) == {"storage_state": "ready"}
+    assert client.calls == [("reset_storage",)]
 
 
 # ---- QS-1: settings parity (features, reconnect, sync, notifications) -------
@@ -1339,6 +1362,24 @@ def test_bridge_words_a_refused_pin_with_the_shared_texts(name, message, text) -
     assert reply == {"saved": False, "pinned": False, "error": text}
 
 
+def test_bridge_shows_why_a_pin_was_refused_while_settings_cannot_be_read() -> None:
+    # SetNotificationPinned answers Configuration while settings.json can't be
+    # read; the shared text names the file and the fix, as in the other clients.
+    client = NotificationAppsClient()
+    message = (
+        "settings.json could not be read, so the change was not saved; "
+        "repair or remove the file and try again"
+    )
+    client.pin_error = _backend_error("io.weirdware.BlueFerry.Error.Configuration", message)
+    reply = QuickshellBridge(client).dispatch(  # type: ignore[arg-type]
+        "set_notification_pinned", {"key": "k1", "pinned": False}
+    )
+    assert reply == {
+        "saved": False, "pinned": True,
+        "error": notification_pin_view.UNREADABLE_SETTINGS_TEXT,
+    }
+
+
 def test_bridge_lists_the_notification_apps_with_the_shared_wording() -> None:
     client = NotificationAppsClient()
     reply = QuickshellBridge(client).dispatch("notification_apps", {})  # type: ignore[arg-type]
@@ -1413,6 +1454,43 @@ def test_bridge_does_not_mute_a_disabled_row_and_reports_refusals() -> None:
     assert [row["muted"] for row in refused["rows"]] == [True, False]
 
 
+def test_a_mute_refused_while_settings_cannot_be_read_shows_muting_unavailable() -> None:
+    # settings.json broke between the list read and the write: the daemon
+    # refuses with Configuration and now lists mute_available false.
+    client = NotificationAppsClient()
+    message = (
+        "settings.json could not be read, so the change was not saved; "
+        "repair or remove the file and try again"
+    )
+    error = _backend_error("io.weirdware.BlueFerry.Error.Configuration", message)
+
+    def refuse(app_id, muted):
+        client.calls.append(("set_notification_app_muted", app_id, muted))
+        client.apps["mute_available"] = False  # type: ignore[index]
+        raise error
+
+    client.set_notification_app_muted = refuse  # type: ignore[method-assign]
+    bridge = QuickshellBridge(client)  # type: ignore[arg-type]
+    reply = bridge.dispatch("toggle_notification_app", {"index": 1, "app_id": "com.example.mail"})
+    assert reply["saved"] is False and reply["error"] == message
+    assert reply["available"] is False
+    assert [row["enabled"] for row in reply["rows"]] == [False, False]
+    assert [row["muted"] for row in reply["rows"]] == [True, False]
+    assert "settings.json can't be read" in reply["hint"]
+
+    # A reread that fails too keeps the list read before the write.
+    client.apps["mute_available"] = True  # type: ignore[index]
+
+    def refuse_and_break(app_id, muted):
+        client.calls.append(("set_notification_app_muted", app_id, muted))
+        client.apps = error
+        raise error
+
+    client.set_notification_app_muted = refuse_and_break  # type: ignore[method-assign]
+    reply = bridge.dispatch("toggle_notification_app", {"index": 1, "app_id": "com.example.mail"})
+    assert reply["error"] == message and [row["name"] for row in reply["rows"]] == ["Chat", "Mail"]
+
+
 @pytest.mark.parametrize(("args", "message"), [
     ({"app_id": "com.example.mail"}, "index must be an integer"),
     ({"index": True, "app_id": "com.example.mail"}, "index must be an integer"),
@@ -1458,6 +1536,28 @@ def test_concurrent_toggles_reread_the_list_one_at_a_time() -> None:
         thread.join(5)
     assert not any(thread.is_alive() for thread in threads)
     assert max(overlap) == 1
+
+
+def test_bridge_forwards_call_history_changes_without_content(monkeypatch) -> None:
+    # The panel's search shows call hits, so it searches again on this event.
+    from blueferry import quickshell_bridge
+    from blueferry.protocol import EVENTS_IFACE
+
+    receivers: dict[str, tuple] = {}
+
+    class Bus:
+        def add_signal_receiver(self, handler, signal_name, **keywords):
+            receivers[signal_name] = (handler, keywords)
+            return signal_name
+
+    monkeypatch.setattr(quickshell_bridge, "get_session_bus", lambda: Bus())
+    output = io.StringIO()
+    bridge = QuickshellBridge(FakeClient(), output)  # type: ignore[arg-type]
+    quickshell_bridge._install_signal_receivers(bridge)
+    handler, keywords = receivers["CallHistoryChanged"]
+    assert keywords["dbus_interface"] == EVENTS_IFACE
+    handler()
+    assert json.loads(output.getvalue()) == {"event": "call-history-changed", "data": None}
 
 
 def test_bridge_forwards_the_content_free_notification_apps_signal(monkeypatch) -> None:
@@ -1611,6 +1711,23 @@ def test_bridge_pages_contact_cards_with_the_shared_rows() -> None:
     assert reply["count_text"] == "60 matching contacts"
     assert reply["has_more"] is True and reply["next_offset"] == 51
     assert reply["offset"] == 50
+
+
+def test_bridge_contact_rows_carry_no_photo_hint() -> None:
+    # The panel shows no card photos: a row never says it has one, also
+    # while contact photos are off or the choice is unknown.
+    client = ContactsClient()
+    client.contact_cards = lambda offset, limit, query: {  # type: ignore[method-assign]
+        "contacts": [{"id": "c1", "name": "Ana", "has_photo": True}],
+        "total": 1, "offset": offset, "query": query,
+    }
+    reply = QuickshellBridge(client).dispatch(  # type: ignore[arg-type]
+        "contact_cards", {"query": "", "offset": 0},
+    )
+    assert [row["has_photo"] for row in reply["rows"]] == [False]
+    assert "photo" not in json.dumps(QuickshellBridge(client).dispatch(  # type: ignore[arg-type]
+        "contact_card", {"id": "c1"},
+    ))
 
 
 @pytest.mark.parametrize("args", [

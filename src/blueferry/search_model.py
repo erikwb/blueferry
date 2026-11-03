@@ -9,7 +9,11 @@ query, only one answer (the newest) is shown, and the results are dropped
 when the search is closed (:meth:`GlobalSearch.clear`). While the daemon's
 search queue is full it answers ``NotReady``; the model then tries the same
 query again after the typing delay, :data:`BUSY_RETRIES` times, and then
-says the search is busy.
+says the search is busy. When the data behind the results changes, the
+client calls :meth:`GlobalSearch.invalidate` (on ``HistoryChanged`` and
+``CallHistoryChanged``; :meth:`GlobalSearch.apply_status` does it for
+storage, call-history and contact changes): the shown answer, which may
+name deleted messages or calls, goes at once and the search runs again.
 """
 from __future__ import annotations
 
@@ -23,6 +27,11 @@ from blueferry.client_tasks import TaskRunner, TimerFactory
 LIMIT = 20
 MAX_QUERY_CHARS = 128
 BUSY_RETRIES = 3
+# GetStatus keys whose change can make a shown result wrong or gone.
+SOURCE_KEYS = (
+    "storage_policy", "storage_state", "call_history_enabled",
+    "contact_card_epoch", "contact_photos", "contact_photos_state",
+)
 
 _BUSY = object()
 
@@ -53,6 +62,7 @@ class GlobalSearch:
         self._on_change = on_change
         self._timer = timer(self.run)
         self._supported = False
+        self._sources: tuple[object, ...] | None = None
         self._query = ""
         self._serial = 0
         self._retries = 0
@@ -99,10 +109,34 @@ class GlobalSearch:
 
     def apply_status(self, status: Mapping[str, Any]) -> None:
         supported = search_view.supported(status)
+        sources = tuple(status.get(key) for key in SOURCE_KEYS)
+        previous, self._sources = self._sources, sources
         if supported != self._supported:
             self._supported = supported
             if not supported:
                 self.clear()
+            self._on_change()
+            return
+        if previous is not None and sources != previous:
+            self.invalidate()
+
+    def invalidate(self) -> None:
+        """The searched data changed: drop the shown answer and search again.
+
+        An answer already on its way predates the change and is dropped too.
+        The new search waits for the typing delay, so a burst of change
+        signals runs it once.
+        """
+        self._timer.stop()
+        self._serial += 1
+        changed = bool(self._searched or self._error or self._loading)
+        self._payload, self._searched = {}, ""
+        self._error, self._retries = "", 0
+        self._loading = False
+        if self._supported and search_view.should_search(self._query):
+            self._loading = True
+            self._timer.start(search_view.TYPING_DELAY_MS)
+        if changed or self._loading:
             self._on_change()
 
     def set_query(self, text: str) -> None:

@@ -850,8 +850,10 @@ def test_mns_loss_reconnects_map_once_per_outage():
     from blueferry import daemon
 
     reconnects = []
+    backfills = []
     instance = daemon.Daemon.__new__(daemon.Daemon)
     instance.profiles = SimpleNamespace(reconnect=reconnects.append)
+    instance.backfill = SimpleNamespace(request=backfills.append)
     instance._mns_reconnect_spent = False
 
     instance._mns_missing("the iPhone closed MAP notifications")
@@ -860,6 +862,8 @@ def test_mns_loss_reconnects_map_once_per_outage():
     assert reconnects == ["the iPhone closed MAP notifications"]
 
     instance._mns_present()
+    # Each MNS connection also lists the inbox for messages missed meanwhile.
+    assert backfills == ["MAP notifications connected"]
     instance._mns_missing("the iPhone closed MAP notifications")
     assert reconnects == ["the iPhone closed MAP notifications"] * 2
 

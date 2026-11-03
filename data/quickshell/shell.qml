@@ -19,6 +19,10 @@ ShellRoot {
   property var participantEntries: []
   property string groupParticipantsDraft: ""
   property var rosterChangedThread: null
+  // A reply held while asking whether it goes to the sender only, and the
+  // conversation as shown when it asked.
+  property var senderConfirmThread: null
+  property string senderConfirmDraft: ""
   property string errorText: ""
   property bool phoneSettingsVisible: false
   property var backendStatus: ({})
@@ -86,6 +90,8 @@ ShellRoot {
     && phoneSettingsPage.notificationsExpanded
   property bool storagePolicyBusy: false
   property bool storageUnlockBusy: false
+  property bool storageResetBusy: false
+  property string storageResetNotice: ""
   // Contact cards and the global search: read only while the search popup
   // is open and forgotten when it closes. The epoch changes when card ids
   // may no longer resolve (daemon restart, contact reload).
@@ -99,6 +105,9 @@ ShellRoot {
   property bool contactCardsBusy: false
   property bool dialBusy: false
   property var contactCardEpoch: undefined
+  // search_model.SOURCE_KEYS of the last status: a change means the shown
+  // hits may name data that is gone or locked.
+  property string searchSources: ""
   readonly property bool contactCardsSupported:
     typeof root.backendStatus.contact_card_count === "number"
   // Plugin cards (bridge plugin_cards): read only while the window shows
@@ -174,6 +183,17 @@ ShellRoot {
       storageUnlockBusy = true
       backendBridge.request("unlock_storage", {})
     }
+  }
+
+  // Like the other clients: only while the daemon offers the reset, and
+  // only from the confirmation popup.
+  function resetStorage() {
+    if (!storageResetPopup.offered || storageResetBusy || storagePolicyBusy) return
+    // The reset obtains its own key, so skip the automatic unlock.
+    storageUnlockAttempted = true
+    storageResetBusy = true
+    storageResetNotice = ""
+    backendBridge.request("reset_storage", {confirmed: true})
   }
 
   // Qt 6.12 hands arrays in a var signal argument over as sequence wrappers,
@@ -346,12 +366,35 @@ ShellRoot {
       openGroupParticipants(thread, composer.text)
       return
     }
+    if (conversationLogic.needsSenderConfirmation(thread)) {
+      senderConfirmThread = thread
+      senderConfirmDraft = composer.text
+      senderConfirmPopup.open()
+      return
+    }
     sendBusy = true
     backendBridge.request("send_to_thread", {
       thread_key: thread.key,
       body: composer.text,
       confirm_group: thread.is_group,
       expected_group_token: groupSignature(thread)
+    })
+  }
+
+  // The answer covers only the messages shown when it asked; the backend
+  // refuses it once another message that may be from a group arrives.
+  function sendToSenderOnly() {
+    const thread = senderConfirmThread
+    const selected = selectedThread()
+    senderConfirmPopup.close()
+    if (!thread || !selected || selected.key !== thread.key
+        || composer.text !== senderConfirmDraft) return
+    sendBusy = true
+    backendBridge.request("send_to_thread", {
+      thread_key: thread.key,
+      body: senderConfirmDraft,
+      confirm_group: true,
+      expected_group_token: String(thread.sender_reply_token || "")
     })
   }
 
@@ -401,10 +444,14 @@ ShellRoot {
 
   // An empty or one-letter query lists (or filters) the contact cards; a
   // longer one searches everything when the daemon can.
+  function searchesEverything(query) {
+    return root.searchSupported && (query.length >= 2 || !root.contactCardsSupported)
+  }
+
   function runSearch(query) {
     root.searchQuery = query
     root.searchError = ""
-    if (root.searchSupported && (query.length >= 2 || !root.contactCardsSupported)) {
+    if (root.searchesEverything(query)) {
       backendBridge.cancelLatest("contact_cards")
       root.contactCardsBusy = false
       backendBridge.requestLatest("search", {query: query})
@@ -413,6 +460,18 @@ ShellRoot {
       root.searchResults = ({})
       if (root.contactCardsSupported) root.loadContactCards(0)
     }
+  }
+
+  // The searched data changed (search_model.GlobalSearch.invalidate): drop
+  // the shown hits and an answer still on its way, then search again after
+  // the typing delay, so a burst of change signals searches once.
+  function invalidateSearch() {
+    if (!searchPopup.visible || !root.searchesEverything(root.searchQuery)) return
+    backendBridge.cancelLatest("search")
+    root.searchResults = ({})
+    root.searchError = ""
+    root.searchBusyRetries = 0
+    searchTimer.restart()
   }
 
   function loadContactCards(offset) {
@@ -477,15 +536,29 @@ ShellRoot {
         const daemonReturned = result.daemon === true && root.backendStatus.daemon !== true
         root.backendStatus = result
         if (daemonReturned && root.featuresWanted) root.loadFeatures()
+        let searchedAgain = false
         if (result.contact_card_epoch !== root.contactCardEpoch) {
           // Card ids from the old epoch may be gone: read the list again.
           const epochWasKnown = root.contactCardEpoch !== undefined
           root.contactCardEpoch = result.contact_card_epoch
           if (epochWasKnown && searchPopup.visible) {
+            // The old rows, hits and card go at once, with any card or
+            // page still on its way (contacts_model.ContactBook).
+            backendBridge.cancelLatest("contact_card")
+            backendBridge.cancelLatest("contact_cards")
             root.contactCard = ({})
-            root.runSearch(root.searchQuery)
+            root.contactCards = ({})
+            if (root.searchesEverything(root.searchQuery)) root.invalidateSearch()
+            else root.runSearch(root.searchQuery)
+            searchedAgain = true
           }
         }
+        const sources = JSON.stringify(["storage_policy", "storage_state",
+          "call_history_enabled", "contact_card_epoch", "contact_photos",
+          "contact_photos_state"].map(key => result[key]))
+        const sourcesChanged = root.searchSources !== "" && sources !== root.searchSources
+        root.searchSources = sources
+        if (sourcesChanged && !searchedAgain) root.invalidateSearch()
         if (typeof result.bluetooth_restart_command === "string")
           root.bluetoothRestartCommand = result.bluetooth_restart_command
         var policy = result.notification_policy || "messages"
@@ -665,6 +738,14 @@ ShellRoot {
           root.storageDetail = result.storage_detail || root.storageDetail
         }
         root.reload()
+      } else if (method === "reset_storage") {
+        root.storageResetBusy = false
+        if (typeof result === "object" && result !== null) {
+          root.storageState = result.storage_state || root.storageState
+          root.storageDetail = result.storage_detail || root.storageDetail
+        }
+        root.storageResetNotice = "Local storage reset"
+        root.reload()
       } else if (method === "set_phone_battery_warning") {
         root.batteryWarning.saved(result === true, root.statusBusy)
         root.reload()
@@ -707,7 +788,7 @@ ShellRoot {
         // A saved pin sends NotificationsChanged, which rereads the list;
         // only a refusal rereads it here.
         root.notificationPinBusy = false
-        var saved = typeof result === "object" && result !== null && result.saved === true
+        const saved = typeof result === "object" && result !== null && result.saved === true
         root.notificationPinError = typeof result === "object" && result !== null
           ? String(result.error || "") : ""
         if (!saved) root.refreshNotificationList()
@@ -841,6 +922,12 @@ ShellRoot {
       } else if (method === "unlock_storage") {
         root.storageUnlockBusy = false
         root.errorText = message
+      } else if (method === "reset_storage") {
+        root.storageResetBusy = false
+        // Beside the button: a reload clears the error banner.
+        root.storageResetNotice = "Could not reset local storage: "
+          + (message || "BlueFerry is unavailable")
+        root.reload()
       } else if (method === "set_phone_battery_warning") {
         root.batteryWarning.failed(root.backendStatus.phone_battery_warning === true)
         root.errorText = message || "Could not save the battery warning preference"
@@ -927,6 +1014,7 @@ ShellRoot {
           root.otpAutocopy.failed(root.backendStatus.otp_autocopy === true)
         root.storagePolicyBusy = false
         root.storageUnlockBusy = false
+        root.storageResetBusy = false
         if (root.batteryWarning.busy)
           root.batteryWarning.failed(root.backendStatus.phone_battery_warning === true)
         if (root.mirrorRemovals.busy)
@@ -943,7 +1031,12 @@ ShellRoot {
     function onEventReceived(name, data) {
       data = root.plainValue(data)
       if (name === "open-message") root.openMessage(String(data || ""))
-      else if (name === "history-changed" || name === "status-changed") root.reload()
+      else if (name === "history-changed" || name === "status-changed") {
+        // Messages changed: hits for them may be gone (GlobalSearch.invalidate).
+        if (name === "history-changed") root.invalidateSearch()
+        root.reload()
+      }
+      else if (name === "call-history-changed") root.invalidateSearch()
       else if (name === "now-playing-changed") root.refreshNowPlaying()
       else if (name === "notifications-changed" && root.notificationListWatched)
         root.refreshNotificationList()
@@ -1639,6 +1732,7 @@ ShellRoot {
           notificationPinError: root.notificationPinError
           notificationApps: root.notificationApps
           contactsSyncNotice: root.contactsSyncNotice
+          storageResetNotice: root.storageResetNotice
           busy: ({notifications: root.notificationPolicyBusy,
                   contactsOnly: root.contactsOnlyNotificationsBusy,
                   ancsActions: root.ancsActionsBusy,
@@ -1660,12 +1754,14 @@ ShellRoot {
                   restart: root.restartBusy,
                   pin: root.notificationPinBusy,
                   notificationApps: root.notificationAppsBusy,
-                  storage: root.storagePolicyBusy})
+                  storage: root.storagePolicyBusy || root.storageResetBusy,
+                  storageReset: root.storageResetBusy})
           visible: root.phoneSettingsVisible
           Layout.fillWidth: true
           Layout.fillHeight: true
           onCloseRequested: root.phoneSettingsVisible = false
           onPairingIssueRequested: pairingIssuePopup.open()
+          onStorageResetRequested: if (storageResetPopup.offered) storageResetPopup.open()
           onErrorRequested: message => root.errorText = message
           onReloadRequested: root.reload()
           onOperationRequested: (method, args) => {
@@ -1841,6 +1937,74 @@ ShellRoot {
       }
 
       Popup {
+        id: storageResetPopup
+        objectName: "storageResetPopup"
+        // The popup goes away with the offer, such as when the data opens
+        // again or the daemon stops, so a stale one cannot erase anything.
+        readonly property bool offered: root.backendStatus.daemon === true
+          && root.backendStatus.storage_reset === true
+        onOfferedChanged: if (!offered) close()
+        parent: applicationSurface
+        x: Math.max(0, (applicationSurface.width - width) / 2)
+        y: Math.max(0, (applicationSurface.height - height) / 2)
+        width: Math.min(theme.scaled(440), applicationSurface.width - theme.scaled(24))
+        modal: true
+        focus: true
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        padding: theme.scaled(18)
+
+        background: Rectangle {
+          color: theme.windowSurface
+          border.color: theme.divider
+          radius: theme.panelRadius
+        }
+
+        Overlay.modal: Rectangle {
+          color: Qt.rgba(theme.windowSurface.r, theme.windowSurface.g,
+                         theme.windowSurface.b, 0.72)
+        }
+
+        contentItem: ColumnLayout {
+          spacing: theme.scaled(12)
+          FerryLabel {
+            ferryTheme: theme
+            text: "Reset local storage?"
+            font.bold: true
+            font.pixelSize: theme.headingSize
+          }
+          FerryLabel {
+            ferryTheme: theme
+            Layout.fillWidth: true
+            wrapMode: Text.Wrap
+            text: "This permanently deletes local message history, cached contacts, call history and conversation preferences, and replaces BlueFerry's keyring key. Nothing is deleted from the iPhone."
+          }
+          RowLayout {
+            Layout.alignment: Qt.AlignRight
+            FerryButton {
+              id: storageResetCancelButton
+              objectName: "storageResetCancelButton"
+              ferryTheme: theme
+              text: "Cancel"
+              onClicked: storageResetPopup.close()
+            }
+            FerryButton {
+              id: storageResetConfirmButton
+              objectName: "storageResetConfirmButton"
+              ferryTheme: theme
+              text: "Erase and start over"
+              highlighted: true
+              enabled: storageResetPopup.offered && !root.storageResetBusy
+                && !root.storagePolicyBusy
+              onClicked: {
+                root.resetStorage()
+                storageResetPopup.close()
+              }
+            }
+          }
+        }
+      }
+
+      Popup {
         id: deleteThreadsPopup
         property string threadKey: ""
         parent: applicationSurface
@@ -1929,7 +2093,8 @@ ShellRoot {
       }
 
       Shortcut {
-        sequence: StandardKey.Find
+        // Find has several bindings (Ctrl+F, F3 …); bind every one of them.
+        sequences: [StandardKey.Find]
         enabled: root.contactCardsSupported || root.searchSupported
         onActivated: searchPopup.open()
       }
@@ -2233,6 +2398,67 @@ ShellRoot {
                   body: newMessageBody.text
                 })
               }
+            }
+          }
+        }
+      }
+
+      Popup {
+        id: senderConfirmPopup
+        objectName: "senderConfirmPopup"
+        parent: applicationSurface
+        x: Math.max(0, (applicationSurface.width - width) / 2)
+        y: Math.max(0, (applicationSurface.height - height) / 2)
+        width: Math.min(theme.scaled(500), applicationSurface.width - theme.scaled(24))
+        modal: true
+        focus: true
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        padding: theme.scaled(18)
+
+        background: Rectangle {
+          color: theme.windowSurface
+          border.color: theme.divider
+          radius: theme.panelRadius
+        }
+
+        Overlay.modal: Rectangle {
+          color: Qt.rgba(theme.windowSurface.r, theme.windowSurface.g,
+                         theme.windowSurface.b, 0.72)
+        }
+
+        contentItem: ColumnLayout {
+          spacing: theme.scaled(12)
+          FerryLabel {
+            ferryTheme: theme
+            Layout.fillWidth: true
+            wrapMode: Text.Wrap
+            text: root.senderConfirmThread
+              ? "Reply to " + root.senderConfirmThread.name + " only?" : ""
+            font.bold: true
+            font.pixelSize: theme.headingSize
+          }
+          FerryLabel {
+            ferryTheme: theme
+            Layout.fillWidth: true
+            wrapMode: Text.Wrap
+            text: root.senderConfirmThread
+              ? "The latest message may have been sent in a group. Your reply goes only to "
+                + (root.senderConfirmThread.recipients || []).join(", ") + "."
+              : ""
+          }
+          RowLayout {
+            Layout.alignment: Qt.AlignRight
+            FerryButton {
+              ferryTheme: theme
+              text: "Cancel"
+              onClicked: senderConfirmPopup.close()
+            }
+            FerryButton {
+              ferryTheme: theme
+              objectName: "senderConfirmSend"
+              text: "Reply only to sender"
+              highlighted: true
+              onClicked: root.sendToSenderOnly()
             }
           }
         }

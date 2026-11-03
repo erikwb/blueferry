@@ -17,7 +17,7 @@ from blueferry.contact_repository import ContactRepository
 from blueferry.contacts import ContactsResolver
 from blueferry.errors import InvalidArgumentsError, NotReadyError
 from blueferry.global_search import ThreadSearchIndex, search_calls, search_threads, snippet
-from blueferry.history import append_event
+from blueferry.history import append_event, clear_events
 from blueferry.limits import MAX_SEARCH_RESULTS, MAX_SEARCH_SNIPPET_CHARS
 from blueferry.models import CallHistoryEntry
 
@@ -243,13 +243,122 @@ def test_search_without_call_history_or_contacts(isolated_state) -> None:
 
 
 def test_search_skips_calls_while_storage_is_locked(isolated_state) -> None:
-    locked = SimpleNamespace(status=SimpleNamespace(can_read=False))
+    locked = SimpleNamespace(status=SimpleNamespace(can_read=False), revision=0)
     history = SimpleNamespace(records=lambda: pytest.fail("locked history was read"))
     operations = BackendOperations(_Sessions(), BackendDependencies(
         call_history=lambda: history, storage=locked,
     ))
     operations._conversations.threads = lambda: []
     assert operations.search("anything", 10)["calls"]["available"] is False
+
+
+class _Storage:
+    """Readable until locked; decrypts the plain test history as-is."""
+
+    def __init__(self) -> None:
+        self.status = SimpleNamespace(can_read=True)
+        self.revision = 0
+
+    def lock(self) -> None:
+        self.status = SimpleNamespace(can_read=False)
+        self.revision += 1
+
+    @staticmethod
+    def decrypt(payload, *, purpose):
+        return payload
+
+
+def _queued(isolated_state, *, storage=None):
+    """Operations over the fixture's data with one search queued, not delivered."""
+    ContactRepository().replace([("Alice Example", ["15551112222"], [])])
+    append_event({
+        "kind": "sms_received", "handle": "h0", "sender_address": "+15551112222",
+        "body": "lunch with alice", "is_read": True, "seen_at": "2026-10-30T10:00:00Z",
+    })
+    contacts = ContactsResolver(photos=lambda: False)
+    calls = {"history": SimpleNamespace(records=lambda: [_call("missed", 5, "15551112222")])}
+    operations = BackendOperations(_Sessions(), BackendDependencies(
+        contacts=contacts, call_history=lambda: calls["history"], storage=storage,
+    ))
+    operations.list_threads(5)
+    jobs, replies = [], []
+    operations.search_async(
+        "alice", 10, lambda job, **callbacks: jobs.append((job, callbacks)),
+        replies.append, pytest.fail,
+    )
+    [(job, callbacks)] = jobs
+    outcome = job()
+
+    def deliver():
+        callbacks["on_success"](outcome)
+        return replies[-1]
+
+    return operations, calls, contacts, deliver
+
+
+def _found(result):
+    return {group: result[group]["total"] for group in search_view.GROUPS}
+
+
+def test_a_queued_search_keeps_results_when_messages_only_arrive(isolated_state) -> None:
+    _operations, _calls, _contacts, deliver = _queued(isolated_state)
+    append_event({
+        "kind": "sms_received", "handle": "h1", "sender_address": "+15559990000",
+        "body": "new", "is_read": True, "seen_at": "2026-10-30T11:00:00Z",
+    })
+    assert _found(deliver()) == {
+        "conversations": 1, "messages": 1, "contacts": 1, "calls": 1,
+    }
+
+
+def test_a_queued_search_drops_messages_cleared_meanwhile(isolated_state) -> None:
+    _operations, _calls, _contacts, deliver = _queued(isolated_state)
+    clear_events()
+    result = deliver()
+    assert result["conversations"]["results"] == result["messages"]["results"] == []
+    assert result["messages"]["total"] == 0 and result["calls"]["total"] == 1
+
+
+def test_a_queued_search_drops_calls_turned_off_meanwhile(isolated_state) -> None:
+    _operations, calls, _contacts, deliver = _queued(isolated_state)
+    calls["history"] = None
+    result = deliver()
+    assert result["calls"] == {"total": 0, "results": [], "available": False}
+    assert result["messages"]["total"] == 1
+
+
+def test_a_queued_search_drops_calls_cleared_meanwhile(isolated_state) -> None:
+    _operations, calls, _contacts, deliver = _queued(isolated_state)
+    calls["history"].records = lambda: []
+    assert deliver()["calls"] == {"total": 0, "results": [], "available": True}
+
+
+def test_a_queued_search_drops_contacts_reloaded_meanwhile(isolated_state) -> None:
+    _operations, _calls, contacts, deliver = _queued(isolated_state)
+    ContactRepository().replace([])
+    contacts.refresh()
+    result = deliver()
+    assert result["contacts"] == {"total": 0, "results": [], "available": True}
+    # Call names came from the same contacts.
+    assert result["calls"] == {"total": 0, "results": [], "available": True}
+
+
+def test_a_queued_search_returns_nothing_once_storage_locks(isolated_state) -> None:
+    storage = _Storage()
+    _operations, _calls, _contacts, deliver = _queued(isolated_state, storage=storage)
+    storage.lock()
+    result = deliver()
+    assert _found(result) == {
+        "conversations": 0, "messages": 0, "contacts": 0, "calls": 0,
+    }
+    assert result["calls"]["available"] is False
+
+
+def test_invalidating_conversations_forgets_the_folded_bodies(operations) -> None:
+    operations.search("lunch", 10)
+    assert operations._search_index is not None
+    operations.invalidate_conversations()
+    assert operations._search_index is None
 
 
 def test_search_writes_nothing_to_disk(operations) -> None:

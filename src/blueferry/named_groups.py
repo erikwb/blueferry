@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import unicodedata
 from collections.abc import Iterable
 
@@ -26,9 +27,47 @@ def unnamed_group_key(members: Iterable[str]) -> str:
     ANCS names the other members but carries no conversation ID, so this is
     the only identity that both survives a member writing from a different
     address and is known before every address is. Renaming a member in
-    Contacts or changing who is in the group changes the key.
+    Contacts or changing who is in the group changes the key. The names are
+    hashed as a list, so a repeated name, or one containing a separator, still
+    gives a different roster a different key.
     """
-    return UNNAMED_GROUP_PREFIX + "|".join(sorted(member.casefold() for member in members))
+    names = json.dumps(sorted(member.casefold() for member in members))
+    digest = hashlib.sha256(names.encode("utf-8")).hexdigest()
+    return f"{UNNAMED_GROUP_PREFIX}v2:{digest}"
+
+
+def is_unnamed_group_key(key: str) -> bool:
+    """Whether ``key`` is a current, versioned unnamed-group key."""
+    return key.startswith(UNNAMED_GROUP_PREFIX) and not is_legacy_unnamed_group_key(key)
+
+
+def is_legacy_unnamed_group_key(key: str) -> bool:
+    """Whether ``key`` is the unversioned unnamed-group key used before v2.
+
+    That key joined the member names with an unescaped ``|``, so it cannot say
+    which group it was saved for, and no new message is keyed by it.
+    """
+    if not key.startswith(UNNAMED_GROUP_PREFIX):
+        return False
+    rest = key[len(UNNAMED_GROUP_PREFIX):]
+    return not (
+        rest.startswith("v2:") and len(rest) == 67
+        and all(character in "0123456789abcdef" for character in rest[3:])
+    )
+
+
+def unnamed_group_key_for_legacy(key: str) -> str | None:
+    """The v2 key of the group an unversioned unnamed-group key most likely meant.
+
+    Reads the key as member names joined by ``|``. The old key dropped
+    repeated names and did not escape ``|``, so for some groups this is
+    another group's key. Use it only where a wrong guess is harmless, such as
+    a star, never for a reply roster.
+    """
+    if not is_legacy_unnamed_group_key(key):
+        return None
+    names = key[len(UNNAMED_GROUP_PREFIX):]
+    return unnamed_group_key(names.split("|")) if names else None
 
 
 def legacy_named_group_key(name: str) -> str:
@@ -50,6 +89,30 @@ def stored_named_group_key(event: dict) -> str:
     """Resolve a retained key using its recorded name, without rewriting it."""
     name = _stored_name(event)
     return named_group_key(name) if name else ""
+
+
+def route_version(route: dict) -> str:
+    """Identify one save of a roster; a roster warning names the save it is for."""
+    return str(
+        route.get("seen_at") or stored_named_group_key(route)
+        or route.get("group_key") or ""
+    )
+
+
+def held_roster_warning(route: dict) -> dict:
+    """The saved warning about a sender outside this roster, if any.
+
+    It is kept with the roster because the sender's messages can leave
+    history before the user reviews the members again.
+    """
+    warning_id = str(route.get("group_roster_warning_id") or "")
+    if not warning_id.startswith(route_version(route) + ":"):
+        return {}
+    return {
+        "group_roster_changed": True,
+        "group_unexpected_sender": str(route.get("group_unexpected_sender") or ""),
+        "group_roster_warning_id": warning_id,
+    }
 
 
 class NamedGroupRoutes:
@@ -77,7 +140,7 @@ class NamedGroupRoutes:
                     # A roster saved for the previously merged thread cannot
                     # be assigned to either new conversation without review.
                     continue
-            elif str(event.get("group_key") or "").startswith(UNNAMED_GROUP_PREFIX):
+            elif is_unnamed_group_key(str(event.get("group_key") or "")):
                 key = str(event["group_key"])
             else:
                 continue
@@ -106,7 +169,13 @@ class NamedGroupRoutes:
         name = _stored_name(event)
         if not name:
             key = str(event.get("group_key") or "")
-            if key.startswith(UNNAMED_GROUP_PREFIX):
+            if is_legacy_unnamed_group_key(key):
+                # No roster applies under the old key, and none can be saved
+                # for it: new messages from the group join its v2 key.
+                event["group_origin"] = "unnamed"
+                event["group_reply_ready"] = False
+                event["group_participants_required"] = False
+            elif is_unnamed_group_key(key):
                 event["group_origin"] = "unnamed"
                 if not self._apply_stored(event, key):
                     event["group_reply_ready"] = False
@@ -127,12 +196,14 @@ class NamedGroupRoutes:
             return False
         # A roster edit also replaces historical outgoing routing metadata;
         # otherwise old sends could re-add a participant the user removed.
+        held = held_roster_warning(route)
         event.update({
             "group_name": str(route.get("group_name") or ""),
             "group_members": list(route.get("group_members") or []),
             "group_recipients": list(route["group_recipients"]),
-            "group_reply_ready": True,
-            "group_participants_required": False,
+            "group_reply_ready": not held,
+            "group_participants_required": bool(held),
+            **held,
         })
         return True
 
@@ -166,6 +237,7 @@ class NamedGroupRoutes:
         members = [sender_title] if sender_title else []
         reply_ready = False
         roster_changed = False
+        unexpected_sender = ""
         warning_id = ""
         if route is not None:
             recipients = [str(value) for value in route["group_recipients"]]
@@ -180,8 +252,15 @@ class NamedGroupRoutes:
                     recipients.append(sender_address)
                 if sender_identity is not None:
                     roster_changed = True
-                    route_version = str(route.get("seen_at") or key)
-                    warning_id = f"{route_version}:{sender_identity}"
+                    unexpected_sender = sender_title
+                    warning_id = f"{route_version(route)}:{sender_identity}"
+            held = held_roster_warning(route)
+            if held and not roster_changed:
+                # A member writing again does not answer an earlier warning.
+                reply_ready = False
+                roster_changed = True
+                unexpected_sender = held["group_unexpected_sender"]
+                warning_id = held["group_roster_warning_id"]
         return {
             "group_key": key,
             "group_members": members,
@@ -191,6 +270,6 @@ class NamedGroupRoutes:
             "group_observed_recipient": sender_address or "",
             "group_observed_sender": sender_title,
             "group_roster_changed": roster_changed,
-            "group_unexpected_sender": sender_title if roster_changed else "",
+            "group_unexpected_sender": unexpected_sender,
             "group_roster_warning_id": warning_id,
         }

@@ -112,6 +112,29 @@ blueferry send photo.jpg --to localsend
 blueferry photos recent
 ```
 
+### Dateien aufs Fenster ziehen
+
+Zieh Dateien aus der Dateiverwaltung irgendwo aufs Hauptfenster des KDE-
+oder GTK-Clients: **Drop to send to iPhone** erscheint, und beim Loslassen
+gibt BlueFerry die Dateien an ein Ziel von **Send to…**:
+
+- Ein Ziel, etwa „iPhone (LocalSend)“: die Dateien gehen sofort dorthin. Ein
+  kurzer Hinweis sagt das, und die Karte des Plugins zeigt die Übertragung.
+- Mehrere Ziele: BlueFerry fragt nach dem Ziel. Das zuletzt gewählte ist
+  vorausgewählt, bis du BlueFerry schließt.
+- Kein Ziel: BlueFerry erklärt, dass ein Plugin mit **Send to** (die
+  Fähigkeit `share`, etwa LocalSend) nötig ist, mit einem Knopf, der
+  **Settings › Plugins** öffnet.
+
+Gesendet werden nur Dateien auf diesem Computer, 1 bis 64 auf einmal.
+Ordner, Links aus dem Browser und Dateien auf anderen Computern (etwa
+`sftp://`) werden mit einem Hinweis übersprungen. Ein Karteneintrag, der
+Dateien annimmt, bekommt die darauf gezogenen Dateien weiterhin selbst.
+
+| | Qt | GTK | TUI | Quickshell | CLI |
+|---|---|---|---|---|---|
+| Dateien aufs Fenster ziehen | ✓ | ✓ | — ein Terminal bekommt keine abgelegten Dateien | — das Panel hat keine Ablagefläche und verwaltet keine Plugins | `blueferry send DATEI… [--to PLUGIN]` |
+
 ## Protokolle und Datenschutz
 
 Plugins schreiben `~/.local/state/blueferry/plugins/<id>.log` (nur für dich

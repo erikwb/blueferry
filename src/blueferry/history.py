@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 
 from blueferry import config
 from blueferry.ancs.constants import MESSAGES_APP_ID
+from blueferry.sqlite_files import is_damaged, remove_database
 from blueferry.storage_security import (
     ENCRYPTED_STORAGE,
     PLAINTEXT_STORAGE,
@@ -39,6 +40,29 @@ CREATE TABLE IF NOT EXISTS meta (
 CREATE INDEX IF NOT EXISTS idx_events_kind_id ON events(kind, id);
 CREATE INDEX IF NOT EXISTS idx_events_occurred_at ON events(occurred_at);
 """
+
+
+# Rows fetched per statement. Decoding happens between statements, so a slow
+# decrypt on a worker never keeps a read lock that would stall a writer.
+_READ_PAGE_ROWS = 256
+
+
+def _payload_rows(
+    database: sqlite3.Connection, *, newest_first: bool
+) -> Iterator[tuple[int, str]]:
+    """Yield raw ``(id, payload)`` rows, reading one finished page at a time."""
+    query = (
+        "SELECT id, payload_json FROM events WHERE id < ? ORDER BY id DESC LIMIT ?"
+        if newest_first
+        else "SELECT id, payload_json FROM events WHERE id > ? ORDER BY id ASC LIMIT ?"
+    )
+    after = 2**63 - 1 if newest_first else -(2**63)
+    while True:
+        page = database.execute(query, (after, _READ_PAGE_ROWS)).fetchall()
+        yield from page
+        if len(page) < _READ_PAGE_ROWS:
+            return
+        after = int(page[-1][0])
 
 
 def _event_datetime(event: EventRecord) -> datetime | None:
@@ -129,6 +153,39 @@ def append_event(
         _insert(database, event, storage)
 
 
+class HistoryErasedError(RuntimeError):
+    """History was erased after the caller read the backfill floor."""
+
+
+_ANY_FLOOR = object()
+
+
+def append_events(
+    events: Iterable[EventRecord],
+    *,
+    path: Path | None = None,
+    storage: StorageSecurity | None = None,
+    floor: datetime | object | None = _ANY_FLOOR,
+) -> int:
+    """Commit several serialized events as one SQLite transaction.
+
+    With ``floor`` (as read by ``backfill_floor``), raise
+    ``HistoryErasedError`` and append nothing if history was erased since.
+    """
+    selected = list(events)
+    if not selected:
+        return 0
+    with closing(_open_database(path)) as database, database:
+        if floor is not _ANY_FLOOR:
+            # Hold the write lock from the check to the commit.
+            database.execute("BEGIN IMMEDIATE")
+            if _read_backfill_floor(database) != floor:
+                raise HistoryErasedError("local history was erased meanwhile")
+        for event in selected:
+            _insert(database, event, storage)
+    return len(selected)
+
+
 def read_events(
     *,
     kinds: set[str] | None = None,
@@ -149,13 +206,10 @@ def read_events(
     if bounded == 0:
         return []
     events: list[EventRecord] = []
-    query = (
-        "SELECT payload_json FROM events ORDER BY id DESC"
-        if bounded is not None
-        else "SELECT payload_json FROM events ORDER BY id ASC"
-    )
     with closing(_open_database(path)) as database:
-        for (payload,) in database.execute(query):
+        for _event_id, payload in _payload_rows(
+            database, newest_first=bounded is not None
+        ):
             try:
                 event = _deserialize(payload, storage)
             except CorruptStorageError:
@@ -206,14 +260,11 @@ def read_event_rows(
     bounded = max(0, int(limit)) if limit is not None else None
     if bounded == 0:
         return []
-    query = (
-        "SELECT id, payload_json FROM events ORDER BY id DESC"
-        if bounded is not None
-        else "SELECT id, payload_json FROM events ORDER BY id ASC"
-    )
     rows: list[EventRow] = []
     with closing(_open_database(path)) as database:
-        for event_id, payload in database.execute(query):
+        for event_id, payload in _payload_rows(
+            database, newest_first=bounded is not None
+        ):
             try:
                 event = _deserialize(payload, storage)
             except CorruptStorageError:
@@ -238,8 +289,13 @@ def delete_event_rows(
     *,
     path: Path | None = None,
     storage: StorageSecurity | None = None,
+    raise_floor: bool = False,
 ) -> int:
-    """Securely erase a backend-resolved set of event rows."""
+    """Securely erase a backend-resolved set of event rows.
+
+    ``raise_floor`` raises the backfill floor in the same transaction, so a
+    reconnect cannot fetch the erased messages again.
+    """
     selected = sorted({int(event_id) for event_id in event_ids})
     if not selected:
         return 0
@@ -253,6 +309,8 @@ def delete_event_rows(
                 "DELETE FROM events WHERE id = ?",
                 ((event_id,) for event_id in selected),
             )
+            if raise_floor and database.total_changes != before:
+                _raise_backfill_floor(database, datetime.now(timezone.utc))
         removed = database.total_changes - before
     return int(removed)
 
@@ -526,13 +584,66 @@ def prune_events(
     return removed
 
 
-def clear_events(*, path: Path | None = None) -> None:
-    """Erase local history and scrub SQLite's reusable pages."""
+_BACKFILL_FLOOR_KEY = "map_backfill_floor"
+
+
+def _raise_backfill_floor(database: sqlite3.Connection, when: datetime) -> None:
+    database.execute(
+        "INSERT INTO meta(key, value) VALUES (?, ?) "
+        "ON CONFLICT(key) DO UPDATE SET value = MAX(value, excluded.value)",
+        (_BACKFILL_FLOOR_KEY, int(when.timestamp())),
+    )
+
+
+def raise_backfill_floor(
+    when: datetime | None = None, *, path: Path | None = None
+) -> None:
+    """Never fetch missed messages from the phone that are older than ``when``.
+
+    Erasing history raises this floor, so a later reconnect does not restore
+    messages the user deleted from the iPhone's inbox. It holds no message
+    content or message time, only when local history was last erased.
+    """
+    with closing(_open_database(path)) as database, database:
+        _raise_backfill_floor(database, when or datetime.now(timezone.utc))
+
+
+def backfill_floor(*, path: Path | None = None) -> datetime | None:
+    """Return the backfill floor, or ``None`` when history was never erased."""
     with closing(_open_database(path)) as database:
-        database.execute("PRAGMA secure_delete = ON")
-        with database:
-            database.execute("DELETE FROM events")
-        database.execute("VACUUM")
+        return _read_backfill_floor(database)
+
+
+def _read_backfill_floor(database: sqlite3.Connection) -> datetime | None:
+    row = database.execute(
+        "SELECT value FROM meta WHERE key = ?", (_BACKFILL_FLOOR_KEY,)
+    ).fetchone()
+    if row is None:
+        return None
+    try:
+        return datetime.fromtimestamp(int(row[0]), timezone.utc)
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
+def clear_events(*, path: Path | None = None, discard_damaged: bool = False) -> None:
+    """Erase local history and scrub SQLite's reusable pages.
+
+    A storage reset passes ``discard_damaged`` so that a file SQLite cannot
+    read is deleted rather than blocking the reset. Clearing raises the
+    backfill floor (see ``raise_backfill_floor``); a deleted file loses it.
+    """
+    try:
+        with closing(_open_database(path)) as database:
+            database.execute("PRAGMA secure_delete = ON")
+            with database:
+                database.execute("DELETE FROM events")
+                _raise_backfill_floor(database, datetime.now(timezone.utc))
+            database.execute("VACUUM")
+    except sqlite3.DatabaseError as error:
+        if not discard_damaged or not is_damaged(error):
+            raise
+        remove_database(path or config.EVENTS_DB)
 
 
 def scrub_unprotected_events(

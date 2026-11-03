@@ -209,7 +209,10 @@ notification contents. During setup BlueFerry therefore sends a minimal
 Control Point request for the Messages app's display name and reports ANCS
 ready only after the corresponding Data Source response arrives. This probe
 contains no notification identifier or notification content. A rejected or
-interrupted probe is retried while MAP/PBAP remains available.
+interrupted probe is retried while MAP/PBAP remains available. The same
+applies after access was granted: an explicit `NotAuthorized`/`NotPermitted`
+rejection, as when notification sharing is turned off on the iPhone, ends
+ANCS readiness and resumes the probe retry without resetting LE.
 
 Without the relevant permission, MAP or PBAP can be visible at the SDP level
 but reject an OBEX connection with `Forbidden`/`0x43`; that state resolves
@@ -233,6 +236,15 @@ the tested phone they are indistinguishable on the wire:
 - `ListMessages` puts the message text in the `Subject` property. It also
   supplies sender, timestamp, folder, type, and read state without requiring a
   full bMessage download.
+- BlueZ's `ListMessages` filter keys are `MaxCount` (uint16, default 1024),
+  `Offset`, `SubjectLength`, `Fields`, `Types`, `PeriodBegin`, `PeriodEnd`,
+  `Read`, `Recipient`, `Sender` and `Priority` (BlueZ 5.87,
+  `doc/org.bluez.obex.MessageAccess.rst` and `parse_message_filters` in
+  `obexd/client/map.c`). obexd silently ignores unknown keys, so the MAP
+  specification's `MaxListCount` leaves the default of 1024 entries in
+  effect; a `MaxCount` of another D-Bus type is rejected. The one-time-code
+  lookup lists up to 1024 inbox entries because the order in which iOS
+  returns entries when `MaxCount` truncates the listing is unverified.
 - Changing `Message1.Read` is reflected on the phone. Conversely, opening a
   message on the phone produces a read-property update that can close the
   corresponding desktop popup.
@@ -244,7 +256,27 @@ conversation identifier in the observed format.
 
 The iPhone's MAP sent folder was empty in testing, and sending did not produce
 a useful outgoing MNS event. BlueFerry records successful local sends itself;
-it cannot reconstruct a complete sent history from the phone.
+it cannot reconstruct a complete sent history from the phone, nor catch up on
+messages sent from the iPhone while the computer was disconnected.
+
+iOS does not replay MNS events for messages that arrived while MAP was
+disconnected, but its inbox listing includes them. Observed on 2026-11-02
+with an iPhone on iOS 27, BlueZ 5.87 and an Intel AX200 on Gentoo (phone model
+and exact iOS build not recorded): with Bluetooth off on the computer, a message received
+on the iPhone produced no MNS event after Bluetooth came back and MAP and MNS
+reconnected, and it was missing from local history. `ListMessages` on
+`telecom/msg/INBOX` afterwards listed it with its sender, text, timestamp and
+read flag, together with older inbox messages BlueFerry had also never seen.
+BlueFerry therefore lists the inbox once after each MAP or MNS reconnect and
+stores what history lacks. Still unverified on hardware: whether iOS honours
+the `PeriodBegin` filter, the order in which it returns entries when
+`MaxCount` truncates the listing, how long the listing's `Subject` may be
+before iOS shortens it, and whether MAP handles stay stable across sessions.
+The backfill filters by time itself and does not rely on stable handles.
+
+The backfill passes BlueZ's `MaxCount` and `PeriodBegin` filter keys (listed
+above); `PeriodBegin` is a string in BlueZ's `YYYYMMDDTHHMMSS` format, which
+obexd forwards unchanged.
 
 ## MAP send behavior
 
@@ -317,8 +349,8 @@ The iPhone phonebook is available through BlueZ's
 - Select the main phonebook with `Select("int", "pb")`; this is not MAP's
   `SetFolder` API.
 - Pull it with `PullAll(path, {"MaxCount": ..., "Format": "vcard30", "Offset": 1})`.
-  `MaxListCount` is a MAP option and causes a PBAP transfer to fail or yield a
-  zero-byte file.
+  `MaxListCount` is the MAP specification's parameter name, not a BlueZ filter
+  key, and causes a PBAP transfer to fail or yield a zero-byte file.
 - PBAP reserves `telecom/pb/0.vcf` for the owner card and returns the bulk
   phonebook in ascending index order (PBAP 1.2.3, sections 3.1.5.2 and 4.2).
   `Offset=1` excludes this entry before parsing or photo budgeting. This
@@ -666,8 +698,11 @@ timed out *and* BlueZ answered the previous write, so a slow ATT write never
 stalls the daemon's main loop and two writes never overlap (BlueZ rejects an
 overlapping write with `org.bluez.Error.InProgress`; a rejection caused by
 another D-Bus client is retried a few times). The iPhone
-can replay existing notifications after a reconnect, so startup/reconnect
-delivery needs deduplication without suppressing genuine modifications.
+replays existing notifications after a reconnect, flagged PreExisting;
+BlueFerry skips those. Within a session, an event whose UID, app, and text
+were already delivered is dropped, while a genuine modification still goes
+through. That record is cleared when the UID session ends, because a reused
+UID with the same text is then a new notification.
 
 Apple Messages also appears through ANCS. BlueFerry retains that copy for group
 correlation but suppresses its desktop popup because MAP already provides the
@@ -734,8 +769,11 @@ detach all earlier records for good: they are reported with `actionable`
 false and are never matched to a UID again. Only pinned records are written,
 to the encrypted `pinned_notifications` entry of `settings.json` under the
 storage policy (never with `none`, unreadable while locked, at most 20 and
-64 KiB); records loaded at startup are detached. With the list off, the
-entry is deleted at daemon start. This path is verified only against
+64 KiB); records loaded at startup are detached. While `settings.json`
+can't be read the saved pins are not loaded, pinning and unpinning fail with
+`Configuration`, and they load on the next list, pin or storage change after
+it reads again. With the list off, the entry is deleted at daemon start, or
+by the storage retry once the file reads. This path is verified only against
 simulated events, not a physical iPhone.
 
 Conversation reads update local history immediately. The daemon delays the
@@ -944,6 +982,30 @@ moves its `State` from `active` to `idle` while AMS still reports playback;
 GetStatus then reports route `pc` with `phone_audio_playing` `phone`, and
 picking this computer again returns to `pc`.
 
+A/V sync: when the phone and BlueZ negotiate AVDTP Delay Reporting,
+bluetoothd exports `MediaTransport1.Delay` (unit 1/10 ms) and sends the
+audio server's latency to the phone, which shifts video by it. GetStatus
+reports it as `phone_audio_delay_ms` with `phone_audio_delay_reporting`
+`true`; a transport without `Delay` reports `false`, no transport `null`.
+Updates follow `PropertiesChanged` (`State` and `Delay`). The delay is only
+reported while the transport's `State` is `active`; an idle or pending
+transport reports `phone_audio_delay_ms` as `null`, because its last value
+would be stale, and `phone_audio_delay_reporting` still says whether `Delay`
+exists. BlueZ invalidates `Delay` only once it no longer exists, so an
+invalidated `Delay` reads like a transport without it. Observed 2026-10-30
+(iPhone, AAC, Intel AX200, BlueZ 5.87, PipeWire 1.6.9): `Delay` went 0 → 316 → 1098 (later up to
+1298) as PipeWire reported latency.
+A follow-up test on 2026-11-02 (iPhone, video playing through the PC,
+transport `active`, BlueZ 5.87, PipeWire 1.6.9) showed that the
+`bluez_input` node has no `latencyOffsetNsec`, only channel and resample
+properties plus a writable `ProcessLatency`. Setting `ProcessLatency` to
+50 ms left `Delay` at 1098 for 20 s; after pause and play PipeWire rebuilt
+the node, the override was gone, and `Delay` read 1298, the same +20 ms
+already seen on 2026-10-31 without any intervention, which comes from
+PipeWire's own buffering. PipeWire therefore reports only its own buffer at
+stream start; a user offset is not included and does not survive a stream
+restart, so BlueFerry offers no fine-tuning control for the delay.
+
 Hardware validation on 2026-10-25 UTC (MediaTek, BlueZ 5.87, PipeWire 1.6.9,
 WirePlumber 0.5.18): with normal adapter roles and a rule matching only the
 selected phone's `api.bluez5.address` with `bluez5.auto-connect = [ ]`, an
@@ -1044,10 +1106,32 @@ until the phone answers, concurrent callers get `org.ofono.Error.InProgress`.
 iOS additionally reports a 0-9 battery level through `AT+IPHONEACCEV`, which
 oFono does not decode, so the HFP battery is limited to 20 % steps. The
 battery does not need HFP, though: iOS exposes the standard GATT Battery
-Service (0x180F, Battery Level 0x2A19, read and notify) to its LE peer;
-BlueFerry prefers that value. BlueZ's `Battery1`, built from the same
-service, is only the fallback: bluetoothd 5.87 was seen to keep an old level
-there after an LE reconnect (`error registering battery: path exists`).
+Service (0x180F, Battery Level 0x2A19, read and notify) to its LE peer.
+BlueZ's battery plugin reads and subscribes to that characteristic itself and
+publishes the level as `Battery1.Percentage` with `Source` "GATT Battery
+Service". With that `Battery1` present (BlueZ 5.87), BlueFerry's own
+`ReadValue` was seen to fail with `org.bluez.Error.Failed` and `StartNotify`
+with `org.bluez.Error.InProgress`, and its reading could stay at the first
+value; that the plugin's own session causes the read failures is an inference.
+So when that `Battery1` is present, BlueFerry follows only its
+`PropertiesChanged` and neither reads nor subscribes to 0x2A19 (an own
+notification session is stopped when it appears). Without it (no battery
+plugin, or a `Battery1` from another source such as hands-free) BlueFerry
+reads the characteristic once and follows its notifications, with any other
+`Battery1` as the fallback. A `Battery1` without `Source` was seen on one
+BlueZ 5.82 laptop (#280): BlueZ omits `Source` for a battery provider that
+names none, such as PipeWire's hands-free battery, and its battery plugin then
+fails to register at the same path (`path exists`) and drops its session
+(read from the BlueZ and PipeWire sources). bluetoothd 5.87 was seen to keep
+an old level in `Battery1` after an LE reconnect (`error registering battery:
+path exists`); BlueZ normally removes its `Battery1` with the LE link, so one that survives
+the disconnect is not trusted afterwards: BlueFerry reads the characteristic
+itself until that `Battery1` is replaced or its level changes. A switch
+between the two sources never shows a cached value: the characteristic path
+starts with a fresh read. BlueZ answers `StartNotify` with `InProgress` when
+the same D-Bus client already has a session that is not yet registered (after
+a reconnect, BlueFerry's session from before); it is kept, or stopped if
+`Battery1` took over meanwhile.
 
 ## Pairing diagnostics
 

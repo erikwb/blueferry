@@ -23,11 +23,24 @@ Zeichen finden nichts.
 Suche in den Clients:
 
 - **KDE-Client:**
-  noch nicht; nutze die Kommandozeile.
+  die Lupe in der Kopfzeile, `Strg+K` oder `Strg+F` öffnen die Suche. Sie
+  sucht beim Tippen, nach einer kurzen Pause, und zeigt dieselben Gruppen
+  mit je bis zu 20 Treffern; Pfeiltasten und Enter oder ein Klick öffnen
+  einen Treffer: die Unterhaltung bei der Nachricht, die Kontaktkarte oder
+  den Anruf in der Anrufliste. Beim Schließen vergisst die Suche die
+  Ergebnisse.
 - **GTK-Client:**
-  noch nicht; nutze die Kommandozeile.
+  die Lupe in der Kopfzeile, `Strg+K` oder `Strg+F` öffnen die Suche. Sie
+  sucht beim Tippen, nach einer kurzen Pause, und zeigt dieselben Gruppen
+  mit je bis zu 20 Treffern; Enter öffnet den ersten Treffer, ein Klick oder
+  die Pfeiltasten jeden anderen: die Unterhaltung bei der Nachricht, die
+  Kontaktkarte oder den Anruf in der Anrufliste. Beim Schließen vergisst die
+  Suche die Ergebnisse.
 - **Terminal-Client:**
-  noch nicht; nutze die Kommandozeile.
+  `f` öffnet dieselbe Suche beim Tippen, mit je bis zu 20 Treffern pro
+  Gruppe, und Enter auf einem Treffer öffnet die Unterhaltung, die
+  Kontaktkarte oder den Anruf (siehe
+  [Clients](clients.md#kontakte-und-suche)).
 - **Quickshell-Panel:**
   der Suchknopf (oder `Strg+F`) sucht beim Tippen, zeigt je Gruppe bis zu 10
   Treffer und öffnet aus einem Treffer die Unterhaltung oder die
