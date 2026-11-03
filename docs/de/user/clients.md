@@ -317,6 +317,7 @@ Hintergrunddienst sie anbietet.
 | Notifications | Welche Ereignisse Popups erzeugen, nur Kontakte, **Click Rules** (auch `l`), [stummgeschaltete Apps](notification-mute.md), Mitteilungsinhalt, Aktionsknöpfe, Mitteilungen mit dem iPhone abgleichen, beim Wegklicken als gelesen markieren, letzte iPhone-Mitteilungen behalten |
 | Calls & Audio | Telefonate, Anrufliste und Popups für verpasste Anrufe, Akkuwarnung, iPhone-Ton auf diesem Computer (auch `a`), Mediensteuerung und MPRIS |
 | Security | Einmalcodes, Sperre bei Abwesenheit, die Speichereinstellung (nur angezeigt; ändern mit `blueferry storage-policy-set`) |
+| Plugins | Installierte [Plugins](plugins.md) (Leertaste ein/aus, Enter **Settings**, `u` Update, Entf entfernen, `g` das Protokoll im Terminal), die Plugin-Listen mit Installieren und Aktualisieren, eine eigene Git-URL und die Listen selbst. Jede Installation fragt vorher nach. Die **Settings** eines Plugins öffnen sich als eigenes Formular |
 | About | Version, der Hintergrunddienst mit **Restart Service**, die Tastenbelegung |
 
 Die Schalter, die einen Neustart brauchen (siehe oben), zeigen den Hinweis
@@ -328,10 +329,17 @@ zu setzen ist.
 **Copy Report** legt ihn über das Terminal (OSC 52) in die Zwischenablage;
 reicht das Terminal das nicht weiter, markiere den Text mit der Maus.
 
+Das Einstellungsformular eines Plugins folgt dem, was das Plugin braucht,
+wie in Qt und GTK: Abschnitte (eingeklappte öffnet **Show**), Felder, die
+nur bei bestimmten Auswahlen erscheinen, Beispiele und Hilfe-Links, **Test
+Connection**, eine Anmeldung im Browser und die eigenen Knöpfe des Plugins.
+**Save** (oder `Strg+S`) wird verfügbar, sobald die Pflichtfelder gültig
+sind. Ein gespeichertes Passwort oder ein Schlüssel wird nie angezeigt: das
+Feld bleibt leer und maskiert, leer lassen behält den Wert.
+
 Die Befehlspalette (`Strg+P`) kennt außerdem **Settings: Phone** … **Settings:
 About** und **Run Diagnostics**. Die Kopplung bleibt bei `blueferry
-pair-setup` oder einem grafischen Client; Plugin-Einstellungen hat der
-Terminal-Client noch nicht.
+pair-setup` oder einem grafischen Client.
 
 ### iPhone, Anrufe und Mitteilungen
 
@@ -345,6 +353,24 @@ die Übersicht zu schließen; außerhalb eines Textfelds ändern auch `-` und
 jeweils um eine iPhone-Stufe, und neben dem Titel steht der Wert, den das
 iPhone zuletzt gemeldet hat. Die übrigen Knöpfe öffnen die Mitteilungsliste,
 die letzten Anrufe, das Anruf-Panel und Settings.
+
+Darunter listet **From Plugins**, was deine [Plugins](plugins.md) anbieten,
+etwa einen Kalendereintrag, AirPods oder ein LocalSend-Gerät, mit ihren
+Knöpfen; Enter führt den markierten aus. **Send to…** fragt nach einem Ziel
+und den Pfaden der Dateien (→ ergänzt einen Pfad). Gelesen wird nur, solange
+die Übersicht offen ist. **Photos** in der Palette (da, solange ein
+Foto-Plugin eingeschaltet ist) listet die neuesten Einträge dieses Plugins;
+Enter öffnet einen im Bildbetrachter, `c`
+kopiert seinen Pfad.
+
+| | Qt | GTK | TUI | Quickshell | CLI |
+|---|---|---|---|---|---|
+| Plugin-Karten mit ihren Knöpfen | ✓ | ✓ | ✓ iPhone-Übersicht | ✓ From Plugins, ohne Knöpfe, die Dateien senden | ✓ `blueferry cards` |
+| Plugins verwalten und einstellen | ✓ | ✓ | ✓ Settings › Plugins | — | ✓ `blueferry plugins` |
+| Send to… | ✓ | ✓ | ✓ Dateipfade | — | ✓ `blueferry send` |
+| Dateien auf das Fenster oder einen Karteneintrag ziehen | ✓ | ✓ | — ein Terminal bekommt keine Dateien gezogen | — | — |
+| Photos | ✓ Vorschaubilder | ✓ Vorschaubilder | ✓ Liste ohne Vorschaubilder | — | ✓ `blueferry photos` |
+| Begleitprogramme | ✓ | ✓ | — | — | ✓ `blueferry tools` |
 
 **iPhone Notifications** (in der Palette und in der Übersicht) listet die
 letzten Mitteilungen von iPhone-Apps, die **Keep recent iPhone
