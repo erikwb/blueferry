@@ -12,13 +12,154 @@
 - Edit the replies for declining a call in the Quickshell settings
   (Calls & Audio). Muting during a call and declining with a message stay
   with the other clients, because the panel has no call view.
-- Choose the speaker and microphone for phone calls, saved for every call or
-  switched for the running call only, without changing the system defaults
-  (`Calls1.ListCallAudioDevices`, `SetCallAudioDevice`,
-  `SetCallAudioDeviceForCall`, `blueferry calls audio`).
 - Mute this computer's microphone for the running call only, without muting
   the microphone for other applications (`Calls1.SetCallMuted`, ListCalls
   `audio.muted`, `blueferry calls mute on|off`).
+- Contact cards: the contact cache now keeps each number with its iPhone
+  label, labelled email addresses, postal addresses, company and job title,
+  inside the encrypted contact records only. `Messages1.ListContactCards`
+  pages through the cards (optionally filtered, no photo bytes) and
+  `GetContact` returns one card with its photo; `GetStatus` reports
+  `contact_card_count` and `contact_card_epoch` (changes when card ids may
+  no longer resolve). Card queries ignore case, accents and Unicode forms.
+  CLI: `blueferry contacts list|show`.
+- Global search: `Messages1.Search` looks through conversations, messages,
+  contact cards and call history in one call and groups the hits with the
+  ids to open them. It searches only the decrypted data the daemon already
+  holds in memory; there is no search index on disk. `ListCallHistory`
+  entries gain an opaque `id`, and `GetStatus` reports `search_result_limit`.
+  CLI: `blueferry search`.
+- Client models: `contacts_model` and `search_model` hold the paging,
+  typing delay, stale-id and busy handling of the contact list and the
+  global search for the KDE, GTK and terminal clients, drop contact photos
+  once the option is off and search results once their data changes
+  (`GlobalSearch.invalidate`); recent-call rows
+  from `phone_overview.call_groups` carry the ids of the folded calls.
+- KDE client: a **Contacts** tab lists the contact cards with a search
+  field (searching after a short pause while typing) and loads more cards
+  while scrolling; a card shows every labelled number, email and postal
+  address, company, job title and photo, with **Call** (asks first) and
+  **Message**, and the list reloads when `contact_card_epoch` changes. A
+  global search (header magnifier, `Ctrl+K` or `Ctrl+F`) shows the grouped
+  hits and opens the conversation at the message, the contact card or the
+  call.
+- Quickshell: a search button (and Ctrl+F) opens a popup that lists and
+  searches the contact cards and, from two characters on, searches
+  conversations, messages, contacts and calls. Hits open their
+  conversation or contact card; a card's numbers and addresses and call
+  hits offer Call (confirmed first) and Message. Read only while the popup
+  is open.
+- Mute the desktop popups of single iPhone apps: `Messages1.ListNotificationApps`
+  lists the apps seen since the daemon started (memory only) plus the muted
+  ones, `SetNotificationAppMuted` saves a choice under the storage policy, and
+  `Events1.NotificationAppsChanged` invalidates the list. CLI:
+  `blueferry notifications apps|mute|unmute`. The environment allowlist and
+  blocklist stay a hard filter in front of it.
+- `blueferry media volume up|down` sends one iPhone volume step and confirms
+  it with the last reported level; `blueferry media volume` prints the level.
+  A shared presenter (`media_volume_view`) prepares the volume buttons for the
+  graphical and terminal clients.
+- Pin entries of the opt-in iPhone notification list so they stay listed,
+  also across restarts, until unpinned (`Messages1.SetNotificationPinned`,
+  `blueferry notifications pin`/`unpin`). Pins are saved under the local data
+  policy, at most 20; entries removed on the iPhone are marked as such.
+- KDE client: volume down/up buttons and the reported level under the
+  now-playing transport buttons; **Pin**/**Unpin** on entries of the
+  Notifications tab, with a pin marker, greyed-out entries removed on the
+  iPhone or from muted apps, and the pin limit and errors shown above the
+  list; a **Muted apps** section in Settings › Notifications with a switch per
+  app, refreshed on `NotificationAppsChanged` while it is shown.
+- Terminal client: `-` and `+` step the iPhone volume, the now-playing line
+  shows the reported level, and the iPhone overview has Volume Down,
+  Play/Pause and Volume Up buttons. `P` pins or unpins the selected entry of
+  iPhone Notifications, which marks pinned entries and dims removed ones and
+  those of muted apps. Settings › Notifications › Muted apps mutes single
+  apps with a checkbox each.
+- Terminal client: `C` (or **Contacts** in the command palette) lists the
+  contact cards with a search field and paging, shows every number, email
+  and postal address of the selected card, and calls, messages or copies the
+  selected entry. `f` (or **Search Everything**) searches conversations,
+  messages, contacts and calls as you type and opens the hit: the
+  conversation, the contact card or the call in Recent calls. Contact
+  photos are not shown.
+- Quickshell: volume down/up buttons with the iPhone's level in the
+  now-playing strip, **Pin** / **Unpin** in the recent notification list
+  (removed entries and entries of muted apps greyed out, the pin limit
+  shown), and **Muted apps** under iPhone settings › Notifications. The
+  bridge gains `set_notification_pinned`, `notification_apps` and
+  `toggle_notification_app` and forwards `NotificationAppsChanged`.
+- Shared presenter `file_drop_view` for the drop zones of the KDE and GTK
+  main windows (both below). It holds the decisions and texts, so both
+  clients send dropped files to a **Send to…** target the same way (the
+  only target at once, a picker for several with the session's last pick
+  preselected, or an explanation when no `share` plugin is there). Only
+  local files, 1 to 64; folders and
+  remote URIs are skipped with a note, and a client never runs two
+  `SendFiles` at once across "Send to…", card sends and drops.
+- KDE client: files dragged anywhere onto the main window go to a
+  **Send to…** target (overlay "Drop to send to iPhone"): the only target
+  at once with a notice, a picker for several (the session's last pick
+  preselected), or an explanation with a button to Settings › Plugins when
+  no `share` plugin is there. Only local files, 1 to 64; folders and remote
+  URIs are skipped.
+- Report the A/V sync delay of the iPhone's audio stream in `GetStatus`
+  (`phone_audio_delay_ms`, `phone_audio_delay_reporting`; the delay only while
+  the stream is active), show it next to the iPhone sound status, and check
+  AVDTP delay reporting in `blueferry doctor`.
+- KDE client: the iPhone sound switches in Settings and on the phone card
+  show the A/V sync line under the sound status.
+- Terminal client: the connection summary shows the A/V sync line next to
+  the iPhone sound status.
+- Quickshell: the phone settings show the A/V sync line under the iPhone
+  sound switch.
+- Catch up on incoming messages that arrived while the iPhone was
+  disconnected. After each MAP or MNS reconnect, and only while message
+  history is kept and unlocked, the backend lists the iPhone's inbox once
+  and adds the missing messages to history: no popups, no one-time code
+  copies, the iPhone's read state kept. It looks back from shortly before
+  the newest stored message, within the retention period and at most 200
+  messages, and never restores messages erased locally. MAP cannot say
+  whether such a message went to a group, so before you reply to one the
+  clients ask whether the reply should go to the sender only, as for other
+  messages that may be from a group. Messages sent from the iPhone itself
+  remain unavailable (related to
+  [#280](https://github.com/erikwb/blueferry/issues/280)).
+- GTK client: volume down/up buttons with the reported level on the phone
+  card, Pin/Unpin on each Notifications entry (removed and muted-app entries
+  dimmed), and a **Muted apps** group under Settings › Notifications.
+- GTK client: a **Contacts** tab lists the contact cards with a search
+  field (searching after a short pause while typing) and loads more cards
+  at the end of the list; a card shows every labelled number, email and
+  postal address, company, job title and photo, with **Call** (asks first)
+  and **Message**, and the list reloads when `contact_card_epoch` changes.
+  A global search (header button, `Ctrl+K` or `Ctrl+F`) shows the grouped
+  hits and opens the conversation at the message, the contact card or the
+  call.
+- GTK client: files dragged anywhere onto the main window go to a
+  **Send to…** target (hint "Drop to send to iPhone"): the only target at
+  once with a toast, a picker for several (the session's last pick
+  preselected), or an explanation with a button to Settings › Plugins when
+  no `share` plugin is there. Only local `file://` URIs, 1 to 64 files;
+  folders and remote URIs are skipped.
+- GTK client: the iPhone sound rows in Settings and the quick switches show
+  the A/V sync line under the sound status.
+
+### Fixed
+
+- Pass BlueZ's `MaxCount` filter key to MAP `ListMessages` instead of
+  `MaxListCount`, which obexd ignored. The message query now asks the iPhone
+  for only the requested number of messages instead of up to 1024. The
+  one-time-code lookup keeps listing up to 1024 inbox entries
+  ([#396](https://github.com/erikwb/blueferry/pull/396)).
+- Follow the iPhone's battery through BlueZ's `Battery1` when BlueZ's
+  battery plugin already reads the GATT Battery Level, instead of reading and
+  subscribing to the same characteristic a second time. This removes the
+  `ReadValue failed: org.bluez.Error.Failed` and `StartNotify failed:
+  org.bluez.Error.InProgress` log lines and the battery value that could stay
+  at its first reading. Without that `Battery1`, BlueFerry still reads the
+  characteristic itself, and a plugin `Battery1` that survives an LE
+  reconnect unchanged is checked against it
+  ([#280](https://github.com/erikwb/blueferry/issues/280)).
 
 ## [0.9.1](https://github.com/erikwb/blueferry/releases/tag/v0.9.1) - 2026-10-30
 

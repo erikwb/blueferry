@@ -82,6 +82,10 @@ def load_cards(
     plugins = list(plugins) if plugins is not None else surface_plugins(CAPABILITY_CARD)
     cards = []
     for plugin in plugins[:MAX_CARD_PLUGINS]:
+        # Read again for each plugin: one disabled since the list was made
+        # must not be started by the call.
+        if plugin.id in disabled_plugins():
+            continue
         try:
             items = client_factory(plugin).card_items()
         except PluginError as error:
@@ -220,6 +224,8 @@ def load_targets(
     plugins = list(plugins) if plugins is not None else surface_plugins(CAPABILITY_SHARE)
     result = ShareTargets()
     for plugin in plugins:
+        if plugin.id in disabled_plugins():  # disabled since the list was made
+            continue
         try:
             targets = client_factory(plugin).share_targets()
         except Exception as error:

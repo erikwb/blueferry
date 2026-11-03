@@ -95,6 +95,9 @@ def test_form_rules_follow_the_qt_form() -> None:
 class FakeClient:
     """The daemon side the settings dialog needs; nothing answers."""
 
+    def get_tether_async(self, *_args):
+        pass  # Tether1 not offered: the Internet Sharing group stays hidden
+
     def connect(self, *_args):
         return 0
 
@@ -113,9 +116,6 @@ class FakeClient:
         pass
 
     def unlock_storage_async(self, *_args):
-        pass
-
-    def get_tether_async(self, *_args):
         pass
 
 
