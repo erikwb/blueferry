@@ -35,6 +35,7 @@ import dbus.mainloop.glib
 import dbus.service
 
 from blueferry.ams.constants import PlaybackState, RemoteCommandID
+from blueferry.dbus_object import StrictObject
 from blueferry.dbus_security import CallerGuard
 from blueferry.errors import BlueFerryError
 from blueferry.media import MediaController
@@ -210,7 +211,7 @@ class NameClaim:
         self._advance()
 
 
-class MprisPlayer(dbus.service.Object):
+class MprisPlayer(StrictObject):
     """Map MPRIS2 to :class:`MediaController`, and own the name while active."""
 
     def __init__(

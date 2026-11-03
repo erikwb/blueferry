@@ -7,6 +7,7 @@ import phonenumbers
 import pytest
 
 from blueferry import config
+from blueferry.contact_details import EMPTY as EMPTY_DETAILS
 from blueferry.contact_repository import ContactRepository
 from blueferry.contacts import ContactsResolver, _parse_vcard_records
 from blueferry.events import canonical_address
@@ -17,8 +18,11 @@ from blueferry.threads import build_threads, conversation_keys, sort_threads
 @pytest.fixture
 def resolver_for(monkeypatch):
     def create(records, photos=None):
-        entries = list(zip(records, photos or [42] * len(records), strict=True))
-        monkeypatch.setattr(ContactRepository, "load_entries", lambda _self, **_kwargs: entries)
+        entries = [
+            (record, photo, EMPTY_DETAILS)
+            for record, photo in zip(records, photos or [42] * len(records), strict=True)
+        ]
+        monkeypatch.setattr(ContactRepository, "load_cards", lambda _self, **_kwargs: entries)
         return ContactsResolver(photos=lambda: True)
     return create
 
