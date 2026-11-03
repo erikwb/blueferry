@@ -9,6 +9,7 @@ from pathlib import Path
 from blueferry import file_drop_view as drop
 from blueferry import plugin_surfaces as surfaces
 from blueferry.plugin_api.surfaces import MAX_SHARE_FILES
+from blueferry.plugin_surfaces_model import PluginSurfacesModel, SendGate
 from tests.client_fakes import ManualRunner
 
 PHONE = surfaces.ShareChoice("io.example.localsend", "LocalSend", "ls-1", "iPhone")
@@ -27,7 +28,7 @@ def _files(tmp_path: Path, *names: str) -> list[Path]:
 class Harness:
     def __init__(self, choices=(), problems=()) -> None:
         self.work = ManualRunner()
-        self.sending = False
+        self.gate = SendGate()
         self.notices: list[tuple[str, bool]] = []
         self.sent: list[tuple[str, list[str]]] = []
         self.loads = 0
@@ -46,7 +47,7 @@ class Harness:
         self.model = drop.FileDrop(
             runner=self.work, notify=lambda text, ok: self.notices.append((text, ok)),
             on_sent=self._sent, load_targets=load, send=send,
-            is_sending=lambda: self.sending,
+            gate=self.gate,
         )
 
     def _sent(self) -> None:
@@ -65,6 +66,32 @@ def test_only_local_file_uris_become_paths() -> None:
     ])
     assert result.paths == ("/home/me/a b.txt", "/home/me/c.txt")
     assert result.remote == 4
+
+
+def test_a_malformed_uri_is_skipped_without_losing_the_drop() -> None:
+    result = drop.local_paths(["file:///home/me/a.txt", "https://[bad"])
+    assert result.paths == ("/home/me/a.txt",)
+    assert result.remote == 1
+
+
+def test_a_name_that_is_not_utf8_is_skipped_not_replaced(tmp_path) -> None:
+    # Replacing the bad byte would name this other, existing file.
+    lookalike = tmp_path / "photo-\ufffd.jpg"
+    lookalike.write_text("x", encoding="utf-8")
+    harness = Harness([PHONE])
+    harness.model.drop([tmp_path.as_uri() + "/photo-%FF.jpg"])
+    assert harness.work.pending == []
+    assert harness.sent == []
+    assert harness.notices == [("Skipped an item whose name is not UTF-8 text.", False)]
+
+
+def test_a_file_gone_at_drop_time_is_named_as_gone(tmp_path) -> None:
+    (one,) = _files(tmp_path, "a.txt")
+    harness = Harness([PHONE])
+    harness.model.drop([one.as_uri(), (tmp_path / "gone.txt").as_uri()])
+    harness.run_all()
+    assert harness.sent == [(PHONE.key, [str(one.resolve())])]
+    assert ("Skipped an item that no longer exists.", False) in harness.notices
 
 
 def test_one_file_with_one_target_is_sent_with_a_notice(tmp_path) -> None:
@@ -208,8 +235,22 @@ def test_a_file_deleted_before_sending_is_reported(tmp_path) -> None:
     # Said in this module's (translatable) words, not the plugin API's.
     assert harness.notices[-1] == (
         "Nothing was sent: the dropped files changed in the meantime. "
-        "Skipped an item that is not a regular file.", False)
+        "Skipped an item that no longer exists.", False)
     assert harness.after_send == 0
+
+
+def test_a_file_swapped_for_a_symlink_is_not_sent(tmp_path) -> None:
+    (one, secret) = _files(tmp_path, "a.txt", "secret.txt")
+    harness = Harness([PHONE, ABLAGE])
+    harness.model.drop([one.as_uri()])
+    harness.run_all()
+    one.unlink()
+    one.symlink_to(secret)  # same count, still one regular file
+    harness.model.pick(PHONE.key)
+    harness.run_all()
+    assert harness.sent == []
+    assert harness.notices[-1] == (
+        "Nothing was sent: the dropped files changed in the meantime.", False)
 
 
 def test_a_file_turned_into_a_folder_is_named(tmp_path) -> None:
@@ -227,25 +268,75 @@ def test_a_file_turned_into_a_folder_is_named(tmp_path) -> None:
         "Folders cannot be sent; skipped Album.", False)
 
 
+def _send_to(harness: Harness, choice: surfaces.ShareChoice) -> PluginSurfacesModel:
+    """The client's "Send to…", sharing the drop's gate and send log."""
+    send_to = PluginSurfacesModel(
+        runner=harness.work, timer=harness.work.timer, opener=lambda _uri: None,
+        load_targets=lambda: surfaces.ShareTargets([choice], []),
+        send=lambda target, files: harness.sent.append((target.key, list(files)))
+        or surfaces.Outcome(True, "Sent."),
+        gate=harness.gate,
+    )
+    send_to.load_targets()
+    harness.work.run_next()
+    return send_to
+
+
 def test_a_drop_waits_while_send_to_is_sending(tmp_path) -> None:
     (one,) = _files(tmp_path, "a.txt")
     harness = Harness([PHONE, ABLAGE])
-    harness.sending = True
+    send_to = _send_to(harness, PHONE)
+    send_to.send(PHONE.key, [str(one)])
     harness.model.drop([one.as_uri()])
-    assert harness.work.submitted == 0
-    assert harness.notices == [("Still busy with the last drop; try again in a moment.", False)]
+    assert harness.work.submitted == 2  # targets and the send; no drop work
+    assert harness.notices == [
+        ("Other files are still being sent; try again in a moment.", False)]
+    harness.run_all()
     # Started meanwhile: the picker waits instead of sending alongside.
-    harness.sending = False
     harness.model.drop([one.as_uri()])
     harness.run_all()
-    harness.sending = True
+    send_to.send(PHONE.key, [str(one)])
     harness.model.pick(PHONE.key)
-    assert harness.work.pending == [] and harness.sent == []
+    assert len(harness.work.pending) == 1
     assert harness.model.state()["phase"] == drop.PICKING
-    harness.sending = False
+    harness.run_all()
     harness.model.pick(PHONE.key)
+    harness.run_all()
+    assert harness.sent == [(PHONE.key, [str(one.resolve())])] * 3
+
+
+def test_send_to_started_while_a_single_target_drop_is_checked(tmp_path) -> None:
+    (one,) = _files(tmp_path, "a.txt")
+    harness = Harness([PHONE])
+    send_to = _send_to(harness, PHONE)
+    harness.model.drop([one.as_uri()])
+    send_to.send(PHONE.key, [str(one)])  # the drop is still being checked
+    harness.work.run_next()  # the check ends: the drop must not send alongside
+    assert len(harness.work.pending) == 1
+    assert harness.model.state()["phase"] == drop.IDLE
+    assert harness.notices[-1] == (
+        "Other files are still being sent; try again in a moment.", False)
     harness.run_all()
     assert harness.sent == [(PHONE.key, [str(one.resolve())])]
+
+
+def test_send_to_waits_while_a_drop_is_sending(tmp_path) -> None:
+    (one,) = _files(tmp_path, "a.txt")
+    harness = Harness([PHONE])
+    send_to = _send_to(harness, PHONE)
+    harness.model.drop([one.as_uri()])
+    harness.work.run_next()
+    assert harness.model.state()["phase"] == drop.SENDING
+    send_to.send(PHONE.key, [str(one)])
+    send_to.send_from_card(PHONE.plugin_id, PHONE.target_id, "iPhone", [str(one)])
+    assert send_to.state()["busy"] == ""
+    assert send_to.state()["message"] == (
+        "Other files are still being sent; try again in a moment.")
+    harness.run_all()
+    assert harness.sent == [(PHONE.key, [str(one.resolve())])]
+    send_to.send(PHONE.key, [str(one)])  # the drop is done: free again
+    harness.run_all()
+    assert len(harness.sent) == 2
 
 
 def test_a_refused_send_does_not_reload_the_card(tmp_path) -> None:

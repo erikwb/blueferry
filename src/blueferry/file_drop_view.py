@@ -28,11 +28,12 @@ from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
-from urllib.parse import unquote, urlsplit
+from urllib.parse import unquote_to_bytes, urlsplit
 
 from blueferry import plugin_surfaces as surfaces
 from blueferry.i18n import _, ngettext
 from blueferry.plugin_api.surfaces import MAX_SHARE_FILES, checked_share_paths, plain
+from blueferry.plugin_surfaces_model import SendGate, sending_elsewhere_notice
 
 log = logging.getLogger(__name__)
 
@@ -108,29 +109,44 @@ def sending_notice(count: int, target: str) -> str:
 
 @dataclass(frozen=True, slots=True)
 class DroppedUris:
-    """Local paths of the dropped ``file://`` URIs; ``remote`` counts the rest."""
+    """Local paths of the dropped ``file://`` URIs; ``remote`` counts the
+    rest, ``undecodable`` the local names that are not UTF-8 (D-Bus strings
+    cannot carry them)."""
 
     paths: tuple[str, ...] = ()
     remote: int = 0
+    undecodable: int = 0
 
 
 def local_paths(uris: Iterable[object]) -> DroppedUris:
     """Keep local ``file://`` URIs (host empty or ``localhost``) as paths."""
     paths: list[str] = []
     remote = 0
+    undecodable = 0
     for uri in uris:
         text = str(uri or "").strip()
         if not text:
             continue
-        parts = urlsplit(text)
-        path = unquote(parts.path)
-        if (parts.scheme.lower() != "file" or parts.netloc.lower() not in ("", "localhost")
-                or not path.startswith("/") or "\x00" in path):
+        try:
+            parts = urlsplit(text)
+        except ValueError:  # e.g. "https://[bad": skip this one, keep the rest
+            remote += 1
+            continue
+        if parts.scheme.lower() != "file" or parts.netloc.lower() not in ("", "localhost"):
+            remote += 1
+            continue
+        try:
+            # Strict: a replacement character could name another, existing file.
+            path = unquote_to_bytes(parts.path).decode("utf-8")
+        except UnicodeError:
+            undecodable += 1
+            continue
+        if not path.startswith("/") or "\x00" in path:
             remote += 1
             continue
         if path not in paths:
             paths.append(path)
-    return DroppedUris(tuple(paths), remote)
+    return DroppedUris(tuple(paths), remote, undecodable)
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,18 +156,23 @@ class DroppedFiles:
     files: tuple[str, ...] = ()
     folders: tuple[str, ...] = ()
     other: tuple[str, ...] = ()
+    missing: tuple[str, ...] = ()
 
 
 def sort_paths(paths: Iterable[str]) -> DroppedFiles:
-    """*Blocking* (``stat``): regular files, folders, and the rest (gone,
-    sockets, devices)."""
+    """*Blocking* (``stat``): regular files, folders, the gone ones, and the
+    rest (sockets, devices, unreadable)."""
     files: list[str] = []
     folders: list[str] = []
     other: list[str] = []
+    missing: list[str] = []
     for text in paths:
         path = Path(text)
         try:
             resolved = path.resolve(strict=True)
+        except FileNotFoundError:
+            missing.append(path.name)
+            continue
         except (OSError, RuntimeError):
             other.append(path.name)
             continue
@@ -162,7 +183,7 @@ def sort_paths(paths: Iterable[str]) -> DroppedFiles:
                 files.append(str(resolved))
         else:
             other.append(path.name)
-    return DroppedFiles(tuple(files), tuple(folders), tuple(other))
+    return DroppedFiles(tuple(files), tuple(folders), tuple(other), tuple(missing))
 
 
 def skipped_note(dropped: DroppedUris, sorted_paths: DroppedFiles) -> str:
@@ -183,6 +204,15 @@ def skipped_note(dropped: DroppedUris, sorted_paths: DroppedFiles) -> str:
         notes.append(ngettext("Skipped an item that is not a regular file.",
                               "Skipped {count} items that are not regular files.",
                               count).format(count=count))
+    if sorted_paths.missing:
+        count = len(sorted_paths.missing)
+        notes.append(ngettext("Skipped an item that no longer exists.",
+                              "Skipped {count} items that no longer exist.",
+                              count).format(count=count))
+    if dropped.undecodable:
+        notes.append(ngettext("Skipped an item whose name is not UTF-8 text.",
+                              "Skipped {count} items whose names are not UTF-8 text.",
+                              dropped.undecodable).format(count=dropped.undecodable))
     if dropped.remote:
         notes.append(ngettext("Skipped an item that is not on this computer.",
                               "Skipped {count} items that are not on this computer.",
@@ -248,11 +278,11 @@ class FileDrop:
 
     ``notify(text, ok)`` shows a short notice (a toast or passive message).
     ``on_sent`` runs after a send the plugin accepted, e.g. to reload the
-    phone card that shows the transfer. ``is_sending`` says whether the
-    client's "Send to…" (``PluginSurfacesModel.sending``) is sending right
-    now; a drop waits for it, so one plugin never gets two ``SendFiles`` at
-    once. The last picked target is remembered for this object's lifetime,
-    i.e. the client session.
+    phone card that shows the transfer. ``gate`` is the client's
+    :class:`~blueferry.plugin_surfaces_model.SendGate`, shared with its
+    ``PluginSurfacesModel``: a drop sends only while it holds the gate, so the
+    client never has two ``SendFiles`` running at once. The last picked target
+    is remembered for this object's lifetime, i.e. the client session.
     """
 
     def __init__(
@@ -265,7 +295,7 @@ class FileDrop:
         load_targets: Callable[[], surfaces.ShareTargets] = surfaces.load_targets,
         send: Callable[..., surfaces.Outcome] = surfaces.send,
         sort: Callable[[Iterable[str]], DroppedFiles] = sort_paths,
-        is_sending: Callable[[], bool] = lambda: False,
+        gate: SendGate | None = None,
     ) -> None:
         self._runner = runner
         self._notify = notify
@@ -274,7 +304,7 @@ class FileDrop:
         self._load_targets = load_targets
         self._send = send
         self._sort = sort
-        self._is_sending = is_sending
+        self._gate = gate if gate is not None else SendGate()
         self._last_key = ""
         self._plan: DropPlan | None = None
         self._state: dict[str, Any] = self._idle_state()
@@ -306,8 +336,11 @@ class FileDrop:
 
     def drop(self, uris: Iterable[object]) -> None:
         """Files dropped on the window (``file://`` URIs as text)."""
-        if self.busy or self._is_sending():
+        if self.busy:
             self._notify(busy_notice(), False)
+            return
+        if self._gate.busy:
+            self._notify(sending_elsewhere_notice(), False)
             return
         dropped = local_paths(uris)
         if not dropped.paths:
@@ -329,6 +362,7 @@ class FileDrop:
     def _failed(self, message: str) -> None:
         # The raw error is English and may come from anywhere; say it plainly.
         log.warning("file drop failed: %s", plain(message, 200))
+        self._gate.release(self)
         self._reset()
         self._notify(not_answered_notice(), False)
 
@@ -341,7 +375,10 @@ class FileDrop:
             self._notify(result.note, False)
         self._plan = result
         if result.kind == "send":
-            self._dispatch(result.choices[0], result.files)
+            if not self._dispatch(result.choices[0], result.files):
+                # "Send to…" started while the drop was checked.
+                self._reset()
+                self._notify(sending_elsewhere_notice(), False)
         elif result.kind == "pick":
             self._set(phase=PICKING, choices=choice_rows(result.choices),
                       selected=result.selected, title=picker_title(),
@@ -358,18 +395,19 @@ class FileDrop:
         choice = next((item for item in current.choices if item.key == key), None)
         if choice is None:
             return
-        if self._is_sending():
-            self._notify(busy_notice(), False)  # the picker stays open
-            return
         self._last_key = choice.key
-        self._dispatch(choice, current.files)
+        if not self._dispatch(choice, current.files):
+            self._notify(sending_elsewhere_notice(), False)  # the picker stays open
 
     def cancel(self) -> None:
         """Close the picker or the explanation without sending."""
         if self._state["phase"] in (PICKING, NO_TARGET):
             self._reset()
 
-    def _dispatch(self, choice: surfaces.ShareChoice, files: tuple[str, ...]) -> None:
+    def _dispatch(self, choice: surfaces.ShareChoice, files: tuple[str, ...]) -> bool:
+        """Send unless another ``SendFiles`` of this client runs; ``False`` then."""
+        if not self._gate.acquire(self):
+            return False
         label = surfaces.choice_label(choice, self._plan.choices if self._plan else (choice,))
         self._set(**{**self._idle_state(), "phase": SENDING, "count": len(files)})
         self._notify(sending_notice(len(files), label), True)
@@ -378,7 +416,7 @@ class FileDrop:
             # Moved, deleted or replaced since the drop: say which, in words
             # of this module, and send nothing.
             now = self._sort(files)
-            if now.folders or now.other or len(now.files) != len(files):
+            if now.files != files:  # also a file swapped for a symlink
                 return surfaces.Outcome(False, changed_notice(
                     skipped_note(DroppedUris(), now)))
             try:
@@ -390,9 +428,11 @@ class FileDrop:
             return self._send(choice, paths)
 
         def done(outcome: surfaces.Outcome) -> None:
+            self._gate.release(self)
             self._reset()
             self._notify(outcome.message, outcome.ok)
             if outcome.ok:
                 self._on_sent()
 
         self._runner.submit(work, done, self._failed)
+        return True
