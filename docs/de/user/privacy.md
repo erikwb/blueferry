@@ -50,6 +50,10 @@ ohne Inhalt:
 journalctl --user -u blueferry -f | grep "ANCS app observed"
 ```
 
+Diese Regeln sind ein harter Filter: Ausgeschlossene Apps werden nie geholt
+und nie aufgelistet. Um einzelne Apps ohne Änderung an `local.env`
+auszublenden, kannst du sie stattdessen [stummschalten](notification-mute.md).
+
 ### Klickregeln
 
 [Klickregeln](notification-click-rules.md) öffnen beim Klick auf das Popup
@@ -74,8 +78,10 @@ Unterhaltungen einen Neustart überstehen. Du entscheidest, wie:
   Client oder mit `blueferry storage-unlock`).
 - Ein Wechsel des Speichermodus leert den bisherigen Cache, damit
   verschlüsselte und unverschlüsselte Daten nie gemischt werden.
-- Markierte Unterhaltungen, gespeicherte Gruppenmitglieder und
-  Gruppenbestätigungen folgen demselben Speichermodus.
+- Markierte Unterhaltungen, gespeicherte Gruppenmitglieder,
+  Gruppenbestätigungen, angeheftete iPhone-Mitteilungen und
+  [stummgeschaltete Apps](notification-mute.md) folgen demselben
+  Speichermodus.
 - `blueferry history-clear` löscht den lokalen Nachrichtenverlauf.
 - Solange noch Daten mit einem Speicherschlüssel verschlüsselt sind, ersetzt
   BlueFerry ihn nie, wenn er fehlt, und merkt, wenn der Schlüsselbund einen
@@ -84,6 +90,12 @@ Unterhaltungen einen Neustart überstehen. Du entscheidest, wie:
   Storage** im Client oder `blueferry storage-reset` alle lokalen Daten und
   beginnt mit einem neuen Schlüssel; siehe
   [Fehlerbehebung](troubleshooting.md#gespeicherter-verlauf-lasst-sich-nach-einem-neustart-nicht-offnen).
+
+Die [Kartenangaben](contacts.md) der Kontakte (Bezeichnungen der Nummern,
+Postadressen, Firma, Position) liegen nur in verschlüsselten
+Kontakteinträgen; im unverschlüsselten Modus werden sie gar nicht
+gespeichert. Die [Suche](search.md) legt keinen Index auf der Festplatte
+an; sie läuft über Daten, die der Dienst ohnehin im Speicher hält.
 
 Mit den optionalen [Kontaktfotos](contact-photos.md) enthält der
 Kontakt-Cache auch die Bilder deiner Kontakte, im selben Speichermodus. Für

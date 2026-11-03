@@ -15,7 +15,7 @@ def test_concurrent_updates_preserve_both_fields(tmp_path, monkeypatch):
     path = tmp_path / "settings.json"
     migration = SettingsStore(path)
     notification = SettingsStore(path)
-    read = migration._load
+    read = migration.load
     entered = threading.Event()
     release = threading.Event()
     second_started = threading.Event()
@@ -30,7 +30,7 @@ def test_concurrent_updates_preserve_both_fields(tmp_path, monkeypatch):
         second_started.set()
         notification.update(notification_policy="all")
 
-    monkeypatch.setattr(migration, "_load", paused_read)
+    monkeypatch.setattr(migration, "load", paused_read)
     first = threading.Thread(target=lambda: migration.update(starred_thread_keys="ciphertext"))
     second = threading.Thread(target=update_notification)
     first.start()

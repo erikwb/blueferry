@@ -334,6 +334,16 @@ The iPhone phonebook is available through BlueZ's
   retain that signal as evidence for valid empty contacts and call histories.
 - vCards contain `FN`, multiple `TEL` values, and `EMAIL` values. Retaining
   emails is necessary for contacts that exist only as Apple-ID destinations.
+- For the contact view, the same pull also yields each `TEL`, `EMAIL` and
+  `ADR` with its `TYPE` parameters, plus `ORG` and `TITLE`. iOS writes custom
+  and some built-in labels as a grouped `itemN.X-ABLabel` (`_$!<Mobile>!$_`
+  for built-in ones, free text for the user's own); the label applies to the
+  property with the same group prefix and overrides its `TYPE`. Values are
+  vCard 3.0 text with `\;`, `\,`, `\n` escapes; `ADR` has seven `;`-separated
+  components. These details are kept only inside the sealed contact payload,
+  never in the plaintext tables. This layout follows RFC 2426 and Apple's
+  vCard export; it has not yet been compared against a real iPhone's PBAP
+  output.
 - BlueFerry sends no `Fields` filter, and BlueZ then omits the PBAP Filter
   application parameter. The PBAP specification treats a missing filter as
   "all attributes", so inline `PHOTO` values are already part of this single
@@ -677,6 +687,19 @@ or app display-name attributes are requested. Even when mirroring is enabled,
 included non-Messages content is never written to history or placed on
 BlueFerry's D-Bus event feed.
 
+The daemon remembers which non-Messages apps sent such a notification during
+the running session (bundle ID, the display name from `GetAppAttributes`, and
+when it last saw one; in memory only, at most 64 apps). The display name is
+normally known before the event is emitted; when the app-name request cannot
+be queued the event carries the bundle ID instead, and a later event fills the
+name in. A client can mute an app from that list: its desktop popup is then
+skipped, checked for each notification, while ANCS processing stays exactly
+as before (the same attributes are requested, a `MissedCall` still marks the
+call for the call-history path). Muted apps are saved with their display name
+under the storage policy. The allow/block rules above stay a hard filter in
+front of this: an app they exclude is never fetched, listed or muted. Messages
+cannot be muted. This is verified only against simulated ANCS events.
+
 With the opt-in notification actions (a saved setting; `BLUEFERRY_ANCS_ACTIONS`
 is its initial value), BlueFerry reads the Notification
 Source `PositiveAction`/`NegativeAction` event flags. For an included
@@ -701,6 +724,28 @@ discards every offer and queued action and closes the desktop popups still
 wired to them. Labels are app-defined
 strings and are requested only while notification content is shown. This path
 is verified only against simulated responses, not a physical iPhone.
+
+### Notification list and pins (opt-in)
+
+With `BLUEFERRY_NOTIFICATION_HISTORY` the daemon keeps the last 200 included
+non-Messages ANCS notifications in memory for `Messages1.ListNotifications`
+(content-gated like popups). Each record gets a random opaque `key`; clients
+pin with `Messages1.SetNotificationPinned(key, pinned)` and never address a
+record by UID, because UIDs are valid only within one ANCS session. A
+Modified event replaces the record only when UID and app ID match a record
+of the current session that the iPhone has not removed. A Removed event marks
+every such record `removed` (independent of the popup-sync opt-in). A
+PreExisting replay or a subscription reset, which end the UID session,
+detach all earlier records for good: they are reported with `actionable`
+false and are never matched to a UID again. Only pinned records are written,
+to the encrypted `pinned_notifications` entry of `settings.json` under the
+storage policy (never with `none`, unreadable while locked, at most 20 and
+64 KiB); records loaded at startup are detached. While `settings.json`
+can't be read the saved pins are not loaded, pinning and unpinning fail with
+`Configuration`, and they load on the next list, pin or storage change after
+it reads again. With the list off, the entry is deleted at daemon start, or
+by the storage retry once the file reads. This path is verified only against
+simulated events, not a physical iPhone.
 
 Conversation reads update local history immediately. The daemon delays the
 corresponding MAP read acknowledgements by at least five seconds, including
@@ -825,6 +870,19 @@ specification-based expectation, not a captured result.
   `Can*` properties are true while the command list is unknown (a list the
   phone did send is followed exactly, even when empty), and `mpris:trackid`
   stays the same when a truncated title is completed.
+- Volume: AMS has Remote Commands VolumeUp (5) and VolumeDown (6) and the
+  read-only Player attribute Volume (2, a float string 0.0 to 1.0), but no
+  way to set a level. BlueFerry therefore exposes volume only as the
+  existing `SendMediaCommand("volume-up"/"volume-down")` (no extra method:
+  same capability check against the advertised command list, same
+  rate-limit bucket) and the level as `player.volume`; a value outside 0 to
+  1 is dropped. `blueferry media volume up|down` and the client buttons
+  (`media_volume_view`) send one step each. MPRIS `Volume` stays readable
+  because the phone reports it, and a write keeps mapping to one step toward
+  the target (none within 0.01 of the reported level, none while the level
+  is unknown, and no effect for a player without volume commands, as MPRIS
+  wants for unsupported actions). Whether one AMS step equals one press of
+  the iPhone's volume button is not verified on hardware.
 - AMS ATT application errors 0xA0 (InvalidState), 0xA1 (InvalidCommand) and
   0xA2 (AbsentAttribute) appear only in BlueZ's error message text; BlueFerry
   logs them by name.
@@ -894,6 +952,30 @@ control). Observed with a real iPhone (iOS 27, Intel AX200, BlueZ 5.87,
 moves its `State` from `active` to `idle` while AMS still reports playback;
 GetStatus then reports route `pc` with `phone_audio_playing` `phone`, and
 picking this computer again returns to `pc`.
+
+A/V sync: when the phone and BlueZ negotiate AVDTP Delay Reporting,
+bluetoothd exports `MediaTransport1.Delay` (unit 1/10 ms) and sends the
+audio server's latency to the phone, which shifts video by it. GetStatus
+reports it as `phone_audio_delay_ms` with `phone_audio_delay_reporting`
+`true`; a transport without `Delay` reports `false`, no transport `null`.
+Updates follow `PropertiesChanged` (`State` and `Delay`). The delay is only
+reported while the transport's `State` is `active`; an idle or pending
+transport reports `phone_audio_delay_ms` as `null`, because its last value
+would be stale, and `phone_audio_delay_reporting` still says whether `Delay`
+exists. BlueZ invalidates `Delay` only once it no longer exists, so an
+invalidated `Delay` reads like a transport without it. Observed 2026-10-30
+(iPhone, AAC, Intel AX200, BlueZ 5.87, PipeWire 1.6.9): `Delay` went 0 → 316 → 1098 (later up to
+1298) as PipeWire reported latency.
+A follow-up test on 2026-11-02 (iPhone, video playing through the PC,
+transport `active`, BlueZ 5.87, PipeWire 1.6.9) showed that the
+`bluez_input` node has no `latencyOffsetNsec`, only channel and resample
+properties plus a writable `ProcessLatency`. Setting `ProcessLatency` to
+50 ms left `Delay` at 1098 for 20 s; after pause and play PipeWire rebuilt
+the node, the override was gone, and `Delay` read 1298, the same +20 ms
+already seen on 2026-10-31 without any intervention, which comes from
+PipeWire's own buffering. PipeWire therefore reports only its own buffer at
+stream start; a user offset is not included and does not survive a stream
+restart, so BlueFerry offers no fine-tuning control for the delay.
 
 Hardware validation on 2026-10-25 UTC (MediaTek, BlueZ 5.87, PipeWire 1.6.9,
 WirePlumber 0.5.18): with normal adapter roles and a rule matching only the

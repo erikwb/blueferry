@@ -55,7 +55,11 @@ class MessagesService(StrictObject):
         self._caller_guard = caller_guard or CallerGuard(bus_name.get_bus())
         self._change_revision = 0
         self.operations = operations or BackendOperations(sessions, dependencies)
-        self._projection_worker = BackgroundWorker("blueferry-projection", maximum=1)
+        # One coalesced projection plus one conversation deletion's archive
+        # read; the executor still runs them one at a time.
+        self._projection_worker = BackgroundWorker("blueferry-projection", maximum=2)
+        # Matching only; a few queued keystrokes, then NotReady until it drains.
+        self._search_worker = BackgroundWorker("blueferry-search", maximum=4)
         # One active lookup plus an interactive request queued behind a
         # cancelled passive lookup. The executor still runs one job at a time.
         self._wallet_worker = BackgroundWorker("blueferry-wallet", maximum=2)
@@ -252,6 +256,55 @@ class MessagesService(StrictObject):
         ))
 
     @dbus.service.method(
+        IFACE, in_signature="su", out_signature="s", sender_keyword="sender",
+        async_callbacks=("reply_handler", "error_handler"),
+    )
+    def Search(self, query: str, limit: int, reply_handler, error_handler, sender=None) -> None:
+        """Search conversations, messages, contacts and calls in memory, as JSON.
+
+        Sources are snapshotted on the main loop; matching runs on the search
+        worker so a client searching while the user types never blocks it.
+        """
+        def replied(result: dict) -> None:
+            try:
+                encoded = self._json_response(result)
+            except Exception as error:
+                error_handler(self._dbus_error(error))
+                return
+            reply_handler(encoded)
+
+        self._conversation_call(
+            sender, "read", lambda: self.operations.search_async(
+                str(query), int(limit), self._search_worker.submit, replied,
+                lambda error: error_handler(self._dbus_error(error)),
+            ), error_handler,
+        )
+
+    @dbus.service.method(
+        IFACE, in_signature="uus", out_signature="s", sender_keyword="sender"
+    )
+    def ListContactCards(self, offset: int, limit: int, query: str, sender=None) -> str:
+        """One page of contact cards (ids, names, counts), optionally filtered."""
+        return self._sync(lambda: self._authorized(
+            sender, "read",
+            lambda: self._json_response(
+                self.operations.list_contact_cards(offset, limit, str(query))
+            ),
+        ))
+
+    @dbus.service.method(
+        IFACE, in_signature="s", out_signature="say", sender_keyword="sender"
+    )
+    def GetContact(self, contact_id: str, sender=None) -> tuple[str, dbus.ByteArray]:
+        """Every detail of one contact card as JSON, plus its photo bytes."""
+        def card() -> tuple[str, dbus.ByteArray]:
+            document, photo = self.operations.contact_card(str(contact_id))
+            return self._json_response(document), dbus.ByteArray(photo)
+
+        # Charged like GetContactPhoto: the reply can carry a decrypted photo.
+        return self._sync(lambda: self._authorized(sender, "contact-photo", card))
+
+    @dbus.service.method(
         IFACE, in_signature="s", out_signature="ay", sender_keyword="sender"
     )
     def GetContactPhoto(self, address: str, sender=None) -> dbus.ByteArray:
@@ -267,14 +320,20 @@ class MessagesService(StrictObject):
     def SetGroupParticipants(
         self, thread_key: str, recipients, reply_handler, error_handler, sender=None,
     ) -> None:
-        def update() -> None:
-            result = self._json_response(
-                self.operations.set_group_participants(thread_key, recipients)
-            )
+        def updated(thread) -> None:
+            result = self._json_response(thread)
             self.emit_history_changed()
             reply_handler(result)
 
-        self._conversation_call(sender, "settings", update, error_handler)
+        self._conversation_call(
+            sender, "settings",
+            lambda: self.operations.set_group_participants_async(
+                self._projection_worker.submit, thread_key, recipients,
+                lambda thread: self._async(lambda: updated(thread), error_handler),
+                lambda error: error_handler(self._dbus_error(error)),
+            ),
+            error_handler,
+        )
 
     @dbus.service.method(
         IFACE, in_signature="", out_signature="s", sender_keyword="sender"
@@ -302,14 +361,19 @@ class MessagesService(StrictObject):
     def DeleteThreads(
         self, thread_keys, confirmed: bool, reply_handler, error_handler, sender=None,
     ) -> None:
-        def delete() -> None:
-            removed = self.operations.delete_threads(
-                thread_keys, bool(confirmed)
-            )
+        def deleted(removed: int) -> None:
             self.emit_history_changed()
             reply_handler(removed)
 
-        self._conversation_call(sender, "conversation-delete", delete, error_handler)
+        self._conversation_call(
+            sender, "conversation-delete",
+            lambda: self.operations.delete_threads_async(
+                self._projection_worker.submit, thread_keys, bool(confirmed),
+                lambda removed: self._async(lambda: deleted(removed), error_handler),
+                lambda error: error_handler(self._dbus_error(error)),
+            ),
+            error_handler,
+        )
 
     @dbus.service.method(
         IFACE, in_signature="", out_signature="s", sender_keyword="sender"
@@ -378,6 +442,16 @@ class MessagesService(StrictObject):
         return self._sync(lambda: self._authorized(
             sender, "notifications-read",
             lambda: self._json_response(self.operations.list_notifications(int(limit))),
+        ))
+
+    @dbus.service.method(
+        IFACE, in_signature="sb", out_signature="b", sender_keyword="sender"
+    )
+    def SetNotificationPinned(self, key: str, pinned: bool, sender=None) -> bool:
+        """Pin or unpin one ListNotifications record by its opaque key."""
+        return self._sync(lambda: self._authorized(
+            sender, "notifications-pin",
+            lambda: self.operations.set_notification_pinned(str(key), bool(pinned)),
         ))
 
     @dbus.service.method(
@@ -488,6 +562,26 @@ class MessagesService(StrictObject):
                     str(bundle_id), str(target)
                 )
             ),
+        ))
+
+    @dbus.service.method(
+        IFACE, in_signature="", out_signature="s", sender_keyword="sender"
+    )
+    def ListNotificationApps(self, sender=None) -> str:
+        """Seen iPhone apps joined with the muted ones, as JSON."""
+        return self._sync(lambda: self._authorized(
+            sender, "status",
+            lambda: self._json_response(self.operations.list_notification_apps()),
+        ))
+
+    @dbus.service.method(
+        IFACE, in_signature="sb", out_signature="b", sender_keyword="sender"
+    )
+    def SetNotificationAppMuted(self, app_id: str, muted: bool, sender=None) -> bool:
+        """Hide (or show again) the desktop popups of one iPhone app."""
+        return self._sync(lambda: self._authorized(
+            sender, "settings",
+            lambda: self.operations.set_notification_app_muted(str(app_id), bool(muted)),
         ))
 
     @dbus.service.method(
@@ -1014,6 +1108,16 @@ class MessagesService(StrictObject):
             log.exception("NowPlayingChanged emit failed")
 
     @dbus.service.signal(EVENTS_IFACE, signature="")
+    def NotificationAppsChanged(self):
+        """The notification-app list changed; clients call ListNotificationApps."""
+
+    def emit_notification_apps_changed(self) -> None:
+        try:
+            self.NotificationAppsChanged()
+        except Exception:
+            log.exception("NotificationAppsChanged emit failed")
+
+    @dbus.service.signal(EVENTS_IFACE, signature="")
     def CallsChanged(self):
         """Call state changed; clients fetch details with Calls1.ListCalls."""
 
@@ -1059,6 +1163,7 @@ class MessagesService(StrictObject):
         if storage is not None:
             storage.cancel_pending()
         self._projection_worker.close()
+        self._search_worker.close()
         self._wallet_worker.close()
         self._caller_guard.close()
 

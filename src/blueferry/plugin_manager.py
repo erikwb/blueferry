@@ -65,6 +65,7 @@ from blueferry.plugin_api.manifest import (
     valid_plugin_id,
 )
 from blueferry.plugin_prefs import config_path, disabled_from
+from blueferry.plugin_prefs import read_json as _read_json
 from blueferry.plugin_stopper import UNMANAGED, BusPluginStopper, PluginStopper, StopOutcome
 
 GIT_TIMEOUT_SEC = 120.0
@@ -669,16 +670,7 @@ def _restore_on_failure(paths: Sequence[Path]) -> Iterator[None]:
     backups: list[tuple[Path, Path | None]] = []
     try:
         for path in paths:
-            backup = None
-            if path.exists():
-                fd, name = tempfile.mkstemp(prefix=f".{path.name}.backup-", dir=path.parent)
-                os.close(fd)
-                backup = Path(name)
-                try:
-                    shutil.copy2(path, backup)
-                except BaseException:
-                    backup.unlink(missing_ok=True)
-                    raise
+            backup = _back_up(path) if path.exists() else None
             backups.append((path, backup))
         yield
     except BaseException:
@@ -692,6 +684,30 @@ def _restore_on_failure(paths: Sequence[Path]) -> Iterator[None]:
         for _path, backup in backups:
             if backup is not None:
                 backup.unlink(missing_ok=True)
+
+
+def _back_up(path: Path) -> Path:
+    """Copy a regular file beside itself, with its mode and times."""
+    # The type is checked on the opened file, so it cannot change in between.
+    # O_NONBLOCK keeps a FIFO from blocking the open, and has no effect on
+    # reads from a regular file.
+    source = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
+    with os.fdopen(source, "rb") as reader:
+        current = os.fstat(reader.fileno())
+        if not stat.S_ISREG(current.st_mode):
+            raise InstallError(f"{path.name} is not a regular file")
+        descriptor, name = tempfile.mkstemp(prefix=f".{path.name}.backup-", dir=path.parent)
+        backup = Path(name)
+        try:
+            with os.fdopen(descriptor, "wb") as writer:
+                shutil.copyfileobj(reader, writer)
+                writer.flush()
+                os.fchmod(writer.fileno(), stat.S_IMODE(current.st_mode))
+                os.utime(writer.fileno(), ns=(current.st_atime_ns, current.st_mtime_ns))
+        except BaseException:
+            backup.unlink(missing_ok=True)
+            raise
+    return backup
 
 
 def _manifest_text(checkout: Path) -> str:
@@ -708,9 +724,17 @@ def _manifest_text(checkout: Path) -> str:
         current = current / part
         if current.is_symlink():
             raise InstallError("the manifest is not a regular file inside the repository")
-    if not path.is_file():
-        raise InstallError("the manifest is not a regular file")
-    with path.open("rb") as stream:
+    # The type is checked on the opened file, so it cannot change in between.
+    # O_NONBLOCK keeps a FIFO from blocking the open, and has no effect on
+    # reads from a regular file.
+    try:
+        descriptor = os.open(
+            path, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC | os.O_NOFOLLOW)
+    except OSError:
+        raise InstallError("the manifest is not a readable regular file") from None
+    with os.fdopen(descriptor, "rb") as stream:
+        if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+            raise InstallError("the manifest is not a regular file")
         data = stream.read(MAX_MANIFEST_BYTES + 1)
     if len(data) > MAX_MANIFEST_BYTES:
         raise InstallError("the manifest is too large")
@@ -754,27 +778,22 @@ def _rewrite(text: str, exec_argv: Sequence[str], cli_argv: Sequence[str]) -> st
     return "\n".join(lines) + "\n"
 
 
-def _read_json(path: Path) -> dict:
-    # O_NONBLOCK keeps a FIFO from blocking the open; the fstat below rejects
-    # it, and the flag has no effect on reads from a regular file. Symlinks
-    # are still followed, as plugin_prefs.read_settings follows them.
-    try:
-        descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
-        with os.fdopen(descriptor, "rb") as stream:
-            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
-                return {}
-            value = json.loads(stream.read(1024 * 1024).decode("utf-8"))
-    except (OSError, ValueError):
-        return {}
-    return value if isinstance(value, dict) else {}
-
-
 def _write_text(path: Path, text: str, mode: int = 0o644) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.tmp")
-    temporary.write_text(text, encoding="utf-8")
-    temporary.chmod(mode)
-    os.replace(temporary, path)
+    # A fresh name, created exclusively, so nothing planted beside the file
+    # (a FIFO at a fixed name would block the write) can receive it.
+    descriptor, name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    temporary = Path(name)
+    try:
+        os.fchmod(descriptor, mode)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            descriptor = -1
+            stream.write(text)
+        os.replace(temporary, path)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        temporary.unlink(missing_ok=True)
 
 
 def _write_json(path: Path, value: object, *, private: bool) -> None:

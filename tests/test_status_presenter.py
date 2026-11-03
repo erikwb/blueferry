@@ -992,6 +992,10 @@ class _PhotosWidget:
         self.visible = None
         self.active = active
         self.sensitive = None
+        self.subtitle = None
+
+    def set_subtitle(self, value) -> None:
+        self.subtitle = value
 
     def set_visible(self, value) -> None:
         self.visible = value
@@ -1051,6 +1055,23 @@ def test_gtk_contact_photo_row_appears_only_for_supporting_daemons():
     assert page._photos_row.sensitive is True
     # Reflecting the daemon's state never saves it back.
     assert calls == []
+
+
+def test_gtk_contact_photo_row_is_unavailable_while_the_choice_is_unknown():
+    page, calls = _photos_page()
+    unknown = {"contact_photos": False, "contact_photos_state": "unknown", "saved_opt_ins": True}
+
+    page._apply_contact_photos(BackendStatus.from_dict(unknown), reachable=True)
+    assert page._photos_group.visible is True
+    assert page._photos_row.sensitive is False
+    assert "settings.json cannot be read" in page._photos_row.subtitle
+    assert calls == []
+
+    page._apply_contact_photos(BackendStatus.from_dict(
+        {**unknown, "contact_photos": True, "contact_photos_state": "on"}
+    ), reachable=True)
+    assert page._photos_row.sensitive is True and page._photos_switch.active is True
+    assert "settings.json" not in page._photos_row.subtitle
 
 
 def test_gtk_contact_photo_switch_saves_through_the_client():

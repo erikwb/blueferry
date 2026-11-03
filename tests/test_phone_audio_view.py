@@ -60,3 +60,41 @@ def test_phone_audio_pending_and_unavailable_hints_win_over_playing() -> None:
         "phone_audio_playing": "phone",
     })
     assert "KEEP_PHONE_AUDIO" in kept["hint"]
+
+
+@pytest.mark.parametrize(("status", "expected"), [
+    ({}, ""),
+    ({"phone_audio_delay_reporting": None, "phone_audio_delay_ms": None}, ""),
+    (
+        {"phone_audio_delay_reporting": True, "phone_audio_delay_ms": 110},
+        "A/V sync: this computer reports 110 ms.",
+    ),
+    ({"phone_audio_delay_reporting": True, "phone_audio_delay_ms": None},
+     "A/V sync: delay reporting active."),
+    ({"phone_audio_delay_reporting": True, "phone_audio_delay_ms": True},
+     "A/V sync: delay reporting active."),
+    ({"phone_audio_delay_reporting": False, "phone_audio_delay_ms": None},
+     "A/V sync: delay reporting not negotiated; video may be out of sync."),
+    ({"phone_audio_delay_reporting": "yes"}, ""),
+])
+def test_av_sync_line(status, expected) -> None:
+    from blueferry.phone_audio_view import av_sync
+
+    assert av_sync(status) == expected
+    assert phone_audio({"phone_audio_route": "pc", **status})["sync"] == expected
+
+
+@pytest.mark.parametrize(("status", "expected"), [
+    ({}, ""),
+    ({"phone_audio_delay_reporting": True, "phone_audio_delay_ms": 110}, "A/V sync: 110 ms"),
+    ({"phone_audio_delay_reporting": True, "phone_audio_delay_ms": None}, "A/V sync: reporting"),
+    ({"phone_audio_delay_reporting": False}, "A/V sync: not negotiated"),
+])
+def test_av_sync_terse_fragment(status, expected) -> None:
+    from blueferry.phone_audio_view import av_sync
+
+    assert av_sync(status, terse=True) == expected
+
+
+def test_av_sync_is_empty_for_backends_without_the_switch() -> None:
+    assert phone_audio({})["sync"] == ""

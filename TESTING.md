@@ -139,7 +139,9 @@ must not be hidden behind an automated test command.
 dbus-python decorators, including signatures and stable application errors.
 Private D-Bus tests deliberately hold fake wallet and conversation-projection
 work open while fetching status, and verify that history changes invalidate
-an in-flight projection. Wallet tests cover cancellation and late key results;
+an in-flight projection. They hold the rebuild after saving group members and
+the archive read of a deletion the same way; a message that arrives during
+that read is deleted with its conversation. Wallet tests cover cancellation and late key results;
 group tests bind confirmation to the displayed roster across client refreshes.
 Named-group upgrade tests separate previously colliding spellings and exercise
 legacy rosters, stars, read state, reply confirmation, and deletion against
@@ -216,7 +218,9 @@ group members, blocking during edits or roster review, and the exact roster toke
 sent with each reply. Backend tests reject that token after the members change.
 The shell test also delivers pre-save snapshots and failures before or after
 the fresh snapshot, verifies immediate replies use the saved roster, and checks
-that interrupted reads cannot restore history after a reset.
+that interrupted reads cannot restore history after a reset. Another shell
+test sends a storage reset only from its confirmation popup and only while the
+daemon offers it; the popup closes when the offer ends or the daemon goes away.
 
 The optional oFono call controller is tested against a recording fake
 transport and a manual timer queue: discovery, the Powered/Online bring-up,

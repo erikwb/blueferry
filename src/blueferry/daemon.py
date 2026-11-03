@@ -79,8 +79,11 @@ from blueferry.history import (
     history_count,
     mark_event_handles_read,
 )
+from blueferry.limits import MAX_PINNED_NOTIFICATIONS
 from blueferry.media import MediaController, MediaControlSettings
+from blueferry.notification_apps import MutedAppsStore, NotificationApps
 from blueferry.notification_log import NotificationLog
+from blueferry.notification_pins import PinnedNotificationsStore
 from blueferry.notification_policy import (
     ALL_NOTIFICATIONS,
     NotificationPolicyStore,
@@ -204,13 +207,21 @@ class Daemon:
         self._photo_erase_pending = False
         self._photo_erase_running = False
         self._photo_erase_generation = 0
+        self._photo_cache_owed = False
         if self.photo_settings.enabled:
             self.photo_files = self._avatar_files
-        else:
+        elif self.photo_settings.known:
             self._photo_erase_pending = not self._erase_contact_photos()
         self.connectivity = Connectivity()
         self.notification_policy = NotificationPolicyStore()
         self.starred_threads = StarredThreadsStore(storage=self.storage)
+        # Seen iPhone apps (memory only) and the saved muted ones.
+        self.notification_apps = NotificationApps(
+            MutedAppsStore(storage=self.storage),
+            policy=lambda: self.notification_policy.value,
+            on_changed=self._notification_apps_changed,
+            on_muted_changed=self._emit_status,
+        )
         self.confirmed_groups = ConfirmedGroupsStore(storage=self.storage)
         self.group_routes = GroupRoutesStore(storage=self.storage)
         self.setup_verification = SetupVerification(config.IPHONE_MAC)
@@ -228,6 +239,8 @@ class Daemon:
             on_incoming_message=lambda: self._verify_setup_task(MESSAGE_NOTIFICATIONS),
             perform_ancs_action=self._perform_ancs_action,
             ancs_actions_enabled=self._ancs_actions_active,
+            ancs_app_seen=self.notification_apps.observe,
+            ancs_app_muted=self.notification_apps.is_muted,
             on_call_action=self._notification_call_action,
             # Always wired, so switching photos on needs no new sink; it
             # returns no icon while photos are off.
@@ -348,9 +361,17 @@ class Daemon:
             on_powered=self.profile_reset.hfp_powered,
         )
         # Opt-in, memory-only list of recent iPhone app notifications.
+        # Pinned records persist in settings.json under the storage policy.
+        # With the list off nothing is retained: stored pins are deleted,
+        # by the storage retry once settings.json reads again if it can't now.
+        pins = PinnedNotificationsStore(storage=self.storage)
+        self._stale_pins = None if config.NOTIFICATION_HISTORY else pins
+        self._stale_pins_failed = False
+        self._delete_stale_pins()
         self.notification_log: NotificationLog | None = (
             NotificationLog(
                 show_content=config.SHOW_NOTIFICATION_CONTENT, idle=GLib.idle_add,
+                pins=pins,
             )
             if config.NOTIFICATION_HISTORY else None
         )
@@ -438,7 +459,7 @@ class Daemon:
             contacts=self.contacts,
             submit=lambda *args, **kwargs: self.obex_worker.submit(*args, **kwargs),
             on_refreshed=self._contacts_refreshed,
-            photos=self._contact_photos_enabled,
+            photos=lambda: self.photo_settings.saved,
         )
         # Opt-in: until the user turns it on nothing is pulled, stored, or
         # scheduled, and no CallHistorySync exists.
@@ -923,6 +944,7 @@ class Daemon:
                 notification_policy=self.notification_policy,
                 on_notification_policy_changed=self._notification_policy_changed,
                 starred_threads=self.starred_threads,
+                notification_apps=self.notification_apps,
                 confirmed_groups=self.confirmed_groups,
                 group_routes=self.group_routes,
                 storage=self.storage,
@@ -1150,6 +1172,8 @@ class Daemon:
     def _retry_storage(self) -> bool:
         # A daemon activated before the desktop keyring opens must recover
         # without requiring a client launch. Wallet I/O stays off the GLib loop.
+        self._settle_contact_photos()
+        self._delete_stale_pins()
         try:
             if self._dbus_service is not None:
                 self._dbus_service.retry_storage_unlock()
@@ -1174,6 +1198,41 @@ class Daemon:
 
     def _contact_photos_enabled(self) -> bool:
         return self.photo_settings.enabled
+
+    def _delete_stale_pins(self) -> None:
+        """With the notification list off, delete the saved pins once readable."""
+        if self._stale_pins is None:
+            return
+        try:
+            self._stale_pins.clear(strict=True)
+        except (OSError, ValueError) as error:
+            if not self._stale_pins_failed:
+                log.warning("could not delete pinned notifications: %s", type(error).__name__)
+            self._stale_pins_failed = True
+            return
+        self._stale_pins = None
+
+    def _settle_contact_photos(self) -> None:
+        """Apply the saved contact-photo choice once settings.json reads again.
+
+        Until then photos are neither erased, fetched nor shown.
+        """
+        if not self.photo_settings.known and self.photo_settings.reload():
+            if self.photo_settings.enabled:
+                self.photo_files = self._avatar_files
+                # A cache prepared while the choice was unknown has no photos,
+                # including one a preparation still running will install.
+                self._photo_cache_owed = True
+            else:
+                self._photo_erase_pending = True
+                self._queue_photo_erase()
+            # Pulls skipped while the choice was unknown are owed now.
+            if self.contact_sync.needed():
+                self.contact_sync.refresh()
+            self._emit_status()
+        if self._photo_cache_owed and self.storage.status.can_read:
+            self._photo_cache_owed = False
+            self._reload_contact_photos()
 
     def _contact_photo_path(self, address: str | None) -> str | None:
         photo_files = self.photo_files
@@ -1222,7 +1281,7 @@ class Daemon:
                 return  # _erase_contact_photos logged the failure; retry later
             if generation == self._photo_erase_generation:
                 self._photo_erase_pending = False
-            self._photos_erased()
+            self._reload_contact_photos()
             if self._photo_erase_pending:
                 self._queue_photo_erase()
             elif self.photo_settings.enabled:
@@ -1241,12 +1300,12 @@ class Daemon:
         except Exception as error:
             failed(error)
 
-    def _photos_erased(self) -> None:
-        # Reload the cache without photo references and tell clients.
+    def _reload_contact_photos(self) -> None:
+        # Reload the cache with or without photo references and tell clients.
         try:
             self.contacts.refresh()
         except Exception as error:
-            log.warning("could not reload contacts after erasing photos: %s",
+            log.warning("could not reload contacts after a photo change: %s",
                         type(error).__name__)
         self._emit_status()
 
@@ -1278,6 +1337,7 @@ class Daemon:
             self.call_history.adopt(prepared.call_history)
         if prepared.has_messages:
             self._mark_setup_task(MESSAGE_NOTIFICATIONS)
+        self._settle_contact_photos()
 
     def _on_storage_changed(self) -> None:
         self._clear_photo_files()
@@ -1286,6 +1346,10 @@ class Daemon:
         self.contact_sync.storage_changed()
         if self.call_history is not None:
             self.call_history.storage_changed()
+        if self.notification_log is not None:
+            self.notification_log.storage_changed()
+        # Saved mutes become readable (or unreadable) with the storage.
+        self.notification_apps.storage_changed()
         self._emit_status()
 
     def _initialize(self) -> bool:
@@ -1766,7 +1830,14 @@ class Daemon:
         ancs = self.ancs
         if ancs is not None:
             ancs.notification_actions_changed()
+        # The app list reports the policy ("all_notifications").
+        self._notification_apps_changed()
         self._emit_status()
+
+    def _notification_apps_changed(self) -> None:
+        emit = getattr(getattr(self, "_dbus_service", None), "emit_notification_apps_changed", None)
+        if emit is not None:
+            emit()
 
     def _perform_ancs_action(
         self, notification_id, positive, token, on_result=None
@@ -1788,7 +1859,9 @@ class Daemon:
             removed(notification_id)
 
     def _ancs_removed_on_iphone(self, notification_id: int) -> None:
-        """Opt-in: close the popup of a notification removed on the iPhone."""
+        """Mark the listed record removed; opt-in: close its popup too."""
+        if self.notification_log is not None:
+            self.notification_log.mark_removed(notification_id)
         if not self.notification_policy.mirror_removals:
             return
         removed = getattr(self.events, "ancs_mirror_removed", None)
@@ -1797,7 +1870,10 @@ class Daemon:
 
     def _ancs_session_reset(self) -> None:
         # Always, even with the setting off: switching it on later must never
-        # match a UID of an ended session.
+        # match a UID of an ended session. The notification list detaches
+        # its records of the ended session for the same reason.
+        if self.notification_log is not None:
+            self.notification_log.session_reset()
         reset = getattr(self.events, "ancs_session_reset", None)
         if reset is not None:
             reset()
@@ -1948,14 +2024,20 @@ class Daemon:
             **self._media_status(),
             **self.phone_audio_route.snapshot(),
             "notification_history_enabled": self.notification_log is not None,
+            "notification_pins_max": MAX_PINNED_NOTIFICATIONS,
             **self.audio_preference.snapshot(),
             **self._controller_identity(),
             **self.connectivity.snapshot(),
         }
 
     def _contact_photo_status(self) -> dict[str, object]:
+        settings = self.photo_settings
         status: dict[str, object] = {
-            "contact_photos": self.photo_settings.enabled,
+            # False while the choice is unknown, as for older clients.
+            "contact_photos": settings.enabled,
+            "contact_photos_state": (
+                "unknown" if not settings.known else "on" if settings.enabled else "off"
+            ),
             "contact_photo_cleanup_pending": (
                 self._photo_erase_pending or self._avatar_files.cleanup_pending
             ),
@@ -2206,7 +2288,9 @@ class Daemon:
     def _cleanup_bluetooth_worker(self) -> None:
         # Queued erasures may have been cancelled by shutdown. The worker is
         # now past every in-flight pull, so the last cleanup cannot be undone.
-        if self._photo_erase_pending or not self.photo_settings.enabled:
+        if self._photo_erase_pending or (
+            self.photo_settings.known and not self.photo_settings.enabled
+        ):
             self._erase_contact_photos()
         # A second daemon still runs stop() when claiming the name fails. It
         # must not replay or clear recovery state belonging to the live owner.

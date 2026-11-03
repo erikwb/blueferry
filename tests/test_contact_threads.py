@@ -5,6 +5,7 @@ import pytest
 
 from blueferry import backend_operations, config
 from blueferry.backend_operations import BackendDependencies, BackendOperations
+from blueferry.contact_details import EMPTY as EMPTY_DETAILS
 from blueferry.contact_repository import ContactRepository
 from blueferry.contacts import ContactsResolver
 from blueferry.conversation_state import ConversationSnapshot, ConversationState
@@ -21,7 +22,10 @@ EMAIL = "sarah@example.com"
 @pytest.fixture
 def contacts(monkeypatch):
     records = [("Dr. Sarah Bourget", [PHONE[1:], OTHER_PHONE[1:]], [EMAIL])]
-    monkeypatch.setattr(ContactRepository, "load", lambda _self, **_kwargs: records)
+    monkeypatch.setattr(
+        ContactRepository, "load_cards",
+        lambda _self, **_kwargs: [(record, None, EMPTY_DETAILS) for record in records],
+    )
     return ContactsResolver(), records
 
 
