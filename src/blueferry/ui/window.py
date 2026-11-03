@@ -1,5 +1,5 @@
-"""Main application window: the phone card above the Messages, Calls,
-Notifications and Photos tabs.
+"""Main application window: the phone card above the Messages, Contacts,
+Calls, Notifications and Photos tabs, and the global search.
 
 GTK counterpart of the Qt client's main page (``Main.qml`` with
 ``PhoneCard.qml``). The tabs live in an ``AdwViewStack``; the switcher sits
@@ -8,7 +8,8 @@ is read only while its tab is visible to the user (see
 :meth:`MainWindow.sync_watches`); tabs are added with
 :meth:`MainWindow.add_tab`. What the Qt card shows below its switches,
 "From Plugins" and "Tools", unfolds below the card strip with
-**Plugins & Tools**.
+**Plugins & Tools**. Files dropped anywhere on the window go to a "Send
+to…" target (``ui/file_drop.py``).
 """
 
 from __future__ import annotations
@@ -20,12 +21,15 @@ from gi.repository import Adw, Gio, Gtk
 from blueferry.client_tasks import TaskRunner
 from blueferry.gio_dbus import GioBus
 from blueferry.i18n import _
+from blueferry.plugin_surfaces_model import SendGate
 from blueferry.setup_client import SetupClient
 from blueferry.tel_links import dial_request
 from blueferry.ui.calls import CallsPage
 from blueferry.ui.companion_tools import CompanionToolsSection, ToolsFactory, default_tools
+from blueferry.ui.contacts import ContactsPage
 from blueferry.ui.conversations import ConversationsPage
 from blueferry.ui.dial_presenter import dial_prompt
+from blueferry.ui.file_drop import FileDropFactory, FileDropZone, default_file_drop
 from blueferry.ui.notifications import NotificationsPage
 from blueferry.ui.phone_card import PhoneCard, load_phone_name
 from blueferry.ui.photos import PhotosPage
@@ -36,6 +40,7 @@ from blueferry.ui.plugin_cards import (
     choose_files,
     default_surfaces,
 )
+from blueferry.ui.search import SearchDialog
 from blueferry.ui.status import SettingsDialog
 from blueferry.ui.ui_state import EXTRAS_EXPANDED, UiState
 
@@ -51,6 +56,7 @@ class MainWindow(Adw.ApplicationWindow):
         opener: Callable[[str], None] | None = None,
         open_file: Callable[[object], None] | None = None,
         ui_state: UiState | None = None,
+        file_drop: FileDropFactory | None = None,
     ) -> None:
         super().__init__(application=application, title=_("BlueFerry"))
         self._client = client
@@ -69,6 +75,12 @@ class MainWindow(Adw.ApplicationWindow):
         self.stack = Adw.ViewStack(vexpand=True)
         self.messages = ConversationsPage(client, self.toast)
         self.add_tab("messages", _("Messages"), "chat-message-new-symbolic", self.messages)
+        self.contacts = ContactsPage(
+            client, self.toast, dial=self.request_dial, message=self.message_address,
+            timer=timer,
+        )
+        self.add_tab("contacts", _("Contacts"), "avatar-default-symbolic", self.contacts,
+                     self.contacts.set_watched)
         self.calls = CallsPage(
             client, self.toast, dial=self.request_dial,
             compose=self.compose_message, open_settings=self.present_phone_settings,
@@ -86,6 +98,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.add_controller(tone_keys)
         self.notifications = NotificationsPage(
             client, open_settings=self.present_phone_settings, timer=timer,
+            toast=self.toast,
         )
         self.add_tab(
             "notifications", _("Notifications"),
@@ -104,12 +117,21 @@ class MainWindow(Adw.ApplicationWindow):
         self.phone_card = PhoneCard(client, self.toast, name_loader=name_loader)
         self.phone_card.add_status_listener(self.calls.apply_status)
         self.phone_card.add_status_listener(self.notifications.apply_status)
+        self.search = SearchDialog(client, activate=self.open_search_target, timer=timer)
+        # Every GetStatus answer, not only the card's: the contact book drops
+        # photos and cards, and the search its answer, as soon as one says so.
+        client.connect("status-read", self._status_read)
+        # A shown search answer may name deleted messages or calls.
+        client.connect("history-changed", lambda *_args: self.search.invalidate())
+        client.connect("call-history-changed", lambda *_args: self.search.invalidate())
 
         # "From Plugins" and "Tools": below the card strip, on demand.
         self._auto_extras = False
+        # One SendFiles at a time across "Send to…", card sends and drops.
+        self.send_gate = SendGate()
         self.plugin_cards = PluginCardSection(
             surfaces or default_surfaces(client), bus=card_bus, files=files, opener=opener,
-            on_new_items=self._new_plugin_items,
+            on_new_items=self._new_plugin_items, gate=self.send_gate,
         )
         self.tools = CompanionToolsSection(tools or default_tools(client), timer=timer)
         self.extras_box = Gtk.Box(
@@ -149,10 +171,19 @@ class MainWindow(Adw.ApplicationWindow):
         )
         menu_button.update_property([Gtk.AccessibleProperty.LABEL], [_("Main Menu")])
         self.header.pack_end(menu_button)
+        self.search_button = Gtk.Button(
+            icon_name="system-search-symbolic", tooltip_text=_("Search"),
+            action_name="win.search",
+        )
+        self.search_button.update_property([Gtk.AccessibleProperty.LABEL], [_("Search")])
+        self.header.pack_start(self.search_button)
 
         phone_action = Gio.SimpleAction.new("phone", None)
         phone_action.connect("activate", lambda *_args: self.present_phone_settings())
         self.add_action(phone_action)
+        search_action = Gio.SimpleAction.new("search", None)
+        search_action.connect("activate", lambda *_args: self.open_search())
+        self.add_action(search_action)
 
         self._banner = Adw.Banner(
             title=_("Background service unavailable — open Settings to repair it"),
@@ -169,7 +200,15 @@ class MainWindow(Adw.ApplicationWindow):
         content.append(self.extras)
         content.append(Gtk.Separator())
         content.append(self.stack)
-        self._toasts.set_child(content)
+        # Files dropped anywhere on the window go to a "Send to…" target.
+        self.file_drop = FileDropZone(
+            self, file_drop or default_file_drop(client), toast=self.toast,
+            open_plugin_settings=lambda: self.present_phone_settings("plugins"),
+            on_sent=self.plugin_cards.schedule_reload, gate=self.send_gate,
+        )
+        drop_overlay = Gtk.Overlay(child=content)
+        self.file_drop.attach(drop_overlay)
+        self._toasts.set_child(drop_overlay)
 
         self.switcher_bar = Adw.ViewSwitcherBar(stack=self.stack)
         toolbar = Adw.ToolbarView()
@@ -183,6 +222,8 @@ class MainWindow(Adw.ApplicationWindow):
         compact = Adw.Breakpoint.new(Adw.BreakpointCondition.parse(COMPACT_WIDTH))
         compact.add_setter(self.messages.split_view, "collapsed", True)
         compact.add_setter(self.messages.back_button, "visible", True)
+        compact.add_setter(self.contacts.split_view, "collapsed", True)
+        compact.add_setter(self.contacts.back_button, "visible", True)
         compact.add_setter(self.header, "title-widget", Adw.WindowTitle(title=_("BlueFerry")))
         compact.add_setter(self.switcher_bar, "reveal", True)
         compact.add_setter(self.phone_card, "orientation", Gtk.Orientation.VERTICAL)
@@ -235,6 +276,9 @@ class MainWindow(Adw.ApplicationWindow):
                 shown and self.is_active() and self.extras.get_reveal_child())
         for name, set_watched in self._watchers.items():
             set_watched(shown and name == visible)
+        if hasattr(self, "search") and not shown:
+            # Like the tabs: no query or hits kept for a window nobody sees.
+            self.search.dismiss()
 
     def _extras_toggled(self, button: Gtk.ToggleButton) -> None:
         self.extras.set_reveal_child(button.get_active())
@@ -283,12 +327,46 @@ class MainWindow(Adw.ApplicationWindow):
 
     # ---- feedback -------------------------------------------------------
 
-    def toast(self, text: str) -> None:
-        self._toasts.add_toast(Adw.Toast(title=text, use_markup=False))
+    def toast(self, text: str, long: bool = False) -> None:
+        """A short notice; ``long`` (a failure) stays twice as long."""
+        toast = Adw.Toast(title=text, use_markup=False)
+        if long:
+            toast.set_timeout(toast.get_timeout() * 2)
+            toast.set_priority(Adw.ToastPriority.HIGH)
+        self._toasts.add_toast(toast)
 
     def compose_message(self, address: str) -> None:
         self.show_tab("messages")
         self.messages.compose_to(address)
+
+    def message_address(self, address: str) -> None:
+        """The conversation with ``address``, or a new message to it."""
+        self.show_tab("messages")
+        self.messages.open_or_compose(address)
+
+    def _status_read(self, _client, status: dict) -> None:
+        self.contacts.apply_status(status)
+        self.search.apply_status(status)
+
+    # ---- global search --------------------------------------------------
+
+    def open_search(self) -> None:
+        self.search.open(self)
+
+    def open_search_target(self, target: dict) -> None:
+        """Open a search hit: conversation, message, contact card or call."""
+        kind = target.get("kind")
+        if kind in ("conversation", "message"):
+            self.show_tab("messages")
+            self.messages.open_search_hit(
+                str(target.get("thread_key") or ""), str(target.get("handle") or ""),
+            )
+        elif kind == "contact":
+            self.show_tab("contacts")
+            self.contacts.open_contact(str(target.get("contact_id") or ""))
+        elif kind == "call":
+            self.show_tab("calls")
+            self.calls.focus_call(str(target.get("call_id") or ""))
 
     def present_phone_settings(self, category: str = "") -> None:
         self.settings.open(self, category)

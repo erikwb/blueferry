@@ -47,10 +47,12 @@ Heftest du eine Mitteilung an, bleibt sie erhalten: Angeheftete Mitteilungen
 stehen oben (die zuletzt angeheftete zuerst), bleiben, bis du sie wieder
 löst, und überstehen einen Neustart des Hintergrunddienstes – auch wenn das
 iPhone sie entfernt hat oder sie aus den letzten 200 herausgefallen sind. In
-den Clients heftest du mit **Pin** am Eintrag an und löst mit **Unpin**
-(im Terminal-Client unter **iPhone Notifications** auch mit der Taste `P`).
-Auf der Kommandozeile geht es mit dem Schlüssel, der am Ende jeder Zeile
-steht:
+den Clients dient **Pin** / **Unpin** (Anheften/Lösen) am Eintrag dazu; im
+GTK-Client ist das der Knopf mit der Stecknadel am Ende jedes Eintrags,
+angeheftete Einträge zeigen eine Stecknadel, und sind 20 angeheftet, ist der
+Knopf ausgegraut und sein Tooltip nennt den Grund. Im Terminal-Client geht es
+unter **iPhone Notifications** auch mit der Taste `P`. Auf der Kommandozeile
+geht es mit dem Schlüssel, der am Ende jeder Zeile steht:
 
 ```bash
 blueferry notifications pin SCHLÜSSEL

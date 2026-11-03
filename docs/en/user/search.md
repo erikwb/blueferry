@@ -24,7 +24,11 @@ Search in the clients:
 - **KDE client:**
   not yet; use the command line.
 - **GTK client:**
-  not yet; use the command line.
+  the magnifier in the header bar, `Ctrl+K` or `Ctrl+F` opens the search. It
+  searches as you type, after a short pause, and shows the same groups with
+  up to 20 hits each; Enter opens the first hit, a click or the arrow keys
+  any other: the conversation scrolled to the message, the contact card, or
+  the call in the call history. Closing the search forgets the results.
 - **Terminal client:**
   `f` opens the same search as you type, with up to 20 hits per group, and
   Enter on a hit opens the conversation, contact card or call (see

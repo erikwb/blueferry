@@ -29,6 +29,10 @@ CONFIGURATION_TEXT = _("Pins can't be changed while settings.json can't be read.
 GENERIC_ERROR_TEXT = _("Could not change the pin.")
 FULL_TEXT = _("The pinned list is full; unpin a notification first.")
 TOO_LONG_TEXT = _("The pinned notifications are too long to store; unpin one first.")
+UNREADABLE_SETTINGS_TEXT = _(
+    "settings.json can't be read, so the pin was not changed. "
+    "Repair or remove the file and try again."
+)
 
 
 def _flag(record: Mapping[str, Any], name: str) -> bool:
@@ -108,6 +112,9 @@ def pin_error_text(error_name: object, message: object = "") -> str:
         return RATE_LIMITED_TEXT
     if name.endswith(".UnknownMethod"):
         return UNSUPPORTED_TEXT
+    if name.endswith(".Configuration"):
+        # Pins are saved in settings.json; while it can't be read nothing changes.
+        return UNREADABLE_SETTINGS_TEXT
     if name.endswith(".NotReady"):
         return OFF_TEXT if "notification list is off" in text else LOCKED_TEXT
     if name.endswith(".Configuration"):

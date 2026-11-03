@@ -354,9 +354,9 @@ Where it shows up:
   and `blueferry send FILE… [--to PLUGIN[:TARGET]] [--list]` (`PLUGIN` is the id
   or alias; without `--to` the only target is used). Whether "Send to…"
   appears comes from the manifests; `ShareTargets` (which starts the plugin)
-  is called only when the user opens it (or, once the windows take
-  drops, drops files). The Qt and GTK main windows are getting a drop zone
-  (`file_drop_view.py`) that sends dropped files to the same targets: the
+  is called only when the user opens it or drops files. The GTK main
+  window has a drop zone, and the Qt one is getting it
+  (`file_drop_view.py`); it sends dropped files to the same targets: the
   only one at once, else a picker. Only regular local files are sent, 1 to
   64, as `SendFiles` requires; folders are skipped. A client runs one
   `SendFiles` at a time across "Send to…", card sends and drops.

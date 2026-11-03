@@ -12,13 +12,18 @@ desktops.
 
 The window is a phone overview. A card above the tabs shows the iPhone's
 name and connection, battery, signal and network, and what is playing (with
-previous, play/pause and next). Its **Quick Settings** button holds the
+previous, play/pause and next, and [volume down and up](media-control.md#volume)
+around the level the iPhone last reported). Its **Quick Settings** button holds the
 switches for [the sound](phone-audio.md) and the
 [away lock](proximity-lock.md). When something is off, the card says which
 setting turns it on. The tabs are switched in the header bar, or at the
 bottom in a narrow window:
 
 - **Messages**: conversations and the chat.
+- **Contacts**: the [contact cards](contacts.md) with a search field; a
+  card shows every number with its label, email and postal addresses,
+  company, job title and photo, with **Call** and **Message** (opens the
+  conversation with that number, or a new message).
 - **Calls**: running [phone calls](calls.md) with answer, hold/resume,
   hang up, keypad tones (0-9, `*`, `#`) for the active call and the sound
   switch, a dial pad that also searches your
@@ -26,8 +31,10 @@ bottom in a narrow window:
   with All and Missed, call back and message buttons, and **Refresh from
   iPhone**. Every call asks for confirmation first.
 - **Notifications**: the [recent iPhone notifications](notification-history.md)
-  of other apps. When the list is off, the tab says why and opens the
-  setting.
+  of other apps, with a pin button on each entry; pinned entries are listed
+  first, and entries removed on the iPhone or from
+  [muted apps](notification-mute.md) are dimmed. When the list is off, the
+  tab says why and opens the setting.
 - **Photos**: the newest photos and videos of a [photo plugin](plugins.md),
   with All, Photos and Videos; a click downloads the original and opens it,
   and an opened one can be dragged into other apps.
@@ -39,6 +46,15 @@ it) and **Tools** (screen mirroring, LocalSend, the iPhone's photos over
 USB). It stays as you left it and unfolds by itself when a plugin brings
 something new, such as a running transfer.
 
+Drag files from the file manager anywhere onto the window to send them to
+the iPhone through a **Send to…** plugin such as LocalSend; see
+[dropping files on the window](plugins.md#dropping-files-on-the-window).
+
+The magnifier in the header bar, `Ctrl+K` or `Ctrl+F` opens the
+[search](search.md) over conversations, messages, contacts and calls.
+Choosing a hit opens the conversation at that message, the contact card,
+or the call in the call history.
+
 **Settings** (main menu, `Ctrl+,`) has the same categories as the KDE
 client, one page each; the switcher sits in the header bar, or at the
 bottom in a narrow window, and the search button finds any setting:
@@ -46,7 +62,7 @@ bottom in a narrow window, and the search button finds any setting:
 | Category | What's there |
 | --- | --- |
 | Phone | Pairing, connection health with **Reconnect**, **Run Diagnostics** (the same checks as `blueferry doctor`; the report opens in its own dialog with a copy button), pairing report, contact sync, contact photos |
-| Notifications | Which events create popups, contacts only, click rules, notification content, action buttons, sync notifications with iPhone, mark read on dismiss, keeping recent notifications |
+| Notifications | Which events create popups, contacts only, [muted apps](notification-mute.md), click rules, notification content, action buttons, sync notifications with iPhone, mark read on dismiss, keeping recent notifications |
 | Calls & Audio | Phone calls, call history, battery warning, [iPhone sound on this computer](phone-audio.md), media control |
 | Network | Opt-in [Bluetooth tethering](bluetooth-tethering.md) |
 | Security | One-time codes, away lock, local storage and its encryption, Clear History |
