@@ -2726,8 +2726,15 @@ def test_pinning_refreshes_the_list_and_explains_a_failure(monkeypatch):
 
 
 def test_muted_apps_are_read_only_while_shown_and_only_from_capable_daemons(monkeypatch):
+    from PySide6.QtCore import QCoreApplication
+    from PySide6.QtGui import QGuiApplication
+
     from blueferry.qt import controller as controller_module
     from tests.client_fakes import ManualRunner
+
+    # The QTimer below only runs inside an application, also when this test
+    # runs on its own.
+    _application = QCoreApplication.instance() or QGuiApplication([])
 
     timers = ManualRunner()
     monkeypatch.setattr(controller_module, "qt_timers", lambda _parent: timers.timer)
@@ -2785,11 +2792,77 @@ def test_muting_an_app_refreshes_the_list_and_reports_failures_in_the_section(mo
     controller.notificationAppsChanged.connect(lambda: changes.append(True))
     controller.setNotificationAppMuted("fail", True)
     assert controller.notificationApps["error"] == "local data is locked"
-    assert changes == [True]
+    # The error shows at once; the reread for the switches keeps it.
+    assert changes == [True, True]
     assert controller.errorText == ""
     controller.setNotificationAppMuted("com.example.mail", False)
     assert controller.notificationApps["error"] == ""
     assert backend.muted == set()
+
+
+class _ConfigurationFailure(Exception):
+    """The D-Bus error behind a refusal while settings.json can't be read."""
+
+    MESSAGE = ("settings.json could not be read, so the change was not saved; "
+               "repair or remove the file and try again")
+
+    def get_dbus_name(self):
+        return "io.weirdware.BlueFerry.Error.Configuration"
+
+    def get_dbus_message(self):
+        return self.MESSAGE
+
+
+def _configuration_error() -> BackendError:
+    try:
+        raise BackendError(_ConfigurationFailure.MESSAGE) from _ConfigurationFailure()
+    except BackendError as error:
+        return error
+
+
+def test_a_pin_refused_for_an_unreadable_settings_file_says_so(monkeypatch):
+    backend = _PinBackend()
+    controller = _inline_controller(monkeypatch, backend)
+    _allow_notifications(controller)
+    controller.watchNotifications(True)
+    backend.pin_error = _configuration_error()
+    controller.setNotificationPinned("k2", True)
+    text = controller.notificationsInfo["pinError"]
+    assert text == ("settings.json can't be read, so pins can't be changed. Repair or "
+                    "remove the file and try again.")
+    assert controller.errorText == ""
+    # The rows stay usable for the next try once the file is repaired.
+    assert [row["key"] for row in controller.notifications] == ["k1", "k2"]
+
+
+def test_a_mute_refused_for_an_unreadable_settings_file_shows_the_list_unavailable(
+    monkeypatch,
+):
+    backend = _PinBackend()
+    controller = BridgeController(backend=backend, setup=object(), subscribe=False, autostart=False)
+    _run_inline_any(controller, monkeypatch)
+    controller._status = {"notification_muted_app_count": 0}
+    controller.watchNotificationApps(True)
+    assert all(row["enabled"] for row in controller.notificationApps["rows"])
+
+    # settings.json broke after the list was read.
+    listed = backend.notification_apps
+
+    def unreadable():
+        return {**listed(), "mute_available": False}
+
+    def refuse(_app_id, _muted):
+        raise _configuration_error()
+
+    backend.notification_apps = unreadable
+    backend.set_notification_app_muted = refuse
+    controller.setNotificationAppMuted("com.example.mail", True)
+    apps = controller.notificationApps
+    assert apps["error"] == _ConfigurationFailure.MESSAGE
+    assert apps["available"] is False
+    assert not any(row["enabled"] for row in apps["rows"])
+    assert "settings.json can't be read" in apps["hint"]
+    assert controller.errorText == ""
 
 
 def test_notification_rows_without_pin_keys_hide_the_pin_control(monkeypatch):

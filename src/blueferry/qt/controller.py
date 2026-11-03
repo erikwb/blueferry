@@ -1066,6 +1066,9 @@ class BridgeController(QObject):
 
     @Slot()
     def refreshNotificationApps(self) -> None:
+        self._read_notification_apps(keep_error=False)
+
+    def _read_notification_apps(self, *, keep_error: bool) -> None:
         if not self._notification_apps_watched or not self.notificationAppsSupported:
             return
 
@@ -1073,7 +1076,8 @@ class BridgeController(QObject):
             if not self._notification_apps_watched:
                 return
             view = notification_apps_view.list_view(value)
-            self._notification_apps = {**view, "loaded": True, "error": ""}
+            error = self._notification_apps.get("error", "") if keep_error else ""
+            self._notification_apps = {**view, "loaded": True, "error": error}
             self.notificationAppsChanged.emit()
 
         def failed(message: str) -> None:
@@ -1114,6 +1118,9 @@ class BridgeController(QObject):
                 "error": notification_apps_view.change_failed_text(message),
             }
             self.notificationAppsChanged.emit()
+            # Muting may have become unavailable (settings.json unreadable,
+            # storage locked): read the list again for its switches and hint.
+            self._read_notification_apps(keep_error=True)
 
         self._run(
             lambda: self._backend.set_notification_app_muted(selected, wanted),

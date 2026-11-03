@@ -40,3 +40,7 @@ def test_presenter_limit_and_errors() -> None:
     ) == view.FULL_TEXT
     assert view.pin_error_text(prefix + "InvalidArgs", "… too long to store; …") == view.TOO_LONG_TEXT
     assert view.pin_error_text(prefix + "Failed") == view.GENERIC_ERROR_TEXT
+    # settings.json can't be read: pin and unpin are refused with Configuration.
+    assert view.pin_error_text(
+        prefix + "Configuration", "settings.json could not be read, …",
+    ) == view.SETTINGS_UNREADABLE_TEXT
