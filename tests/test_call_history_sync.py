@@ -176,6 +176,32 @@ def test_retention_drops_expired_calls_and_their_announcement_state(
     assert repository.load(now=NOW) == []
 
 
+def test_prune_expires_announced_callers_without_rearming_seeding(
+    storage, monkeypatch,
+) -> None:
+    monkeypatch.setattr(config, "HISTORY_RETENTION_DAYS", 7)
+    repository = CallHistoryRepository(storage)
+    repository.replace([_call(INCOMING, 60)], now=NOW)
+    repository.replace([_call(MISSED, 5), _call(INCOMING, 60)], now=NOW)
+    later = NOW + timedelta(days=8)
+
+    # The phone stays away past the retention window; startup prunes.
+    assert repository.prune(now=later) == 2
+
+    with closing(sqlite3.connect(config.CALLS_DB)) as connection:
+        (payload,) = connection.execute(
+            "SELECT payload FROM state WHERE name = 'seen'"
+        ).fetchone()
+    assert repository._open_value(payload, "call-state-v1") == {}
+    # The next sync still announces a call that arrived meanwhile.
+    fresh = CallRecord(
+        direction=MISSED, occurred_at=later, raw_time="20261006T120000Z",
+        address="+15551230002", phone="15551230002", name=None,
+    )
+    result = repository.replace([fresh], now=later)
+    assert not result.seeded and result.new_missed == [fresh]
+
+
 def test_clear_erases_rows_and_rearms_silent_seeding(storage) -> None:
     repository = CallHistoryRepository(storage)
     repository.replace([], now=NOW)

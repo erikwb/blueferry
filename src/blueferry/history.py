@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 
 from blueferry import config
 from blueferry.ancs.constants import MESSAGES_APP_ID
+from blueferry.sqlite_files import is_damaged, remove_database
 from blueferry.storage_security import (
     ENCRYPTED_STORAGE,
     PLAINTEXT_STORAGE,
@@ -39,6 +40,29 @@ CREATE TABLE IF NOT EXISTS meta (
 CREATE INDEX IF NOT EXISTS idx_events_kind_id ON events(kind, id);
 CREATE INDEX IF NOT EXISTS idx_events_occurred_at ON events(occurred_at);
 """
+
+
+# Rows fetched per statement. Decoding happens between statements, so a slow
+# decrypt on a worker never keeps a read lock that would stall a writer.
+_READ_PAGE_ROWS = 256
+
+
+def _payload_rows(
+    database: sqlite3.Connection, *, newest_first: bool
+) -> Iterator[tuple[int, str]]:
+    """Yield raw ``(id, payload)`` rows, reading one finished page at a time."""
+    query = (
+        "SELECT id, payload_json FROM events WHERE id < ? ORDER BY id DESC LIMIT ?"
+        if newest_first
+        else "SELECT id, payload_json FROM events WHERE id > ? ORDER BY id ASC LIMIT ?"
+    )
+    after = 2**63 - 1 if newest_first else -(2**63)
+    while True:
+        page = database.execute(query, (after, _READ_PAGE_ROWS)).fetchall()
+        yield from page
+        if len(page) < _READ_PAGE_ROWS:
+            return
+        after = int(page[-1][0])
 
 
 def _event_datetime(event: EventRecord) -> datetime | None:
@@ -149,13 +173,10 @@ def read_events(
     if bounded == 0:
         return []
     events: list[EventRecord] = []
-    query = (
-        "SELECT payload_json FROM events ORDER BY id DESC"
-        if bounded is not None
-        else "SELECT payload_json FROM events ORDER BY id ASC"
-    )
     with closing(_open_database(path)) as database:
-        for (payload,) in database.execute(query):
+        for _event_id, payload in _payload_rows(
+            database, newest_first=bounded is not None
+        ):
             try:
                 event = _deserialize(payload, storage)
             except CorruptStorageError:
@@ -206,14 +227,11 @@ def read_event_rows(
     bounded = max(0, int(limit)) if limit is not None else None
     if bounded == 0:
         return []
-    query = (
-        "SELECT id, payload_json FROM events ORDER BY id DESC"
-        if bounded is not None
-        else "SELECT id, payload_json FROM events ORDER BY id ASC"
-    )
     rows: list[EventRow] = []
     with closing(_open_database(path)) as database:
-        for event_id, payload in database.execute(query):
+        for event_id, payload in _payload_rows(
+            database, newest_first=bounded is not None
+        ):
             try:
                 event = _deserialize(payload, storage)
             except CorruptStorageError:
@@ -526,13 +544,22 @@ def prune_events(
     return removed
 
 
-def clear_events(*, path: Path | None = None) -> None:
-    """Erase local history and scrub SQLite's reusable pages."""
-    with closing(_open_database(path)) as database:
-        database.execute("PRAGMA secure_delete = ON")
-        with database:
-            database.execute("DELETE FROM events")
-        database.execute("VACUUM")
+def clear_events(*, path: Path | None = None, discard_damaged: bool = False) -> None:
+    """Erase local history and scrub SQLite's reusable pages.
+
+    A storage reset passes ``discard_damaged`` so that a file SQLite cannot
+    read is deleted rather than blocking the reset.
+    """
+    try:
+        with closing(_open_database(path)) as database:
+            database.execute("PRAGMA secure_delete = ON")
+            with database:
+                database.execute("DELETE FROM events")
+            database.execute("VACUUM")
+    except sqlite3.DatabaseError as error:
+        if not discard_damaged or not is_damaged(error):
+            raise
+        remove_database(path or config.EVENTS_DB)
 
 
 def scrub_unprotected_events(
