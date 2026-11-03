@@ -68,6 +68,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `gio_dbus.py` | `GioBus`: a two-method seam (typed asynchronous `call`, `subscribe`) over a `Gio.DBusConnection`, with dbus-python-compatible error names; used by `phone_audio_route.py`. |
 | `notification_apps_view.py`, `cli_notifications.py` | Toolkit-free rows, hints and index toggles for the muted-apps list (`Messages1.ListNotificationApps`); `blueferry notifications apps/mute/unmute`. |
 | `phone_audio_view.py` | Toolkit-free wording of the PC/iPhone sound switch for every client. |
+| `media_volume_view.py` | Toolkit-free iPhone volume up/down buttons and level label (from `GetNowPlaying`) for every client and `blueferry media volume`. |
 | `features.py` | The `local.env` switches without a runtime setter of their own that clients may store in settings.json (`Messages1.GetFeatures/SetFeature`): notification content, mark read on dismiss, and notification history. |
 | `doctor_report.py` | Runs `blueferry doctor` in an owned, cancellable child process for the settings UIs and returns a plain-text report; its state map and summary (`view()`) are shared by the Qt, GTK and terminal settings. |
 | `mpris.py` | Optional MPRIS2 player (`org.mpris.MediaPlayer2.blueferry_iphone`) over `media.py`, exported on its own private session-bus connection so the MPRIS name never addresses the BlueFerry object. |
