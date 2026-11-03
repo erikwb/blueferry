@@ -19,6 +19,7 @@ from blueferry.history import (
     read_events,
     scrub_unprotected_events,
 )
+from blueferry.notification_apps import MutedAppsStore
 from blueferry.notification_pins import PinnedNotificationsStore
 from blueferry.starred_threads import StarredThreadsStore
 from blueferry.storage_security import NO_STORAGE, CorruptStorageError, StorageSecurity
@@ -39,6 +40,7 @@ def prepare_storage(
     ``photos`` is the daemon's contact-photo setting for the prepared cache.
     """
     StarredThreadsStore(storage.settings_path, storage=storage).migrate()
+    MutedAppsStore(storage.settings_path, storage=storage).migrate()
     ConfirmedGroupsStore(storage.settings_path, storage=storage).migrate()
     PinnedNotificationsStore(storage.settings_path, storage=storage).migrate()
     routes = GroupRoutesStore(storage.settings_path, storage=storage)

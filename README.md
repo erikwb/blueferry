@@ -360,6 +360,17 @@ daemon run without logging its notification content:
 journalctl --user -u blueferry -f | grep "ANCS app observed"
 ```
 
+These variables stay a hard filter: an excluded app is never fetched and
+never listed anywhere. For apps that pass it you can also **mute** single
+apps without editing `local.env`: `blueferry notifications apps` lists the
+apps that sent notifications since the daemon started, and
+`blueferry notifications mute com.example.Chat` (or `unmute`) hides or shows
+that app's desktop popups, effective with the next notification. Muted apps
+are saved with their display name, under the local storage policy, as
+`ancs_muted_apps` in `settings.json`; while the wallet is locked nothing is
+muted. Messages cannot be muted. See
+[Mute apps](docs/en/user/notification-mute.md).
+
 ### One-time codes
 
 BlueFerry can copy verification codes (2FA/OTP) from newly received SMS and
@@ -1202,6 +1213,7 @@ blueferry history-clear
 blueferry otp status
 blueferry notifications open-map list
 blueferry notifications sync status
+blueferry notifications apps   # mute APP_ID / unmute APP_ID
 blueferry doctor
 blueferry tether            # status; also: enable, disable, on, off
 blueferry reconnect         # page the iPhone now instead of waiting

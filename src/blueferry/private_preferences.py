@@ -25,17 +25,19 @@ class PrivatePreference:
         self._storage = storage
 
     def read(self) -> object:
-        return self._decoded(self._settings.read().get(self._key))
+        """The saved value; ``None`` also while settings.json can't be read."""
+        return self._value(self._settings.read())
 
     def load(self) -> object:
-        """Like :meth:`read`, but raise while the settings file can't be read.
+        """Like ``read``, but raise UnreadableSettingsError while settings.json can't be read."""
+        return self._value(self._settings.load())
 
-        A cached preference must not take an unreadable file for "nothing
-        saved": its next write would replace the saved value.
-        """
-        return self._decoded(self._settings.load().get(self._key))
+    def require_readable(self) -> None:
+        """Raise UnreadableSettingsError while settings.json can't be read."""
+        self._settings.load()
 
-    def _decoded(self, value: object) -> object:
+    def _value(self, document: dict) -> object:
+        value = document.get(self._key)
         storage = self._storage
         if storage is None or value is None:
             return value

@@ -50,6 +50,10 @@ ohne Inhalt:
 journalctl --user -u blueferry -f | grep "ANCS app observed"
 ```
 
+Diese Regeln sind ein harter Filter: Ausgeschlossene Apps werden nie geholt
+und nie aufgelistet. Um einzelne Apps ohne Änderung an `local.env`
+auszublenden, kannst du sie stattdessen [stummschalten](notification-mute.md).
+
 ### Klickregeln
 
 [Klickregeln](notification-click-rules.md) öffnen beim Klick auf das Popup
@@ -75,7 +79,8 @@ Unterhaltungen einen Neustart überstehen. Du entscheidest, wie:
 - Ein Wechsel des Speichermodus leert den bisherigen Cache, damit
   verschlüsselte und unverschlüsselte Daten nie gemischt werden.
 - Markierte Unterhaltungen, gespeicherte Gruppenmitglieder,
-  Gruppenbestätigungen und angeheftete iPhone-Mitteilungen folgen demselben
+  Gruppenbestätigungen, angeheftete iPhone-Mitteilungen und
+  [stummgeschaltete Apps](notification-mute.md) folgen demselben
   Speichermodus.
 - `blueferry history-clear` löscht den lokalen Nachrichtenverlauf.
 - Solange noch Daten mit einem Speicherschlüssel verschlüsselt sind, ersetzt

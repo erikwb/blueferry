@@ -4,6 +4,12 @@
 
 ### Added
 
+- Mute the desktop popups of single iPhone apps: `Messages1.ListNotificationApps`
+  lists the apps seen since the daemon started (memory only) plus the muted
+  ones, `SetNotificationAppMuted` saves a choice under the storage policy, and
+  `Events1.NotificationAppsChanged` invalidates the list. CLI:
+  `blueferry notifications apps|mute|unmute`. The environment allowlist and
+  blocklist stay a hard filter in front of it.
 - `blueferry media volume up|down` sends one iPhone volume step and confirms
   it with the last reported level; `blueferry media volume` prints the level.
   A shared presenter (`media_volume_view`) prepares the volume buttons for the

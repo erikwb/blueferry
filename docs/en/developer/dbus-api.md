@@ -116,6 +116,8 @@ and retries on a later status read.
 | `GetNotificationOpenMap` | → `s rules_json` (list of `bundle_id`, `target`, `kind`) |
 | `SetNotificationOpenTarget` | `s bundle_id, s target` → `s rules_json` |
 | `RemoveNotificationOpenTarget` | `s bundle_id` → `b removed` |
+| `ListNotificationApps` | → `s apps_json`: `{"apps": [{"app_id", "app_name", "muted", "seen", "last_seen"}], "muted_count", "max_muted", "mute_available", "all_notifications", "env_allowlist", "env_blocklist"}`. `apps` joins the non-Messages apps seen since the daemon started (memory only, at most 64; `last_seen` is Unix seconds, `null` for a muted app not seen yet) with the muted apps saved in `settings.json`, sorted by name. `app_name` is empty while the iPhone has not reported one. `mute_available` is false while local storage is locked, disabled or unreadable (then nothing is muted), and while `settings.json` can't be read (mutes read before stay in effect). `env_allowlist`/`env_blocklist` say that `BLUEFERRY_ANCS_APP_ALLOWLIST`/`BLOCKLIST` are set; apps they exclude never appear. Shape it with `blueferry.notification_apps_view` |
+| `SetNotificationAppMuted` | `s app_id, b muted` → `b selected`: hides (or shows again) the desktop popups of one app, effective with the next notification; `InvalidArgs` for a malformed ID, Messages, an app excluded by the environment rules or more than `max_muted` apps; `NotReady` while local storage is locked, disabled or unreadable; `Configuration` while `settings.json` can't be read. Bucket `settings`. `GetStatus` reports `notification_muted_app_count` (also the capability marker) |
 | `OpenNotificationClick` | `s click_id, s activation_token` → `b opened` (a notification shell ran a mapped popup's stored argv; the ID is random per popup and stays valid for 10 s after the user dismissed the popup) |
 | `OpenLegacyGtkMessage` | `s handle, s application_owner` → `b delivered` (upgrade compatibility) |
 
@@ -234,6 +236,7 @@ adds `calls_state` (`unavailable`, `searching`, `connecting`, `ready`,
 | `CallHistoryChanged` | none | Retained call history changed; call `ListCallHistory` again |
 | `NowPlayingChanged` | none | Fetch `Media1.GetNowPlaying` again |
 | `NotificationsChanged` | none | Fetch `Messages1.ListNotifications` again (opt-in list) |
+| `NotificationAppsChanged` | none | The notification-app list changed (an app seen for the first time, a newly known name, a mute toggled, storage unlocked, the popup policy changed); call `ListNotificationApps` again |
 | `CallsChanged` | none | Optional calls changed; fetch `Calls1.ListCalls`. Never emitted while calls are off |
 
 ## Errors

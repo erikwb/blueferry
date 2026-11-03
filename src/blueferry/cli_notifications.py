@@ -279,3 +279,75 @@ def _desktop_entry_installed(desktop_id: str) -> bool:
         return Gio.DesktopAppInfo.new(desktop_id) is not None
     except Exception:
         return True  # cannot check; do not warn spuriously
+
+
+def describe_apps(payload: object) -> list[str]:
+    """``blueferry notifications apps`` output; names are terminal-escaped."""
+    from blueferry import notification_apps_view as view
+
+    rows = view.app_rows(payload)
+    lines = []
+    for row in rows:
+        marker = "muted" if row["muted"] else "     "
+        name = terminal_text(row["name"])
+        app_id = terminal_text(row["app_id"])
+        suffix = f"  ({app_id})" if row["name"] != row["app_id"] else ""
+        unseen = "" if row["seen"] else "  [not seen since start]"
+        lines.append(f"{marker}  {name}{suffix}{unseen}")
+    hint = view.apps_hint(payload)
+    if hint:
+        if lines:
+            lines.append("")
+        lines.append(terminal_text(hint))
+    return lines
+
+
+@notifications_app.command("apps")
+def notification_apps_list() -> None:
+    """List iPhone apps that sent notifications, and the muted ones."""
+    from blueferry.client import BackendError
+
+    try:
+        payload = _client().notification_apps()
+    except BackendError as error:
+        typer.echo(terminal_text(error), err=True)
+        raise typer.Exit(code=2) from None
+    for line in describe_apps(payload):
+        typer.echo(line)
+
+
+def _set_app_muted(app_id: str, muted: bool) -> None:
+    from blueferry.client import BackendError
+    from blueferry.notification_apps import validate_app_id
+
+    try:
+        # Validate locally for an immediate message; the backend decides.
+        selected = validate_app_id(app_id)
+    except ValueError as error:
+        typer.echo(str(error), err=True)
+        raise typer.Exit(code=2) from None
+    try:
+        _client().set_notification_app_muted(selected, muted)
+    except BackendError as error:
+        typer.echo(terminal_text(error), err=True)
+        raise typer.Exit(code=2) from None
+    if muted:
+        typer.echo(f"Muted {selected}: its desktop popups are hidden.")
+    else:
+        typer.echo(f"Unmuted {selected}: its desktop popups are shown again.")
+
+
+@notifications_app.command("mute")
+def notification_app_mute(
+    app_id: str = typer.Argument(..., help="iPhone app bundle ID, e.g. com.example.Chat"),
+) -> None:
+    """Hide the desktop popups of APP_ID (see `blueferry notifications apps`)."""
+    _set_app_muted(app_id, True)
+
+
+@notifications_app.command("unmute")
+def notification_app_unmute(
+    app_id: str = typer.Argument(..., help="iPhone app bundle ID"),
+) -> None:
+    """Show the desktop popups of APP_ID again."""
+    _set_app_muted(app_id, False)

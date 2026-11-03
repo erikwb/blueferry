@@ -88,6 +88,18 @@ def _open_map_error(error: Exception) -> BackendError:
     return BackendError(_dbus_message(error))
 
 
+def _notification_apps_error(error: Exception) -> BackendError:
+    if (
+        isinstance(error, dbus.exceptions.DBusException)
+        and error.get_dbus_name() == "org.freedesktop.DBus.Error.UnknownMethod"
+    ):
+        return BackendError(
+            "the running backend cannot mute notification apps; "
+            "restart it after upgrading"
+        )
+    return BackendError(_dbus_message(error))
+
+
 class TetherUnsupportedError(BackendError):
     """The running daemon does not export the optional Tether1 interface."""
 
@@ -598,6 +610,27 @@ class BackendClient:
             ))
         except (dbus.exceptions.DBusException, ValueError) as error:
             raise _open_map_error(error) from error
+
+    def notification_apps(self) -> dict:
+        """``ListNotificationApps``: seen iPhone apps and the muted ones.
+
+        Shape it with ``blueferry.notification_apps_view`` for display.
+        """
+        try:
+            return decode_mapping(self._iface(MESSAGES_IFACE).ListNotificationApps(
+                timeout=POLICY_CALL_TIMEOUT_SEC
+            ))
+        except (dbus.exceptions.DBusException, ValueError) as error:
+            raise _notification_apps_error(error) from error
+
+    def set_notification_app_muted(self, app_id: str, muted: bool) -> bool:
+        """Hide or show the desktop popups of one iPhone app; the new state."""
+        try:
+            return bool(self._iface(MESSAGES_IFACE).SetNotificationAppMuted(
+                app_id, dbus.Boolean(muted), timeout=POLICY_CALL_TIMEOUT_SEC
+            ))
+        except dbus.exceptions.DBusException as error:
+            raise _notification_apps_error(error) from error
 
     def open_notification_click(self, click_id: str, token: str) -> bool:
         try:

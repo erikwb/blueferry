@@ -514,6 +514,26 @@ class MessagesService(StrictObject):
         ))
 
     @dbus.service.method(
+        IFACE, in_signature="", out_signature="s", sender_keyword="sender"
+    )
+    def ListNotificationApps(self, sender=None) -> str:
+        """Seen iPhone apps joined with the muted ones, as JSON."""
+        return self._sync(lambda: self._authorized(
+            sender, "status",
+            lambda: self._json_response(self.operations.list_notification_apps()),
+        ))
+
+    @dbus.service.method(
+        IFACE, in_signature="sb", out_signature="b", sender_keyword="sender"
+    )
+    def SetNotificationAppMuted(self, app_id: str, muted: bool, sender=None) -> bool:
+        """Hide (or show again) the desktop popups of one iPhone app."""
+        return self._sync(lambda: self._authorized(
+            sender, "settings",
+            lambda: self.operations.set_notification_app_muted(str(app_id), bool(muted)),
+        ))
+
+    @dbus.service.method(
         IFACE, in_signature="ss", out_signature="b", sender_keyword="sender"
     )
     def OpenNotificationClick(
@@ -1035,6 +1055,16 @@ class MessagesService(StrictObject):
             self.NowPlayingChanged()
         except Exception:
             log.exception("NowPlayingChanged emit failed")
+
+    @dbus.service.signal(EVENTS_IFACE, signature="")
+    def NotificationAppsChanged(self):
+        """The notification-app list changed; clients call ListNotificationApps."""
+
+    def emit_notification_apps_changed(self) -> None:
+        try:
+            self.NotificationAppsChanged()
+        except Exception:
+            log.exception("NotificationAppsChanged emit failed")
 
     @dbus.service.signal(EVENTS_IFACE, signature="")
     def CallsChanged(self):
