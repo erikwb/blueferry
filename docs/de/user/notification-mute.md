@@ -59,7 +59,8 @@ hin, damit du weißt, warum manche Apps nie auftauchen.
   selben [Speichermodus](privacy.md#lokale-daten) wie markierte Unterhaltungen
   (standardmäßig verschlüsselt). Ein Wechsel des Speichermodus löscht sie.
 - Solange der Schlüsselbund gesperrt ist oder **Keine lokalen Daten
-  behalten** gewählt ist, ist keine App stummgeschaltet und Stummschalten nicht möglich.
+  behalten** gewählt ist, ist keine App stummgeschaltet und Stummschalten
+  nicht möglich.
   BlueFerry überschreibt die gespeicherte Liste nie, solange es sie nicht
   lesen kann.
 - Solange `settings.json` selbst nicht lesbar ist, wird Stummschalten und

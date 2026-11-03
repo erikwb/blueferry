@@ -262,10 +262,10 @@ gerade läuft, und für jede ausgeschaltete optionale Funktion der Schalter,
 der sie einschaltet, samt seiner Kategorie in Settings. Unter der Wiedergabe
 steuern **Volume Down**, **Play/Pause** und **Volume Up** das iPhone, ohne
 die Übersicht zu schließen; außerhalb eines Textfelds ändern auch `-` und
-`+` (oder `=`, dieselbe Taste ohne Umschalt) die Lautstärke. Sie bewegt sich jeweils um eine iPhone-Stufe, und neben
-dem Titel steht der Wert, den das iPhone zuletzt gemeldet hat. Die übrigen
-Knöpfe öffnen die Mitteilungsliste, die letzten Anrufe, das Anruf-Panel und
-Settings.
+`+` (oder `=`, dieselbe Taste ohne Umschalt) die Lautstärke. Sie bewegt sich
+jeweils um eine iPhone-Stufe, und neben dem Titel steht der Wert, den das
+iPhone zuletzt gemeldet hat. Die übrigen Knöpfe öffnen die Mitteilungsliste,
+die letzten Anrufe, das Anruf-Panel und Settings.
 
 **iPhone Notifications** (in der Palette und in der Übersicht) listet die
 letzten Mitteilungen von iPhone-Apps, die **Keep recent iPhone
