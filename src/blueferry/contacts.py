@@ -61,9 +61,10 @@ _PHONEBOOK_TRANSFER_MAX_SECONDS = 30 * 60
 def _pbap_pull_filters(max_contacts: int, *, phonebook: str = "pb") -> dict:
     """Build filters using the PhonebookAccess1 API's exact spelling.
 
-    PBAP uses MaxCount and lowercase vcard30. MAP's superficially similar
-    ListMessages call uses MaxListCount; mixing the two makes BlueZ create a
-    transfer that immediately fails and leaves a zero-byte target file.
+    PBAP uses MaxCount and lowercase vcard30. ``MaxListCount`` is the MAP
+    specification's application-parameter name, not a BlueZ filter key (MAP's
+    ListMessages also takes MaxCount); passing it to PullAll made BlueZ create
+    a transfer that immediately failed and left a zero-byte target file.
     """
     filters = {
         "MaxCount": dbus.UInt16(max_contacts),

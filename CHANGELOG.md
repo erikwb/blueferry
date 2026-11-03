@@ -46,9 +46,26 @@
   (`phone_audio_delay_ms`, `phone_audio_delay_reporting`; the delay only while
   the stream is active), show it next to the iPhone sound status, and check
   AVDTP delay reporting in `blueferry doctor`.
+- Catch up on incoming messages that arrived while the iPhone was
+  disconnected. After each MAP or MNS reconnect, and only while message
+  history is kept and unlocked, the backend lists the iPhone's inbox once
+  and adds the missing messages to history: no popups, no one-time code
+  copies, the iPhone's read state kept. It looks back from shortly before
+  the newest stored message, within the retention period and at most 200
+  messages, and never restores messages erased locally. MAP cannot say
+  whether such a message went to a group, so before you reply to one the
+  clients ask whether the reply should go to the sender only, as for other
+  messages that may be from a group. Messages sent from the iPhone itself
+  remain unavailable (related to
+  [#280](https://github.com/erikwb/blueferry/issues/280)).
 
 ### Fixed
 
+- Pass BlueZ's `MaxCount` filter key to MAP `ListMessages` instead of
+  `MaxListCount`, which obexd ignored. The message query now asks the iPhone
+  for only the requested number of messages instead of up to 1024. The
+  one-time-code lookup keeps listing up to 1024 inbox entries
+  ([#396](https://github.com/erikwb/blueferry/pull/396)).
 - Follow the iPhone's battery through BlueZ's `Battery1` when BlueZ's
   battery plugin already reads the GATT Battery Level, instead of reading and
   subscribing to the same characteristic a second time. This removes the

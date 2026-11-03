@@ -236,6 +236,15 @@ the tested phone they are indistinguishable on the wire:
 - `ListMessages` puts the message text in the `Subject` property. It also
   supplies sender, timestamp, folder, type, and read state without requiring a
   full bMessage download.
+- BlueZ's `ListMessages` filter keys are `MaxCount` (uint16, default 1024),
+  `Offset`, `SubjectLength`, `Fields`, `Types`, `PeriodBegin`, `PeriodEnd`,
+  `Read`, `Recipient`, `Sender` and `Priority` (BlueZ 5.87,
+  `doc/org.bluez.obex.MessageAccess.rst` and `parse_message_filters` in
+  `obexd/client/map.c`). obexd silently ignores unknown keys, so the MAP
+  specification's `MaxListCount` leaves the default of 1024 entries in
+  effect; a `MaxCount` of another D-Bus type is rejected. The one-time-code
+  lookup lists up to 1024 inbox entries because the order in which iOS
+  returns entries when `MaxCount` truncates the listing is unverified.
 - Changing `Message1.Read` is reflected on the phone. Conversely, opening a
   message on the phone produces a read-property update that can close the
   corresponding desktop popup.
@@ -247,7 +256,27 @@ conversation identifier in the observed format.
 
 The iPhone's MAP sent folder was empty in testing, and sending did not produce
 a useful outgoing MNS event. BlueFerry records successful local sends itself;
-it cannot reconstruct a complete sent history from the phone.
+it cannot reconstruct a complete sent history from the phone, nor catch up on
+messages sent from the iPhone while the computer was disconnected.
+
+iOS does not replay MNS events for messages that arrived while MAP was
+disconnected, but its inbox listing includes them. Observed on 2026-11-02
+with an iPhone on iOS 27, BlueZ 5.87 and an Intel AX200 on Gentoo (phone model
+and exact iOS build not recorded): with Bluetooth off on the computer, a message received
+on the iPhone produced no MNS event after Bluetooth came back and MAP and MNS
+reconnected, and it was missing from local history. `ListMessages` on
+`telecom/msg/INBOX` afterwards listed it with its sender, text, timestamp and
+read flag, together with older inbox messages BlueFerry had also never seen.
+BlueFerry therefore lists the inbox once after each MAP or MNS reconnect and
+stores what history lacks. Still unverified on hardware: whether iOS honours
+the `PeriodBegin` filter, the order in which it returns entries when
+`MaxCount` truncates the listing, how long the listing's `Subject` may be
+before iOS shortens it, and whether MAP handles stay stable across sessions.
+The backfill filters by time itself and does not rely on stable handles.
+
+The backfill passes BlueZ's `MaxCount` and `PeriodBegin` filter keys (listed
+above); `PeriodBegin` is a string in BlueZ's `YYYYMMDDTHHMMSS` format, which
+obexd forwards unchanged.
 
 ## MAP send behavior
 
@@ -320,8 +349,8 @@ The iPhone phonebook is available through BlueZ's
 - Select the main phonebook with `Select("int", "pb")`; this is not MAP's
   `SetFolder` API.
 - Pull it with `PullAll(path, {"MaxCount": ..., "Format": "vcard30", "Offset": 1})`.
-  `MaxListCount` is a MAP option and causes a PBAP transfer to fail or yield a
-  zero-byte file.
+  `MaxListCount` is the MAP specification's parameter name, not a BlueZ filter
+  key, and causes a PBAP transfer to fail or yield a zero-byte file.
 - PBAP reserves `telecom/pb/0.vcf` for the owner card and returns the bulk
   phonebook in ascending index order (PBAP 1.2.3, sections 3.1.5.2 and 4.2).
   `Offset=1` excludes this entry before parsing or photo budgeting. This

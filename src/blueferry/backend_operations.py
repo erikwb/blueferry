@@ -1591,7 +1591,8 @@ class BackendOperations:
                 raise NotFoundError(
                     "selected conversations no longer exist in local history"
                 )
-            if delete_event_rows(event_ids, storage=storage) == 0:
+            # A later reconnect must not fetch the deleted messages again.
+            if delete_event_rows(event_ids, storage=storage, raise_floor=True) == 0:
                 raise NotFoundError(
                     "selected conversations no longer exist in local history"
                 )
