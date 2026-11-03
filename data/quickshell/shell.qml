@@ -2026,7 +2026,8 @@ ShellRoot {
       }
 
       Shortcut {
-        sequence: StandardKey.Find
+        // Find has several bindings (Ctrl+F, F3 …); bind every one of them.
+        sequences: [StandardKey.Find]
         enabled: root.contactCardsSupported || root.searchSupported
         onActivated: searchPopup.open()
       }

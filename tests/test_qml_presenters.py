@@ -7715,6 +7715,10 @@ Item {
     log = result.stdout + result.stderr
     assert result.returncode == 0 and "BLUEFERRY_QS_SEARCH_INVALIDATE_OK" in log, log
     assert "ReferenceError" not in log and "TypeError" not in log, log
+    # Quickshell colours its log levels; without the codes no QML warning,
+    # such as a Shortcut that binds only one of Find's key sequences, is left.
+    import re
+    assert "WARN scene" not in re.sub(r"\x1b\[[0-9;]*m", "", log), log
 
 
 def test_category_navigation_preserves_pairing_choices(qml_engine, settings_window):
