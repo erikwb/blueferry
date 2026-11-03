@@ -19,8 +19,10 @@ from blueferry.calls.quick_replies import (
     default_replies,
     valid_replies,
 )
+from blueferry.dbus_service import MessagesService
 from blueferry.errors import (
     CallsDisabledError,
+    ConfigurationError,
     DeclinedNotSentError,
     InvalidArgumentsError,
     NotFoundError,
@@ -29,6 +31,7 @@ from blueferry.errors import (
     SendOutcomeUnknownError,
 )
 from blueferry.models import CallInfo
+from blueferry.protocol import ERROR_PREFIX
 
 NUMBER = "+41791234567"
 
@@ -112,6 +115,11 @@ class FakeCalls:
         if not self.number:
             raise InvalidArgumentsError("the caller's number is unknown")
         return self.number
+
+    def send_tones(self, call_id, tones, success, _failure):
+        # For the rate-limit test: tones share no bucket with declining.
+        self.requests.append(("tones", call_id, tones))
+        success(None)
 
     def hangup(self, call_id, success, failure):
         self.requests.append(("hangup", call_id))
@@ -273,6 +281,25 @@ def test_saving_replies_is_validated_and_typed() -> None:
         operations.set_call_quick_replies(["A", "A"])
     with pytest.raises(NotReadyError):
         _operations(replies=FakeReplies(error=OSError("disk full"))).set_call_quick_replies([])
+
+
+def test_unreadable_settings_refuse_the_replies_as_a_configuration_error(tmp_path) -> None:
+    # UnreadableSettingsError is also a ValueError; it must not read as the
+    # caller's mistake (InvalidArgs).
+    path = tmp_path / "settings.json"
+    path.write_text("{not json", encoding="utf-8")
+    path.chmod(0o600)
+    operations = _operations(replies=QuickReplySettings(path))
+
+    with pytest.raises(ConfigurationError) as caught:
+        operations.set_call_quick_replies(["Later"])
+
+    error = MessagesService._dbus_error(caught.value)
+    assert error.get_dbus_name() == f"{ERROR_PREFIX}.Configuration"
+    assert error.get_dbus_message().startswith(
+        "settings.json could not be read, so the change was not saved"
+    )
+    assert path.read_text(encoding="utf-8") == "{not json"
 
 
 # ---- the presenter ----------------------------------------------------------
