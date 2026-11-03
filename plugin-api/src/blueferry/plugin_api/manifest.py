@@ -340,7 +340,11 @@ def default_directories() -> tuple[Path, ...]:
 
 
 def _read_manifest(path: Path) -> str:
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    # Without O_NONBLOCK a FIFO would block the open before the type check.
+    flags = (
+        os.O_RDONLY | os.O_NONBLOCK
+        | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    )
     descriptor = os.open(path, flags)
     with os.fdopen(descriptor, "rb") as stream:
         current = os.fstat(stream.fileno())

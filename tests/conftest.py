@@ -8,6 +8,7 @@ import importlib.util
 import os
 import pathlib
 import shutil
+import subprocess
 import sys
 import tempfile
 import threading
@@ -35,6 +36,7 @@ os.environ["BLUEFERRY_PHONE_REGION"] = "US"
 
 import dbus  # noqa: E402
 import dbus.connection  # noqa: E402
+import dbus.mainloop  # noqa: E402
 import pytest  # noqa: E402
 from gi.repository import GLib  # noqa: E402
 
@@ -161,6 +163,61 @@ if not _running_private_suite:
     os.environ["DBUS_SESSION_BUS_ADDRESS"] = _unreachable_bus
     os.environ["DBUS_SYSTEM_BUS_ADDRESS"] = _unreachable_bus
 
+
+def _start_worker_bus() -> str:
+    """Start a bus from tests/dbus-test.conf that lives as long as this process.
+
+    dbus-run-session stops the daemon when ``cat`` exits, and ``cat`` exits
+    when this process closes its stdin, however this process ends.
+    """
+    daemon = subprocess.Popen(
+        [
+            "dbus-run-session",
+            f"--config-file={pathlib.Path(__file__).with_name('dbus-test.conf')}",
+            "--", "sh", "-c", 'echo "$DBUS_SESSION_BUS_ADDRESS"; exec cat >/dev/null',
+        ],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    assert daemon.stdin is not None and daemon.stdout is not None
+    address = daemon.stdout.readline().strip()
+    daemon.stdout.close()
+    if not address:
+        raise RuntimeError("could not start a private D-Bus for this xdist worker")
+
+    def stop() -> None:
+        daemon.stdin.close()
+        daemon.wait(timeout=10)
+
+    atexit.register(stop)
+    return address
+
+
+# pytest-xdist workers sharing the dbus-run-session bus would race each other
+# for the fixed names private_dbus tests claim, such as org.bluez. Give each
+# worker its own bus with the same configuration.
+if _running_private_suite and os.environ.get("PYTEST_XDIST_WORKER"):
+    _worker_bus = _start_worker_bus()
+    if os.environ.get("DBUS_SYSTEM_BUS_ADDRESS") == _active_bus:
+        os.environ["DBUS_SYSTEM_BUS_ADDRESS"] = _worker_bus
+    os.environ["DBUS_SESSION_BUS_ADDRESS"] = _worker_bus
+    os.environ[PRIVATE_BUS_ADDRESS_ENV] = _worker_bus
+
+# libdbus reads each bus address from the environment once per process, at
+# the first connection to that bus from dbus-python or QtDBus alike. Unit
+# tests run with the unreachable address (see isolate_dbus), so a Qt test
+# that connected first would leave every later private_dbus test in the
+# process connecting to it. Connect once now, while the variables still name
+# the test bus.
+if _running_private_suite:
+    for _factory, _variable in (
+        (dbus.SessionBus, "DBUS_SESSION_BUS_ADDRESS"),
+        (dbus.SystemBus, "DBUS_SYSTEM_BUS_ADDRESS"),
+    ):
+        if os.environ.get(_variable) == os.environ[PRIVATE_BUS_ADDRESS_ENV]:
+            _factory(private=True, mainloop=dbus.mainloop.NULL_MAIN_LOOP).close()
+
 # Qt tests must not adopt the operator's desktop. A platform theme plugin is
 # the dangerous one: QT_QPA_PLATFORMTHEME=gtk3 pulls GTK3 into a process where
 # the GTK4 client tests have already initialized gi, and the two GLib
@@ -179,6 +236,17 @@ os.environ["QT_NO_GLIB"] = "1"
 os.environ["QML_DISABLE_DISK_CACHE"] = "1"
 os.environ.pop("QT_QPA_PLATFORMTHEME", None)
 os.environ.pop("QT_STYLE_OVERRIDE", None)
+
+
+def pytest_configure(config):
+    # pyproject's ``pythonpath`` pins the checkout's src/ on this process's
+    # sys.path only. Export it too, so Python child processes import the code
+    # under test rather than an installed BlueFerry.
+    paths = [str(path) for path in config.getini("pythonpath")]
+    if inherited := os.environ.get("PYTHONPATH"):
+        paths.append(inherited)
+    if paths:
+        os.environ["PYTHONPATH"] = os.pathsep.join(paths)
 
 
 def _forbid_live_bus(kind: str):

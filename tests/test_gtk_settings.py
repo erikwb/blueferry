@@ -742,11 +742,18 @@ def _exercise_storage_reset():
     assert not row.get_visible()
     dialog._apply_status(BackendStatus.from_dict({**locked, "storage_reset": False}))
     assert not row.get_visible()
+    policy_row = dialog._storage_policy_row
+    unreadable = "Local data is not retained while settings.json cannot be read"
+    dialog._apply_status(BackendStatus.from_dict(
+        {**locked, "storage_reset": False, "storage_detail": unreadable},
+    ))
+    assert policy_row.get_subtitle() == unreadable and not row.get_visible()
     detail = "The key for saved encrypted history is no longer in the desktop keyring"
     dialog._apply_status(BackendStatus.from_dict(
         {**locked, "storage_reset": True, "storage_detail": detail},
     ))
     assert row.get_visible() and row.get_subtitle() == detail and button.get_sensitive()
+    assert policy_row.get_subtitle() == "Protects message history and cached contacts"
 
     alerts = []
     toasts = []

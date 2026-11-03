@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 
 import dbus
+import pytest
 
 from blueferry import search_view
 from blueferry.client import BackendError
@@ -190,3 +191,59 @@ def test_a_not_ready_error_name_kept_on_the_error_counts_as_busy():
     timers[0].fire()
     runner.run_all()
     assert model.view()["count"] == 4 and calls == ["noon", "noon"]
+
+
+def _shown(model):
+    return [row for section in model.view()["sections"] for row in section["rows"]]
+
+
+def test_invalidating_drops_the_answer_at_once_and_searches_again():
+    model, daemon, runner, timer = _search()
+    model.set_query("noon")
+    timer.fire()
+    runner.run_all()
+    assert _shown(model)
+    model.invalidate()
+    model.invalidate()  # a burst of change signals
+    assert _shown(model) == [] and model.target_at(0) is None
+    assert model.view()["loading"] is True and runner.queue == []
+    timer.fire()
+    runner.run_all()
+    assert daemon.queries == [("noon", LIMIT)] * 2 and _shown(model)
+
+
+def test_an_answer_on_its_way_during_an_invalidation_is_dropped():
+    model, daemon, runner, timer = _search()
+    model.set_query("noon")
+    timer.fire()
+    model.invalidate()
+    runner.run_all()
+    assert _shown(model) == [] and model.view()["loading"] is True
+    timer.fire()
+    runner.run_all()
+    assert len(daemon.queries) == 2 and _shown(model)
+
+
+@pytest.mark.parametrize("change", [
+    {"call_history_enabled": False},
+    {"storage_state": "locked"},
+    {"contact_card_epoch": 8},
+    {"contact_photos": False},
+])
+def test_a_status_change_of_a_searched_source_invalidates(change):
+    status = {**STATUS, "call_history_enabled": True, "storage_state": "ready",
+              "contact_card_epoch": 7, "contact_photos": True}
+    model, _daemon, runner, timer = _search(status)
+    model.set_query("noon")
+    timer.fire()
+    runner.run_all()
+    model.apply_status(status)  # unchanged: the answer stays
+    assert _shown(model) and timer.delay is None
+    model.apply_status({**status, **change})
+    assert _shown(model) == [] and timer.delay == search_view.TYPING_DELAY_MS
+
+
+def test_invalidating_without_a_query_searches_nothing():
+    model, daemon, runner, timer = _search()
+    model.invalidate()
+    assert timer.delay is None and runner.queue == [] and daemon.queries == []

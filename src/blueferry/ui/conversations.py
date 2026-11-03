@@ -1256,6 +1256,12 @@ class ConversationsPage(Gtk.Box):
         ):
             self._confirm_group_send(plan.thread, plan.body)
             return
+        if (
+            plan.disposition is ReplyDisposition.CONFIRM_SENDER
+            and plan.thread is not None
+        ):
+            self._confirm_sender_send(plan.thread, plan.body)
+            return
         if plan.ready:
             self._dispatch_send(plan)
 
@@ -1285,6 +1291,37 @@ class ConversationsPage(Gtk.Box):
                     self._dispatch_send(plan)
                 elif plan.disposition.message:
                     self._toast(plan.disposition.message)
+
+        dialog.connect("response", responded)
+        dialog.present(self.get_root())
+
+    def _confirm_sender_send(self, thread: Thread, body: str) -> None:
+        dialog = Adw.AlertDialog(
+            heading=_("Reply to {name} only?").format(name=thread.name),
+            body=_(
+                "The latest message may have been sent in a group. "
+                "Your reply goes only to {address}."
+            ).format(address=", ".join(thread.recipients)),
+        )
+        dialog.add_response("cancel", _("Cancel"))
+        dialog.add_response("send", _("Reply Only to {name}").format(name=thread.name))
+        dialog.set_close_response("cancel")
+        dialog.set_default_response("send")
+        dialog.set_response_appearance("send", Adw.ResponseAppearance.SUGGESTED)
+
+        def responded(_dialog, response: str) -> None:
+            if response != "send":
+                return
+            plan = self._state.plan_reply(
+                body,
+                thread_key=thread.key,
+                confirm_group=True,
+                expected_group_token=thread.confirmation_token,
+            )
+            if plan.ready:
+                self._dispatch_send(plan)
+            elif plan.disposition.message:
+                self._toast(plan.disposition.message)
 
         dialog.connect("response", responded)
         dialog.present(self.get_root())

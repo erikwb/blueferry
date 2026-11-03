@@ -189,7 +189,7 @@ background service offers it.
 | Phone | Pairing, connection health with **Reconnect**, resetting a stuck connection automatically, **Run Diagnostics**, **Sync Contacts**, contact photos |
 | Notifications | Which events create popups, contacts only, notification content, action buttons, sync notifications with iPhone, mark read on dismiss, keeping recent iPhone notifications, and the recent notifications themselves |
 | Calls & Audio | Phone calls, call history and missed-call popups, battery warning, iPhone sound on this computer, media control and MPRIS |
-| Security | One-time codes, away lock, the local storage setting |
+| Security | One-time codes, away lock, the local storage setting, and **Reset Local Storage…** when the saved data can't be opened |
 | About | The background service, its version and **Restart Service** |
 
 The switches that need a restart show the restart notice at the top of the

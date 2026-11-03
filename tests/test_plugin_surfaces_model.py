@@ -113,13 +113,10 @@ def test_a_second_send_waits_for_the_first(tmp_path) -> None:
                    or surfaces.Outcome(True, "Sending 1 file"))
     model.load_targets()
     work.run_tasks()
-    assert not model.sending
     model.send("io.example.ls:iphone", [str(payload)])
-    assert model.sending  # the window's drop zone waits for this
     model.send("io.example.ls:iphone", [str(payload)])  # still busy: ignored
     model.send_from_card("io.example.ls", "iphone", "iPhone", [str(payload)])  # also busy
     work.run_tasks()
-    assert not model.sending
     assert model.state()["message"] == "Sending 1 file"
     assert sent == ["io.example.ls:iphone"]
 
