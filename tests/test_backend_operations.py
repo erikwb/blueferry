@@ -11,13 +11,16 @@ from blueferry.confirmed_groups import ConfirmedGroupsStore
 from blueferry.contact_details import EMPTY as EMPTY_DETAILS
 from blueferry.contact_repository import ContactRepository
 from blueferry.contacts import ContactsResolver
+from blueferry.dbus_service import MessagesService
 from blueferry.errors import (
+    ConfigurationError,
     ConfirmationRequiredError,
     InvalidArgumentsError,
     NotFoundError,
     NotReadyError,
     OperationFailedError,
 )
+from blueferry.features import FeatureSettings
 from blueferry.group_routes import GroupRoutesStore
 from blueferry.grouping import named_group_key
 from blueferry.history import append_event, read_events
@@ -28,6 +31,8 @@ from blueferry.limits import (
     MAX_THREAD_BODY_CHARS,
 )
 from blueferry.models import Thread
+from blueferry.notification_policy import NotificationPolicyStore
+from blueferry.protocol import ERROR_PREFIX
 from blueferry.recipients import group_confirmation_token
 from blueferry.starred_threads import StarredThreadsStore
 from blueferry.threads import build_threads
@@ -206,6 +211,165 @@ def test_confirmed_group_reply_uses_backend_recipient_set(monkeypatch):
     assert replies == ["/transfer/1", "/transfer/1"]
 
 
+def _maybe_group_events(sender: str, name: str, at: str) -> list[dict]:
+    """Two equal texts from ``sender``; either may be the one sent to Crew."""
+    return [
+        {"kind": "sms_received", "handle": f"{name}-1-{at}", "sender_address": sender,
+         "contact_name": name, "body": "ok", "seen_at": f"2026-08-12T{at}:00+00:00"},
+        {"kind": "ancs_notification", "app_id": "com.apple.MobileSMS", "title": name,
+         "subtitle": "Crew", "body": "ok", "seen_at": f"2026-08-12T{at}:02+00:00"},
+        {"kind": "sms_received", "handle": f"{name}-2-{at}", "sender_address": sender,
+         "contact_name": name, "body": "ok", "seen_at": f"2026-08-12T{at}:30+00:00"},
+    ]
+
+
+def _stub_events(operations: BackendOperations, events: list[dict]) -> None:
+    operations._conversations.threads = lambda: build_threads(events)
+
+
+def test_sender_only_reply_needs_a_confirmation_for_the_messages_shown(monkeypatch):
+    operations = _operations()
+    events = _maybe_group_events("+15551111111", "Alice", "10:00")
+    _stub_events(operations, events)
+    (alice,) = operations.list_threads(10)
+    assert alice["reply_ready"] is False
+    assert alice["group_ambiguous"] is True
+    token = alice["sender_reply_token"]
+    assert token
+    sent = []
+    monkeypatch.setattr(
+        backend_operations, "send_message",
+        lambda _path, recipient, body: sent.append((recipient, body)) or "/transfer/1",
+    )
+
+    # Without the confirmation the conversation stays read-only.
+    for confirm, expected in ((False, token), (True, ""), (False, "")):
+        with pytest.raises(NotReadyError):
+            operations.send_to_thread(
+                alice["key"], "draft", confirm,
+                lambda _: pytest.fail("unexpected send"),
+                lambda error: pytest.fail(str(error)),
+                expected_group_token=expected,
+            )
+    assert sent == []
+
+    replies = []
+    operations.send_to_thread(
+        alice["key"], "just you", True, replies.append,
+        lambda error: pytest.fail(str(error)),
+        expected_group_token=token,
+    )
+    assert replies == ["/transfer/1"]
+    assert sent == [("+15551111111", "just you")]
+
+
+def test_sender_only_confirmation_does_not_cover_other_messages():
+    queued = []
+    operations = _operations(submit_obex=lambda *args, **kwargs: queued.append(args))
+    events = _maybe_group_events("+15551111111", "Alice", "10:00")
+    _stub_events(operations, events)
+    (alice,) = operations.list_threads(10)
+    confirmed = alice["sender_reply_token"]
+
+    # Another ambiguous pair from Alice arrives after she was confirmed.
+    newer = _maybe_group_events("+15551111111", "Alice", "11:00")
+    _stub_events(operations, [*events, *newer])
+    (alice,) = operations.list_threads(10)
+    assert alice["sender_reply_token"] not in ("", confirmed)
+    # Bob's equally ambiguous conversation has its own confirmation.
+    bob = build_threads(_maybe_group_events("+15552222222", "Bob", "10:00"))[0]
+    for stale in (confirmed, bob["sender_reply_token"]):
+        with pytest.raises(ConfirmationRequiredError, match="newer message"):
+            operations.send_to_thread(
+                alice["key"], "private draft", True,
+                lambda _: pytest.fail("unexpected send"),
+                lambda _: pytest.fail("unexpected queued operation"),
+                expected_group_token=stale,
+            )
+    assert queued == []
+
+
+def test_sender_only_confirmation_does_not_follow_the_sender_to_another_address():
+    queued = []
+    operations = _operations(submit_obex=lambda *args, **kwargs: queued.append(args))
+    # Alice's phone and email are one conversation.
+    alice = SimpleNamespace(
+        thread_addresses=lambda _address: ("phone:15551111111",),
+        resolve=lambda _address: "Alice",
+        find_by_name=lambda _name: [],
+    )
+    events = _maybe_group_events("+15551111111", "Alice", "10:00")
+    operations._conversations.threads = lambda: build_threads(events, alice)
+    (thread,) = operations.list_threads(10)
+    confirmed = thread["sender_reply_token"]
+
+    # Before the user confirms, Alice writes from her email, plainly to them.
+    email = {"kind": "sms_received", "handle": "Alice-email", "contact_name": "Alice",
+             "sender_address": "alice@example.com", "body": "hi",
+             "seen_at": "2026-08-12T11:00:00+00:00"}
+    operations._conversations.threads = lambda: build_threads([*events, email], alice)
+    (thread,) = operations.list_threads(10)
+    assert thread["recipients"] == ["alice@example.com"]
+    with pytest.raises(ConfirmationRequiredError):
+        operations.send_to_thread(
+            thread["key"], "private draft", True,
+            lambda _: pytest.fail("unexpected send"),
+            lambda _: pytest.fail("unexpected queued operation"),
+            expected_group_token=confirmed,
+        )
+    assert queued == []
+
+
+@pytest.mark.parametrize("arrived", [
+    # Nothing new; the confirmed reply goes to the address shown.
+    [],
+    # Another message from Alice that may be from Crew.
+    _maybe_group_events("+15551111111", "Alice", "11:00"),
+    # A plain message from Alice: the doubt is gone, but so is what the user saw.
+    [{"kind": "sms_received", "handle": "Alice-plain", "sender_address": "+15551111111",
+      "contact_name": "Alice", "body": "hi", "seen_at": "2026-08-12T11:00:00+00:00"}],
+    # A plain message from her other address in the same conversation.
+    [{"kind": "sms_received", "handle": "Alice-email", "sender_address": "alice@example.com",
+      "contact_name": "Alice", "body": "hi", "seen_at": "2026-08-12T11:00:00+00:00"}],
+], ids=["unchanged", "another-maybe-group", "plain-same-address", "plain-other-address"])
+def test_queued_sender_only_reply_is_refused_when_its_thread_changes(monkeypatch, arrived):
+    queued = []
+    operations = _operations(
+        submit_obex=lambda operation, **callbacks: queued.append((operation, callbacks)),
+    )
+    alice = SimpleNamespace(
+        thread_addresses=lambda _address: ("phone:15551111111",),
+        resolve=lambda _address: "Alice",
+        find_by_name=lambda _name: [],
+    )
+    events = _maybe_group_events("+15551111111", "Alice", "10:00")
+    operations._conversations.threads = lambda: build_threads(events, alice)
+    (thread,) = operations.list_threads(10)
+    sent = []
+    monkeypatch.setattr(
+        backend_operations, "send_message",
+        lambda _path, recipient, body: sent.append((recipient, body)) or "/transfer/1",
+    )
+    replies, errors = [], []
+
+    operations.send_to_thread(
+        thread["key"], "just you", True, replies.append, errors.append,
+        expected_group_token=thread["sender_reply_token"],
+    )
+    # These arrive while the reply waits behind another Bluetooth transfer.
+    events += arrived
+    while queued:
+        operation, callbacks = queued.pop(0)
+        callbacks["on_success"](operation())
+
+    if not arrived:
+        assert (sent, replies, errors) == ([("+15551111111", "just you")], ["/transfer/1"], [])
+        return
+    assert (sent, replies) == ([], [])
+    assert len(errors) == 1
+    assert isinstance(errors[0], ConfirmationRequiredError)
+
+
 def test_named_group_remembers_confirmation_until_roster_changes(monkeypatch):
     operations = _operations()
     thread = {**_group(), "group_origin": "named"}
@@ -318,6 +482,49 @@ def test_confirmed_group_roster_survives_a_new_operations_instance(
 
     assert replies == ["/transfer/persist"]
     assert second.list_threads(10)[0]["group_confirmed"] is True
+
+
+def test_queued_reply_is_refused_when_its_thread_becomes_read_only(monkeypatch):
+    queued = []
+    operations = _operations(
+        submit_obex=lambda operation, **callbacks: queued.append((operation, callbacks)),
+    )
+    events = [
+        {"kind": "group_route", "group_key": named_group_key("Crew"),
+         "group_name": "Crew", "group_members": ["Alice", "Bob"],
+         "group_recipients": ["+15551111111", "+15552222222"],
+         "seen_at": "2026-08-12T09:00:00+00:00"},
+        {"kind": "sms_received", "handle": "first", "sender_address": "+15551111111",
+         "contact_name": "Alice", "body": "ok", "seen_at": "2026-08-12T10:00:00+00:00"},
+    ]
+    operations._conversations.threads = lambda: build_threads(events)
+    sent = []
+    monkeypatch.setattr(
+        backend_operations, "send_message",
+        lambda _path, recipient, _body: sent.append(recipient) or "/transfer/1",
+    )
+    errors = []
+
+    operations.send_to_thread(
+        "address:phone:15551111111", "on my way", False,
+        lambda _result: pytest.fail("unexpected successful reply"), errors.append,
+    )
+    # While the reply waits its turn, a second "ok" arrives that either it or
+    # the first may be the one sent to Crew.
+    events += [
+        {"kind": "ancs_notification", "notification_id": 42,
+         "app_id": "com.apple.MobileSMS", "title": "Alice", "subtitle": "Crew",
+         "body": "ok", "seen_at": "2026-08-12T10:00:02+00:00"},
+        {"kind": "sms_received", "handle": "second", "sender_address": "+15551111111",
+         "contact_name": "Alice", "body": "ok", "seen_at": "2026-08-12T10:00:30+00:00"},
+    ]
+    while queued:
+        operation, callbacks = queued.pop(0)
+        callbacks["on_success"](operation())
+
+    assert sent == []
+    assert len(errors) == 1
+    assert isinstance(errors[0], NotReadyError)
 
 
 def test_group_reply_records_the_projected_member_roster(monkeypatch):
@@ -521,12 +728,41 @@ def test_invalid_notification_policy_has_public_invalid_args_error() -> None:
     assert getattr(caught.value, "dbus_suffix", None) == "InvalidArgs"
 
 
+@pytest.mark.parametrize("save", [
+    lambda operations: operations.set_contacts_only_notifications(True),
+    lambda operations: operations.set_feature(config.FEATURE_SWITCHES[0][0], True),
+], ids=["notification-policy", "feature"])
+def test_refused_settings_save_reaches_dbus_as_configuration_error(tmp_path, save) -> None:
+    path = tmp_path / "settings.json"
+    path.write_text("{not json", encoding="utf-8")
+    path.chmod(0o600)
+    operations = _operations(
+        notification_policy=NotificationPolicyStore(path),
+        features=FeatureSettings(
+            path, running=dict, explicit=frozenset(), local_env=dict,
+        ),
+    )
+
+    with pytest.raises(ConfigurationError) as caught:
+        save(operations)
+
+    error = MessagesService._dbus_error(caught.value)
+    assert error.get_dbus_name() == f"{ERROR_PREFIX}.Configuration"
+    assert error.get_dbus_message().startswith(
+        "settings.json could not be read, so the change was not saved"
+    )
+    assert path.read_text(encoding="utf-8") == "{not json"
+
+
 def test_storage_policy_change_clears_data_before_switching(monkeypatch) -> None:
     calls = []
 
     class Storage:
         status = SimpleNamespace(policy="encrypted", can_read=True)
         busy = False
+
+        def require_known_policy(self):
+            calls.append("known")
 
         def change_async(self, submit, *, policy, on_success, on_error):
             calls.append(("set", policy))
@@ -539,10 +775,10 @@ def test_storage_policy_change_clears_data_before_switching(monkeypatch) -> None
             on_success(self.status)
 
     monkeypatch.setattr(
-        backend_operations, "clear_events", lambda: calls.append("events")
+        backend_operations, "clear_events", lambda **_kwargs: calls.append("events")
     )
     monkeypatch.setattr(
-        backend_operations, "clear_contact_cache", lambda: calls.append("contacts")
+        backend_operations, "clear_contact_cache", lambda **_kwargs: calls.append("contacts")
     )
     operations = BackendOperations(
         _Sessions(), BackendDependencies(storage=Storage())
@@ -554,7 +790,7 @@ def test_storage_policy_change_clears_data_before_switching(monkeypatch) -> None
         lambda error: pytest.fail(str(error)), policy="plaintext",
     )
 
-    assert calls == ["events", "contacts", ("set", "plaintext")]
+    assert calls == ["known", "events", "contacts", ("set", "plaintext")]
     assert result[0]["storage_policy"] == "plaintext"
 
 
@@ -565,12 +801,12 @@ def test_invalid_storage_policy_does_not_clear_data(monkeypatch) -> None:
         _Sessions(), BackendDependencies(storage=storage)
     )
     monkeypatch.setattr(
-        backend_operations, "clear_events", lambda: cleared.append("events")
+        backend_operations, "clear_events", lambda **_kwargs: cleared.append("events")
     )
     monkeypatch.setattr(
         backend_operations,
         "clear_contact_cache",
-        lambda: cleared.append("contacts"),
+        lambda **_kwargs: cleared.append("contacts"),
     )
 
     with pytest.raises(InvalidArgumentsError, match="local data policy"):
@@ -1273,9 +1509,12 @@ def test_successful_group_send_is_acknowledged_when_preferences_fail(monkeypatch
             thread["recipients"], thread.get("roster_warning_id"),
         ),
     )
+    turn = Future()
+    turn.set_result(None)
+    ObexWorker._deliver(turn, *pending.pop(0))
     result = Future()
     result.set_result("/transfer/sent")
-    ObexWorker._deliver(result, *pending[0])
+    ObexWorker._deliver(result, *pending.pop(0))
     assert replies == ["/transfer/sent"]
     assert len(recorded) == 1
 
@@ -1342,3 +1581,77 @@ def test_thread_snapshot_reads_confirmed_rosters_once(tmp_path, monkeypatch):
     by_key = {thread["key"]: thread["group_confirmed"] for thread in result}
     assert all(by_key[f"group:{i}"] for i in range(19))
     assert by_key["group:19"] is False
+
+
+def test_deletion_gives_up_once_when_messages_keep_arriving(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "EVENTS_DB", tmp_path / "events.sqlite")
+    alice = {"kind": "sms_received", "sender_address": "+15551111111", "body": "a"}
+    append_event({**alice, "handle": "0"})
+    operations = _operations()
+    [key] = [thread["key"] for thread in operations.list_threads(10)]
+    jobs = []
+
+    def submit(operation, *, on_success, on_error):
+        jobs.append((operation, on_success))
+
+    replies, failures = [], []
+    operations.delete_threads_async(submit, [key], True, replies.append, failures.append)
+    # A message arrives while every archive read and projection refresh runs.
+    for handle in range(1, 20):
+        if not jobs:
+            break
+        operation, on_success = jobs.pop(0)
+        result = operation()
+        append_event({**alice, "handle": str(handle)})
+        on_success(result)
+    assert not jobs
+    assert replies == []
+    assert len(failures) == 1 and isinstance(failures[0], NotReadyError)
+
+    def run(operation, *, on_success, on_error):
+        on_success(operation())
+
+    operations.prepare_conversations(run, lambda: None, pytest.fail)
+    operations.delete_threads_async(run, [key], True, replies.append, pytest.fail)
+    assert replies == [1]
+
+
+def test_deletion_ignores_a_storage_error_from_an_archive_that_was_replaced(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setattr(config, "EVENTS_DB", tmp_path / "events.sqlite")
+    alice = {"kind": "sms_received", "sender_address": "+15551111111", "body": "a"}
+    append_event({**alice, "handle": "0"})
+    closed = []
+    storage = SimpleNamespace(
+        status=SimpleNamespace(can_read=True, can_write=True, state="ready"),
+        decrypt=lambda payload, purpose: payload, fail_closed=closed.append,
+        close=lambda: None,
+    )
+    storage.snapshot = lambda **_kwargs: storage
+    operations = _operations(storage=storage)
+    [key] = [thread["key"] for thread in operations.list_threads(10)]
+    real_job = operations._deletion_job
+    calls = []
+
+    def deletion_job(selected):
+        calls.append(selected)
+        if len(calls) > 1:
+            return real_job(selected)
+
+        def replaced_mid_read():
+            append_event({**alice, "handle": "1"})
+            raise backend_operations.CorruptStorageError("old archive")
+        return replaced_mid_read
+
+    def run(operation, *, on_success, on_error):
+        try:
+            on_success(operation())
+        except Exception as error:
+            on_error(error)
+
+    monkeypatch.setattr(operations, "_deletion_job", deletion_job)
+    replies = []
+    operations.delete_threads_async(run, [key], True, replies.append, pytest.fail)
+    assert closed == []
+    assert replies == [1]

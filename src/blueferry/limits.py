@@ -30,6 +30,11 @@ MAX_ANCS_ACTIONABLE = 64
 MAX_ANCS_ACTIONS_IN_FLIGHT = 4
 # Desktop popups that still carry live iPhone action buttons.
 MAX_ANCS_ACTION_POPUPS = 64
+# Apps whose notifications this daemon run has seen (memory only, LRU), and
+# apps the user muted (saved in settings.json with their display name).
+MAX_ANCS_SEEN_APPS = 64
+MAX_ANCS_MUTED_APPS = 100
+MAX_ANCS_APP_NAME_CHARS = 256
 
 # AMS values are short display strings (titles, artists). A full Entity
 # Attribute read can exceed one notification, but never needs to be large.
@@ -138,3 +143,8 @@ MAX_NOTIFICATION_OPEN_URL_CHARS = 2048
 # Clickable app popups are tracked separately from message popups so they
 # can never evict a message popup's read-state sync.
 MAX_NOTIFICATION_CLICK_TRACKERS = 64
+# Pinned iPhone app notifications survive restarts in settings.json. A pin is
+# a deliberate act, so the count is small; the byte cap bounds the encrypted
+# settings entry even when every pinned record carries long text.
+MAX_PINNED_NOTIFICATIONS = 20
+MAX_PINNED_NOTIFICATION_BYTES = 64 * 1024

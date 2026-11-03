@@ -2217,6 +2217,120 @@ def test_flapping_cannot_refund_the_shared_dial_and_reset_budget():
     assert len(calls) == 5
 
 
+def test_a_reset_refused_by_the_budget_runs_once_it_allows():
+    state = {"bredr": True, "le": True}
+    now = 0.0
+    disconnects = []
+    supervisor = BearerSupervisor(
+        "/device", read_connected=state.get, clock=lambda: now,
+        connect=lambda _kind, success, _error: success(),
+        disconnect=lambda kind, success, _error: (disconnects.append(kind), success()),
+        schedule=lambda _delay, _callback: 7, cancel=lambda _timer: None,
+    )
+    supervisor.start()
+    supervisor.recover_le_transport()
+    assert disconnects == ["le"]
+    now = 10.0
+    supervisor.poke()
+    # ANCS asks once more on the replacement link, inside the cooldown.
+    supervisor.recover_le_transport()
+    supervisor.poke()
+    assert disconnects == ["le"]
+    now = 30.0
+    supervisor.poke()
+    assert disconnects == ["le", "le"]
+
+    # A refused request belongs to its link and does not outlive it.
+    now = 40.0
+    supervisor.poke()
+    supervisor.recover_le_transport()
+    state["le"] = False
+    supervisor.poke()
+    state["le"] = True
+    now = 1000.0
+    supervisor.poke()
+    assert disconnects == ["le", "le"]
+
+
+def test_a_postponed_reset_that_ran_answers_the_next_refused_request():
+    state = {"bredr": True, "le": True}
+    now = 0.0
+    disconnects = []
+    supervisor = BearerSupervisor(
+        "/device", read_connected=state.get, clock=lambda: now,
+        connect=lambda _kind, success, _error: success(),
+        disconnect=lambda kind, success, _error: (disconnects.append(kind), success()),
+        schedule=lambda _delay, _callback: 7, cancel=lambda _timer: None,
+    )
+    supervisor.start()
+    supervisor.recover_le_transport()
+    now = 10.0
+    supervisor.poke()
+    # The adapter watchdog asks during the cooldown; the poll runs it later.
+    assert not supervisor.recover_le_transport(allow_disconnected=True, since=5.0)
+    now = 30.0
+    supervisor.poke()
+    assert disconnects == ["le", "le"]
+    now = 40.0
+    assert supervisor.recover_le_transport(allow_disconnected=True, since=5.0)
+    now = 1000.0
+    supervisor.poke()
+    assert disconnects == ["le", "le"]
+
+
+def test_a_postponed_reset_waits_for_its_disconnect_reply():
+    state = {"bredr": True, "le": True}
+    now = 0.0
+    replies, published = [], []
+    supervisor = BearerSupervisor(
+        "/device", read_connected=state.get, clock=lambda: now,
+        on_le_state=published.append,
+        connect=lambda _kind, success, _error: success(),
+        disconnect=lambda _kind, success, _error: replies.append(success),
+        schedule=lambda _delay, _callback: 7, cancel=lambda _timer: None,
+    )
+    supervisor.start()
+    supervisor.recover_le_transport()
+    replies.pop()()
+    state["le"] = False
+    now = 10.0
+    supervisor.poke()
+    supervisor.recover_le_transport(allow_disconnected=True)
+    now = 30.0
+    supervisor.poke()
+    assert len(replies) == 1
+    # The phone is back before the reply; the reply still ends that link.
+    state["le"] = True
+    supervisor.poke()
+    published.clear()
+    replies.pop()()
+    assert published == [False]
+
+
+def test_a_profile_reset_retires_a_postponed_le_reset():
+    state = {"bredr": True, "le": True}
+    now = 0.0
+    disconnects, scheduled = [], []
+    supervisor = BearerSupervisor(
+        "/device", read_connected=state.get, clock=lambda: now,
+        connect=lambda _kind, success, _error: success(),
+        disconnect=lambda kind, success, _error: (disconnects.append(kind), success()),
+        schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+        cancel=lambda _timer: None,
+    )
+    supervisor.start()
+    supervisor.recover_le_transport()
+    now = 10.0
+    supervisor.poke()
+    supervisor.recover_le_transport()
+    assert supervisor.reset_profiles() == "started"
+    # The phone is back on both bearers before any poll saw LE go down.
+    scheduled[-1][1]()
+    now = 1000.0
+    supervisor.poke()
+    assert disconnects == ["le", "device"]
+
+
 def test_transport_reset_waits_for_pending_connect_to_finish():
     state = {"bredr": True, "le": False}
     now = 0.0

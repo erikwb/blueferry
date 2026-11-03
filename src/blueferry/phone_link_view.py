@@ -18,6 +18,7 @@ from typing import Any
 from blueferry import phone_overview
 from blueferry.calls.model import MAX_DIAL_DIGITS, MAX_DTMF_TONES
 from blueferry.i18n import _
+from blueferry.notification_pin_view import pin_row_extras
 from blueferry.time_display import format_message_timestamp
 
 
@@ -289,19 +290,32 @@ def notifications_view(info: Mapping[str, Any], opt_in_hint: str) -> dict[str, s
     return {"title": title, "explanation": explanation, "contentHint": content_hint}
 
 
-def notification_rows(records: object, *, content: bool = True) -> list[dict[str, str]]:
-    """Normalize ListNotifications records for the Notifications tab."""
-    rows: list[dict[str, str]] = []
+def notification_rows(
+    records: object, muted: frozenset[str] = frozenset(), *, content: bool = True,
+) -> list[dict[str, Any]]:
+    """Normalize ListNotifications records for the Notifications tab.
+
+    Each row carries the shared pin fields
+    (:func:`blueferry.notification_pin_view.pin_row_extras`) and ``muted``
+    for rows of apps whose popups are muted (``muted`` holds their IDs).
+    Without ``content`` the title, subtitle and body stay empty.
+    """
+    rows: list[dict[str, Any]] = []
     if not isinstance(records, list):
         return rows
     for record in records:
         if not isinstance(record, Mapping):
             continue
-        app = str(record.get("app_name") or record.get("app_id") or _("iPhone app"))
+        app_id = record.get("app_id")
+        app_id = app_id if isinstance(app_id, str) else ""
+        app = str(record.get("app_name") or app_id or _("iPhone app"))
         title = str(record.get("title") or "") if content else ""
         subtitle = str(record.get("subtitle") or "") if content else ""
         rows.append({
+            **pin_row_extras(record),
             "app": app,
+            "app_id": app_id,
+            "muted": bool(app_id) and app_id in muted,
             "time": format_message_timestamp(str(record.get("time") or "")),
             "title": title,
             "subtitle": subtitle,

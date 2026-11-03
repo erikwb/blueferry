@@ -15,7 +15,8 @@ from typing import Any, Protocol
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-from blueferry.settings_store import SettingsStore
+from blueferry.settings_store import SettingsStore, UnreadableSettingsError
+from blueferry.sqlite_files import is_damaged
 
 log = logging.getLogger(__name__)
 
@@ -45,6 +46,10 @@ KEY_MISMATCH_DETAIL = (
     "encrypted saved history. Open the wallet that holds the original key and "
     "unlock again, or reset local storage to start over"
 )
+DAMAGED_DATABASE_DETAIL = (
+    "Local storage could not be prepared because a database is damaged. "
+    "Reset local storage to discard the unreadable data"
+)
 
 
 class StorageUnavailableError(RuntimeError):
@@ -70,6 +75,10 @@ class _PreparedKey:
 
 
 def _retryable_preparation_error(error: Exception) -> bool:
+    if isinstance(error, UnreadableSettingsError):
+        # Whether the settings file may read on a retry depends on why it failed.
+        cause = error.__cause__
+        return isinstance(cause, Exception) and _retryable_preparation_error(cause)
     if isinstance(error, OSError):
         return not isinstance(error, PermissionError)
     if not isinstance(error, sqlite3.OperationalError):
@@ -304,10 +313,8 @@ class StorageSecurity:
     ) -> None:
         self._settings = settings or SettingsStore()
         self._provider = key_provider or SecretServiceKeyProvider()
-        selected = str(self._settings.read().get(
-            "local_data", DEFAULT_STORAGE_POLICY
-        ))
-        self._policy = selected if selected in STORAGE_POLICIES else DEFAULT_STORAGE_POLICY
+        self._policy = DEFAULT_STORAGE_POLICY
+        self._policy_known = False
         self._key: bytearray | None = None
         # The key opened this install's key check, or wrote it after
         # preparation proved that it opens the retained data.
@@ -320,6 +327,29 @@ class StorageSecurity:
         self._failure_generation = 0
         self._revision = 0
         self._followed: tuple[StorageSecurity, int] | None = None
+        self._state = "locked"
+        self._detail = ""
+        self._load_policy()
+        if initialize and self._policy_known and self._policy == ENCRYPTED_STORAGE:
+            self.refresh(allow_prompt=False)
+
+    def _load_policy(self) -> bool:
+        """Adopt the saved policy and return whether it could be read.
+
+        A settings file that exists but can't be read may hold a choice to
+        retain nothing, so nothing is retained until it reads again.
+        """
+        try:
+            saved = self._settings.load()
+        except UnreadableSettingsError as error:
+            self._policy_unreadable(error)
+            return False
+        selected = str(saved.get("local_data", DEFAULT_STORAGE_POLICY))
+        selected = selected if selected in STORAGE_POLICIES else DEFAULT_STORAGE_POLICY
+        if selected != self._policy:
+            self._policy = selected
+            self._revision += 1
+        self._policy_known = True
         if self._policy == NO_STORAGE:
             self._state = "disabled"
             self._detail = "Local data is not retained"
@@ -329,8 +359,49 @@ class StorageSecurity:
         else:
             self._state = "locked"
             self._detail = "Unlock the desktop keyring to retain encrypted local data"
-        if initialize and self._policy == ENCRYPTED_STORAGE:
-            self.refresh(allow_prompt=False)
+        return True
+
+    def _policy_unreadable(self, error: UnreadableSettingsError) -> None:
+        """Retain nothing until the settings file reads again."""
+        detail = (
+            f"Local data is not retained while {self._settings.path.name} "
+            "cannot be read; repair or remove the file"
+        )
+        if self._detail != detail:
+            log.warning("local data policy could not be read: %s", error.__cause__ or error)
+        if self._policy_known:
+            # Background writers that started under the known policy stop.
+            self._revision += 1
+        self._policy_known = False
+        self._forget_key()
+        self._state = "locked"
+        self._detail = detail
+
+    def _policy_readable(self) -> bool:
+        """Read the settings file again and return whether the policy is known."""
+        if not self._policy_known:
+            return self._load_policy()
+        try:
+            self._settings.load()
+        except UnreadableSettingsError as error:
+            self._policy_unreadable(error)
+            return False
+        return True
+
+    def require_known_policy(self) -> None:
+        """Refuse a storage change while the settings file can't be read.
+
+        Erasing or migrating for a policy that is only assumed could remove
+        data the saved one keeps, or keep plaintext the user believes is
+        encrypted. The file is read again each time, so a reset offered for
+        a damaged database is refused, and no longer offered, while the
+        file can't be read.
+        """
+        if not self._policy_readable():
+            raise UnreadableSettingsError(
+                f"{self._settings.path.name} can't be read, so local storage was "
+                "not changed; repair or remove the file and try again"
+            )
 
     @property
     def status(self) -> StorageStatus:
@@ -339,8 +410,12 @@ class StorageSecurity:
     @property
     def reset_offered(self) -> bool:
         """Saved data can't be opened: its key is missing or differs, or it is damaged."""
-        # Only those details, and fail_closed's, point to the reset.
-        return self._state != "ready" and "reset local storage" in self._detail.casefold()
+        # Only those details, and fail_closed's, point to the reset. While the
+        # settings file can't be read, a reset is refused, so it isn't offered.
+        return (
+            self._policy_known and self._state != "ready"
+            and "reset local storage" in self._detail.casefold()
+        )
 
     @property
     def revision(self) -> int:
@@ -418,6 +493,13 @@ class StorageSecurity:
 
         if self.busy:
             raise StorageUnavailableError("a desktop wallet request is already pending")
+        if reset:
+            self.require_known_policy()
+        elif policy is None and not self._policy_readable():
+            # Preparing now could report a damaged database, and offer its
+            # reset, ahead of the settings file the user has to fix first.
+            on_success(self.status)
+            return
         if policy is not None:
             self._select_policy(policy)
         if reset:
@@ -469,6 +551,9 @@ class StorageSecurity:
             if self._failure_generation != failure_generation:
                 # Independent corruption detection always wins over a late result.
                 pass
+            elif isinstance(error, UnreadableSettingsError):
+                # The file, not the data, is what the user has to fix.
+                self._policy_unreadable(error)
             elif isinstance(error, StorageUnavailableError) and not deleting:
                 self._forget_key()
                 self._state = "locked"
@@ -483,6 +568,9 @@ class StorageSecurity:
                 elif isinstance(error, CorruptStorageError):
                     self._key_checked = checked
                     self.fail_closed(str(error))
+                elif isinstance(error, sqlite3.DatabaseError) and is_damaged(error):
+                    # Only a reset, which deletes the file, gets past this.
+                    self._fail(DAMAGED_DATABASE_DETAIL)
                 else:
                     self._fail("Local storage could not be prepared")
                 log.warning("local storage preparation failed: %s", error)
@@ -647,6 +735,8 @@ class StorageSecurity:
             log.info("could not remove the previous storage key: %s", error)
 
     def refresh(self, *, allow_prompt: bool) -> StorageStatus:
+        if not self._policy_known and not self._load_policy():
+            return self.status
         if self._policy == NO_STORAGE:
             return self.status
         if self._policy == PLAINTEXT_STORAGE:
@@ -669,6 +759,7 @@ class StorageSecurity:
         if selected not in STORAGE_POLICIES:
             choices = ", ".join(sorted(STORAGE_POLICIES))
             raise ValueError(f"local data policy must be one of: {choices}")
+        self.require_known_policy()
         previous = self._policy
         # The caller erased the data sealed under the previous policy.
         self._settings.update(
@@ -676,6 +767,7 @@ class StorageSecurity:
             **(self._cleared_key_check() if previous != selected else {}),
         )
         self._policy = selected
+        self._policy_known = True
         if previous != selected:
             self._revision += 1
         if selected == NO_STORAGE:

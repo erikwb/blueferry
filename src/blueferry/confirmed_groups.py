@@ -7,6 +7,7 @@ from pathlib import Path
 
 from blueferry import config
 from blueferry.limits import MAX_CONFIRMED_GROUPS, MAX_THREAD_KEY_CHARS
+from blueferry.named_groups import is_legacy_unnamed_group_key
 from blueferry.private_preferences import PrivatePreference
 from blueferry.storage_security import StorageSecurity
 
@@ -16,7 +17,8 @@ _DIGEST_LENGTH = 64
 
 def _normalized_key(value: object) -> str:
     key = str(value or "").strip()
-    if not key or len(key) > MAX_THREAD_KEY_CHARS:
+    # No reply goes to a group under the unversioned unnamed-group key.
+    if not key or len(key) > MAX_THREAD_KEY_CHARS or is_legacy_unnamed_group_key(key):
         return ""
     return key
 
@@ -63,6 +65,12 @@ class ConfirmedGroupsStore:
 
     def migrate(self) -> None:
         self._preference.migrate()
+        raw = self._preference.read()
+        if (
+            self._preference.writable and isinstance(raw, dict)
+            and any(is_legacy_unnamed_group_key(str(key).strip()) for key in raw)
+        ):
+            self._preference.write(self._mapping())
 
     def matches(self, thread_key: str, token: str) -> bool:
         return thread_key in self.matching_rosters({thread_key: token})

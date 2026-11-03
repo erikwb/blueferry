@@ -37,7 +37,13 @@ def find_log(plugin_id: str) -> Path | None:
 def read_tail(path: Path, lines: int = DEFAULT_LINES) -> str:
     """The last ``lines`` lines of ``path`` (at most 256 KiB); OSError if
     it is not a regular file of this user."""
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    # find_log checked the path, but it may have changed since. O_NONBLOCK
+    # keeps a FIFO from blocking the open; the fstat below checks the file
+    # actually opened, and the flag has no effect on reads from a regular file.
+    flags = (
+        os.O_RDONLY | os.O_NONBLOCK
+        | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    )
     descriptor = os.open(path, flags)
     with os.fdopen(descriptor, "rb") as stream:
         info = os.fstat(stream.fileno())
