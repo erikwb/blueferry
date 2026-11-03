@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `blueferry media volume up|down` sends one iPhone volume step and confirms
+  it with the last reported level; `blueferry media volume` prints the level.
+  A shared presenter (`media_volume_view`) prepares the volume buttons for the
+  graphical and terminal clients.
+
 ## [0.9.1](https://github.com/erikwb/blueferry/releases/tag/v0.9.1) - 2026-10-30
 
 ### Fixed
