@@ -360,6 +360,17 @@ daemon run without logging its notification content:
 journalctl --user -u blueferry -f | grep "ANCS app observed"
 ```
 
+These variables stay a hard filter: an excluded app is never fetched and
+never listed anywhere. For apps that pass it you can also **mute** single
+apps without editing `local.env`: `blueferry notifications apps` lists the
+apps that sent notifications since the daemon started, and
+`blueferry notifications mute com.example.Chat` (or `unmute`) hides or shows
+that app's desktop popups, effective with the next notification. Muted apps
+are saved with their display name, under the local storage policy, as
+`ancs_muted_apps` in `settings.json`; while the wallet is locked nothing is
+muted. Messages cannot be muted. See
+[Mute apps](docs/en/user/notification-mute.md).
+
 ### One-time codes
 
 BlueFerry can copy verification codes (2FA/OTP) from newly received SMS and
@@ -514,6 +525,26 @@ region, BlueFerry does not guess a country for local numbers.
 After upgrading from a version that removed `+` during import, run
 `blueferry contacts-sync` once to restore the saved international prefixes.
 
+### Contact cards
+
+`blueferry contacts list` pages through the cached contacts (`-q` filters
+by name, company, mail, postal address or number digits), and
+`blueferry contacts show ID` (or a name that matches one card) prints every
+number with its label, the email and postal addresses, the company and the
+job title; `--photo FILE` also saves the photo when
+[contact photos](docs/en/user/contacts.md#photos) are on. These details are
+kept only in the encrypted contact cache. See
+[Contacts](docs/en/user/contacts.md).
+
+### Search
+
+`blueferry search TEXT` looks through conversations, messages (the most
+recent 2,000 plus starred conversations), contacts and the retained call
+history at once and groups the hits; `--ids` prints what a client needs to
+open each one. Because local history is encrypted there is no search index
+on disk: the background service searches the data it already holds in
+memory, only when you search. See [Search](docs/en/user/search.md).
+
 ### Contact photos (optional)
 
 Contact photos are off by default. To show the iPhone's contact pictures as
@@ -559,14 +590,22 @@ non-Messages iPhone app notifications in the daemon's memory so the
 Notifications tab of the Qt and GTK clients, the terminal client's **iPhone
 Notifications**, **Show Recent Notifications** in the Quickshell settings
 (the newest 30) and
-`blueferry notifications recent` can list them. Nothing is written to disk: BlueFerry's
-history deliberately retains only Messages records, so the list starts empty
-after every backend restart. Titles and bodies are kept only with
+`blueferry notifications recent` can list them. The list itself is not written
+to disk: BlueFerry's history deliberately retains only Messages records, so
+apart from pinned notifications the list starts empty after every backend
+restart. Titles and bodies are kept only with
 `BLUEFERRY_SHOW_NOTIFICATION_CONTENT=true`, otherwise just the app and the
 time. Apps other than Messages only reach BlueFerry with the "All iPhone
 Notifications" policy. While encrypted storage is locked the list is refused.
 It is a recent history, not a mirror of the iPhone's Notification Center:
-notifications dismissed on the iPhone stay in the list.
+notifications dismissed on the iPhone stay in the list, marked "removed on
+iPhone". Pinned notifications (`blueferry notifications pin KEY`, or **Pin**
+in the clients) are listed first and kept until unpinned, also across
+restarts: they are the only part of the list saved to disk, in the
+owner-only settings file under the local data policy (encrypted by default,
+never with "do not retain", at most 20). With the list off, saved pins are
+deleted at the next service start. See
+[docs/en/user/notification-history.md](docs/en/user/notification-history.md).
 
 ### Clicking iPhone app notifications
 
@@ -756,8 +795,9 @@ What happens then:
 
 BlueFerry shows the iPhone's battery while it is connected, read over the
 Bluetooth LE link it already holds for notifications: from the
-standard GATT Battery Service (Battery Level, read once, then followed
-through notifications), or from BlueZ's `Battery1` while that is missing. This
+standard GATT Battery Service (Battery Level), through BlueZ's `Battery1`
+where BlueZ's battery plugin already follows it, otherwise read once and then
+followed through notifications by BlueFerry itself. This
 needs neither HFP nor oFono, is exact to 1 %, and was confirmed present on an
 iPhone with iOS 27 (BlueZ 5.87 had cached its Battery Level); the reading
 path itself is tested against fakes only.
@@ -1045,8 +1085,9 @@ messaging focus. Turn it on in the Qt client's iPhone settings
 ```bash
 blueferry media enable     # opt in (blueferry media disable to opt out)
 blueferry media            # now playing
-blueferry media toggle     # also: play, pause, next, previous, volume-up,
-                           # volume-down, skip-forward, skip-backward, like, ...
+blueferry media toggle     # also: play, pause, next, previous,
+                           # skip-forward, skip-backward, like, ...
+blueferry media volume up  # one iPhone volume step (also: volume down)
 ```
 
 Only commands the iPhone currently offers are sent; for example, like/dislike
@@ -1193,6 +1234,8 @@ blueferry sms-send Alice 'running late'
 blueferry contacts-sync
 blueferry contact-photos enable                     # opt in; disable / status
 blueferry contacts-photo Alice --output alice.jpg   # needs contact photos on
+blueferry contacts list -q Alice                    # cards with ids; show ID for details
+blueferry search lunch                              # messages, contacts and calls at once
 blueferry call-history --missed   # after `blueferry call-history enable`
 blueferry media status
 blueferry audio            # inspect the iPhone audio route
@@ -1200,6 +1243,7 @@ blueferry history-clear
 blueferry otp status
 blueferry notifications open-map list
 blueferry notifications sync status
+blueferry notifications apps   # mute APP_ID / unmute APP_ID
 blueferry doctor
 blueferry tether            # status; also: enable, disable, on, off
 blueferry reconnect         # page the iPhone now instead of waiting

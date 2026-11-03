@@ -102,6 +102,10 @@ deshalb:
 - Eine Nachricht landet nur dann in ihrer Gruppe, wenn BlueFerry auch die
   zugehörige iPhone-Mitteilung erhält. Sonst erscheint sie in der
   Einzelunterhaltung mit dem Absender.
+- Kann eine Nachricht in einer Einzelunterhaltung auch an eine Gruppe
+  gegangen sein, etwa dasselbe „ok“ in einer Gruppe und an dich, fragt
+  BlueFerry vor dem Antworten, ob die Antwort nur an den Absender gehen soll.
+  Kommt eine weitere solche Nachricht, fragt es erneut.
 
 ## Nächste Schritte
 
