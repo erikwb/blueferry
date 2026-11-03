@@ -92,6 +92,8 @@ src/blueferry/tui_phone.py
 src/blueferry/quickshell_bridge.py
 src/blueferry/contacts_view.py
 src/blueferry/search_view.py
+src/blueferry/qt/qml/ContactsTab.qml
+src/blueferry/qt/qml/SearchDialog.qml
 src/blueferry/notification_apps_view.py
 src/blueferry/media_volume_view.py
 src/blueferry/tui_contacts.py

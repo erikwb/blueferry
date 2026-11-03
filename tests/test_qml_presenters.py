@@ -945,6 +945,20 @@ def settings_window(qml_engine):
             function hangupCall(callId) { record("hangupCall", [callId]); }
             function hangupAllCalls() { record("hangupAllCalls", []); }
             function reconnectPhone() { record("reconnectPhone", []); }
+            property bool contactsSupported: false
+            property var contacts: ({})
+            property var contactCard: ({})
+            property bool searchSupported: false
+            property var searchResults: ({})
+            function watchContacts(watched) { record("watchContacts", [watched]); }
+            function setContactQuery(query) { record("setContactQuery", [query]); }
+            function reloadContacts() { record("reloadContacts", []); }
+            function loadMoreContacts() { record("loadMoreContacts", []); }
+            function openContact(contactId) { record("openContact", [contactId]); }
+            function closeContact() { record("closeContact", []); }
+            function setSearchQuery(query) { record("setSearchQuery", [query]); }
+            function clearSearch() { record("clearSearch", []); }
+            function revealCall(callId) { record("revealCall", [callId]); }
         }
     ''', QUrl())
     assert not component.isError(), [error.toString() for error in component.errors()]
@@ -1637,6 +1651,17 @@ def test_phone_audio_switch_appears_only_for_supporting_daemons(qml_engine, sett
     assert "connected" in switch.property("subtitle")
     # Checked follows the reported route, not the click.
     assert switch.property("checked") is False
+
+    # The A/V sync line follows the route wording.
+    bridge.setProperty("phoneAudio", {
+        "supported": True, "available": True, "onPc": True, "pending": False,
+        "hint": "Playing on this computer.", "playing": "pc", "mismatch": False,
+        "sync": "A/V sync: this computer reports 110 ms.",
+    })
+    QGuiApplication.processEvents()
+    assert switch.property("subtitle") == (
+        "Playing on this computer.\nA/V sync: this computer reports 110 ms."
+    )
 
 
 def test_ancs_actions_checkbox_is_opt_in_and_gated(qml_engine, settings_window):
@@ -4159,11 +4184,13 @@ class _CallsBridge(QObject):
         missed = {"direction": "missed", "caller": "<b>Eve</b>", "known": True,
                   "address": "+15551230002", "day": "Today", "clock": "2:36 PM",
                   "missed": True, "count": 3, "title": "<b>Eve</b> (3)",
-                  "detail": "Missed · +15551230002", "direction_label": "Missed"}
+                  "detail": "Missed · +15551230002", "direction_label": "Missed",
+                  "ids": ["m-1", "m-2", "m-3"]}
         outgoing = {"direction": "outgoing", "caller": "+15551230001", "known": False,
                     "address": "+15551230001", "day": "Today", "clock": "1:02 PM",
                     "missed": False, "count": 1, "title": "+15551230001",
-                    "detail": "Outgoing", "direction_label": "Outgoing"}
+                    "detail": "Outgoing", "direction_label": "Outgoing",
+                    "ids": ["out-1"]}
         return {"all": [missed, outgoing], "missed": [missed]}
 
     @Property("QVariantMap", constant=True)
@@ -5739,6 +5766,20 @@ def test_phone_card_greys_out_opt_ins_and_switches_audio_explicitly(qml_engine, 
     audio = _settings_object(window, "phoneCardAudioSwitch")
     assert audio.property("enabled") is False
     assert "KEEP_PHONE_AUDIO" in audio.property("subtitle")
+    _evaluate(qml_engine, """testBridge.phoneAudio = {
+        supported: true, available: true, onPc: true, pending: false,
+        hint: "Playing on this computer.",
+        sync: "A/V sync: delay reporting not negotiated; video may be out of sync."
+    }""")
+    QGuiApplication.processEvents()
+    assert audio.property("subtitle").endswith("\nA/V sync: delay reporting not negotiated; "
+                                               "video may be out of sync.")
+    _evaluate(qml_engine, """testBridge.phoneAudio = {
+        supported: true, available: false, onPc: false, pending: false,
+        hint: "Set BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE=false"
+    }""")
+    QGuiApplication.processEvents()
+    assert "A/V sync" not in audio.property("subtitle")  # no stream, no line
     assert "MEDIA_CONTROL" in _settings_object(window, "nowPlayingHint").property("text")
     hint = _settings_object(window, "phoneStatusHint")
     qml_engine.globalObject().setProperty("phoneStatusHint", qml_engine.newQObject(hint))
@@ -6953,6 +6994,263 @@ def test_quickshell_empty_activation_only_presents_the_window(qml_engine) -> Non
         return JSON.stringify(calls);
     })()'''
     assert _evaluate(qml_engine, script) == '["present","present","select:m1","reload"]'
+
+
+def _calls_since(engine, start):
+    calls = _evaluate(engine, "testBridge.calls")
+    return calls[start:]
+
+
+def _contacts_view(**extra):
+    return {
+        "supported": True, "loaded": True, "loading": False, "query": "",
+        "rows": [
+            {"id": "c1", "title": "<b>Ada</b>", "subtitle": "+15550001",
+             "initials": "A", "has_photo": False},
+            {"id": "c2", "title": "Bob", "subtitle": "", "initials": "B",
+             "has_photo": False},
+        ],
+        "count": 2, "count_text": "2 contacts", "hint": "", "has_more": True,
+        "error": "", "placeholder": "Search contacts", **extra,
+    }
+
+
+CONTACT_CARD = {
+    "open": True, "id": "c1", "loading": False, "stale": False, "error": "",
+    "title": "<b>Ada</b>", "subtitle": "Countess", "initials": "A",
+    "has_photo": False, "photo_retry": False, "photo": "",
+    "sections": [
+        {"id": "phones", "title": "Phone", "rows": [
+            {"label": "Mobile", "value": "+1 555 0001", "target": "+15550001",
+             "actions": ["dial", "message", "copy"]}]},
+        {"id": "emails", "title": "Email", "rows": [
+            {"label": "Work", "value": "ada@example.org", "target": "ada@example.org",
+             "actions": ["mail", "message", "copy"]}]},
+    ],
+}
+
+
+def test_contacts_tab_reads_only_while_shown_and_opens_cards(qml_engine, settings_window):
+    window, bridge = settings_window
+    _evaluate(qml_engine, "testWindow.currentTab = testWindow.contactsTab")
+    QGuiApplication.processEvents()
+    assert _settings_object(window, "contactsUnsupported").property("visible") is True
+    assert _evaluate(qml_engine, "testBridge.calls") == [], "unsupported daemon: nothing loads"
+
+    bridge.setProperty("contactsSupported", True)
+    bridge.setProperty("status", {"contact_card_count": 2})  # statusChanged
+    QGuiApplication.processEvents()
+    assert _evaluate(qml_engine, "testBridge.calls") == [
+        {"method": "watchContacts", "args": [True]},
+    ]
+    bridge.setProperty("contacts", _contacts_view())
+    QGuiApplication.processEvents()
+    contact_list = _settings_object(window, "contactList")
+    assert contact_list.property("count") == 2
+    assert _settings_object(window, "contactCount").property("text") == "2 contacts"
+    # Names are plain text, never markup.
+    assert _delegate_value(qml_engine, window, "contactList", "contactTitle",
+                           "item.text + '|' + (item.textFormat === 0)") == "<b>Ada</b>|true"
+
+    field = _settings_object(window, "contactSearchField")
+    field.setProperty("text", "ad")
+    QGuiApplication.processEvents()
+    assert _evaluate(qml_engine, "testBridge.calls")[-1] == {
+        "method": "setContactQuery", "args": ["ad"]}
+
+    _evaluate(qml_engine, """(function () {
+        const list = delegateList
+        list.itemAtIndex(0).clicked()
+    })()""")
+    assert _evaluate(qml_engine, "testBridge.calls")[-1] == {
+        "method": "openContact", "args": ["c1"]}
+
+    bridge.setProperty("contactCard", CONTACT_CARD)
+    QGuiApplication.processEvents()
+    assert _settings_object(window, "contactTitle").property("text") == "<b>Ada</b>"
+    assert _settings_object(window, "contactCallButton").property("visible") is True
+    assert _settings_object(window, "contactCallButton").property("enabled") is False
+
+    # Message: an existing direct conversation opens, otherwise New Message.
+    _evaluate(qml_engine, """testBridge.threads = [{
+        key: "t1", name: "Ada", is_group: false, recipients: ["+15550001"],
+        messages: [], reply_ready: true, starred: false, unread: false
+    }]""")
+    QGuiApplication.processEvents()
+    _settings_object(window, "contactMessageButton").clicked.emit()
+    QGuiApplication.processEvents()
+    assert _evaluate(qml_engine, "testWindow.currentTab === testWindow.messagesTab") is True
+    assert _evaluate(qml_engine, "testWindow.selectedThreadKey") == "t1"
+    _evaluate(qml_engine, "testWindow.messageAddress('ada@example.org')")
+    dialog = window.findChild(QObject, "newMessageDialog")
+    assert dialog.property("recipient") == "ada@example.org"
+    dialog.metaObject().invokeMethod(dialog, "close")
+    QGuiApplication.processEvents()
+
+    _evaluate(qml_engine, "testWindow.currentTab = testWindow.callsTab")
+    QGuiApplication.processEvents()
+    assert {"method": "watchContacts", "args": [False]} in _evaluate(
+        qml_engine, "testBridge.calls")
+    source = (ROOT / "src/blueferry/qt/qml/ContactsTab.qml").read_text()
+    assert source.count("Controls.Label {") == source.count(
+        "textFormat: Text.PlainText") - source.count("Kirigami.Heading {")
+
+
+def test_contact_card_call_asks_through_the_phone_link_dialog(qml_engine, settings_window):
+    window, bridge = settings_window
+    bridge.setProperty("contactsSupported", True)
+    bridge.setProperty("status", {"calls_enabled": True})
+    bridge.setProperty("callsState", "ready")
+    _evaluate(qml_engine, "testWindow.currentTab = testWindow.contactsTab")
+    bridge.setProperty("contacts", _contacts_view())
+    bridge.setProperty("contactCard", CONTACT_CARD)
+    QGuiApplication.processEvents()
+    button = _settings_object(window, "contactCallButton")
+    assert button.property("enabled") is True
+    button.clicked.emit()
+    # Asks first: the number goes through the phone-link confirmation.
+    assert _evaluate(qml_engine, "testBridge.calls")[-1] == {
+        "method": "requestDialLink", "args": ["tel:+15550001"]}
+    assert "dialCall" not in _bridge_methods(qml_engine)
+    stale = {**CONTACT_CARD, "sections": [], "stale": True,
+             "error": "This contact changed or was removed. Reload the list."}
+    bridge.setProperty("contactCard", stale)
+    QGuiApplication.processEvents()
+    message = _settings_object(window, "contactCardError")
+    assert message.property("visible") is True
+    assert "Reload the list" in message.property("text")
+
+
+SEARCH_RESULTS = {
+    "supported": True, "loading": False, "error": "", "query": "noon",
+    "placeholder": "Search messages, contacts and calls", "scope": "Searches …",
+    "hint": "", "limit": 20, "limit_text": "", "count": 4,
+    "sections": [
+        {"id": "conversations", "title": "Conversations", "total": 1, "more": "",
+         "rows": [{"title": "Ada", "subtitle": "", "time": "", "snippet": "",
+                   "highlight": [], "target": {"kind": "conversation", "thread_key": "t1"}}]},
+        {"id": "messages", "title": "Messages", "total": 3, "more": "2 more matches",
+         "rows": [{"title": "Ada", "subtitle": "Ada", "time": "2026-10-30 10:00",
+                   "snippet": "😀 <i>at</i> noon", "highlight": [12, 4],
+                   "target": {"kind": "message", "thread_key": "t1", "handle": "h9"}}]},
+        {"id": "contacts", "title": "Contacts", "total": 1, "more": "",
+         "rows": [{"title": "Ada Lovelace", "subtitle": "", "time": "", "snippet": "",
+                   "highlight": [], "target": {"kind": "contact", "contact_id": "c1"}}]},
+        {"id": "calls", "title": "Calls", "total": 1, "more": "",
+         "rows": [{"title": "Ada", "subtitle": "Missed call", "time": "", "snippet": "",
+                   "highlight": [], "target": {"kind": "call", "call_id": "call-1"}}]},
+    ],
+}
+
+
+def test_global_search_opens_with_the_shortcut_and_jumps_to_each_hit(
+    qml_engine, settings_window,
+):
+    window, bridge = settings_window
+    bridge.setProperty("searchSupported", True)
+    dialog = window.findChild(QObject, "searchDialog")
+    window.show()
+    QGuiApplication.processEvents()
+    QTest.keyClick(window, Qt.Key_K, Qt.ControlModifier)
+    QGuiApplication.processEvents()
+    assert dialog.property("opened") or dialog.property("visible")
+    field = _visual_find(dialog.property("contentItem") or dialog, "globalSearchField", qml_engine) \
+        or dialog.findChild(QObject, "globalSearchField")
+    assert field is not None
+    field.setProperty("text", "noon")
+    QGuiApplication.processEvents()
+    assert {"method": "setSearchQuery", "args": ["noon"]} in _evaluate(
+        qml_engine, "testBridge.calls")
+
+    bridge.setProperty("searchResults", SEARCH_RESULTS)
+    QGuiApplication.processEvents()
+    rows = dialog.property("rows")
+    if hasattr(rows, "toVariant"):
+        rows = rows.toVariant()
+    assert [row["target"]["kind"] for row in rows] == [
+        "conversation", "message", "contact", "call"]
+    assert rows[1]["section_title"] == "Messages · 2 more matches"
+    qml_engine.globalObject().setProperty("testSearch", qml_engine.newQObject(dialog))
+    # Escaped, with the code point offsets of the match (the emoji is one).
+    assert _evaluate(qml_engine, "testSearch.snippetMarkup(testSearch.rows[1])") == (
+        "<span>😀 &lt;i&gt;at&lt;/i&gt; <b>noon</b></span>")
+
+    _evaluate(qml_engine, """testBridge.threads = [{
+        key: "t1", name: "Ada", is_group: false, recipients: ["+15550001"],
+        messages: [{handle: "h9", body: "noon", outgoing: false}],
+        reply_ready: true, starred: false, unread: false
+    }]""")
+    QGuiApplication.processEvents()
+    _evaluate(qml_engine, "testSearch.activate(1)")
+    QGuiApplication.processEvents()
+    assert _evaluate(qml_engine, "testWindow.selectedThreadKey") == "t1"
+    assert _evaluate(qml_engine, "testWindow.focusedMessageHandle") == "h9"
+    message_list = window.findChild(QObject, "messageList")
+    QGuiApplication.processEvents()
+    # Centred once; later changes (a new message) do not jump back to it.
+    assert message_list.property("focusPending") is False
+    _evaluate(qml_engine, "testWindow.openSearchTarget(testSearch.rows[1].target)")
+    assert message_list.property("focusPending") is True, "the same hit scrolls again"
+    QGuiApplication.processEvents()
+    assert message_list.property("focusPending") is False
+    for _attempt in range(100):  # the dialog forgets the results once closed
+        if {"method": "clearSearch", "args": []} in _evaluate(qml_engine, "testBridge.calls"):
+            break
+        QTest.qWait(10)
+    assert _evaluate(qml_engine, "testBridge.calls")[-1] == {"method": "clearSearch", "args": []}
+
+    bridge.setProperty("contactsSupported", True)
+    _evaluate(qml_engine, "testWindow.openSearchTarget(testSearch.rows[2].target)")
+    QGuiApplication.processEvents()
+    assert _evaluate(qml_engine, "testWindow.currentTab === testWindow.contactsTab") is True
+    assert _evaluate(qml_engine, "testBridge.calls")[-1] == {
+        "method": "openContact", "args": ["c1"]}
+
+    _evaluate(qml_engine, "testWindow.openSearchTarget(testSearch.rows[3].target)")
+    QGuiApplication.processEvents()
+    assert _evaluate(qml_engine, "testWindow.currentTab === testWindow.callsTab") is True
+    assert _evaluate(qml_engine, "testWindow.focusedCallId") == "call-1"
+    assert {"method": "revealCall", "args": ["call-1"]} in _evaluate(
+        qml_engine, "testBridge.calls")
+    changes: list[str] = []
+    window.focusedCallIdChanged.connect(lambda: changes.append(window.property("focusedCallId")))
+    _evaluate(qml_engine, "testWindow.openSearchTarget(testSearch.rows[3].target)")
+    assert changes == ["", "call-1"], "the same hit again scrolls to it again"
+
+    # A conversation that is not loaded yet is selected once it arrives.
+    _evaluate(qml_engine, "testWindow.openSearchTarget({kind: 'conversation', thread_key: 't2'})")
+    QGuiApplication.processEvents()
+    assert _evaluate(qml_engine, "testWindow.focusedCallId") == ""
+    assert _evaluate(qml_engine, "testBridge.calls")[-1] == {"method": "refresh", "args": []}
+    _evaluate(qml_engine, """testBridge.threads = testBridge.threads.concat([{
+        key: "t2", name: "Bob", is_group: false, recipients: ["+15550002"],
+        messages: [], reply_ready: true, starred: false, unread: false
+    }])""")
+    QGuiApplication.processEvents()
+    assert _evaluate(qml_engine, "testWindow.selectedThreadKey") == "t2"
+
+
+def test_recent_calls_page_marks_the_call_a_search_hit_points_at(qml_engine):
+    bridge = _CallsBridge()
+    component = _component(qml_engine, "src/blueferry/qt/qml/RecentCallsPage.qml")
+    page = component.createWithInitialProperties({"bridge": bridge, "missedOnly": True})
+    assert page is not None, [error.toString() for error in component.errors()]
+    from PySide6.QtQml import QQmlExpression
+
+    def evaluate(script):
+        expression = QQmlExpression(qml_engine.contextForObject(page), page, script)
+        value, failed = expression.evaluate()
+        assert not failed, expression.error().toString()
+        return value
+
+    assert evaluate("focusedIndex()") == -1
+    page.setProperty("focusedCallId", "out-1")
+    assert page.property("missedOnly") is False, "the hit may be any call"
+    assert evaluate("focusedIndex()") == 1
+    assert page.property("focusedRow") == 1
+    page.setProperty("focusedCallId", "unknown")
+    assert evaluate("focusedIndex()") == -1
+    page.deleteLater()
 
 
 def test_category_navigation_preserves_pairing_choices(qml_engine, settings_window):

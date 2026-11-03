@@ -78,10 +78,16 @@ das iPhone ihn meldet. Bietet die spielende App keine Lautstärkeregelung an,
 sagt BlueFerry das und sendet nichts. Die älteren Schreibweisen `volume-up`
 und `volume-down` funktionieren weiterhin.
 
-Der GTK-Client bietet dieselben Schritte als zwei Knöpfe neben
-Wiedergabe/Pause auf seiner Telefon-Karte, dazwischen die zuletzt gemeldete
-Lautstärke. Ein Knopf ist ausgegraut, und sein Tooltip nennt den Grund, wenn
-die spielende App diesen Schritt nicht anbietet.
+Im Kirigami-Client hat der Bereich **Now Playing** der Telefon-Karte unter
+den Wiedergabeknöpfen eine zweite Zeile: den zuletzt vom iPhone gemeldeten
+Stand („Volume 40%“) und die Knöpfe **Volume Down** / **Volume Up**, eine
+Stufe pro Klick. Bietet die spielende App keine Lautstärkeregelung an, sind
+sie ausgegraut und eine kurze Notiz sagt warum. Der GTK-Client bietet
+dieselben Schritte als zwei Knöpfe neben Wiedergabe/Pause auf seiner
+Telefon-Karte, dazwischen die zuletzt gemeldete Lautstärke; ein Knopf ist
+ausgegraut, und sein Tooltip nennt den Grund, wenn die spielende App diesen
+Schritt nicht anbietet. Die Lautstärketasten des Terminal-Clients stehen
+weiter unten.
 
 Im Kirigami-Client erscheint über den Unterhaltungen eine kleine Leiste mit
 Titel, Interpret und den Tasten Zurück/Wiedergabe-Pause/Weiter, solange etwas

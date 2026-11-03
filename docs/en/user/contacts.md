@@ -28,7 +28,14 @@ works; list the contacts again.
 Contact view in the clients:
 
 - **KDE client:**
-  not yet; use the command line.
+  the **Contacts** tab lists the cards with a search field (it searches as
+  you type, after a short pause) and loads more cards as you scroll. Choose
+  a card to see all its details; **Call** asks before it dials the first
+  number, **Message** opens the conversation with it or starts a new one,
+  and each number or address has its own call, message, email and copy
+  buttons. The list is read only while the tab is shown, and reloads by
+  itself when the background service restarts or the contacts were synced
+  again.
 - **GTK client:**
   the **Contacts** tab lists the cards with a search field (it searches as
   you type, after a short pause) and loads more cards when you scroll to the

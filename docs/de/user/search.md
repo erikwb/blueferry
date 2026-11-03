@@ -23,7 +23,12 @@ Zeichen finden nichts.
 Suche in den Clients:
 
 - **KDE-Client:**
-  noch nicht; nutze die Kommandozeile.
+  die Lupe in der Kopfzeile, `Strg+K` oder `Strg+F` öffnen die Suche. Sie
+  sucht beim Tippen, nach einer kurzen Pause, und zeigt dieselben Gruppen
+  mit je bis zu 20 Treffern; Pfeiltasten und Enter oder ein Klick öffnen
+  einen Treffer: die Unterhaltung bei der Nachricht, die Kontaktkarte oder
+  den Anruf in der Anrufliste. Beim Schließen vergisst die Suche die
+  Ergebnisse.
 - **GTK-Client:**
   die Lupe in der Kopfzeile, `Strg+K` oder `Strg+F` öffnen die Suche. Sie
   sucht beim Tippen, nach einer kurzen Pause, und zeigt dieselben Gruppen

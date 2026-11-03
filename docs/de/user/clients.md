@@ -90,10 +90,14 @@ Verbindung, Akku und Empfang des iPhones, was gerade läuft (mit zurück,
 Wiedergabe/Pause und weiter) und Schnellschalter für [den
 Ton](phone-audio.md) und die [Abwesenheitssperre](proximity-lock.md).
 Ausgeschaltete Funktionen bleiben sichtbar, aber ausgegraut, mit der
-Einstellung, die sie einschaltet. Rechts gibt es drei Reiter:
+Einstellung, die sie einschaltet. Rechts liegen die Reiter:
 
 - **Messages**: Unterhaltungen mit den Filtern All, Unread und Starred und
   der Chat.
+- **Contacts**: die [Kontaktkarten](contacts.md) mit einem Suchfeld; eine
+  Karte zeigt jede Nummer mit Bezeichnung, E-Mail- und Postadressen,
+  Firma, Funktion und Foto, mit **Call** und **Message** (öffnet die
+  Unterhaltung mit dieser Nummer oder eine neue Nachricht).
 - **Calls**: [Anrufe](calls.md) mit Wählfeld und laufenden Anrufen als
   Karten (annehmen, halten, auflegen, Tastentöne für den aktiven Anruf) und die [Anrufliste](call-history.md)
   nach Tagen gruppiert, mit All und Missed.
@@ -103,13 +107,22 @@ Einstellung, die sie einschaltet. Rechts gibt es drei Reiter:
 In einem schmalen Fenster klappt die Karte hinter den Telefon-Knopf in der
 Kopfzeile.
 
+Zieh Dateien aus der Dateiverwaltung irgendwo aufs Fenster, um sie über ein
+Plugin mit **Send to…** wie LocalSend ans iPhone zu senden; siehe
+[Dateien aufs Fenster ziehen](plugins.md#dateien-aufs-fenster-ziehen).
+
+Die Lupe in der Kopfzeile, `Strg+K` oder `Strg+F` öffnet die
+[Suche](search.md) über Unterhaltungen, Nachrichten, Kontakte und Anrufe.
+Ein Treffer öffnet die Unterhaltung bei dieser Nachricht, die Kontaktkarte
+oder den Anruf in der Anrufliste.
+
 **Settings** (das Zahnrad in der Kopfzeile) hat links Kategorien, wie KDEs
 Systemeinstellungen:
 
 | Kategorie | Inhalt |
 | --- | --- |
 | Phone | Kopplung, Verbindungszustand, **Run Diagnostics** (dieselben Prüfungen wie `blueferry doctor`, im Fenster angezeigt), Kontaktabgleich, Kontaktfotos |
-| Notifications | Welche Ereignisse Popups erzeugen, nur Kontakte, Klickregeln, Mitteilungsinhalt, Aktionsknöpfe, Mitteilungen mit dem iPhone abgleichen, beim Wegklicken als gelesen markieren |
+| Notifications | Welche Ereignisse Popups erzeugen, nur Kontakte, Klickregeln, Mitteilungsinhalt, Aktionsknöpfe, Mitteilungen mit dem iPhone abgleichen, beim Wegklicken als gelesen markieren, stummgeschaltete Apps |
 | Calls & Audio | Anrufe, Anrufliste, Akku-Warnung, [iPhone-Ton am Computer](phone-audio.md), Mediensteuerung |
 | Network | [Bluetooth-Tethering](bluetooth-tethering.md), iPhone-Internet teilen, automatische Hotspot-Verbindung |
 | Security | Einmalcodes, Abwesenheitssperre, lokale Daten und ihre Verschlüsselung, Verlauf löschen |

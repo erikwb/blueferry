@@ -75,10 +75,15 @@ it. If the app that is playing does not offer volume control, BlueFerry says
 so and sends nothing. The older spellings `volume-up` and `volume-down` still
 work.
 
-The GTK client has the same steps as two buttons next to play/pause on its
-phone card, with the last reported level between them. A button is greyed
-out, with the reason in its tooltip, when the app that is playing does not
-offer that step.
+In the Kirigami client the **Now Playing** part of the phone card has a
+second row under the transport buttons: the level the iPhone last reported
+("Volume 40%") and **Volume Down** / **Volume Up** buttons, one step per
+click. They are greyed out, with a short note, while the playing app offers
+no volume control. The GTK client has the same steps as two buttons next to
+play/pause on its phone card, with the last reported level between them; a
+button is greyed out, with the reason in its tooltip, when the app that is
+playing does not offer that step. The terminal client's volume keys are
+listed below.
 
 In the Kirigami client a small bar with title, artist and
 previous/play-pause/next buttons appears above the conversations while

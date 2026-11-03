@@ -22,7 +22,11 @@ nothing.
 Search in the clients:
 
 - **KDE client:**
-  not yet; use the command line.
+  the magnifier in the header, `Ctrl+K` or `Ctrl+F` opens the search. It
+  searches as you type, after a short pause, and shows the same groups with
+  up to 20 hits each; arrow keys and Enter, or a click, open a hit: the
+  conversation scrolled to the message, the contact card, or the call in the
+  call history. Closing the search forgets the results.
 - **GTK client:**
   the magnifier in the header bar, `Ctrl+K` or `Ctrl+F` opens the search. It
   searches as you type, after a short pause, and shows the same groups with

@@ -21,16 +21,21 @@ bevor sie überhaupt eine Mitteilung geschickt hat. BlueFerry holt App-Mitteilun
 nur, solange **All iPhone Notifications** gewählt ist; mit einer anderen
 Richtlinie enthält die Liste nur die stummgeschalteten Apps.
 
-Im GTK-Client zeigt **Settings › Notifications** dieselbe Liste in der Gruppe
-**Muted apps** (stummgeschaltete Apps), mit einem Schalter pro App und einem
-Hinweis, wenn die Liste eingeschränkt ist (gesperrte lokale Daten, eine
-andere Mitteilungsrichtlinie, die Höchstzahl oder der Umgebungsfilter unten);
-Einträge stummgeschalteter Apps sind in seinem Reiter **Notifications**
-abgeblendet. Der Terminal-Client hat dieselbe Liste unter Settings ›
-Notifications › **Muted apps**, mit einem Kästchen je App, und blendet die
-Einträge stummgeschalteter Apps in seiner Mitteilungsliste ab. Die anderen
-grafischen Clients bekommen die Liste mit einer separaten Änderung; bis dahin
-nutze dort die Kommandozeile.
+Im KDE-Client unter **Settings › Notifications** listet der Abschnitt
+**Muted apps** (stummgeschaltete Apps) dieselben Apps mit je einem Schalter
+(an = stumm), dazu einen Hinweis, wenn etwas die Liste einschränkt (eine
+andere Mitteilungsrichtlinie, gesperrte lokale Daten, die Höchstzahl oder der
+Umgebungsfilter unten). Solange er offen ist, aktualisiert er sich selbst,
+und der Reiter **Notifications** graut die Einträge stummgeschalteter Apps
+aus. Ist der Hintergrunddienst zu alt zum Stummschalten, fehlt der Abschnitt;
+nach dem Update den Dienst neu starten. Im GTK-Client zeigt **Settings ›
+Notifications** dieselbe Liste in der Gruppe **Muted apps**, ebenfalls mit
+einem Schalter pro App und demselben Hinweis; sein Reiter **Notifications**
+blendet die Einträge stummgeschalteter Apps ab. Der Terminal-Client hat die
+Liste unter Settings › Notifications › **Muted apps**, mit einem Kästchen je
+App, und blendet die Einträge stummgeschalteter Apps in seiner
+Mitteilungsliste ab. Der Quickshell-Client bekommt die Liste mit einer
+separaten Änderung; bis dahin nutze dort die Kommandozeile.
 
 ## Was Stummschalten tut und was nicht
 

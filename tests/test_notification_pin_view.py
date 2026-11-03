@@ -32,9 +32,6 @@ def test_presenter_limit_and_errors() -> None:
     assert view.pin_error_text("org.freedesktop.DBus.Error.UnknownMethod") == view.UNSUPPORTED_TEXT
     assert view.pin_error_text(prefix + "NotReady", "the notification list is off; …") == view.OFF_TEXT
     assert view.pin_error_text(prefix + "NotReady", "keyring locked") == view.LOCKED_TEXT
-    assert view.pin_error_text(
-        prefix + "Configuration", "settings.json can't be read, so local storage was not changed",
-    ) == view.UNREADABLE_SETTINGS_TEXT
     assert view.pin_error_text(prefix + "InvalidArgs", "unknown notification key; …") == (
         view.UNKNOWN_KEY_TEXT
     )

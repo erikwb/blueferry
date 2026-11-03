@@ -24,6 +24,14 @@
   once the option is off and search results once their data changes
   (`GlobalSearch.invalidate`); recent-call rows
   from `phone_overview.call_groups` carry the ids of the folded calls.
+- KDE client: a **Contacts** tab lists the contact cards with a search
+  field (searching after a short pause while typing) and loads more cards
+  while scrolling; a card shows every labelled number, email and postal
+  address, company, job title and photo, with **Call** (asks first) and
+  **Message**, and the list reloads when `contact_card_epoch` changes. A
+  global search (header magnifier, `Ctrl+K` or `Ctrl+F`) shows the grouped
+  hits and opens the conversation at the message, the contact card or the
+  call.
 - Mute the desktop popups of single iPhone apps: `Messages1.ListNotificationApps`
   lists the apps seen since the daemon started (memory only) plus the muted
   ones, `SetNotificationAppMuted` saves a choice under the storage policy, and
@@ -38,6 +46,12 @@
   also across restarts, until unpinned (`Messages1.SetNotificationPinned`,
   `blueferry notifications pin`/`unpin`). Pins are saved under the local data
   policy, at most 20; entries removed on the iPhone are marked as such.
+- KDE client: volume down/up buttons and the reported level under the
+  now-playing transport buttons; **Pin**/**Unpin** on entries of the
+  Notifications tab, with a pin marker, greyed-out entries removed on the
+  iPhone or from muted apps, and the pin limit and errors shown above the
+  list; a **Muted apps** section in Settings › Notifications with a switch per
+  app, refreshed on `NotificationAppsChanged` while it is shown.
 - Terminal client: `-` and `+` step the iPhone volume, the now-playing line
   shows the reported level, and the iPhone overview has Volume Down,
   Play/Pause and Volume Up buttons. `P` pins or unpins the selected entry of
@@ -52,17 +66,25 @@
   conversation, the contact card or the call in Recent calls. Contact
   photos are not shown.
 - Shared presenter `file_drop_view` for the drop zones of the KDE and GTK
-  main windows (the GTK one below; the KDE one is still coming). It holds
-  the decisions and texts, so both clients send dropped files to a
-  **Send to…** target the same way (the only target at once, a picker for
-  several with the session's last pick preselected, or an explanation when
-  no `share` plugin is there). Only local files, 1 to 64; folders and
+  main windows (both below). It holds the decisions and texts, so both
+  clients send dropped files to a **Send to…** target the same way (the
+  only target at once, a picker for several with the session's last pick
+  preselected, or an explanation when no `share` plugin is there). Only
+  local files, 1 to 64; folders and
   remote URIs are skipped with a note, and a client never runs two
   `SendFiles` at once across "Send to…", card sends and drops.
+- KDE client: files dragged anywhere onto the main window go to a
+  **Send to…** target (overlay "Drop to send to iPhone"): the only target
+  at once with a notice, a picker for several (the session's last pick
+  preselected), or an explanation with a button to Settings › Plugins when
+  no `share` plugin is there. Only local files, 1 to 64; folders and remote
+  URIs are skipped.
 - Report the A/V sync delay of the iPhone's audio stream in `GetStatus`
   (`phone_audio_delay_ms`, `phone_audio_delay_reporting`; the delay only while
   the stream is active), show it next to the iPhone sound status, and check
   AVDTP delay reporting in `blueferry doctor`.
+- KDE client: the iPhone sound switches in Settings and on the phone card
+  show the A/V sync line under the sound status.
 - Terminal client: the connection summary shows the A/V sync line next to
   the iPhone sound status.
 - Catch up on incoming messages that arrived while the iPhone was
