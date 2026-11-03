@@ -88,7 +88,9 @@ class PrivatePreference:
         """A non-sensitive key saved beside this preference."""
         return self._settings.read().get(key)
 
-    def clear(self) -> None:
+    def clear(self, *, strict: bool = False) -> None:
+        """Remove the preference; ``strict`` raises while the file can't be read."""
         # Clearing must also work while the keyring is locked or policy changes.
-        if self._settings.read().get(self._key) is not None:
+        saved = self._settings.load() if strict else self._settings.read()
+        if saved.get(self._key) is not None:
             self._settings.update(**{self._key: None})

@@ -73,8 +73,9 @@ restarts. You choose how:
   `blueferry storage-unlock`).
 - Changing the storage mode clears the existing cache, so encrypted and
   unencrypted records are never mixed.
-- Starred conversations, saved group members, group confirmations, and
-  [muted apps](notification-mute.md) follow the same storage mode.
+- Starred conversations, saved group members, group confirmations, pinned
+  iPhone notifications and [muted apps](notification-mute.md) follow the same
+  storage mode.
 - `blueferry history-clear` deletes local message history.
 - BlueFerry never replaces a missing storage key while it still has data
   sealed with it, and it notices if the wallet returns a different key. It

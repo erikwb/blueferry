@@ -72,6 +72,9 @@ _RULES: dict[str, tuple[RateRule, ...]] = {
     "audio-route": (RateRule(20, 60), RateRule(120, 3_600)),
     # The in-memory notification list is cheap but carries app content.
     "notifications-read": (RateRule(240, 60),),
+    # Pinning writes the encrypted settings entry; a person pins a few
+    # notifications at a time, never a stream.
+    "notifications-pin": (RateRule(30, 60), RateRule(300, 3_600)),
     # Feature switches are written to settings.json and need a restart;
     # a settings page flips a few at a time, never a stream.
     "feature": (RateRule(20, 60), RateRule(120, 3_600)),

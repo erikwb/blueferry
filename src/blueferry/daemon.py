@@ -79,9 +79,11 @@ from blueferry.history import (
     history_count,
     mark_event_handles_read,
 )
+from blueferry.limits import MAX_PINNED_NOTIFICATIONS
 from blueferry.media import MediaController, MediaControlSettings
 from blueferry.notification_apps import MutedAppsStore, NotificationApps
 from blueferry.notification_log import NotificationLog
+from blueferry.notification_pins import PinnedNotificationsStore
 from blueferry.notification_policy import (
     ALL_NOTIFICATIONS,
     NotificationPolicyStore,
@@ -359,9 +361,17 @@ class Daemon:
             on_powered=self.profile_reset.hfp_powered,
         )
         # Opt-in, memory-only list of recent iPhone app notifications.
+        # Pinned records persist in settings.json under the storage policy.
+        # With the list off nothing is retained: stored pins are deleted,
+        # by the storage retry once settings.json reads again if it can't now.
+        pins = PinnedNotificationsStore(storage=self.storage)
+        self._stale_pins = None if config.NOTIFICATION_HISTORY else pins
+        self._stale_pins_failed = False
+        self._delete_stale_pins()
         self.notification_log: NotificationLog | None = (
             NotificationLog(
                 show_content=config.SHOW_NOTIFICATION_CONTENT, idle=GLib.idle_add,
+                pins=pins,
             )
             if config.NOTIFICATION_HISTORY else None
         )
@@ -1163,6 +1173,7 @@ class Daemon:
         # A daemon activated before the desktop keyring opens must recover
         # without requiring a client launch. Wallet I/O stays off the GLib loop.
         self._settle_contact_photos()
+        self._delete_stale_pins()
         try:
             if self._dbus_service is not None:
                 self._dbus_service.retry_storage_unlock()
@@ -1187,6 +1198,19 @@ class Daemon:
 
     def _contact_photos_enabled(self) -> bool:
         return self.photo_settings.enabled
+
+    def _delete_stale_pins(self) -> None:
+        """With the notification list off, delete the saved pins once readable."""
+        if self._stale_pins is None:
+            return
+        try:
+            self._stale_pins.clear(strict=True)
+        except (OSError, ValueError) as error:
+            if not self._stale_pins_failed:
+                log.warning("could not delete pinned notifications: %s", type(error).__name__)
+            self._stale_pins_failed = True
+            return
+        self._stale_pins = None
 
     def _settle_contact_photos(self) -> None:
         """Apply the saved contact-photo choice once settings.json reads again.
@@ -1322,6 +1346,8 @@ class Daemon:
         self.contact_sync.storage_changed()
         if self.call_history is not None:
             self.call_history.storage_changed()
+        if self.notification_log is not None:
+            self.notification_log.storage_changed()
         # Saved mutes become readable (or unreadable) with the storage.
         self.notification_apps.storage_changed()
         self._emit_status()
@@ -1833,7 +1859,9 @@ class Daemon:
             removed(notification_id)
 
     def _ancs_removed_on_iphone(self, notification_id: int) -> None:
-        """Opt-in: close the popup of a notification removed on the iPhone."""
+        """Mark the listed record removed; opt-in: close its popup too."""
+        if self.notification_log is not None:
+            self.notification_log.mark_removed(notification_id)
         if not self.notification_policy.mirror_removals:
             return
         removed = getattr(self.events, "ancs_mirror_removed", None)
@@ -1842,7 +1870,10 @@ class Daemon:
 
     def _ancs_session_reset(self) -> None:
         # Always, even with the setting off: switching it on later must never
-        # match a UID of an ended session.
+        # match a UID of an ended session. The notification list detaches
+        # its records of the ended session for the same reason.
+        if self.notification_log is not None:
+            self.notification_log.session_reset()
         reset = getattr(self.events, "ancs_session_reset", None)
         if reset is not None:
             reset()
@@ -1993,6 +2024,7 @@ class Daemon:
             **self._media_status(),
             **self.phone_audio_route.snapshot(),
             "notification_history_enabled": self.notification_log is not None,
+            "notification_pins_max": MAX_PINNED_NOTIFICATIONS,
             **self.audio_preference.snapshot(),
             **self._controller_identity(),
             **self.connectivity.snapshot(),
