@@ -90,7 +90,12 @@ def read_private_text(path: Path, *, maximum_bytes: int) -> str:
     if not path.parent.exists():
         raise FileNotFoundError(path)
     ensure_private_directory(path.parent)
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    # O_NONBLOCK keeps a FIFO from blocking the open; the fstat below rejects
+    # it, and the flag has no effect on reads from a regular file.
+    flags = (
+        os.O_RDONLY | os.O_NONBLOCK
+        | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    )
     descriptor = os.open(path, flags)
     try:
         current = os.fstat(descriptor)

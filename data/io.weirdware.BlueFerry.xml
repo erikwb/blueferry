@@ -23,6 +23,8 @@
                   value="InvalidArgs,NotFound,NotReady,ConfirmationRequired,SendFailed,SendOutcomeUnknown"/>
     </method>
     <method name="SendToThreadChecked">
+      <annotation name="org.freedesktop.DBus.Description"
+                  value="Reply to a thread. A group reply passes the roster token the client displayed. A direct thread whose latest message may be from a group is answered only with confirm_group and its sender_reply_token."/>
       <arg name="thread_key" type="s" direction="in"/>
       <arg name="body" type="s" direction="in"/>
       <arg name="confirm_group" type="b" direction="in"/>
@@ -69,6 +71,34 @@
       <arg name="json" type="s" direction="out"/>
       <annotation name="io.weirdware.BlueFerry.Errors"
                   value="NotReady,ResponseTooLarge"/>
+    </method>
+    <method name="Search">
+      <annotation name="org.freedesktop.DBus.Description"
+                  value="JSON {query, limit, conversations, messages, contacts, calls}; each group is {total, results, available}. Searches the decrypted data the daemon holds in memory (recent and starred conversations, contact cache, retained call history); nothing is indexed on disk. Queries shorter than two characters return no results"/>
+      <arg name="query" type="s" direction="in"/>
+      <arg name="limit" type="u" direction="in"/>
+      <arg name="json" type="s" direction="out"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="InvalidArgs,NotReady,ResponseTooLarge"/>
+    </method>
+    <method name="ListContactCards">
+      <annotation name="org.freedesktop.DBus.Description"
+                  value="JSON {contacts: [{id, name, organization, primary, phone_count, email_count, address_count, has_photo}], total, offset, query}; query (may be empty) matches name, organization, title, email and postal text, and phone digits; ids stay valid while a card is unchanged within one daemon run; no photo bytes"/>
+      <arg name="offset" type="u" direction="in"/>
+      <arg name="limit" type="u" direction="in"/>
+      <arg name="query" type="s" direction="in"/>
+      <arg name="json" type="s" direction="out"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="InvalidArgs,NotReady,ResponseTooLarge"/>
+    </method>
+    <method name="GetContact">
+      <annotation name="org.freedesktop.DBus.Description"
+                  value="JSON {id, name, organization, title, phones: [{kind, label, value, number}], emails: [{kind, label, value}], addresses: [{kind, label, po_box, extended, street, locality, region, postal_code, country}], has_photo, photo_retry} plus the bounded JPEG/PNG photo (empty without one or while contact photos are off)"/>
+      <arg name="contact_id" type="s" direction="in"/>
+      <arg name="json" type="s" direction="out"/>
+      <arg name="photo" type="ay" direction="out"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="InvalidArgs,NotFound,NotReady,ResponseTooLarge"/>
     </method>
     <method name="GetContactPhoto">
       <annotation name="org.freedesktop.DBus.Description"
@@ -138,10 +168,19 @@
     </method>
     <method name="ListNotifications">
       <annotation name="org.freedesktop.DBus.Description"
-                  value="Recent iPhone app notifications, newest first, as JSON {enabled, content, notifications}; memory only and empty unless BLUEFERRY_NOTIFICATION_HISTORY is set; title/subtitle/body only with BLUEFERRY_SHOW_NOTIFICATION_CONTENT"/>
+                  value="Recent iPhone app notifications as JSON {enabled, content, pins_max, notifications}: pinned records first (newest pin first), then the rest newest first; each record has key, id, app_id, app_name, time, pinned, removed, actionable; empty unless BLUEFERRY_NOTIFICATION_HISTORY is set; title/subtitle/body only with BLUEFERRY_SHOW_NOTIFICATION_CONTENT; only pinned records are stored (settings.json, storage policy)"/>
       <arg name="limit" type="u" direction="in"/>
       <arg name="json" type="s" direction="out"/>
       <annotation name="io.weirdware.BlueFerry.Errors" value="NotReady,ResponseTooLarge"/>
+    </method>
+    <method name="SetNotificationPinned">
+      <annotation name="org.freedesktop.DBus.Description"
+                  value="Pin or unpin one ListNotifications record by its opaque key; returns the new pinned state. Pinned records persist under the storage policy and stay listed until unpinned. InvalidArgs: unknown key, pin list full or storage cap reached; NotReady: list off or storage locked"/>
+      <arg name="key" type="s" direction="in"/>
+      <arg name="pinned" type="b" direction="in"/>
+      <arg name="selected" type="b" direction="out"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="InvalidArgs,NotReady"/>
     </method>
     <method name="GetFeatures">
       <annotation name="org.freedesktop.DBus.Description"
@@ -173,6 +212,22 @@
       <arg name="click_id" type="s" direction="in"/>
       <arg name="activation_token" type="s" direction="in"/>
       <arg name="opened" type="b" direction="out"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="InvalidArgs,NotReady"/>
+    </method>
+    <method name="ListNotificationApps">
+      <annotation name="org.freedesktop.DBus.Description"
+                  value="JSON with apps (app_id, app_name, muted, seen, last_seen), muted_count, max_muted, mute_available, all_notifications, env_allowlist, env_blocklist; seen apps are kept in memory only"/>
+      <arg name="apps_json" type="s" direction="out"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="NotReady,ResponseTooLarge"/>
+    </method>
+    <method name="SetNotificationAppMuted">
+      <annotation name="org.freedesktop.DBus.Description"
+                  value="Hide or show the desktop popups of one non-Messages iPhone app; returns the new muted state"/>
+      <arg name="app_id" type="s" direction="in"/>
+      <arg name="muted" type="b" direction="in"/>
+      <arg name="selected" type="b" direction="out"/>
       <annotation name="io.weirdware.BlueFerry.Errors"
                   value="InvalidArgs,NotReady"/>
     </method>
@@ -453,6 +508,10 @@
     <signal name="NowPlayingChanged">
       <annotation name="org.freedesktop.DBus.Description"
                   value="Content-free; fetch details with Media1.GetNowPlaying"/>
+    </signal>
+    <signal name="NotificationAppsChanged">
+      <annotation name="org.freedesktop.DBus.Description"
+                  value="Content-free; fetch the list with Messages1.ListNotificationApps"/>
     </signal>
     <signal name="CallsChanged">
       <annotation name="org.freedesktop.DBus.Description"

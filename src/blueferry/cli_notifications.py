@@ -1,6 +1,8 @@
 """Desktop notification preferences from the command line."""
 from __future__ import annotations
 
+import json
+
 import typer
 
 from blueferry.text_safety import terminal_text
@@ -132,19 +134,32 @@ def render_notifications(snapshot: dict) -> list[str]:
         if not isinstance(record, dict):
             continue
         app = record.get("app_name") or record.get("app_id") or "?"
+        marks = []
+        if record.get("pinned") is True:
+            marks.append("[pinned]")
+        if record.get("removed") is True:
+            marks.append("[removed on iPhone]")
         head = f"{terminal_text(str(record.get('time', ''))[:19])}  {terminal_text(app)}"
+        if marks:
+            head = f"{head}  {' '.join(marks)}"
         text = " - ".join(
             terminal_text(record[key]) for key in ("title", "body") if record.get(key)
         )
-        lines.append(f"{head}  {text}" if text else head)
+        line = f"{head}  {text}" if text else head
+        key = record.get("key")
+        if isinstance(key, str) and key:
+            # Keys are opaque [A-Za-z0-9_-]; escape anyway at the terminal.
+            line = f"{line}  (key {terminal_text(key)})"
+        lines.append(line)
     return lines
 
 
 @notifications_app.command("recent")
 def notifications_recent(
     limit: int = typer.Option(20, "--limit", min=1, max=200, help="Number of entries"),
+    as_json: bool = typer.Option(False, "--json", help="Print the raw list as JSON"),
 ) -> None:
-    """List recent iPhone app notifications (opt-in, memory only)."""
+    """List recent iPhone app notifications, pinned ones first (opt-in)."""
     from blueferry.client import BackendError
 
     try:
@@ -152,8 +167,41 @@ def notifications_recent(
     except BackendError as error:
         typer.echo(terminal_text(error), err=True)
         raise typer.Exit(code=2) from None
+    if as_json:
+        typer.echo(json.dumps(snapshot, ensure_ascii=False, indent=2))
+        return
     for line in render_notifications(snapshot):
         typer.echo(line)
+
+
+def _set_pinned(key: str, pinned: bool) -> None:
+    from blueferry.client import BackendError
+
+    try:
+        _client().set_notification_pinned(key, pinned)
+    except BackendError as error:
+        typer.echo(terminal_text(error), err=True)
+        raise typer.Exit(code=2) from None
+    if pinned:
+        typer.echo("Notification pinned. It stays in the list until you unpin it.")
+    else:
+        typer.echo("Notification unpinned.")
+
+
+@notifications_app.command("pin")
+def notifications_pin(
+    key: str = typer.Argument(..., help="Key shown by 'blueferry notifications recent'"),
+) -> None:
+    """Keep a notification in the list, also across restarts, until unpinned."""
+    _set_pinned(key, True)
+
+
+@notifications_app.command("unpin")
+def notifications_unpin(
+    key: str = typer.Argument(..., help="Key shown by 'blueferry notifications recent'"),
+) -> None:
+    """Unpin a notification; it is forgotten once it leaves the recent list."""
+    _set_pinned(key, False)
 
 
 @open_map_app.command("list")
@@ -231,3 +279,75 @@ def _desktop_entry_installed(desktop_id: str) -> bool:
         return Gio.DesktopAppInfo.new(desktop_id) is not None
     except Exception:
         return True  # cannot check; do not warn spuriously
+
+
+def describe_apps(payload: object) -> list[str]:
+    """``blueferry notifications apps`` output; names are terminal-escaped."""
+    from blueferry import notification_apps_view as view
+
+    rows = view.app_rows(payload)
+    lines = []
+    for row in rows:
+        marker = "muted" if row["muted"] else "     "
+        name = terminal_text(row["name"])
+        app_id = terminal_text(row["app_id"])
+        suffix = f"  ({app_id})" if row["name"] != row["app_id"] else ""
+        unseen = "" if row["seen"] else "  [not seen since start]"
+        lines.append(f"{marker}  {name}{suffix}{unseen}")
+    hint = view.apps_hint(payload)
+    if hint:
+        if lines:
+            lines.append("")
+        lines.append(terminal_text(hint))
+    return lines
+
+
+@notifications_app.command("apps")
+def notification_apps_list() -> None:
+    """List iPhone apps that sent notifications, and the muted ones."""
+    from blueferry.client import BackendError
+
+    try:
+        payload = _client().notification_apps()
+    except BackendError as error:
+        typer.echo(terminal_text(error), err=True)
+        raise typer.Exit(code=2) from None
+    for line in describe_apps(payload):
+        typer.echo(line)
+
+
+def _set_app_muted(app_id: str, muted: bool) -> None:
+    from blueferry.client import BackendError
+    from blueferry.notification_apps import validate_app_id
+
+    try:
+        # Validate locally for an immediate message; the backend decides.
+        selected = validate_app_id(app_id)
+    except ValueError as error:
+        typer.echo(str(error), err=True)
+        raise typer.Exit(code=2) from None
+    try:
+        _client().set_notification_app_muted(selected, muted)
+    except BackendError as error:
+        typer.echo(terminal_text(error), err=True)
+        raise typer.Exit(code=2) from None
+    if muted:
+        typer.echo(f"Muted {selected}: its desktop popups are hidden.")
+    else:
+        typer.echo(f"Unmuted {selected}: its desktop popups are shown again.")
+
+
+@notifications_app.command("mute")
+def notification_app_mute(
+    app_id: str = typer.Argument(..., help="iPhone app bundle ID, e.g. com.example.Chat"),
+) -> None:
+    """Hide the desktop popups of APP_ID (see `blueferry notifications apps`)."""
+    _set_app_muted(app_id, True)
+
+
+@notifications_app.command("unmute")
+def notification_app_unmute(
+    app_id: str = typer.Argument(..., help="iPhone app bundle ID"),
+) -> None:
+    """Show the desktop popups of APP_ID again."""
+    _set_app_muted(app_id, False)
