@@ -835,6 +835,19 @@ specification-based expectation, not a captured result.
   `Can*` properties are true while the command list is unknown (a list the
   phone did send is followed exactly, even when empty), and `mpris:trackid`
   stays the same when a truncated title is completed.
+- Volume: AMS has Remote Commands VolumeUp (5) and VolumeDown (6) and the
+  read-only Player attribute Volume (2, a float string 0.0 to 1.0), but no
+  way to set a level. BlueFerry therefore exposes volume only as the
+  existing `SendMediaCommand("volume-up"/"volume-down")` (no extra method:
+  same capability check against the advertised command list, same
+  rate-limit bucket) and the level as `player.volume`; a value outside 0 to
+  1 is dropped. `blueferry media volume up|down` and the client buttons
+  (`media_volume_view`) send one step each. MPRIS `Volume` stays readable
+  because the phone reports it, and a write keeps mapping to one step toward
+  the target (none within 0.01 of the reported level, none while the level
+  is unknown, and no effect for a player without volume commands, as MPRIS
+  wants for unsupported actions). Whether one AMS step equals one press of
+  the iPhone's volume button is not verified on hardware.
 - AMS ATT application errors 0xA0 (InvalidState), 0xA1 (InvalidCommand) and
   0xA2 (AbsentAttribute) appear only in BlueZ's error message text; BlueFerry
   logs them by name.
@@ -904,6 +917,30 @@ control). Observed with a real iPhone (iOS 27, Intel AX200, BlueZ 5.87,
 moves its `State` from `active` to `idle` while AMS still reports playback;
 GetStatus then reports route `pc` with `phone_audio_playing` `phone`, and
 picking this computer again returns to `pc`.
+
+A/V sync: when the phone and BlueZ negotiate AVDTP Delay Reporting,
+bluetoothd exports `MediaTransport1.Delay` (unit 1/10 ms) and sends the
+audio server's latency to the phone, which shifts video by it. GetStatus
+reports it as `phone_audio_delay_ms` with `phone_audio_delay_reporting`
+`true`; a transport without `Delay` reports `false`, no transport `null`.
+Updates follow `PropertiesChanged` (`State` and `Delay`). The delay is only
+reported while the transport's `State` is `active`; an idle or pending
+transport reports `phone_audio_delay_ms` as `null`, because its last value
+would be stale, and `phone_audio_delay_reporting` still says whether `Delay`
+exists. BlueZ invalidates `Delay` only once it no longer exists, so an
+invalidated `Delay` reads like a transport without it. Observed 2026-10-30
+(iPhone, AAC, Intel AX200, BlueZ 5.87, PipeWire 1.6.9): `Delay` went 0 → 316 → 1098 (later up to
+1298) as PipeWire reported latency.
+A follow-up test on 2026-11-02 (iPhone, video playing through the PC,
+transport `active`, BlueZ 5.87, PipeWire 1.6.9) showed that the
+`bluez_input` node has no `latencyOffsetNsec`, only channel and resample
+properties plus a writable `ProcessLatency`. Setting `ProcessLatency` to
+50 ms left `Delay` at 1098 for 20 s; after pause and play PipeWire rebuilt
+the node, the override was gone, and `Delay` read 1298, the same +20 ms
+already seen on 2026-10-31 without any intervention, which comes from
+PipeWire's own buffering. PipeWire therefore reports only its own buffer at
+stream start; a user offset is not included and does not survive a stream
+restart, so BlueFerry offers no fine-tuning control for the delay.
 
 Hardware validation on 2026-10-25 UTC (MediaTek, BlueZ 5.87, PipeWire 1.6.9,
 WirePlumber 0.5.18): with normal adapter roles and a rule matching only the
