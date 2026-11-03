@@ -57,6 +57,7 @@ from blueferry.call_history_settings import CallHistorySettings
 from blueferry.call_history_sync import CallHistorySync
 from blueferry.calls.controller import CallController
 from blueferry.calls.phone_status import SOURCE_HFP, LowBatteryMonitor, PhoneStatus
+from blueferry.calls.quick_replies import QuickReplySettings
 from blueferry.calls.settings import CallsSettings
 from blueferry.commands import run_command
 from blueferry.confirmed_groups import ConfirmedGroupsStore
@@ -67,7 +68,7 @@ from blueferry.contact_repository import ContactRepository
 from blueferry.contact_sync import ContactSync
 from blueferry.contacts import ContactsResolver
 from blueferry.dbus_service import MessagesService, claim_bus_name
-from blueferry.errors import BlueFerryError, NotReadyError
+from blueferry.errors import BlueFerryError, DeclinedNotSentError, NotReadyError
 from blueferry.event_dispatcher import EventDispatcher
 from blueferry.events import SmsEvent
 from blueferry.features import FeatureSettings
@@ -233,6 +234,8 @@ class Daemon:
         self.setup_verification = SetupVerification(config.IPHONE_MAC)
         # The saved one-time code opt-in (local.env only seeds it).
         self.otp_settings = OtpSettings(log_overrides=True)
+        # Saved texts for declining a ringing call with a message.
+        self.quick_replies = QuickReplySettings()
         self.events = EventDispatcher(
             self.contacts,
             defer_mark_read=self._defer_message_read_path,
@@ -248,6 +251,7 @@ class Daemon:
             ancs_app_seen=self.notification_apps.observe,
             ancs_app_muted=self.notification_apps.is_muted,
             on_call_action=self._notification_call_action,
+            quick_replies=self._notification_quick_replies,
             # Always wired, so switching photos on needs no new sink; it
             # returns no icon while photos are off.
             contact_photo=self._contact_photo_path,
@@ -772,9 +776,26 @@ class Daemon:
         if emit is not None:
             emit()
 
-    def _notification_call_action(self, call_id: str, action: str) -> None:
-        """Answer or decline from an incoming-call desktop notification."""
-        operation = self.calls.answer if action == "answer" else self.calls.hangup
+    def _notification_quick_replies(self) -> list[str]:
+        """Texts a ringing-call popup may offer; none while calls are off."""
+        return self.quick_replies.get() if self.calls.enabled else []
+
+    def _notification_call_action(self, call_id: str, action: str, text: str = "") -> None:
+        """Answer, decline or hang up from a call's desktop notification.
+
+        ``decline-message`` declines and texts ``text`` to the caller.
+        """
+        if action == "decline-message":
+            self._notification_decline_with_message(call_id, text)
+            return
+        operation = {
+            "answer": self.calls.answer,
+            "decline": self.calls.hangup,
+            "hangup": self.calls.hangup,
+        }.get(action)
+        if operation is None:
+            log.debug("ignoring unknown call notification action")
+            return
 
         def failed(error: Exception) -> None:
             # The controller already logged oFono's error name; never log the
@@ -788,6 +809,25 @@ class Daemon:
             operation(call_id, lambda _result: None, failed)
         except BlueFerryError as error:
             log.info("could not %s the call from its notification (%s)", action, error.dbus_suffix)
+
+    def _notification_decline_with_message(self, call_id: str, text: str) -> None:
+        operations = getattr(self._dbus_service, "operations", None)
+        if operations is None:
+            log.info("cannot decline with a message before the D-Bus service is up")
+            return
+
+        def failed(error: Exception) -> None:
+            # Never log the text or the number; the type says enough.
+            suffix = getattr(error, "dbus_suffix", type(error).__name__)
+            log.info("declining with a message from a notification failed (%s)", suffix)
+            # Either way the user pressed a button and expects an answer.
+            self.events.call_reply_failed(declined=isinstance(error, DeclinedNotSentError))
+
+        try:
+            operations.decline_with_message(call_id, text, lambda _result: None, failed)
+        except BlueFerryError as error:
+            log.info("could not decline with a message (%s)", error.dbus_suffix)
+            self.events.call_reply_failed(declined=False)
 
     def _phone_status(self) -> dict[str, object]:
         """GetStatus keys for the phone's battery, signal and network.
@@ -957,6 +997,7 @@ class Daemon:
             self.sessions,
             BackendDependencies(
                 on_sent=self.events.sent,
+                quick_replies=self.quick_replies,
                 on_group_sent=self.events.group_sent,
                 submit_obex=self.obex_worker.submit,
                 defer_mark_read=self._defer_message_reads,
@@ -1865,6 +1906,8 @@ class Daemon:
         ancs = self.ancs
         if ancs is not None:
             ancs.notification_actions_changed()
+        # "No notifications" also retires open call popups right away.
+        self.events.notification_policy_changed()
         # The app list reports the policy ("all_notifications").
         self._notification_apps_changed()
         self._emit_status()

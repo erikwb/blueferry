@@ -28,7 +28,19 @@ flowchart LR
   Bluetooth-Classic-Verbindung steht, und bringt es online (iOS macht das
   nicht von selbst).
 - Zeigt bei einem eingehenden Anruf eine Desktop-Mitteilung mit **Answer**
-  und **Decline**. Sie schließt sich, sobald es nicht mehr klingelt.
+  und **Decline**, bei einem Anrufer mit Nummer zusätzlich einen Knopf zum
+  Ablehnen mit Nachricht (siehe
+  [Ablehnen mit Nachricht](#ablehnen-mit-nachricht)). Sie schließt sich,
+  sobald es nicht mehr klingelt.
+- Während eines Gesprächs (hier oder am iPhone angenommen, oder ein
+  ausgehender Anruf, sobald er verbunden ist) bleibt eine Mitteilung
+  stehen: **Call with** und der Anrufer, die Startzeit („since 15:14“) und
+  **Hang up**. Beim Halten steht dort **On hold**. Wer die Mitteilung
+  schließt, beendet damit nie den Anruf; sie bleibt zu, bis der Anruf
+  gehalten oder fortgesetzt wird. Endet der Anruf, verschwindet sie. Mit
+  `BLUEFERRY_SHOW_NOTIFICATION_CONTENT=false` zeigt sie keinen Anrufer;
+  ein Wechsel auf **No notifications** schließt offene Anruf-Mitteilungen
+  sofort.
 - Der Qt- und der GTK-Client zeigen laufende Anrufe als Karten im Tab
   **Calls** (annehmen, halten/fortsetzen, auflegen und, solange ein Anruf
   aktiv ist, Tastentöne: jede Taste des Wählfelds und jede außerhalb eines
@@ -145,6 +157,45 @@ Auch die gedruckte Schreibweise `+41 (0)79 …` wird abgelehnt: Ob die
 eingeklammerte Null gewählt wird, hängt vom Nummerierungsplan ab. Verwende
 stattdessen eine eindeutige internationale Nummer, etwa `+4179…` für die
 Schweiz oder `+3906…` für Rom.
+
+## Ablehnen mit Nachricht
+
+Einen klingelnden Anruf kannst du mit einer Nachricht an den Anrufer
+ablehnen, etwa „Can't talk now. I'll call you back.“: Zuerst wird der Anruf
+am iPhone abgelehnt, dann geht der Text über die Nachrichten-Verbindung des
+iPhones (MAP) hinaus, genau wie eine in BlueFerry geschriebene Nachricht,
+und erscheint in der Unterhaltung.
+
+- Der Qt-, GTK- und Terminal-Client bieten in der Anrufansicht beim Klingeln
+  **Decline with message** an: eine gespeicherte Antwort wählen oder einen
+  eigenen Text schreiben.
+- Die Mitteilung eines klingelnden Anrufs bekommt einen zusätzlichen Knopf.
+  Mitteilungsserver mit Antwortfeld (KDE Plasma) zeigen **Reply…** für einen
+  eigenen Text, andere die erste gespeicherte Antwort.
+- Nur Anrufe mit Nummer bekommen diese Wahl; unterdrückte oder unbekannte
+  Anrufer lassen sich nur ablehnen.
+- Ohne Nachrichten-Verbindung wird der Anruf nicht abgelehnt, und BlueFerry
+  sagt warum. Scheitert das Senden erst nach dem Ablehnen, meldet BlueFerry
+  das; der Anruf bleibt abgelehnt. Ein eigener Text darf bis zu 1000 Zeichen
+  haben.
+  Kam die Ablehnung aus der Mitteilung, meldet eine kurze Mitteilung beide
+  Fälle.
+- Die gespeicherten Antworten bearbeitest du in den Einstellungen unter
+  **Calls & Audio**: bis zu 5 Zeilen mit je höchstens 160 Zeichen. Bis du sie
+  änderst, stehen drei englische Antworten bereit (übersetzt, wo es eine
+  Übersetzung gibt); mit einer leeren Liste bleibt nur der eigene Text.
+
+```bash
+blueferry calls decline-with-message            # die erste gespeicherte Antwort
+blueferry calls decline-with-message --reply 2  # eine andere gespeicherte Antwort
+blueferry calls decline-with-message --text "Bin in einer Sitzung, rufe um 15 Uhr an"
+blueferry calls replies                         # gespeicherte Antworten zeigen
+blueferry calls replies set "Bin unterwegs" "Rufe später zurück"
+blueferry calls replies clear                   # nur eigener Text
+```
+
+Die Funktion gibt es nur, solange Anrufe eingeschaltet sind; einen eigenen
+Schalter braucht sie nicht.
 
 ## Grenzen
 

@@ -12,6 +12,7 @@ import threading
 import time
 
 import dbus
+import dbus.lowlevel
 import dbus.mainloop
 import dbus.service
 import pytest
@@ -171,6 +172,34 @@ def _call(name, interface_name, method, *args):
             outcome["value"] = getattr(interface, method)(*args, timeout=5)
         except Exception as error:
             outcome["error"] = error
+        finally:
+            connection.close()
+
+    thread = threading.Thread(target=request)
+    thread.start()
+    _dispatch_until(lambda: not thread.is_alive())
+    thread.join()
+    return outcome
+
+
+def _raw_call(name, interface_name, method, args, signature):
+    """Send ``args`` with exactly ``signature``, which dbus-python never checks.
+
+    A proxy call would convert the arguments to the introspected types; a raw
+    message shows what the service does with the wrong ones.
+    """
+    outcome = {}
+
+    def request():
+        connection = dbus.SessionBus(private=True, mainloop=dbus.mainloop.NULL_MAIN_LOOP)
+        try:
+            message = dbus.lowlevel.MethodCallMessage(name, OBJECT_PATH, interface_name, method)
+            if signature:
+                message.append(*args, signature=signature)
+            reply = connection.send_message_with_reply_and_block(message, 5)
+            outcome["value"] = reply.get_args_list()
+        except dbus.exceptions.DBusException as error:
+            outcome["error"] = error.get_dbus_name()
         finally:
             connection.close()
 

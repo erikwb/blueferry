@@ -454,6 +454,22 @@
       <annotation name="io.weirdware.BlueFerry.Errors"
                   value="CallsUnavailable,CallFailed"/>
     </method>
+    <method name="DeclineWithMessage">
+      <annotation name="org.freedesktop.DBus.Description"
+                  value="Decline a ringing call over HFP, then send text to the caller's number over MAP like Send; refused for callers without a number. DeclinedNotSent means the call was declined but the text was not sent"/>
+      <arg name="call_id" type="s" direction="in"/>
+      <arg name="text" type="s" direction="in"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="InvalidArgs,NotFound,NotReady,CallsUnavailable,CallFailed,DeclinedNotSent"/>
+    </method>
+    <method name="SetCallQuickReplies">
+      <annotation name="org.freedesktop.DBus.Description"
+                  value="Save up to 5 one-line texts (160 characters each) offered when declining a call with a message; an empty list leaves only a typed text; returns the calls_quick_replies GetStatus key as JSON"/>
+      <arg name="replies" type="as" direction="in"/>
+      <arg name="status_json" type="s" direction="out"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="InvalidArgs,NotReady"/>
+    </method>
     <method name="HoldAndAnswer">
       <annotation name="io.weirdware.BlueFerry.Errors"
                   value="InvalidArgs,CallsUnavailable,CallFailed"/>
