@@ -1019,7 +1019,9 @@ class MessagesService(StrictObject):
                 str(call_id), str(text), lambda _result: success(), failure,
             )
 
-        self._call_control(sender, "calls-control", invoke, reply_handler, error_handler)
+        # Declining ends the call like Hangup, so it shares Hangup's bucket:
+        # a flood of tones or swaps never keeps a call from being declined.
+        self._call_control(sender, "calls-hangup", invoke, reply_handler, error_handler)
 
     @dbus.service.method(
         CALLS_IFACE, in_signature="as", out_signature="s", sender_keyword="sender"
