@@ -159,6 +159,10 @@ class _SearchOutcome:
     result: dict[str, Any]
     index: ThreadSearchIndex | None = None
     contacts: ContactIndex | None = None
+    # What the job read, so a reply can drop groups that went stale while
+    # it was queued (see BackendOperations._finish_search).
+    version: tuple[int, int, tuple[int, ...]] | None = None
+    records: list[CallRecord] | None = None
 
 
 class NotificationPolicy(Protocol):
@@ -978,6 +982,7 @@ class BackendOperations:
         }
         if len(selected) < MIN_SEARCH_QUERY_CHARS:
             return lambda: _SearchOutcome(result)
+        version = self._search_version()
         threads = self._conversations.threads()
         index = self._search_index
         if index is not None and not index.matches(threads):
@@ -1005,19 +1010,80 @@ class BackendOperations:
                     records, selected, bounded,
                     resolver.resolve if resolver is not None else None,
                 ))
-            return _SearchOutcome(result, built, resolver)
+            return _SearchOutcome(
+                result, built, resolver, version=version, records=records,
+            )
 
         return run
 
+    def _search_version(self) -> tuple[int, int, tuple[int, ...]]:
+        storage = self.dependencies.storage
+        return (
+            self._conversations.generation,
+            storage.revision if storage is not None else 0,
+            history_revision(storage=storage),
+        )
+
+    @staticmethod
+    def _only_appended(
+        before: tuple[int, int, tuple[int, ...]], after: tuple[int, int, tuple[int, ...]],
+    ) -> bool:
+        """Whether history only gained messages: nothing deleted, pruned or changed.
+
+        Event ids are AUTOINCREMENT, so every removal shows as fewer new rows
+        than the newest id advanced by.
+        """
+        generation, key, (count, newest, changes) = before
+        now_generation, now_key, (now_count, now_newest, now_changes) = after
+        return (
+            (generation, key, changes) == (now_generation, now_key, now_changes)
+            and now_newest >= newest and now_count - count == now_newest - newest
+        )
+
     def _finish_search(self, outcome: _SearchOutcome) -> dict[str, Any]:
-        """Keep the folded caches the job built, if they are still current."""
-        current = self._conversations.cached_threads
-        if outcome.index is not None and current is not None and outcome.index.matches(current):
-            self._search_index = outcome.index
+        """Drop groups that went stale while queued; keep still-current caches.
+
+        Locked storage, a deletion, a reset or a contact reload since the
+        snapshot empties the affected groups, and so does call history that
+        was turned off or changed: a reply never carries what is already gone.
+        New messages alone keep the results; their HistoryChanged follows.
+        """
+        result, index = outcome.result, outcome.index
+        storage = self.dependencies.storage
+        readable = storage is None or storage.status.can_read
         contacts = self.dependencies.contacts
-        if outcome.contacts is not None and contacts is not None:
-            contacts.adopt_card_haystacks(outcome.contacts)
-        return outcome.result
+        if outcome.version is not None and (
+            not readable
+            or not self._only_appended(outcome.version, self._search_version())
+        ):
+            for group in ("conversations", "messages"):
+                result[group].update(total=0, results=[])
+            index = None
+        resolver = outcome.contacts
+        # Call names were resolved through the same snapshot.
+        contacts_stale = resolver is not None and (
+            not readable or contacts is None
+            or getattr(resolver, "card_epoch", None) != getattr(contacts, "card_epoch", None)
+        )
+        if contacts_stale:
+            result["contacts"].update(
+                total=0, results=[], available=contacts is not None,
+            )
+        elif not self._contact_photos_enabled():
+            for card in result["contacts"]["results"]:
+                card["has_photo"] = False
+        if outcome.records is not None:
+            history = self._current_call_history() if readable else None
+            if contacts_stale or history is None or history.records() != outcome.records:
+                result["calls"].update(
+                    total=0, results=[], available=history is not None,
+                )
+        current = self._conversations.cached_threads
+        if index is not None and current is not None and index.matches(current):
+            self._search_index = index
+        if resolver is not None and contacts is not None:
+            contacts.adopt_card_haystacks(resolver)
+        return result
 
     def contact_photo(self, address: str) -> bytes:
         """Return the validated photo of the one contact owning ``address``.
@@ -1159,6 +1225,8 @@ class BackendOperations:
 
     def invalidate_conversations(self) -> None:
         self._conversations.invalidate()
+        # The folded bodies are a decrypted copy of the old projection.
+        self._search_index = None
 
     def status(self) -> dict:
         status = {
