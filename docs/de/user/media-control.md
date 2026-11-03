@@ -21,14 +21,15 @@ Bluetooth-Verkehr und liegt außerhalb von BlueFerrys Schwerpunkt Nachrichten.
   ist.
 - Die Kommandozeile funktioniert überall. Jeder Client zeigt bei
   eingeschalteter Mediensteuerung, was gerade läuft, mit Zurück/
-  Wiedergabe-Pause/Weiter (siehe unten). Kirigami-, GTK- und
-  Quickshell-Client haben auch den Schalter; im Terminal-Client schaltet man
-  sie über die Kommandozeile ein.
+  Wiedergabe-Pause/Weiter (siehe unten). Kirigami-, GTK-, Quickshell- und
+  Terminal-Client haben auch den Schalter.
 
 ## Einschalten
 
 Im Kirigami-, GTK- oder Quickshell-Client die iPhone-Einstellungen öffnen
-und **Media Control** einschalten. Im Terminal:
+und **Media Control** einschalten. Im Terminal-Client heißt der Schalter
+**Show and Control What the iPhone Is Playing** und steht unter Settings ›
+Calls & Audio. Im Terminal:
 
 ```bash
 blueferry media enable    # blueferry media disable schaltet sie wieder aus
@@ -51,7 +52,8 @@ Wahl hat Vorrang.
 blueferry media                # was gerade läuft (wie "status")
 blueferry media toggle         # Wiedergabe/Pause
 blueferry media next           # auch: play, pause, previous
-blueferry media volume-up      # auch: volume-down (eine iPhone-Stufe)
+blueferry media volume up      # auch: volume down (eine iPhone-Stufe)
+blueferry media volume         # die zuletzt vom iPhone gemeldete Lautstärke
 blueferry media skip-forward   # auch: skip-backward (fester Sprung der App)
 blueferry media like           # auch: dislike, bookmark, repeat, shuffle
 blueferry media --json         # Rohstatus für Skripte
@@ -66,13 +68,39 @@ Verbindung einmal nach. Bis die Liste da ist, zeigt `blueferry media` die
 Befehle als unbekannt, und BlueFerry sendet einen Befehl wie gewünscht; das
 iPhone ignoriert oder verweigert einen, den die App nicht kennt.
 
-Im Kirigami-Client erscheint über den Unterhaltungen eine kleine Leiste mit
-Titel, Interpret und den Tasten Zurück/Wiedergabe-Pause/Weiter, solange etwas
+### Lautstärke
+
+`blueferry media volume up` und `volume down` ändern die Lautstärke des
+iPhones um eine Stufe, wie die Lautstärketasten am iPhone, und bestätigen das
+mit dem Stand, den das iPhone vor dem Schritt gemeldet hat, etwa „Turned the
+iPhone volume up (was 40%).“ Apples Mediendienst kennt kein „Lautstärke auf
+60 % setzen“; der neue Wert erscheint kurz danach in `blueferry media`, sobald
+das iPhone ihn meldet. Bietet die spielende App keine Lautstärkeregelung an,
+sagt BlueFerry das und sendet nichts. Die älteren Schreibweisen `volume-up`
+und `volume-down` funktionieren weiterhin.
+
+Im Kirigami-Client hat der Bereich **Now Playing** der Telefon-Karte unter
+den Wiedergabeknöpfen eine zweite Zeile: den zuletzt vom iPhone gemeldeten
+Stand („Volume 40%“) und die Knöpfe **Volume Down** / **Volume Up**, eine
+Stufe pro Klick. Bietet die spielende App keine Lautstärkeregelung an, sind
+sie ausgegraut und eine kurze Notiz sagt warum. Der GTK-Client bietet
+dieselben Schritte als zwei Knöpfe neben Wiedergabe/Pause auf seiner
+Telefon-Karte, dazwischen die zuletzt gemeldete Lautstärke; ein Knopf ist
+ausgegraut, und sein Tooltip nennt den Grund, wenn die spielende App diesen
+Schritt nicht anbietet. Der Quickshell-Client zeigt die beiden Knöpfe und
+die zuletzt gemeldete Lautstärke in seinem Wiedergabestreifen; sie sind
+ausgegraut, wenn die spielende App keine Lautstärkeregelung anbietet. Die
+Lautstärketasten des Terminal-Clients stehen weiter unten.
+
+Im Kirigami-Client zeigt der Bereich **Now Playing** der Telefon-Karte Titel,
+Interpret und die Tasten Zurück/Wiedergabe-Pause/Weiter, solange etwas
 läuft. Der Quickshell-Client zeigt dieselbe Leiste unter seiner Kopfzeile,
 der GTK-Client auf der Telefon-Karte über seinen Reitern und der
 Terminal-Client in einer Zeile unter den Statusanzeigen; dort steuern `p`,
-`[` und `]` Wiedergabe/Pause, Zurück und Weiter. Ist die Option aus, zeigt
-keiner davon etwas an und kein Client fragt das Backend.
+`[` und `]` Wiedergabe/Pause, Zurück und Weiter, und `-` und `+` (oder `=`)
+ändern die Lautstärke (seine iPhone-Übersicht hat die Knöpfe Volume Down,
+Play/Pause und Volume Up). Ist die Option aus, zeigt keiner davon etwas an
+und kein Client fragt das Backend.
 
 ```mermaid
 flowchart LR

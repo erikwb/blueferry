@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import sqlite3
+import threading
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
+
+import pytest
 
 import blueferry.history as history_module
 from blueferry.history import (
@@ -303,3 +306,38 @@ def test_sqlite_sink_runs_the_full_age_sweep_at_most_hourly(tmp_path, monkeypatc
     now[0] += sink_module.AGE_SWEEP_INTERVAL_SEC
     append(20)
     assert sweeps == [False, False, True, False]
+
+
+@pytest.mark.parametrize("reader", [read_events, read_event_rows])
+def test_slow_decoding_does_not_lock_out_history_writes(
+    tmp_path, monkeypatch, reader
+) -> None:
+    path = tmp_path / "events.sqlite"
+    for index in range(3):
+        append_event({"kind": "sms_received", "body": str(index)}, path=path)
+    original_deserialize = history_module._deserialize
+    decoding, release = threading.Event(), threading.Event()
+
+    def slow_deserialize(payload, storage):
+        if threading.current_thread() is not threading.main_thread():
+            decoding.set()
+            assert release.wait(5)
+        return original_deserialize(payload, storage)
+
+    monkeypatch.setattr(history_module, "_deserialize", slow_deserialize)
+    read = threading.Thread(target=lambda: reader(path=path))
+    write = threading.Thread(target=lambda: append_event(
+        {"kind": "sms_received", "body": "live"}, path=path,
+    ))
+    read.start()
+    try:
+        assert decoding.wait(5)
+        write.start()
+        # A live message is stored while the archive is still being decoded.
+        write.join(2)
+        assert not write.is_alive()
+    finally:
+        release.set()
+        read.join(5)
+        write.join(5)
+    assert len(read_events(path=path)) == 4

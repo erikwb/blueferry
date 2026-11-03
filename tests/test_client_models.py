@@ -267,6 +267,19 @@ def test_status_reports_the_contact_photo_opt_in_only_when_the_daemon_does() -> 
     assert status.extra == {"contact_photo_count": 4}
 
 
+def test_status_keeps_the_contact_photo_state_beside_the_boolean() -> None:
+    assert "contact_photos_state" not in BackendStatus.from_dict({}).to_dict()
+    status = BackendStatus.from_dict(
+        {"contact_photos": False, "contact_photos_state": "unknown"}
+    )
+    assert status.contact_photos is False and status.contact_photos_state == "unknown"
+    assert status.to_dict()["contact_photos_state"] == "unknown"
+    assert status.extra == {}
+    # A state this client doesn't know leaves it with the boolean.
+    newer = BackendStatus.from_dict({"contact_photos": True, "contact_photos_state": "later"})
+    assert newer.contact_photos_state is None and newer.contact_photos is True
+
+
 def test_status_decodes_only_canonical_opaque_phone_profile_ids() -> None:
     profile_id = "01234567-89ab-4cde-8fab-0123456789ab"
     assert BackendStatus.from_dict({}).phone_profile_id is None
@@ -274,3 +287,74 @@ def test_status_decodes_only_canonical_opaque_phone_profile_ids() -> None:
     assert status.phone_profile_id == profile_id
     assert status.to_dict()["phone_profile_id"] == profile_id
     assert BackendStatus.from_dict({"phone_profile_id": "02:00:00:00:00:01"}).phone_profile_id is None
+
+
+def test_backend_error_keeps_the_dbus_error_name() -> None:
+    import dbus.exceptions
+
+    assert BackendError("plain").dbus_name == ""
+    assert str(BackendError("plain")) == "plain"
+
+    def failing(name: str, message: str):
+        def call(*_args, **_kwargs):
+            raise dbus.exceptions.DBusException(message, name=name)
+        return call
+
+    messages = _Messages()
+    client = BackendClient(interface_factory=lambda _name: messages)
+    messages.SetNotificationPinned = failing(  # type: ignore[attr-defined]
+        "org.blueferry.Error.NotReady", "local history is locked",
+    )
+    with pytest.raises(BackendError, match="local history is locked") as raised:
+        client.set_notification_pinned("k1", True)
+    assert raised.value.dbus_name == "org.blueferry.Error.NotReady"
+
+    messages.SetNotificationPinned = failing(  # type: ignore[attr-defined]
+        "org.freedesktop.DBus.Error.UnknownMethod", "no such method",
+    )
+    with pytest.raises(BackendError, match="cannot pin notifications") as raised:
+        client.set_notification_pinned("k1", True)
+    assert raised.value.dbus_name == "org.freedesktop.DBus.Error.UnknownMethod"
+
+    # Generically, through the shared conversion helper too.
+    messages.MarkThreadRead = failing(  # type: ignore[attr-defined]
+        "org.blueferry.Error.NotFound", "no such conversation",
+    )
+    with pytest.raises(BackendError) as raised:
+        client.mark_thread_read("address:email:test@example.com")
+    assert raised.value.dbus_name == "org.blueferry.Error.NotFound"
+
+
+def test_search_and_contact_card_errors_keep_the_dbus_error_name() -> None:
+    import dbus.exceptions
+
+    from blueferry.client import ContactNotFoundError
+    from blueferry.protocol import ERROR_PREFIX
+
+    def failing(name: str, message: str):
+        def call(*_args, **_kwargs):
+            raise dbus.exceptions.DBusException(message, name=name)
+        return call
+
+    messages = _Messages()
+    client = BackendClient(interface_factory=lambda _name: messages)
+    # A full search queue: the TUI retries once on this name.
+    messages.Search = failing(  # type: ignore[attr-defined]
+        f"{ERROR_PREFIX}.NotReady", "search busy",
+    )
+    with pytest.raises(BackendError, match="search busy") as raised:
+        client.search("alice")
+    assert raised.value.dbus_name == f"{ERROR_PREFIX}.NotReady"
+
+    messages.ListContactCards = failing(  # type: ignore[attr-defined]
+        f"{ERROR_PREFIX}.NotReady", "contacts locked",
+    )
+    with pytest.raises(BackendError) as raised:
+        client.contact_cards()
+    assert raised.value.dbus_name == f"{ERROR_PREFIX}.NotReady"
+
+    messages.GetContact = failing(  # type: ignore[attr-defined]
+        f"{ERROR_PREFIX}.NotFound", "no such card",
+    )
+    with pytest.raises(ContactNotFoundError):
+        client.contact("stale")

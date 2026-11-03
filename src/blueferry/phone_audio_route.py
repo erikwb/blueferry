@@ -21,6 +21,21 @@ computer. Otherwise the Apple Media Service playback state decides between
 change to ``pc`` is published at once; every other change must hold for
 ``PLAYING_DEBOUNCE_SEC`` so a track change does not flicker.
 
+The A/V sync delay is reported as ``phone_audio_delay_ms`` and
+``phone_audio_delay_reporting``. With AVDTP Delay Reporting negotiated,
+bluetoothd exports the transport's ``Delay`` property (1/10 ms) and forwards
+what the audio server reports to the phone, which shifts video by it. A
+transport without ``Delay`` has no delay reporting: BlueZ 5.70 to 5.77 export
+the read-only ``Delay`` only while it is nonzero, and an audio server whose
+sink endpoint does not register ``DelayReporting`` gets none. Video can then
+run ahead of the sound. Both keys are ``None`` while no stream is open. The
+delay itself is only reported while the transport's ``State`` is ``active``:
+an idle or pending transport reports ``phone_audio_delay_ms`` as ``None`` (its
+last value would be stale), while ``phone_audio_delay_reporting`` still says
+whether the property exists. BlueZ lists ``Delay`` as invalidated only once
+it no longer exists, so that counts as no ``Delay``. Both follow
+``PropertiesChanged`` for ``State`` and ``Delay``; nothing polls.
+
 Requires the desktop audio server to offer the A2DP sink role. BlueFerry no
 longer overrides the desktop's Bluetooth audio roles.
 
@@ -130,6 +145,9 @@ class PhoneAudioRoute:
         self.sink_available = False
         # Transport object path -> MediaTransport1.State.
         self._transports: dict[str, str] = {}
+        # Transport object path -> MediaTransport1.Delay (1/10 ms), or None
+        # while the transport does not export Delay.
+        self._delays: dict[str, int | None] = {}
         self._known = False
         self._pending: str | None = None
         self._pending_failure: Callable[[Exception], None] | None = None
@@ -170,7 +188,39 @@ class PhoneAudioRoute:
             "phone_audio_reason": reason,
             "phone_audio_pending": self._pending or "",
             "phone_audio_playing": self._playing or PLAYING_UNKNOWN,
+            **self._delay_status(),
         }
+
+    def _delay_status(self) -> dict[str, object]:
+        """The A/V sync delay of the open stream; ``None`` without one.
+
+        The delay itself only while audio flows (``State`` ``active``); an
+        idle transport still says whether delay reporting was negotiated.
+        """
+        if not self._transports:
+            return {"phone_audio_delay_ms": None, "phone_audio_delay_reporting": None}
+        # Prefer the stream that carries audio; normally there is only one.
+        path = min(
+            self._transports,
+            key=lambda key: (self._transports[key] != TRANSPORT_ACTIVE, key),
+        )
+        delay = self._delays.get(path)
+        if delay is None:
+            return {"phone_audio_delay_ms": None, "phone_audio_delay_reporting": False}
+        if self._transports[path] != TRANSPORT_ACTIVE:
+            return {"phone_audio_delay_ms": None, "phone_audio_delay_reporting": True}
+        return {
+            "phone_audio_delay_ms": (delay + 5) // 10,
+            "phone_audio_delay_reporting": True,
+        }
+
+    @staticmethod
+    def _read_delay(properties: Mapping) -> int | None:
+        """MediaTransport1.Delay in 1/10 ms, or None when it is not exported."""
+        value = properties.get("Delay")
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            return None
+        return int(value)
 
     def _route(self) -> tuple[str, str]:
         if not self._allowed:
@@ -368,11 +418,17 @@ class PhoneAudioRoute:
         self._known = True
         self._connected = bool(device.get("Connected", False))
         self._has_source = self._offers_source(device)
-        self._transports = {
-            str(path): str(interfaces[TRANSPORT_IFACE].get("State", ""))
+        sinks = {
+            str(path): interfaces[TRANSPORT_IFACE]
             for path, interfaces in objects.items()
             if self._is_phone_sink(interfaces.get(TRANSPORT_IFACE))
         } if self._connected else {}
+        self._transports = {
+            path: str(properties.get("State", "")) for path, properties in sinks.items()
+        }
+        self._delays = {
+            path: self._read_delay(properties) for path, properties in sinks.items()
+        }
         if not self._connected:
             self._cancel_resume()
 
@@ -388,6 +444,7 @@ class PhoneAudioRoute:
             self._has_source = self._offers_source(properties)
         if not self._connected:
             self._transports.clear()
+            self._delays.clear()
             self._cancel_resume()
 
     def _is_phone_sink(self, properties: Mapping | None) -> bool:
@@ -413,8 +470,9 @@ class PhoneAudioRoute:
         if not self._is_phone_sink(interfaces.get(TRANSPORT_IFACE)):
             return
         before = self.snapshot()
-        self._transports[str(path)] = str(
-            interfaces[TRANSPORT_IFACE].get("State", ""))
+        properties = interfaces[TRANSPORT_IFACE]
+        self._transports[str(path)] = str(properties.get("State", ""))
+        self._delays[str(path)] = self._read_delay(properties)
         self._changed(before)
 
     def _interfaces_removed(self, path, interfaces) -> None:
@@ -430,16 +488,27 @@ class PhoneAudioRoute:
             return
         before = self.snapshot()
         self._transports.pop(str(path), None)
+        self._delays.pop(str(path), None)
         self._changed(before)
 
-    def _transport_changed(self, path, interface, changed, _invalidated) -> None:
-        if str(interface) != TRANSPORT_IFACE or "State" not in changed:
+    def _transport_changed(self, path, interface, changed, invalidated) -> None:
+        if str(interface) != TRANSPORT_IFACE:
+            return
+        delay_gone = "Delay" in (invalidated or ())
+        if "State" not in changed and "Delay" not in changed and not delay_gone:
             return
         key = str(path)
         if key not in self._transports:
             return
         before = self.snapshot()
-        self._transports[key] = str(changed["State"])
+        if "State" in changed:
+            self._transports[key] = str(changed["State"])
+        if "Delay" in changed:
+            self._delays[key] = self._read_delay(changed)
+        elif delay_gone:
+            # BlueZ invalidates a property only once it no longer exists
+            # (gdbus process_properties_from_interface).
+            self._delays[key] = None
         self._changed(before)
 
     def _properties_changed(self, interface, changed, _invalidated) -> None:
@@ -593,6 +662,7 @@ class PhoneAudioRoute:
         self._has_source = False
         self.sink_available = False
         self._transports.clear()
+        self._delays.clear()
         self._playing = PLAYING_UNKNOWN
         self._cancel_debounce()
         self._cancel_resume()
