@@ -958,6 +958,7 @@ def settings_window(qml_engine):
             function closeContact() { record("closeContact", []); }
             function setSearchQuery(query) { record("setSearchQuery", [query]); }
             function clearSearch() { record("clearSearch", []); }
+            function revealCall(callId) { record("revealCall", [callId]); }
         }
     ''', QUrl())
     assert not component.isError(), [error.toString() for error in component.errors()]
@@ -7209,6 +7210,8 @@ def test_global_search_opens_with_the_shortcut_and_jumps_to_each_hit(
     QGuiApplication.processEvents()
     assert _evaluate(qml_engine, "testWindow.currentTab === testWindow.callsTab") is True
     assert _evaluate(qml_engine, "testWindow.focusedCallId") == "call-1"
+    assert {"method": "revealCall", "args": ["call-1"]} in _evaluate(
+        qml_engine, "testBridge.calls")
     changes: list[str] = []
     window.focusedCallIdChanged.connect(lambda: changes.append(window.property("focusedCallId")))
     _evaluate(qml_engine, "testWindow.openSearchTarget(testSearch.rows[3].target)")

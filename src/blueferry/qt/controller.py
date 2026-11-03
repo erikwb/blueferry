@@ -44,6 +44,7 @@ from blueferry.conversation_state import (
 )
 from blueferry.doctor_report import DoctorReport, DoctorRunner
 from blueferry.i18n import _
+from blueferry.limits import MAX_CALL_HISTORY_QUERY_LIMIT
 from blueferry.models import BackendStatus, CallsSnapshot, Thread
 from blueferry.notification_history import NotificationHistory
 from blueferry.onboarding import OnboardingState, effective_compatibility
@@ -133,7 +134,30 @@ class _WorkerRunner:
 
 
 # Private key of the muted app IDs added to a ListNotifications answer.
+# Calls the Recent Calls page reads at first.
+CALL_HISTORY_PAGE = 200
 _MUTED_APPS_KEY = "_blueferry_muted_apps"
+
+
+# What the rows need from the raw ListNotifications answer: never the titles
+# or bodies, which go with the shared model's rows.
+_RECORD_PIN_FIELDS = ("key", "pinned", "removed", "actionable", "app_id")
+
+
+def _pin_fields(value: object) -> dict:
+    """The pin keys, flags and app IDs of one ListNotifications answer."""
+    if not isinstance(value, dict):
+        return {}
+    records = value.get("notifications")
+    return {
+        "pins_max": value.get("pins_max"),
+        _MUTED_APPS_KEY: value.get(_MUTED_APPS_KEY) or frozenset(),
+        "notifications": [
+            {name: record[name] for name in _RECORD_PIN_FIELDS if name in record}
+            if isinstance(record, Mapping) else None
+            for record in records
+        ] if isinstance(records, list) else [],
+    }
 
 
 class _NotificationRunner:
@@ -169,7 +193,7 @@ class _NotificationRunner:
             history = controller._notification_history
             rows = history.rows
             previous = controller._notification_reply
-            controller._notification_reply = value if isinstance(value, dict) else {}
+            controller._notification_reply = _pin_fields(value)
             callback()
             if history.rows is rows:
                 controller._notification_reply = previous
@@ -335,6 +359,8 @@ class BridgeController(QObject):
         self._call_history_again = False
         # Only a visible Recent Calls page keeps call records in this process.
         self._call_history_watched = False
+        # Recent calls read per load; a search hit can reach further back.
+        self._call_history_limit = CALL_HISTORY_PAGE
         self._call_history_timer = QTimer(self)
         self._call_history_timer.setSingleShot(True)
         self._call_history_timer.setInterval(100)
@@ -935,7 +961,11 @@ class BridgeController(QObject):
         """The shared model changed: add the pin fields and the muted flag
         to its display rows (same order as the raw records)."""
         history = self._notification_history
-        snapshot = self._notification_reply if history.rows else {}
+        if not history.rows:
+            # Forgotten rows (tab hidden, storage locked, list off) take
+            # their keys along.
+            self._notification_reply = {}
+        snapshot = self._notification_reply
         records = snapshot.get("notifications")
         records = [r for r in records if isinstance(r, Mapping)] if isinstance(
             records, list
@@ -1551,6 +1581,7 @@ class BridgeController(QObject):
         if self._call_history_watched:
             self.loadCallHistory()
             return
+        self._call_history_limit = CALL_HISTORY_PAGE
         self._call_history_timer.stop()
         self._call_history_again = False
         if self._call_history or self._call_history_error:
@@ -1558,6 +1589,19 @@ class BridgeController(QObject):
             self._call_history_rows = {}
             self._call_history_error = ""
             self.callHistoryChanged.emit()
+
+    @Slot(str)
+    def revealCall(self, call_id: str) -> None:
+        """A search hit names this call: read every retained call unless
+        the shown list already holds it (Search covers all of them)."""
+        selected = str(call_id or "")
+        if not selected or self._call_history_limit >= MAX_CALL_HISTORY_QUERY_LIMIT:
+            return
+        if any(selected in (row.get("ids") or [])
+               for row in self._call_history_rows.get("all") or []):
+            return
+        self._call_history_limit = MAX_CALL_HISTORY_QUERY_LIMIT
+        self.loadCallHistory()
 
     @Slot()
     def loadCallHistory(self) -> None:
@@ -1568,9 +1612,10 @@ class BridgeController(QObject):
             self._call_history_again = True
             return
         self._call_history_loading = True
+        limit = self._call_history_limit
 
         def operation() -> tuple[list[dict], dict]:
-            entries = self._backend.call_history(200)
+            entries = self._backend.call_history(limit)
             rows = {
                 "all": phone_overview.call_groups(entries),
                 "missed": phone_overview.call_groups(entries, missed_only=True),

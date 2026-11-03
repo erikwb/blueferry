@@ -2865,6 +2865,28 @@ def test_a_mute_refused_for_an_unreadable_settings_file_shows_the_list_unavailab
     assert controller.errorText == ""
 
 
+@pytest.mark.parametrize("change", [
+    {"storage_state": "locked"},
+    {"notification_content_shown": False},
+], ids=["locked", "content-hidden"])
+def test_the_raw_notification_answer_keeps_no_titles_or_bodies(monkeypatch, change):
+    backend = _PinBackend()
+    controller = _inline_controller(monkeypatch, backend)
+    _allow_notifications(controller)
+    controller.watchNotifications(True)
+    assert controller.notifications[0]["key"] == "k1"
+    assert "Hi" not in repr(controller._notification_reply)
+
+    controller._notification_history.sync_status({
+        "daemon": True, "notification_history_enabled": True,
+        "storage_state": "ready", "notification_content_shown": True, **change,
+    })
+    assert "Hi" not in repr(controller._notification_reply)
+    assert all(row["title"] == "" for row in controller.notifications)
+    if not controller.notifications:
+        assert controller._notification_reply == {}
+
+
 def test_notification_rows_without_pin_keys_hide_the_pin_control(monkeypatch):
     backend = _PinBackend(muted={"com.example.chat"})
     backend.notifications = lambda limit=50: {
@@ -3043,6 +3065,42 @@ def test_a_status_with_locked_storage_drops_the_search_answer(monkeypatch):
     controller._status = {**_card_status(), "storage_state": "locked"}
     controller.statusChanged.emit()
     assert controller.searchResults["sections"] == []
+
+
+def test_a_searched_call_beyond_the_first_page_is_read(monkeypatch):
+    from blueferry.limits import MAX_CALL_HISTORY_QUERY_LIMIT
+    from blueferry.models import CallHistoryEntry
+    from blueferry.qt.controller import CALL_HISTORY_PAGE
+
+    limits: list[int] = []
+    retained = [CallHistoryEntry.from_dict({
+        "direction": "incoming", "timestamp": f"2026-10-{1 + n // 100:02d}T10:00:00+00:00",
+        "address": f"+1555{n:04d}", "id": f"call-{n}",
+    }) for n in range(CALL_HISTORY_PAGE + 1)]
+
+    class Backend:
+        def call_history(self, limit=200):
+            limits.append(limit)
+            return retained[:limit]
+
+    controller = _inline_controller(monkeypatch, Backend())
+    controller._status = {"call_history_enabled": True}
+    controller.watchCallHistory(True)
+    assert limits == [CALL_HISTORY_PAGE]
+    # A hit inside the shown page reads nothing more.
+    controller.revealCall("call-0")
+    assert limits == [CALL_HISTORY_PAGE]
+
+    oldest = f"call-{CALL_HISTORY_PAGE}"
+    controller.revealCall(oldest)
+    assert limits == [CALL_HISTORY_PAGE, MAX_CALL_HISTORY_QUERY_LIMIT]
+    ids = [i for row in controller.callHistoryRows["all"] for i in row["ids"]]
+    assert oldest in ids
+
+    # Leaving the page goes back to the first page next time.
+    controller.watchCallHistory(False)
+    controller.watchCallHistory(True)
+    assert limits[-1] == CALL_HISTORY_PAGE
 
 
 def test_contact_query_waits_for_a_pause(monkeypatch):

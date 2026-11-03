@@ -108,6 +108,8 @@ Kirigami.ApplicationWindow {
         } else if (target.kind === "call") {
             focusedCallId = ""  // the same hit again scrolls to it again
             focusedCallId = target.call_id
+            // Search covers every retained call; the page reads the newest.
+            bridge.revealCall(target.call_id)
             openRecentCalls()
         }
     }
