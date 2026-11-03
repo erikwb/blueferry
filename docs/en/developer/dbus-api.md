@@ -223,7 +223,7 @@ the system". Their presence tells clients the choice is offered. See the
 | Method | Arguments → result | Notes |
 | --- | --- | --- |
 | `SetCallsEnabled` | `b enabled` → `s status_json` | Saves the opt-in and applies it at once; returns the `calls_*` status keys. "settings" rate limit |
-| `ListCalls` | → `s json` | Current calls with caller number and contact name; treat as private |
+| `ListCalls` | → `s json` | Current calls with caller number and contact name; treat as private. Each call has `first_seen` (when it appeared) and `active_since` (ISO 8601, when it was answered or the other side picked up; `""` before that), from which clients count the duration |
 | `Dial` | `s number` → `s call_id` | Plain numbers only; `*`/`#` and emergency numbers are refused. 6 per minute, 60 per hour |
 | `Answer` | `s call_id` | A waiting call holds the active one. 10 per minute |
 | `Hangup` | `s call_id` | Hangs up, or declines a ringing call. Own rate bucket, shared only with `HangupAll`, so tones and swaps never block it |
