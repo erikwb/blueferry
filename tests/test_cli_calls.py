@@ -51,6 +51,26 @@ class FakeClient:
     def hold_and_answer_call(self):
         self._record("hold_and_answer")
 
+    def call_audio_devices(self):
+        if self.error is not None:
+            raise BackendError(self.error)
+        return {
+            "outputs": [{"name": "alsa_output.a50", "description": "A50\x1b[2J", "default": True}],
+            "inputs": [],
+            "output": "alsa_output.gone",
+            "input": "",
+        }
+
+    def set_call_audio_device(self, direction, name):
+        self._record("audio", direction, name)
+        return {"calls_audio_output": name}
+
+    def set_call_audio_device_for_call(self, direction, name):
+        self._record("audio_call", direction, name)
+
+    def set_call_muted(self, muted):
+        self._record("mute", muted)
+
 
 def _call(call_id="voicecall01", state="incoming", **extra):
     return {"call_id": call_id, "state": state, "direction": "incoming",
@@ -167,3 +187,80 @@ def test_enable_and_disable_save_the_opt_in(monkeypatch) -> None:
     assert "Calls: unavailable" in enabled.output
     assert disabled.exit_code == 0 and "Phone calls disabled." in disabled.output
     assert client.requests == [("set_enabled", True), ("set_enabled", False)]
+
+
+def test_audio_lists_choices_devices_and_the_running_call(monkeypatch) -> None:
+    client = FakeClient([_call(state="active")])
+    client.snapshot = CallsSnapshot.from_dict({"state": "ready", "calls": [], "audio": {
+        "state": "ready",
+        "output": {"selected": "alsa_output.gone", "missing": True, "stream": True,
+                   "description": "Built-in Audio"},
+        "input": {"stream": True, "description": "A50 Chat"},
+    }})
+
+    result = _invoke(monkeypatch, client, "audio")
+
+    assert result.exit_code == 0
+    assert "Speaker: alsa_output.gone (not connected)" in result.output
+    assert "Microphone: same as system" in result.output
+    assert "Built-in Audio — chosen device missing" in result.output
+    assert "alsa_output.a50" in result.output and "(system default)" in result.output
+    assert "\x1b[2J" not in result.output
+
+
+def test_audio_choices_are_saved_or_used_for_this_call(monkeypatch) -> None:
+    client = FakeClient()
+
+    saved = _invoke(monkeypatch, client, "audio", "output", "alsa_output.a50")
+    system = _invoke(monkeypatch, client, "audio", "input", "system")
+    this_call = _invoke(monkeypatch, client, "audio", "input", "alsa_input.cam", "--this-call")
+
+    assert saved.exit_code == system.exit_code == this_call.exit_code == 0
+    assert "Speaker for calls: alsa_output.a50." in saved.output
+    assert "Microphone for calls: same as system." in system.output
+    assert "Microphone for this call: alsa_input.cam." in this_call.output
+    assert client.requests == [
+        ("audio", "output", "alsa_output.a50"), ("audio", "input", ""),
+        ("audio_call", "input", "alsa_input.cam"),
+    ]
+
+
+def test_audio_failures_exit_with_the_backend_error(monkeypatch) -> None:
+    result = _invoke(monkeypatch, FakeClient(error="no call is in progress"),
+                     "audio", "output", "x", "--this-call")
+
+    assert result.exit_code == 3
+    assert "no call is in progress" in result.output
+
+
+def test_mute_on_and_off_for_the_running_call(monkeypatch) -> None:
+    client = FakeClient()
+
+    muted = _invoke(monkeypatch, client, "mute", "on")
+    unmuted = _invoke(monkeypatch, client, "mute", "OFF")
+    wrong = _invoke(monkeypatch, client, "mute", "maybe")
+
+    assert muted.exit_code == unmuted.exit_code == 0
+    assert "Microphone muted for this call." in muted.output
+    assert "Microphone unmuted." in unmuted.output
+    assert wrong.exit_code == 2
+    assert client.requests == [("mute", True), ("mute", False)]
+
+
+def test_mute_without_a_call_reports_the_backend_error(monkeypatch) -> None:
+    result = _invoke(monkeypatch, FakeClient(error="no call is in progress"), "mute", "on")
+
+    assert result.exit_code == 3 and "no call is in progress" in result.output
+
+
+def test_audio_shows_a_muted_microphone(monkeypatch) -> None:
+    client = FakeClient([_call(state="active")])
+    client.snapshot = CallsSnapshot.from_dict({"state": "ready", "calls": [], "audio": {
+        "state": "ready", "muted": True,
+        "output": {"stream": True, "description": "Built-in Audio"},
+        "input": {"stream": True, "description": "A50 Chat"},
+    }})
+
+    result = _invoke(monkeypatch, client, "audio")
+
+    assert "Microphone: A50 Chat (muted for this call)" in result.output

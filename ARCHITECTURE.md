@@ -121,6 +121,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `calls/model.py` | Optional HFP calls: pure oFono property parsing, modem selection, dial/DTMF/call-id validation. |
 | `calls/ofono.py` | Asynchronous oFono system-bus transport (hand-built calls with NO_AUTO_START, no synchronous owner lookup). |
 | `calls/controller.py` | Optional HFP calls: oFono modem discovery, Powered→Online bring-up, call tracking and control, backoff; watches the phone's battery/signal interfaces while online. |
+| `calls/quick_replies.py` | Saved texts for declining a call with a message (`settings.json`, translated defaults, at most 5 one-line texts). `quick_reply_view.py` is the shared, toolkit-free client logic for offering and editing them. |
 | `phone_battery.py` | The phone's battery over LE (BlueZ `Battery1` or GATT Battery Level), asynchronous, no HFP; saved low-battery warning opt-in. |
 | `calls/phone_status.py` | Optional phone status: pure parsing of oFono's Handsfree/NetworkRegistration properties and the once-per-cycle low-battery decision. |
 | `tether.py` | Opt-in Bluetooth PAN tethering: saved opt-in (`TetherSettings`), state machine, Network1 link watch, and BlueZ error tokens. |
@@ -296,12 +297,15 @@ All paths are relative to `src/blueferry/` unless noted.
 | `qt/qml/NewMessageDialog.qml` | New message composition. |
 | `qt/qml/FileDropLayer.qml` | The window drop zone's overlay, target picker and "no target" explanation over `file_drop_view.py`; the `DropArea` itself sits in `Main.qml` below the pages, so card items that take files keep their own drop. `qt/plugin_surfaces.py` runs the shared `FileDrop` on its pool. |
 | `qt/qml/PhoneCard.qml` | The phone card left of the tabs: name, connection, battery/signal, now playing and quick switches (sound, away lock); opt-ins that are off stay greyed out with a hint. Folds behind a header button in a narrow window. |
-| `qt/qml/CallsTab.qml` | Calls tab: running calls as cards (answer, hold, hang up), dial pad, and the day-grouped recent calls (`RecentCallsPage.qml`). |
+| `qt/qml/CallsTab.qml` | Calls tab: running calls as cards (answer, hold, hang up, decline with a message), their speaker and microphone with a switch and a mute button for this call only, dial pad, and the day-grouped recent calls (`RecentCallsPage.qml`). |
+| `qt/qml/DeclineMessageDialog.qml` | Saved replies and an own-text field for declining a ringing call with a message (`quick_reply_view`); closes when the call stops ringing. |
 | `qt/qml/NotificationsTab.qml` | Notifications tab: the opt-in recent-notification list, loaded only while shown. |
 | `qt/qml/ui/` | Shared building blocks of the design: `SectionHeader`, `ListRow`, `CardFrame`, `FilterBar`, `EmptyState`, `Notice`. |
 | `qt/qml/ContactPhotoSettings.qml` | Contact-photo checkbox; loaded only for daemons that report `contact_photos`. |
 | `qt/qml/OtpAutocopySettings.qml` | One-time code auto-copy checkbox; loaded only for daemons that report `otp_autocopy`. |
 | `qt/qml/PhoneCallsSettings.qml` | Phone-calls opt-in checkbox; loaded only for daemons that report `calls_enabled`. |
+| `qt/qml/CallAudioSettings.qml` | Speaker and microphone for calls (`call_audio_view.settings_view`); loaded only for daemons that report `calls_audio_output`. |
+| `qt/qml/QuickReplySettings.qml` | Saved replies for declining a call: list, add, edit, remove, checked with `quick_reply_view.reply_error`; loaded only for daemons that report `calls_quick_replies`. |
 | `qt/qml/PhoneStatusIndicator.qml` | Optional iPhone battery/signal indicator (loaded only when values are known; plain-text tooltip). |
 | `qt/qml/ExpandingMessageComposer.qml` | Growing message editor. |
 | `qt/qml/MessageBubble.qml` | Message bubble. |
@@ -408,6 +412,13 @@ dbus-python; the guard tolerates that.
   `CallsUnavailable`.
   Its `CallsChanged` invalidation on `Events1` has no arguments; caller
   numbers and names are only returned by the rate-limited `ListCalls`.
+  `ListCallAudioDevices`, `SetCallAudioDevice` and
+  `SetCallAudioDeviceForCall` choose the call speaker and microphone;
+  `SetCallMuted` mutes this computer for the running call.
+  `DeclineWithMessage` declines a ringing call and then sends a text to the
+  caller's number through the normal MAP send path (charged to the hang-up
+  quota it shares with `Hangup` and to the send quota);
+  `SetCallQuickReplies` saves its texts.
   Dialing has its own strict quota. Adding it did not change the API
   generation.
 
@@ -744,6 +755,11 @@ A change to these rules has to be made in both places.
 
 ## Optional phone calls
 
+- Declining with a message checks everything it can first (ringing call,
+  caller number, a valid recipient and body), then hangs up through oFono
+  and only on success queues the text on the OBEX worker like `Send`, so it
+  is recorded in the history. A send that fails afterwards is reported as
+  `DeclinedNotSent`; the call stays declined.
 - `calls.controller` only observes and drives oFono on the system bus; BlueZ
   and PipeWire/WirePlumber own the HFP profile and SCO audio. oFono is an
   optional runtime service: `ServiceUnknown` means "unavailable", retried
@@ -773,6 +789,32 @@ A change to these rules has to be made in both places.
   own experimental HFP plugin is active (`-E` without `-P hfp`, read from
   bluetoothd's argv by process name), the state becomes `bluez_conflict`
   and paging stops until the Classic link returns or oFono makes progress.
+- `calls.audio_devices` picks the call speaker and microphone. With the oFono
+  backend PipeWire shows a running call as two streams of the selected phone
+  (`bluez_input.<MAC>` playing to a sink, `bluez_output.<MAC>` recording from
+  a source), matched by `api.bluez5.address`/node name. While the controller
+  reports a call, the router reads `pw-dump` on its own worker (every second
+  for up to 20 s, re-armed on every call change, then every 5 s for
+  hot-plugged devices) and writes or deletes only those streams'
+  `target.object` in the `default` metadata with `pw-metadata`, after
+  checking that the node ID still has the stream's `object.serial`; system
+  defaults and other streams are never written. One failed read keeps the
+  last report and retries after a second; a second one (or a missing
+  `pw-dump`) reports `unavailable`. Switching calls off deletes the streams'
+  targets once more.
+  The saved choice (`calls_audio_output`/`_input`, a `node.name`) lives in
+  `settings.json`; a per-call choice is kept in memory and dropped when no
+  call is left. Results carry a generation, so a finished call's check is
+  ignored. Clients share `call_audio_view.py` for the wording.
+  Muting for the call sets `mute` in the `Props` of the phone's
+  `bluez_output.<MAC>` stream with `pw-cli set-param`, after the same
+  serial check. The request is in memory and ends when no call is left;
+  `audio.muted` reports the stream's state from the last check (a failed
+  write resets the request and announces it). Each new
+  stream is checked once (so a stream that comes back gets the mute again,
+  and a mute WirePlumber restored from an earlier call is lifted), and a
+  muted call that ends, or switching calls off, unmutes the stream if it
+  still exists.
 - `stop()` (daemon exit or switching calls off) sends `Powered=false`,
   flushed and without awaiting a reply, for the modem BlueFerry powered
   itself; a modem another oFono client powered is left alone.

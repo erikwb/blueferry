@@ -301,6 +301,11 @@ Kirigami.ApplicationWindow {
             dialLinkDialog.request(number, problem)
         }
 
+        // A refused call mute (no call audio yet, PipeWire unreadable).
+        function onCallToastRequested(text) {
+            root.showPassiveNotification(String(text || ""))
+        }
+
         function onMessageOpenRequested(handle) {
             root.pendingMessageHandle = handle
             if (!root.selectMessage(handle))

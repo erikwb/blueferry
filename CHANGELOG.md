@@ -4,6 +4,18 @@
 
 ### Added
 
+- Decline a ringing call with a text to the caller: saved replies (up to 5,
+  translated defaults) or your own text, through
+  `Calls1.DeclineWithMessage`, `SetCallQuickReplies`,
+  `blueferry calls decline-with-message` and `blueferry calls replies`.
+  A text that cannot be sent is reported; the call stays declined.
+- Choose the speaker and microphone for phone calls, saved for every call or
+  switched for the running call only, without changing the system defaults
+  (`Calls1.ListCallAudioDevices`, `SetCallAudioDevice`,
+  `SetCallAudioDeviceForCall`, `blueferry calls audio`).
+- Mute this computer's microphone for the running call only, without muting
+  the microphone for other applications (`Calls1.SetCallMuted`, ListCalls
+  `audio.muted`, `blueferry calls mute on|off`).
 - Contact cards: the contact cache now keeps each number with its iPhone
   label, labelled email addresses, postal addresses, company and job title,
   inside the encrypted contact records only. `Messages1.ListContactCards`
