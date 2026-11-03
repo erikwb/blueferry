@@ -57,6 +57,12 @@ def test_banner_text_names_the_package():
     assert "AVIF" in photos.missing_loader_text("avif")
 
 
+# These drive the real worker pool and GLib main context. A worker that has
+# already finished when submit attaches its done-callback delivers the result
+# from the test thread, which arms a real idle source.
+_real_dispatch = pytest.mark.real_glib_sources
+
+
 def _load(path) -> tuple:
     results: list[tuple] = []
     photos.load_thumbnail(
@@ -72,6 +78,7 @@ def _load(path) -> tuple:
     return results[0]
 
 
+@_real_dispatch
 def test_an_unreadable_webp_reports_the_missing_loader(tmp_path, monkeypatch):
     monkeypatch.setattr(photos, "supported_formats", lambda: frozenset({"png", "jpeg"}))
     path = tmp_path / "thumb.webp"
@@ -79,6 +86,7 @@ def test_an_unreadable_webp_reports_the_missing_loader(tmp_path, monkeypatch):
     assert _load(path) == (None, "webp")
 
 
+@_real_dispatch
 def test_a_broken_file_with_a_loader_is_no_loader_problem(tmp_path, monkeypatch):
     monkeypatch.setattr(photos, "supported_formats", lambda: frozenset({"png", "webp"}))
     broken = tmp_path / "broken.webp"
@@ -89,6 +97,7 @@ def test_a_broken_file_with_a_loader_is_no_loader_problem(tmp_path, monkeypatch)
     assert _load(garbage) == (None, "")
 
 
+@_real_dispatch
 def test_an_oversized_webp_is_skipped_without_sniffing(tmp_path, monkeypatch):
     monkeypatch.setattr(photos, "supported_formats", lambda: frozenset({"png"}))
     path = tmp_path / "large.webp"
@@ -119,6 +128,7 @@ def _release(fifo) -> None:
         pass  # nobody is waiting
 
 
+@_real_dispatch
 def test_a_normal_thumbnail_is_read_off_the_gtk_thread_and_decoded(tmp_path, monkeypatch):
     path = tmp_path / "wide.png"
     path.write_bytes(png(600, 300))
@@ -136,6 +146,7 @@ def test_a_normal_thumbnail_is_read_off_the_gtk_thread_and_decoded(tmp_path, mon
     assert readers and threading.main_thread() not in readers
 
 
+@_real_dispatch
 def test_a_thumbnail_swapped_for_a_fifo_after_the_check_is_not_waited_on(tmp_path):
     path = tmp_path / "thumb.png"
     path.write_bytes(png(8, 8))
@@ -150,6 +161,7 @@ def test_a_thumbnail_swapped_for_a_fifo_after_the_check_is_not_waited_on(tmp_pat
     assert results == [(None, "")]
 
 
+@_real_dispatch
 def test_a_canvas_over_the_pixel_cap_is_not_decoded(tmp_path, monkeypatch):
     path = tmp_path / "thumb.png"
     path.write_bytes(png(8, 8))
