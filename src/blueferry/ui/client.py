@@ -641,6 +641,47 @@ class DaemonClient(GObject.Object):
             mutation=True,
         )
 
+    def call_audio_devices_async(self, on_ok, on_err=None) -> None:
+        """Calls1.ListCallAudioDevices: speakers, microphones, saved choices."""
+        self._submit(
+            lambda: self._call_backend(lambda backend: backend.call_audio_devices()),
+            on_ok,
+            on_err,
+        )
+
+    def set_call_audio_device_async(self, direction: str, name: str, on_ok, on_err) -> None:
+        """Save the speaker or microphone for every call ("" = system)."""
+        self._submit(
+            lambda: self._call_backend(
+                lambda backend: backend.set_call_audio_device(direction, name)
+            ),
+            on_ok,
+            on_err,
+            mutation=True,
+        )
+
+    def set_call_audio_device_for_call_async(
+        self, direction: str, name: str, on_ok, on_err,
+    ) -> None:
+        """Use another speaker or microphone for the running call only."""
+        self._submit(
+            lambda: self._call_backend(
+                lambda backend: backend.set_call_audio_device_for_call(direction, name)
+            ),
+            on_ok,
+            on_err,
+            mutation=True,
+        )
+
+    def set_call_muted_async(self, muted: bool, on_ok, on_err) -> None:
+        """Mute or unmute this computer's microphone for the running call."""
+        self._submit(
+            lambda: self._call_backend(lambda backend: backend.set_call_muted(muted)),
+            on_ok,
+            on_err,
+            mutation=True,
+        )
+
     def dial_async(self, number: str, on_ok, on_err) -> None:
         """Place a call the user has just confirmed (Calls1.Dial)."""
         self._submit(

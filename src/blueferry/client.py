@@ -859,3 +859,33 @@ class BackendClient:
         return self._tether_call(
             "SetTethering", dbus.Boolean(enabled), dbus.Boolean(autoconnect)
         )
+
+    def call_audio_devices(self) -> dict:
+        """Speakers and microphones for calls (``outputs``/``inputs``) and the saved choices."""
+        try:
+            return decode_mapping(self._calls_call(
+                "ListCallAudioDevices", timeout=STATUS_CALL_TIMEOUT_SEC,
+            ))
+        except ValueError as error:
+            raise BackendError(str(error)) from error
+
+    def set_call_audio_device(self, direction: str, name: str) -> dict:
+        """Save the speaker (``output``) or microphone (``input``); "" = system."""
+        try:
+            return decode_mapping(self._calls_call(
+                "SetCallAudioDevice", direction, name, timeout=STATUS_CALL_TIMEOUT_SEC,
+            ))
+        except ValueError as error:
+            raise BackendError(str(error)) from error
+
+    def set_call_audio_device_for_call(self, direction: str, name: str) -> None:
+        """Use another speaker or microphone until the running call ends."""
+        self._calls_call(
+            "SetCallAudioDeviceForCall", direction, name, timeout=STATUS_CALL_TIMEOUT_SEC,
+        )
+
+    def set_call_muted(self, muted: bool) -> None:
+        """Mute or unmute this computer's microphone for the running call."""
+        self._calls_call(
+            "SetCallMuted", dbus.Boolean(bool(muted)), timeout=STATUS_CALL_TIMEOUT_SEC,
+        )

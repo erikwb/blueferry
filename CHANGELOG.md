@@ -206,6 +206,13 @@
 - OpenRC support, English and German documentation, and WSL2 setup guidance.
 - Report a stable opaque phone profile ID in `GetStatus` for clients that need
   to scope local per-phone metadata.
+- Choose the speaker and microphone for phone calls, saved for every call or
+  switched for the running call only, without changing the system defaults
+  (`Calls1.ListCallAudioDevices`, `SetCallAudioDevice`,
+  `SetCallAudioDeviceForCall`, `blueferry calls audio`).
+- Mute this computer's microphone for the running call only, without muting
+  the microphone for other applications (`Calls1.SetCallMuted`, ListCalls
+  `audio.muted`, `blueferry calls mute on|off`).
 
 ### Fixed
 
