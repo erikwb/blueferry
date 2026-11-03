@@ -2928,6 +2928,10 @@ class _CardBackend:
                  "phones": [{"kind": "mobile", "label": "", "value": "+1 555 0001",
                              "number": "+15550001"}]}, b"\x89PNG photo")
 
+    def contact_card_photos(self, ids):
+        self.photo_reads = [*getattr(self, "photo_reads", []), list(ids)]
+        return {key: b"\x89PNG row" for key in ids if key == "c1"}
+
     def search(self, query, limit):
         self.searches.append((query, limit))
         return {"query": query, "limit": limit, "messages": {"total": 1, "results": [
@@ -2973,6 +2977,36 @@ def test_contacts_are_read_while_watched_and_the_card_photo_is_served(monkeypatc
 
     controller.watchContacts(False)
     assert controller.contacts["rows"] == [] and controller.contactCard["open"] is False
+
+
+def test_contact_list_row_photos_are_served_by_card_id(monkeypatch):
+    backend = _CardBackend()
+    controller = _inline_controller(monkeypatch, backend)
+    controller._status = {**_card_status(), "contact_photos": True, "contact_photo_revision": 1}
+    controller.statusChanged.emit()
+    controller.watchContacts(True)
+    assert controller.contactRowPhoto("c1") == ""
+    revision = controller.contactPhotoRevision
+    controller.requestContactPhotos(["c1", "nobody"])
+    assert backend.photo_reads == [["c1"]], "only listed rows with a photo"
+    url = controller.contactRowPhoto("c1")
+    assert url.startswith("image://blueferry-avatar/") and controller.contactPhotoRevision > revision
+    from blueferry.qt.avatars import address_from_id
+
+    key = address_from_id(url.split("image://blueferry-avatar/", 1)[1])
+    assert controller.avatar_bytes(key) == b"\x89PNG row"
+    assert controller.avatar_bytes("contact-row:c2") is None
+
+    # Turning photos off drops them for the provider too.
+    controller._status = {**controller._status, "contact_photos": False}
+    controller.statusChanged.emit()
+    assert controller.contactRowPhoto("c1") == "" and controller.avatar_bytes(key) is None
+    controller._status = {**controller._status, "contact_photos": True}
+    controller.statusChanged.emit()
+    controller.requestContactPhotos(["c1"])
+    assert controller.avatar_bytes(key) == b"\x89PNG row"
+    controller.watchContacts(False)
+    assert controller.avatar_bytes(key) is None
 
 
 @pytest.mark.parametrize("status", [

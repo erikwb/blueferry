@@ -117,6 +117,12 @@ MAX_CONTACT_PHOTOS_TOTAL_BYTES = 16 * 1024 * 1024
 # the rest of the cards does not count against it.
 MAX_CONTACT_PHOTO_DECODE_SECONDS = 5.0
 MAX_CONTACT_PHOTO_FILES = 64
+# Messages1.GetContactCardPhotos: card ids per call (a screenful of list
+# rows) and the photo bytes one reply may carry. At the measured average of
+# about 5 KiB a full batch is some 250 KiB; photos past the byte budget are
+# left out and a client asks for them again in a later call.
+MAX_CONTACT_PHOTO_BATCH = 50
+MAX_CONTACT_PHOTO_BATCH_BYTES = 4 * 1024 * 1024
 # Header-declared pixel size accepted anywhere (daemon, clients, and the
 # image-path handed to notification servers). A small file can declare an
 # enormous canvas; decoders without their own limit would allocate it.
