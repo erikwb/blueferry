@@ -147,3 +147,25 @@ def test_call_errors_map_to_their_documented_names() -> None:
     failed = MessagesService._dbus_error(OperationFailedError("Call", RuntimeError("+4179 secret")))
     assert failed.get_dbus_name() == "io.weirdware.BlueFerry.Error.CallFailed"
     assert "+4179" not in failed.get_dbus_message()
+
+
+def test_phone_audio_status_keys_are_documented_and_survive_the_client_model() -> None:
+    """Every phone-audio GetStatus key is documented and reaches clients."""
+    import json
+
+    from blueferry.models import BackendStatus
+    from blueferry.phone_audio_route import PhoneAudioRoute
+
+    subject = PhoneAudioRoute(
+        object(), "/org/bluez/hci0/dev_AA", allowed=True, on_changed=lambda: None,
+        schedule=lambda _seconds, _callback: 0, cancel=lambda _source: None,
+    )
+    # GetStatus is JSON: the A/V sync keys are always present, null when unknown.
+    snapshot = json.loads(json.dumps(subject.snapshot()))
+    assert snapshot["phone_audio_delay_ms"] is None
+    assert snapshot["phone_audio_delay_reporting"] is None
+    docs = (CONTRACT.parents[1] / "docs/en/developer/dbus-api.md").read_text()
+    for key in snapshot:
+        assert f"`{key}`" in docs, key
+    reported = {"phone_audio_delay_ms": 110, "phone_audio_delay_reporting": True}
+    assert BackendStatus.from_dict(reported).to_dict().items() >= reported.items()

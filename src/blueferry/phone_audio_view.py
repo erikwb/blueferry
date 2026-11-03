@@ -1,7 +1,8 @@
 """Toolkit-free wording for the PC/iPhone sound switch, shared by every client.
 
 Derived from the content-free GetStatus keys ``phone_audio_route``,
-``phone_audio_reason``, ``phone_audio_pending`` and ``phone_audio_playing``.
+``phone_audio_reason``, ``phone_audio_pending``, ``phone_audio_playing``,
+``phone_audio_delay_ms`` and ``phone_audio_delay_reporting``.
 Every string returned here is plain text; each client escapes it for its own
 renderer.
 """
@@ -26,12 +27,14 @@ def phone_audio(status: Mapping[str, Any]) -> dict[str, Any]:
     after the user picked the iPhone in its AirPlay menu. While nothing plays
     (``none``) or the location is ``unknown`` (media control off or not
     ready) the hint keeps the route wording, so it never goes blank.
+    ``sync`` is the A/V sync line from :func:`av_sync`; empty while no stream
+    is open or for older backends.
     """
     route = status.get("phone_audio_route")
     if route is None:
         return {
             "supported": False, "available": False, "on_pc": False, "pending": False,
-            "playing": "", "mismatch": False,
+            "playing": "", "mismatch": False, "sync": "",
             "hint": _("Update the BlueFerry backend to switch the iPhone's sound here."),
         }
     pending = status.get("phone_audio_pending") in ("pc", "phone")
@@ -62,7 +65,32 @@ def phone_audio(status: Mapping[str, Any]) -> dict[str, Any]:
         "supported": True, "available": route in ("pc", "phone") and not pending,
         "on_pc": route == "pc", "pending": pending, "hint": hint,
         "playing": playing, "mismatch": mismatch and not pending,
+        "sync": av_sync(status),
     }
+
+
+def av_sync(status: Mapping[str, Any], *, terse: bool = False) -> str:
+    """The A/V sync delay of the iPhone's audio stream, as one plain line.
+
+    Empty while no stream is open (``phone_audio_delay_reporting`` is null or
+    missing). With delay reporting the line names the delay this computer
+    reports; without it, it warns that video may run ahead of the sound.
+    ``terse`` gives a short fragment without a full stop for one-line
+    summaries such as the terminal client's status line.
+    """
+    reporting = status.get("phone_audio_delay_reporting")
+    if reporting is False:
+        if terse:
+            return _("A/V sync: not negotiated")
+        return _("A/V sync: delay reporting not negotiated; video may be out of sync.")
+    if reporting is not True:
+        return ""
+    delay = status.get("phone_audio_delay_ms")
+    if isinstance(delay, bool) or not isinstance(delay, int) or delay < 0:
+        return _("A/V sync: reporting") if terse else _("A/V sync: delay reporting active.")
+    if terse:
+        return _("A/V sync: {delay} ms").format(delay=delay)
+    return _("A/V sync: this computer reports {delay} ms.").format(delay=delay)
 
 
 def _playing_hint(playing: str, *, mismatch: bool) -> str:
