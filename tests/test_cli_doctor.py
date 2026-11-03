@@ -481,3 +481,39 @@ def test_doctor_skips_the_hfp_plugin_check_without_calls(monkeypatch, caplog) ->
     assert "-P hfp" not in caplog.text
     assert "Run 'blueferry reconnect'" in caplog.text
     assert "No profile reset since the backend started" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("status", "expected", "passed"),
+    [
+        (
+            {"phone_audio_delay_reporting": True, "phone_audio_delay_ms": 316},
+            "delay reporting active, audio delay 316 ms  OK",
+            True,
+        ),
+        (
+            {"phone_audio_delay_reporting": False, "phone_audio_delay_ms": None},
+            "delay reporting not negotiated (older adapter or BlueZ)",
+            False,
+        ),
+        (
+            {"phone_audio_delay_reporting": None, "phone_audio_delay_ms": None},
+            "No iPhone audio stream open; skipped the A/V sync check",
+            True,
+        ),
+        ({}, "Backend does not report A/V sync", True),
+    ],
+)
+def test_doctor_reports_av_sync_delay_reporting(
+    monkeypatch, caplog, status, expected, passed
+) -> None:
+    _matching_cod(monkeypatch)
+    monkeypatch.setattr(cli, "_running_backend_status", lambda: status)
+    caplog.set_level("INFO", logger="doctor")
+
+    result = CliRunner().invoke(cli.app, ["doctor"])
+
+    assert result.exit_code == 0
+    assert expected in caplog.text
+    summary = "All checks passed." if passed else "Checks completed with warnings."
+    assert summary in result.output

@@ -176,6 +176,8 @@ def doctor(verbose: bool = typer.Option(False, "-v", "--verbose")):
         warnings = True
     if not _doctor_mns(log):
         warnings = True
+    if not _doctor_av_sync(log):
+        warnings = True
     _doctor_profile_reset(log)
 
     if not ok:
@@ -510,6 +512,35 @@ def _running_backend_status() -> dict | None:
         logging.getLogger("doctor").debug("backend status unavailable", exc_info=True)
         return None
     return dict(status.extra)
+
+
+def _doctor_av_sync(log: logging.Logger) -> bool:
+    """Report AVDTP delay reporting of the phone's audio stream; False = warning."""
+    status = _running_backend_status()
+    if status is None:
+        log.info("Backend not running; skipped the A/V sync check")
+        return True
+    if "phone_audio_delay_reporting" not in status:
+        log.info("Backend does not report A/V sync; skipped the check")
+        return True
+    reporting = status.get("phone_audio_delay_reporting")
+    if reporting is None:
+        log.info(
+            "No iPhone audio stream open; skipped the A/V sync check. "
+            "Play the iPhone's sound on this computer, then run doctor again."
+        )
+        return True
+    if reporting is True:
+        delay = status.get("phone_audio_delay_ms")
+        valid = isinstance(delay, int) and not isinstance(delay, bool)
+        shown = f"{delay} ms" if valid else "unknown"
+        log.info("A/V sync: delay reporting active, audio delay %s  OK", shown)
+        return True
+    log.warning(
+        "A/V sync: delay reporting not negotiated (older adapter or BlueZ); "
+        "video on the iPhone may be out of sync with the sound here."
+    )
+    return False
 
 
 def _doctor_hfp_plugin(log: logging.Logger) -> bool:

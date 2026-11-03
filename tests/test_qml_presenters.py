@@ -1650,6 +1650,17 @@ def test_phone_audio_switch_appears_only_for_supporting_daemons(qml_engine, sett
     # Checked follows the reported route, not the click.
     assert switch.property("checked") is False
 
+    # The A/V sync line follows the route wording.
+    bridge.setProperty("phoneAudio", {
+        "supported": True, "available": True, "onPc": True, "pending": False,
+        "hint": "Playing on this computer.", "playing": "pc", "mismatch": False,
+        "sync": "A/V sync: 110 ms delay reported to the iPhone.",
+    })
+    QGuiApplication.processEvents()
+    assert switch.property("subtitle") == (
+        "Playing on this computer.\nA/V sync: 110 ms delay reported to the iPhone."
+    )
+
 
 def test_ancs_actions_checkbox_is_opt_in_and_gated(qml_engine, settings_window):
     window, bridge = settings_window
@@ -5319,6 +5330,20 @@ def test_phone_card_greys_out_opt_ins_and_switches_audio_explicitly(qml_engine, 
     audio = _settings_object(window, "phoneCardAudioSwitch")
     assert audio.property("enabled") is False
     assert "KEEP_PHONE_AUDIO" in audio.property("subtitle")
+    _evaluate(qml_engine, """testBridge.phoneAudio = {
+        supported: true, available: true, onPc: true, pending: false,
+        hint: "Playing on this computer.",
+        sync: "A/V sync: delay reporting not negotiated; video may be out of sync."
+    }""")
+    QGuiApplication.processEvents()
+    assert audio.property("subtitle").endswith("\nA/V sync: delay reporting not negotiated; "
+                                               "video may be out of sync.")
+    _evaluate(qml_engine, """testBridge.phoneAudio = {
+        supported: true, available: false, onPc: false, pending: false,
+        hint: "Set BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE=false"
+    }""")
+    QGuiApplication.processEvents()
+    assert "A/V sync" not in audio.property("subtitle")  # no stream, no line
     assert "MEDIA_CONTROL" in _settings_object(window, "nowPlayingHint").property("text")
     hint = _settings_object(window, "phoneStatusHint")
     qml_engine.globalObject().setProperty("phoneStatusHint", qml_engine.newQObject(hint))

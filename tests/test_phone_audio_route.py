@@ -84,13 +84,15 @@ class Bus:
         return Match()
 
 
-def tree(*, connected=True, source=True, transport=False, state="idle"):
+def tree(*, connected=True, source=True, transport=False, state="idle", delay=None):
     uuids = [A2DP_SOURCE_UUID.upper()] if source else ["0000110e-0000-1000-8000-00805f9b34fb"]
     objects = {DEV: {"org.bluez.Device1": {"Connected": connected, "UUIDs": uuids}}}
     if transport:
         objects[FD] = {"org.bluez.MediaTransport1": {
             "Device": DEV, "UUID": A2DP_SINK_UUID, "State": state,
         }}
+        if delay is not None:
+            objects[FD]["org.bluez.MediaTransport1"]["Delay"] = delay
     return objects
 
 
@@ -115,6 +117,8 @@ def test_policy_forbids_the_sink_role_so_route_is_unavailable_and_inert() -> Non
         "phone_audio_reason": "keep_phone_audio_on_phone",
         "phone_audio_pending": "",
         "phone_audio_playing": "unknown",
+        "phone_audio_delay_ms": None,
+        "phone_audio_delay_reporting": None,
     }
     with pytest.raises(NotReadyError, match="KEEP_PHONE_AUDIO_ON_PHONE=false"):
         subject.set_route("pc", lambda _r: None, lambda _e: None)
@@ -765,6 +769,7 @@ def test_owner_loss_immediately_clears_active_audio_and_reprobes_on_return():
     assert subject.snapshot() == {
         "phone_audio_route": "unavailable", "phone_audio_reason": "unknown",
         "phone_audio_pending": "", "phone_audio_playing": "unknown",
+        "phone_audio_delay_ms": None, "phone_audio_delay_reporting": None,
     }
     assert not timers.pending and len(changes) == 2
     bus.tree = tree(connected=False)
@@ -1012,3 +1017,174 @@ def test_handback_does_not_resume_replacement_media(make_daemon, replace_before_
     timers.fire()
     assert not old_sent and not new_sent
     subject.stop()
+
+
+# ---- A/V sync delay (phone_audio_delay_ms / _reporting) ---------------------
+
+
+def _delay(subject) -> tuple:
+    snap = subject.snapshot()
+    return snap["phone_audio_delay_ms"], snap["phone_audio_delay_reporting"]
+
+
+def test_delay_is_unknown_without_an_open_stream():
+    subject, _timers, _ = route(Bus(tree()))
+    subject.start()
+    assert _delay(subject) == (None, None)
+
+
+def test_delay_from_the_probe_is_reported_in_milliseconds():
+    subject, _timers, _ = route(Bus(tree(transport=True, state="active", delay=3164)))
+    subject.start()
+    assert _delay(subject) == (316, True)
+
+
+def test_transport_without_delay_has_not_negotiated_delay_reporting():
+    subject, _timers, _ = route(Bus(tree(transport=True, state="active")))
+    subject.start()
+    assert _delay(subject) == (None, False)
+
+
+def test_delay_follows_properties_changed_and_announces_it():
+    bus = Bus(tree(transport=True, state="active", delay=0))
+    subject, _timers, changes = route(bus)
+    subject.start()
+    assert _delay(subject) == (0, True)
+    calls, before = len(bus.calls), len(changes)
+    bus.receivers["TransportPropertiesChanged"](
+        FD, "org.bluez.MediaTransport1", {"Delay": 10980}, [])
+    assert _delay(subject) == (1098, True)
+    assert len(changes) == before + 1
+    assert len(bus.calls) == calls  # no polling, no extra call
+    # Same rounded value: no new announcement.
+    bus.receivers["TransportPropertiesChanged"](
+        FD, "org.bluez.MediaTransport1", {"Delay": 10984}, [])
+    assert len(changes) == before + 1
+    # Invalidated without a value: still reporting, the last value stays.
+    bus.receivers["TransportPropertiesChanged"](
+        FD, "org.bluez.MediaTransport1", {}, ["Delay"])
+    assert _delay(subject) == (1098, True)
+    assert len(changes) == before + 1
+
+
+def test_an_invalidated_delay_without_a_value_still_reports():
+    bus = Bus(tree(transport=True, state="active"))
+    subject, _timers, changes = route(bus)
+    subject.start()
+    assert _delay(subject) == (None, False)
+    before = len(changes)
+    bus.receivers["TransportPropertiesChanged"](
+        FD, "org.bluez.MediaTransport1", {}, ["Delay"])
+    assert _delay(subject) == (None, True)
+    assert len(changes) == before + 1
+    bus.receivers["TransportPropertiesChanged"](
+        FD, "org.bluez.MediaTransport1", {"Delay": 500}, [])
+    assert _delay(subject) == (50, True)
+
+
+def test_delay_ignores_other_transports_and_bad_values():
+    bus = Bus(tree(transport=True, state="active", delay=500))
+    subject, _timers, _ = route(bus)
+    subject.start()
+    bus.receivers["TransportPropertiesChanged"](
+        f"{DEV}/fd9", "org.bluez.MediaTransport1", {"Delay": 9999}, [])
+    assert _delay(subject) == (50, True)
+    bus.receivers["TransportPropertiesChanged"](
+        FD, "org.bluez.MediaTransport1", {"Delay": True}, [])
+    assert _delay(subject) == (None, False)
+
+
+def test_delay_tracks_transports_added_and_removed():
+    bus = Bus(tree())
+    subject, _timers, _ = route(bus)
+    subject.start()
+    bus.receivers["InterfacesAdded"](FD, {"org.bluez.MediaTransport1": {
+        "Device": DEV, "UUID": A2DP_SINK_UUID, "State": "active", "Delay": 12980,
+    }})
+    assert _delay(subject) == (1298, True)
+    bus.receivers["InterfacesRemoved"](FD, ["org.bluez.MediaTransport1"])
+    assert _delay(subject) == (None, None)
+
+
+@pytest.mark.parametrize("state", ["idle", "pending"])
+def test_delay_is_hidden_while_the_transport_is_not_active(state):
+    subject, _timers, _ = route(Bus(tree(transport=True, state=state, delay=3164)))
+    subject.start()
+    # The property exists, so reporting stays True; the stale value is not shown.
+    assert _delay(subject) == (None, True)
+
+
+def test_idle_transport_without_delay_still_reports_not_negotiated():
+    subject, _timers, _ = route(Bus(tree(transport=True, state="idle")))
+    subject.start()
+    assert _delay(subject) == (None, False)
+
+
+def test_delay_appears_and_disappears_with_the_transport_state():
+    bus = Bus(tree(transport=True, state="idle", delay=3164))
+    subject, _timers, changes = route(bus)
+    subject.start()
+    assert _delay(subject) == (None, True)
+    before = len(changes)
+    bus.receivers["TransportPropertiesChanged"](
+        FD, "org.bluez.MediaTransport1", {"State": "active"}, [])
+    assert _delay(subject) == (316, True)
+    assert len(changes) == before + 1
+    bus.receivers["TransportPropertiesChanged"](
+        FD, "org.bluez.MediaTransport1", {"State": "idle"}, [])
+    assert _delay(subject) == (None, True)
+    assert len(changes) == before + 2
+    # A Delay update while idle is kept, but nothing visible changes yet.
+    bus.receivers["TransportPropertiesChanged"](
+        FD, "org.bluez.MediaTransport1", {"Delay": 10980}, [])
+    assert _delay(subject) == (None, True)
+    assert len(changes) == before + 2
+    bus.receivers["TransportPropertiesChanged"](
+        FD, "org.bluez.MediaTransport1", {"State": "active"}, [])
+    assert _delay(subject) == (1098, True)
+    assert len(changes) == before + 3
+
+
+def test_delay_prefers_the_active_transport():
+    objects = tree(transport=True, state="idle", delay=100)
+    objects[f"{DEV}/fd1"] = {"org.bluez.MediaTransport1": {
+        "Device": DEV, "UUID": A2DP_SINK_UUID, "State": "active", "Delay": 2000,
+    }}
+    subject, _timers, _ = route(Bus(objects))
+    subject.start()
+    assert _delay(subject) == (200, True)
+
+
+def test_delay_is_cleared_on_disconnect_and_owner_loss():
+    bus = Bus(tree(transport=True, state="active", delay=3000))
+    subject, _timers, _ = route(bus)
+    subject.start()
+    bus.receivers["PropertiesChanged"]("org.bluez.Device1", {"Connected": False}, [])
+    assert _delay(subject) == (None, None)
+    subject.probe()
+    assert _delay(subject) == (300, True)
+    subject.bluez_owner_changed(False)
+    assert _delay(subject) == (None, None)
+
+
+def test_audio_status_command_prints_the_av_sync_delay(monkeypatch) -> None:
+    from typer.testing import CliRunner
+
+    from blueferry import cli_audio
+    from blueferry.cli import app
+    from blueferry.models import BackendStatus
+
+    status = BackendStatus.from_dict({
+        "daemon": True, "phone_audio_route": "pc", "phone_audio_reason": "",
+        "phone_audio_pending": "", "phone_audio_delay_ms": 110,
+        "phone_audio_delay_reporting": True,
+    })
+
+    class Client:
+        def status(self) -> BackendStatus:
+            return status
+
+    monkeypatch.setattr(cli_audio, "BackendClient", Client)
+    result = CliRunner().invoke(app, ["audio", "status"], env={"COLUMNS": "200"})
+    assert result.exit_code == 0, result.output
+    assert "A/V sync: 110 ms delay reported to the iPhone." in result.output

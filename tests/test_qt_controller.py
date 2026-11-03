@@ -1924,6 +1924,11 @@ def test_phone_audio_hint_follows_the_typed_playing_field_from_a_refresh():
     audio = controller.phoneAudio
     assert audio["mismatch"] is True and audio["onPc"] is True
     assert audio["hint"] == "The iPhone is playing on its own speaker (chosen on the iPhone)."
+    assert audio["sync"] == ""
+    reported["phone_audio_delay_ms"] = 110
+    reported["phone_audio_delay_reporting"] = True
+    controller._apply_snapshot(controller._snapshot())
+    assert controller.phoneAudio["sync"] == "A/V sync: 110 ms delay reported to the iPhone."
 
 
 def test_feature_hints_point_to_the_setting_for_each_opt_in():

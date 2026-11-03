@@ -479,6 +479,7 @@ class BridgeController(QObject):
             "hint": audio["hint"],
             "playing": audio["playing"],
             "mismatch": audio["mismatch"],
+            "sync": audio["sync"],
         }
 
     @Property("QVariantMap", notify=statusChanged)
