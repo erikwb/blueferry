@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import os
+import threading
 
 import pytest
 from hypothesis import given
@@ -147,6 +149,37 @@ def test_cache_ttl_and_offline_fallback(tmp_path) -> None:
     assert len(entries) == 1 and "cached" in note and len(fetch.calls) == 2
     with pytest.raises(IndexFetchError):
         PluginIndex(fetch=fetch, cache=tmp_path / "empty").load(DEFAULT_INDEX_URL)
+
+
+@pytest.mark.parametrize("planted", ["cache", "temporary"])
+def test_a_fifo_beside_the_cache_counts_as_no_cache_without_waiting(tmp_path, planted) -> None:
+    fetch = _Fetch(_index(IMMICH))
+    index = PluginIndex(fetch=fetch, cache=tmp_path)
+    index.load(DEFAULT_INDEX_URL)
+    cached = next(tmp_path.iterdir())
+    if planted == "cache":
+        cached.unlink()
+        fifo = cached
+    else:
+        # Where earlier versions wrote the new cache before renaming it.
+        fifo = cached.with_name(cached.name + ".tmp")
+    os.mkfifo(fifo, 0o600)
+    result = []
+    loader = threading.Thread(
+        target=lambda: result.append(index.load(DEFAULT_INDEX_URL, refresh=planted != "cache")),
+        daemon=True,
+    )
+    loader.start()
+    loader.join(timeout=5)
+    if loader.is_alive():
+        # Release the blocked open so the hang fails this test only.
+        os.close(os.open(fifo, (os.O_WRONLY if planted == "cache" else os.O_RDONLY)
+                         | os.O_NONBLOCK))
+        loader.join(timeout=5)
+        pytest.fail("the plugin store waited on a FIFO beside its cache")
+    assert result == [([parse_index(_index(IMMICH), DEFAULT_INDEX_URL)[0]], "")]
+    assert len(fetch.calls) == 2
+    assert cached.read_bytes() == _index(IMMICH)
 
 
 def test_catalog_merges_indexes_and_marks_install_state(tmp_path) -> None:

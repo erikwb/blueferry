@@ -290,6 +290,19 @@ def test_dial_quota_is_enforced_over_the_bus_without_blocking_answer(rate_limite
     assert "error" not in _call(name, CALLS_IFACE, "Dial", "0441234567")
 
 
+def test_a_flood_of_tones_never_blocks_hanging_up(rate_limited_service) -> None:
+    name, calls, _now = rate_limited_service
+
+    # Each request comes from a fresh connection, so only the daemon-wide
+    # window applies: tones from any client exhaust it for every client.
+    outcomes = [_call(name, CALLS_IFACE, "SendTones", "voicecall01", "1") for _ in range(61)]
+    assert outcomes[60]["error"].get_dbus_name() == "io.weirdware.BlueFerry.Error.RateLimited"
+
+    assert "error" not in _call(name, CALLS_IFACE, "Hangup", "voicecall01")
+    assert "error" not in _call(name, CALLS_IFACE, "HangupAll")
+    assert calls.requests[-2:] == [("hangup", "voicecall01"), ("hangup_all",)]
+
+
 def test_set_calls_enabled_saves_through_the_daemon_hook() -> None:
     toggles = []
 

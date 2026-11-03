@@ -1,5 +1,6 @@
 """The phone card: a strip above the tabs with the iPhone's name, connection,
-battery/signal/network and the opt-in now playing.
+battery/signal/network and the opt-in now playing with the iPhone's volume
+steps.
 
 GTK counterpart of the Qt client's ``PhoneCard.qml``. The card also reads
 the daemon status for the Calls and Notifications tabs (see
@@ -21,6 +22,7 @@ from gi.repository import Gdk, GdkPixbuf, GLib, Gtk, Pango
 from blueferry import phone_link_view
 from blueferry import phone_overview as overview
 from blueferry.i18n import _
+from blueferry.media_volume_view import volume_controls
 from blueferry.models import BackendStatus
 from blueferry.ui.phone_presenter import media, phone_status
 from blueferry.ui.quick_switches import (
@@ -42,6 +44,14 @@ def _media_buttons() -> dict[str, tuple[str, str]]:
         "previous": ("media-skip-backward-symbolic", _("Previous Track")),
         "toggle": ("media-playback-start-symbolic", _("Play or Pause")),
         "next": ("media-skip-forward-symbolic", _("Next Track")),
+    }
+
+
+def _volume_buttons() -> dict[str, tuple[str, str]]:
+    names = volume_controls({})
+    return {
+        "down": ("audio-volume-low-symbolic", names["down_label"]),
+        "up": ("audio-volume-high-symbolic", names["up_label"]),
     }
 
 
@@ -160,6 +170,21 @@ class PhoneCard(Gtk.Box):
             button.connect("clicked", lambda _b, name=command: self._media_command(name))
             self.media_box.append(button)
             self.media_buttons[command] = button
+        # One relative step on the iPhone per click; the level is read-only.
+        self.volume_buttons: dict[str, Gtk.Button] = {}
+        self.volume_level = Gtk.Label(
+            use_markup=False, css_classes=["dim-label", "caption", "numeric"],
+        )
+        for direction, (icon, label) in _volume_buttons().items():
+            button = Gtk.Button(
+                icon_name=icon, valign=Gtk.Align.CENTER, css_classes=["flat", "circular"],
+            )
+            button.update_property([Gtk.AccessibleProperty.LABEL], [label])
+            button.connect("clicked", lambda _b, name=direction: self._volume_step(name))
+            self.volume_buttons[direction] = button
+        self.media_box.append(self.volume_buttons["down"])
+        self.media_box.append(self.volume_level)
+        self.media_box.append(self.volume_buttons["up"])
         self.media_hint = _hint_label()
         self.media_box.append(self.media_hint)
         self.append(self.media_box)
@@ -284,6 +309,7 @@ class PhoneCard(Gtk.Box):
         self.media_hint.set_label(state.hint)
         self.media_hint.set_tooltip_text(state.hint or None)
         self._show_cover(state.cover if state.available else "")
+        self._render_volume(state.available)
 
     def _show_cover(self, path: str) -> None:
         """Decode the cover off the GTK thread; a newer track wins."""
@@ -320,7 +346,22 @@ class PhoneCard(Gtk.Box):
         self.media_cover.set_visible(texture is not None)
         self.media_icon.set_visible(texture is None)
 
+    def _render_volume(self, available: bool) -> None:
+        volume = volume_controls(self._now_playing if available else {})
+        shown = bool(volume["visible"])
+        for direction, button in self.volume_buttons.items():
+            button.set_visible(shown)
+            button.set_sensitive(bool(volume[f"{direction}_enabled"]))
+            button.set_tooltip_text(volume[f"{direction}_tooltip"] or None)
+        self.volume_level.set_label(volume["level_text"])
+        self.volume_level.set_visible(shown and bool(volume["level_text"]))
+
     # ---- actions --------------------------------------------------------
+
+    def _volume_step(self, direction: str) -> None:
+        volume = volume_controls(self._now_playing)
+        if volume["visible"] and volume[f"{direction}_enabled"]:
+            self._media_command(volume[f"{direction}_command"])
 
     def _media_command(self, command: str) -> None:
         def failed(message: str) -> None:

@@ -46,6 +46,28 @@ ColumnLayout {
         text: tab.view.contentHint || ""
     }
 
+    // Pin results and the pin limit; texts from notification_pin_view.
+    Kirigami.InlineMessage {
+        objectName: "notificationPinError"
+        Layout.fillWidth: true
+        Layout.leftMargin: Kirigami.Units.largeSpacing
+        Layout.rightMargin: Kirigami.Units.largeSpacing
+        Layout.bottomMargin: Kirigami.Units.smallSpacing
+        visible: (tab.info.pinError || "") !== ""
+        type: Kirigami.MessageType.Error
+        text: tab.info.pinError || ""
+    }
+    Kirigami.InlineMessage {
+        objectName: "notificationPinLimit"
+        Layout.fillWidth: true
+        Layout.leftMargin: Kirigami.Units.largeSpacing
+        Layout.rightMargin: Kirigami.Units.largeSpacing
+        Layout.bottomMargin: Kirigami.Units.smallSpacing
+        visible: tab.info.pinLimitReached === true && (tab.info.pinLimitText || "") !== ""
+        type: Kirigami.MessageType.Information
+        text: tab.info.pinLimitText || ""
+    }
+
     Controls.ScrollView {
         Layout.fillWidth: true
         Layout.fillHeight: true
@@ -59,14 +81,37 @@ ColumnLayout {
             delegate: ListRow {
                 id: row
                 required property var modelData
+                readonly property bool pinned: row.modelData.pinned === true
                 partPrefix: "notification"
                 iconName: "preferences-desktop-notification"
+                // Pinned rows carry a pin badge; removed and muted ones are dimmed.
+                badgeIcon: row.pinned ? "pin" : ""
+                dimmed: row.modelData.removed === true || row.modelData.muted === true
+                pinActions: row.pinned
                 title: row.modelData.app
                 bold: true
                 meta: row.modelData.time
-                subtitle: row.modelData.summary || ""
+                subtitle: [row.modelData.removed_text || "", row.modelData.summary || ""]
+                    .filter(part => part !== "").join(" · ")
                 body: row.modelData.body
-                Accessible.name: row.modelData.app + ", " + row.modelData.time
+                Accessible.name: [row.modelData.app, row.modelData.time,
+                                  row.modelData.pinned_text || "", row.modelData.removed_text || ""]
+                    .filter(part => part !== "").join(", ")
+
+                Controls.ToolButton {
+                    objectName: "notificationPin"
+                    visible: row.modelData.can_pin === true
+                    icon.name: row.pinned ? "window-unpin" : "window-pin"
+                    text: row.modelData.pin_label || ""
+                    display: Controls.AbstractButton.IconOnly
+                    // Unpinning always works; pinning stops at the limit.
+                    enabled: row.pinned || tab.info.pinLimitReached !== true
+                    Accessible.name: text
+                    Accessible.description: row.modelData.pin_tooltip || ""
+                    Controls.ToolTip.text: row.modelData.pin_tooltip || text
+                    Controls.ToolTip.visible: hovered
+                    onClicked: tab.bridge.setNotificationPinned(row.modelData.key, !row.pinned)
+                }
             }
 
             EmptyState {

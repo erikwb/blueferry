@@ -5,6 +5,7 @@ import pytest
 
 from blueferry import backend_operations, config
 from blueferry.backend_operations import BackendDependencies, BackendOperations
+from blueferry.contact_details import EMPTY as EMPTY_DETAILS
 from blueferry.contact_repository import ContactRepository
 from blueferry.contacts import ContactsResolver
 from blueferry.conversation_state import ConversationSnapshot, ConversationState
@@ -21,7 +22,10 @@ EMAIL = "sarah@example.com"
 @pytest.fixture
 def contacts(monkeypatch):
     records = [("Dr. Sarah Bourget", [PHONE[1:], OTHER_PHONE[1:]], [EMAIL])]
-    monkeypatch.setattr(ContactRepository, "load", lambda _self, **_kwargs: records)
+    monkeypatch.setattr(
+        ContactRepository, "load_cards",
+        lambda _self, **_kwargs: [(record, None, EMPTY_DETAILS) for record in records],
+    )
     return ContactsResolver(), records
 
 
@@ -118,6 +122,7 @@ def test_merged_operations_preserve_stars_read_and_delete_all_addresses(
     sessions = SimpleNamespace(map=None, map_path="/map")
     operations = BackendOperations(sessions, BackendDependencies(
         contacts=resolver, starred_threads=store,
+        submit_obex=lambda operation, *, on_success, on_error: on_success(operation()),
     ))
     merged = operations.list_threads(10)[0]
     assert merged["starred"]

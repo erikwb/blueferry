@@ -374,6 +374,10 @@ class BearerSupervisor:
         # until BlueZ is replaced or ANCS deliberately resets the transport.
         self._le_dial_spent = False
         self._le_reset_pending = False
+        # A reset the recovery budget refused for the current LE link, as its
+        # allow_disconnected. ANCS asks only once, so the health poll retries.
+        self._le_reset_wanted: bool | None = None
+        self._le_reset_started_at: float | None = None
         self._le_reset_down_seen = False
         self._le_reset_failures = 0
         self._next_le_reset_attempt = 0.0
@@ -522,6 +526,7 @@ class BearerSupervisor:
         self._le_preference_restore_pending = False
         self._le_dial_spent = False
         self._le_reset_pending = False
+        self._le_reset_wanted = None
         self._le_reset_failures = 0
         self._next_le_reset_attempt = 0.0
         self._cancel_le_settle()
@@ -568,26 +573,46 @@ class BearerSupervisor:
         return self._profile_reset_phase is not None
 
     def observe_ancs_health(self, healthy: bool, proof: float | None) -> None:
+        if healthy:
+            self._le_reset_wanted = None
         self._le_recovery_budget.observe_health(healthy, proof)
 
-    def recover_le_transport(self, *, allow_disconnected: bool = False) -> None:
-        """Request one serialized LE reset after GATT and bearer state diverge."""
+    def recover_le_transport(
+        self, *, allow_disconnected: bool = False, since: float | None = None,
+    ) -> bool:
+        """Request one serialized LE reset after GATT and bearer state diverge.
+
+        Returns whether the reset is under way. A reset that only the recovery
+        budget refused is retried by the health poll once the budget allows.
+        With since, a reset that started at or after it also answers.
+        """
+        wanted = self._le_reset_wanted
+        self._le_reset_wanted = None
         if not self._running or self._le_api_available is False:
             # Without Bearer.LE1 the only disconnect drops Classic as well.
-            return
+            return False
         if self._profile_reset_phase is not None:
             # The whole-device reset already replaces this GATT transport.
             # A queued ANCS callback must not also reset the replacement link.
-            return
+            return False
         # A successful reset is published locally as disconnected before the
         # polling source can see a replacement inbound link. Ignore duplicate
         # failure reports during that synthetic down-state.
         if self._states["le"] is False and not allow_disconnected:
-            return
+            return False
         if not self._le_reset_pending and not self._le_recovery_budget.take():
-            return
+            started = self._le_reset_started_at
+            if since is not None and started is not None and started >= since:
+                # The poll already ran a reset for this caller's outage.
+                self._le_reset_wanted = wanted
+                return True
+            if wanted is None:
+                log.info("postponing the iPhone LE reset until the recovery budget allows it")
+            self._le_reset_wanted = allow_disconnected or bool(wanted)
+            return False
         if not self._le_reset_pending:
             self._le_reset_down_seen = False
+            self._le_reset_started_at = self._clock()
             log.warning(
                 "ANCS transport disagrees with BlueZ; resetting the LE bearer"
             )
@@ -600,6 +625,7 @@ class BearerSupervisor:
             self._request_le_disconnect()
         else:
             log.debug("deferring the ANCS LE reset until the profile attempt completes")
+        return True
 
     def stop(self) -> None:
         self._running = False
@@ -615,6 +641,7 @@ class BearerSupervisor:
         self._le_preference_restore_pending = False
         self._le_dial_spent = False
         self._le_reset_pending = False
+        self._le_reset_wanted = None
         self._cancel_le_settle()
         self._stop_le_watch()
         self._stop_bredr_watch()
@@ -742,6 +769,9 @@ class BearerSupervisor:
     def _profile_reset_disconnected(self, generation: int) -> None:
         if generation != self._generation or self._profile_reset_phase != "disconnecting":
             return
+        # The device disconnect also replaced the LE link a postponed reset
+        # was meant for, even if no poll saw it go down.
+        self._le_reset_wanted = None
         self._profile_reset_phase = "settling"
         self._profile_reset_id = self._schedule(
             PROFILE_RESET_SETTLE_SECONDS, self._profile_reset_reconnect,
@@ -1124,6 +1154,10 @@ class BearerSupervisor:
         if self._disconnecting:
             return True
 
+        if self._le_reset_wanted is not None:
+            self.recover_le_transport(allow_disconnected=self._le_reset_wanted)
+            if self._disconnecting:
+                return True
         if self._le_reset_pending and self._le_enabled:
             if le is False:
                 self._complete_le_reset()
@@ -1264,6 +1298,9 @@ class BearerSupervisor:
         if kind == "le":
             if value is False and self._le_reset_pending:
                 self._le_reset_down_seen = True
+            if value is False and previous is True:
+                # The link the refused reset was meant for is gone.
+                self._le_reset_wanted = None
             if value is not True:
                 self._le_recovery_budget.observe_health(False, None)
             if value is True:

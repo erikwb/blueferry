@@ -192,8 +192,11 @@ class LibnotifySink:
         ancs_actions_enabled=None,
         on_call_action=None,
         on_plugin_action=None,
+        app_muted: Callable[[str], bool] | None = None,
     ) -> None:
         self._defer_mark_read = defer_mark_read
+        # bundle ID -> whether the user muted that app's popups (checked live).
+        self._app_muted = app_muted
         self._contact_photo = contact_photo
         # (call_id, "answer" | "decline") from an incoming-call popup button.
         self._on_call_action = on_call_action
@@ -494,6 +497,11 @@ class LibnotifySink:
         # group metadata but never creates a second desktop popup.
         if event.app_id == MESSAGES_APP_ID:
             return
+        if self._muted(event.app_id):
+            # Muted from a client: no popup, but keep the missed-call mark so
+            # the call-history path does not show this call after all.
+            self._remember_missed_call(event)
+            return
         # Title: "📱 AppName" or "📱 com.bundle.id" if no name yet
         app = event.app_name or event.app_id or "Notification"
         # Mirror the iPhone's layout: the notification's own title next to the
@@ -560,17 +568,7 @@ class LibnotifySink:
         except dbus.exceptions.DBusException as e:
             log.error("libnotify Notify (ANCS) failed: %s", e.get_dbus_name())
             return
-        if getattr(event, "category", CategoryID.Other) == CategoryID.MissedCall:
-            # Remember when, and only keyed digests of who: lets the PBAP
-            # missed-call path skip a second popup for the same call.
-            self._ancs_missed_call_marks().append(_MissedCallMark(
-                event.seen_at,
-                # The title names the caller; the subtitle is a label such as
-                # "Missed Call" or, at most, the number, so only its digits count.
-                self._caller_digests(
-                    caller_match_keys(event.title) | caller_number_keys(event.subtitle)
-                ),
-            ))
+        self._remember_missed_call(event)
         if buttons:
             self._track_ancs_actions(
                 int(nid),
@@ -590,6 +588,30 @@ class LibnotifySink:
                 self._click_ids = {}
             self._click_ids[click_id] = int(nid)
             self._prune_trackers()
+
+    def _muted(self, app_id: object) -> bool:
+        check = getattr(self, "_app_muted", None)
+        if check is None or not isinstance(app_id, str) or not app_id:
+            return False
+        try:
+            return bool(check(app_id))
+        except Exception:
+            log.debug("muted-app check failed; showing the popup", exc_info=True)
+            return False
+
+    def _remember_missed_call(self, event: AncsEvent) -> None:
+        if getattr(event, "category", CategoryID.Other) != CategoryID.MissedCall:
+            return
+        # Remember when, and only keyed digests of who: lets the PBAP
+        # missed-call path skip a second popup for the same call.
+        self._ancs_missed_call_marks().append(_MissedCallMark(
+            event.seen_at,
+            # The title names the caller; the subtitle is a label such as
+            # "Missed Call" or, at most, the number, so only its digits count.
+            self._caller_digests(
+                caller_match_keys(event.title) | caller_number_keys(event.subtitle)
+            ),
+        ))
 
     def _resolve_open_target(self, app_id: str):
         provider = getattr(self, "_open_target", None)
