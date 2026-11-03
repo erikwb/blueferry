@@ -23,6 +23,7 @@ from blueferry import (
     contacts_view,
     doctor_report,
     features_view,
+    file_drop_view,
     media_volume_view,
     notification_apps_view,
     notification_pin_view,
@@ -43,6 +44,7 @@ from blueferry.conversation_state import (
 )
 from blueferry.doctor_report import DoctorReport, DoctorRunner
 from blueferry.i18n import _
+from blueferry.limits import MAX_CALL_HISTORY_QUERY_LIMIT
 from blueferry.models import BackendStatus, CallsSnapshot, Thread
 from blueferry.notification_history import NotificationHistory
 from blueferry.onboarding import OnboardingState, effective_compatibility
@@ -53,6 +55,7 @@ from blueferry.qt.companion import CompanionTools
 from blueferry.qt.plugin_settings import PluginSettings
 from blueferry.qt.plugin_surfaces import PluginSurfaces
 from blueferry.qt.tasks import QtTaskRunner, Task, qt_timers
+from blueferry.qt.thumbnails import thumbnail_url
 from blueferry.quirks_report import issue_report, issue_url
 from blueferry.reconnect_view import ManualReconnect, reconnect_view
 from blueferry.search_model import GlobalSearch
@@ -133,7 +136,30 @@ class _WorkerRunner:
 
 
 # Private key of the muted app IDs added to a ListNotifications answer.
+# Calls the Recent Calls page reads at first.
+CALL_HISTORY_PAGE = 200
 _MUTED_APPS_KEY = "_blueferry_muted_apps"
+
+
+# What the rows need from the raw ListNotifications answer: never the titles
+# or bodies, which go with the shared model's rows.
+_RECORD_PIN_FIELDS = ("key", "pinned", "removed", "actionable", "app_id")
+
+
+def _pin_fields(value: object) -> dict:
+    """The pin keys, flags and app IDs of one ListNotifications answer."""
+    if not isinstance(value, dict):
+        return {}
+    records = value.get("notifications")
+    return {
+        "pins_max": value.get("pins_max"),
+        _MUTED_APPS_KEY: value.get(_MUTED_APPS_KEY) or frozenset(),
+        "notifications": [
+            {name: record[name] for name in _RECORD_PIN_FIELDS if name in record}
+            if isinstance(record, Mapping) else None
+            for record in records
+        ] if isinstance(records, list) else [],
+    }
 
 
 class _NotificationRunner:
@@ -169,7 +195,7 @@ class _NotificationRunner:
             history = controller._notification_history
             rows = history.rows
             previous = controller._notification_reply
-            controller._notification_reply = value if isinstance(value, dict) else {}
+            controller._notification_reply = _pin_fields(value)
             callback()
             if history.rows is rows:
                 controller._notification_reply = previous
@@ -200,6 +226,8 @@ class BridgeController(QObject):
     messageOpenRequested = Signal(str)
     notificationOpenMapChanged = Signal()
     groupConfirmationRequested = Signal(str, str, str)
+    # A reply to a message that may be from a group: key, draft, name, address.
+    senderConfirmationRequested = Signal(str, str, str, str)
     # A reply to a group whose members are unconfirmed: key and draft.
     groupParticipantsRequested = Signal(str, str)
     threadSendSucceeded = Signal(str, str)
@@ -212,6 +240,9 @@ class BridgeController(QObject):
     companionToolsChanged = Signal()
     pluginSettingsChanged = Signal()
     pluginSurfacesChanged = Signal()
+    fileDropChanged = Signal()
+    # A short notice about files dropped on the window: text, ok.
+    fileDropNotice = Signal(str, bool)
     notificationAppsChanged = Signal()
     contactsChanged = Signal()
     contactPhotosChanged = Signal()
@@ -251,6 +282,9 @@ class BridgeController(QObject):
         self._tasks: set[Task] = set()
         self._threads: list[dict] = []
         self._pending_group: tuple[str, str, str] | None = None
+        # Whether the last prompt asked to reply to the sender alone, so an
+        # answer that no longer matches it gets the sender's wording.
+        self._confirming_sender = False
         self._contact_results: list[dict] = []
         self._state = ConversationState(select_first=False)
         self._status: dict = {}
@@ -328,6 +362,8 @@ class BridgeController(QObject):
         self._call_history_again = False
         # Only a visible Recent Calls page keeps call records in this process.
         self._call_history_watched = False
+        # Recent calls read per load; a search hit can reach further back.
+        self._call_history_limit = CALL_HISTORY_PAGE
         self._call_history_timer = QTimer(self)
         self._call_history_timer.setSingleShot(True)
         self._call_history_timer.setInterval(100)
@@ -363,7 +399,7 @@ class BridgeController(QObject):
         self._photos_pool.setMaxThreadCount(1)
         self._photos = PhotosTabModel(
             runner=QtTaskRunner(self._photos_pool),
-            url=_file_url, open_file=_open_file,
+            url=_file_url, thumbnail_url=thumbnail_url, open_file=_open_file,
             on_change=self.photosChanged.emit, on_error=self._operation_failed,
         )
         # UxPlay, LocalSend and iPhone photos: client-side, no daemon involved.
@@ -415,6 +451,8 @@ class BridgeController(QObject):
             bus=self._bus, parent=self,
         )
         self._plugin_surfaces.changed.connect(self.pluginSurfacesChanged)
+        self._plugin_surfaces.dropChanged.connect(self.fileDropChanged)
+        self._plugin_surfaces.dropNotice.connect(self.fileDropNotice)
         # Enabling, installing or removing a plugin changes the card. None
         # until the first plugin list has loaded; an empty tuple means "no
         # plugin installed", so installing the very first one still reloads.
@@ -483,6 +521,7 @@ class BridgeController(QObject):
             "hint": audio["hint"],
             "playing": audio["playing"],
             "mismatch": audio["mismatch"],
+            "sync": audio["sync"],
         }
 
     @Property("QVariantMap", notify=statusChanged)
@@ -857,6 +896,32 @@ class BridgeController(QObject):
         self._plugin_surfaces.send_from_card(
             str(plugin_id), str(target_id), str(label), list(urls or []))
 
+    @Property("QVariantMap", notify=fileDropChanged)
+    def fileDrop(self):
+        """Files dropped on the window (file_drop_view.py): phase (idle,
+        checking, picking, none, sending), choices with key/label/icon,
+        selected, title, body and the fixed texts; all plain text."""
+        return {
+            **self._plugin_surfaces.file_drop.state(),
+            "overlayTitle": file_drop_view.overlay_title(),
+            "overlaySubtitle": file_drop_view.overlay_subtitle(),
+            "settingsLabel": file_drop_view.settings_label(),
+            "sendLabel": file_drop_view.send_label(),
+        }
+
+    @Slot("QVariantList")
+    def dropFiles(self, urls: list) -> None:
+        """Files dropped anywhere on the main window."""
+        self._plugin_surfaces.drop(list(urls or []))
+
+    @Slot(str)
+    def pickDropTarget(self, key: str) -> None:
+        self._plugin_surfaces.file_drop.pick(str(key))
+
+    @Slot()
+    def cancelDrop(self) -> None:
+        self._plugin_surfaces.file_drop.cancel()
+
     @Property("QVariantMap", notify=companionToolsChanged)
     def companionTools(self):
         return self._companion.state()
@@ -908,7 +973,11 @@ class BridgeController(QObject):
         """The shared model changed: add the pin fields and the muted flag
         to its display rows (same order as the raw records)."""
         history = self._notification_history
-        snapshot = self._notification_reply if history.rows else {}
+        if not history.rows:
+            # Forgotten rows (tab hidden, storage locked, list off) take
+            # their keys along.
+            self._notification_reply = {}
+        snapshot = self._notification_reply
         records = snapshot.get("notifications")
         records = [r for r in records if isinstance(r, Mapping)] if isinstance(
             records, list
@@ -1039,6 +1108,9 @@ class BridgeController(QObject):
 
     @Slot()
     def refreshNotificationApps(self) -> None:
+        self._read_notification_apps(keep_error=False)
+
+    def _read_notification_apps(self, *, keep_error: bool) -> None:
         if not self._notification_apps_watched or not self.notificationAppsSupported:
             return
 
@@ -1046,7 +1118,8 @@ class BridgeController(QObject):
             if not self._notification_apps_watched:
                 return
             view = notification_apps_view.list_view(value)
-            self._notification_apps = {**view, "loaded": True, "error": ""}
+            error = self._notification_apps.get("error", "") if keep_error else ""
+            self._notification_apps = {**view, "loaded": True, "error": error}
             self.notificationAppsChanged.emit()
 
         def failed(message: str) -> None:
@@ -1087,6 +1160,9 @@ class BridgeController(QObject):
                 "error": notification_apps_view.change_failed_text(message),
             }
             self.notificationAppsChanged.emit()
+            # Muting may have become unavailable (settings.json unreadable,
+            # storage locked): read the list again for its switches and hint.
+            self._read_notification_apps(keep_error=True)
 
         self._run(
             lambda: self._backend.set_notification_app_muted(selected, wanted),
@@ -1518,6 +1594,8 @@ class BridgeController(QObject):
         self._refresh_timer.start()
         # ClearHistory also empties the notification list.
         self._notificationsInvalidated()
+        # Shown search hits may name messages that changed or are gone.
+        self._search.invalidate()
 
     @Slot()
     def _statusInvalidated(self) -> None:
@@ -1536,6 +1614,8 @@ class BridgeController(QObject):
 
     @Slot()
     def _callHistoryInvalidated(self) -> None:
+        # Search hits may name calls that are gone.
+        self._search.invalidate()
         # The signal carries nothing; only a shown list is refetched.
         if self.callHistoryEnabled and self._call_history_watched:
             self._call_history_timer.start()
@@ -1547,6 +1627,7 @@ class BridgeController(QObject):
         if self._call_history_watched:
             self.loadCallHistory()
             return
+        self._call_history_limit = CALL_HISTORY_PAGE
         self._call_history_timer.stop()
         self._call_history_again = False
         if self._call_history or self._call_history_error:
@@ -1554,6 +1635,19 @@ class BridgeController(QObject):
             self._call_history_rows = {}
             self._call_history_error = ""
             self.callHistoryChanged.emit()
+
+    @Slot(str)
+    def revealCall(self, call_id: str) -> None:
+        """A search hit names this call: read every retained call unless
+        the shown list already holds it (Search covers all of them)."""
+        selected = str(call_id or "")
+        if not selected or self._call_history_limit >= MAX_CALL_HISTORY_QUERY_LIMIT:
+            return
+        if any(selected in (row.get("ids") or [])
+               for row in self._call_history_rows.get("all") or []):
+            return
+        self._call_history_limit = MAX_CALL_HISTORY_QUERY_LIMIT
+        self.loadCallHistory()
 
     @Slot()
     def loadCallHistory(self) -> None:
@@ -1564,9 +1658,10 @@ class BridgeController(QObject):
             self._call_history_again = True
             return
         self._call_history_loading = True
+        limit = self._call_history_limit
 
         def operation() -> tuple[list[dict], dict]:
-            entries = self._backend.call_history(200)
+            entries = self._backend.call_history(limit)
             rows = {
                 "all": phone_overview.call_groups(entries),
                 "missed": phone_overview.call_groups(entries, missed_only=True),
@@ -1781,7 +1876,10 @@ class BridgeController(QObject):
         self._pending_group = None
         if confirm_group:
             if pending is None or pending[:2] != (key, body.strip()):
-                self._set_error(ReplyDisposition.STALE_GROUP.message)
+                self._set_error((
+                    ReplyDisposition.STALE_SENDER if self._confirming_sender
+                    else ReplyDisposition.STALE_GROUP
+                ).message)
                 return
         plan = state.plan_reply(
             body, thread_key=key, confirm_group=confirm_group,
@@ -1793,7 +1891,15 @@ class BridgeController(QObject):
             return
         if plan.disposition is ReplyDisposition.CONFIRM_GROUP and thread is not None:
             self._pending_group = (key, plan.body, plan.expected_group_token)
+            self._confirming_sender = False
             self.groupConfirmationRequested.emit(key, draft, "\n".join(thread.recipients))
+            return
+        if plan.disposition is ReplyDisposition.CONFIRM_SENDER and thread is not None:
+            self._pending_group = (key, plan.body, plan.expected_group_token)
+            self._confirming_sender = True
+            self.senderConfirmationRequested.emit(
+                key, draft, thread.name, ", ".join(thread.recipients),
+            )
             return
         if not plan.ready:
             if plan.disposition.message:

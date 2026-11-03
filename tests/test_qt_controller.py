@@ -8,8 +8,9 @@ import pytest
 
 pytest.importorskip("PySide6")
 
+from blueferry import notification_pin_view
 from blueferry.client import BackendError, TetherUnsupportedError
-from blueferry.conversation_state import ConversationSnapshot
+from blueferry.conversation_state import ConversationSnapshot, ReplyDisposition
 from blueferry.models import BackendStatus, Thread
 from blueferry.qt.controller import BridgeController
 from blueferry.setup_client import ConfigurationState
@@ -836,6 +837,44 @@ def test_group_send_requires_explicit_approval_and_rejects_changed_roster(monkey
     controller.sendThread("group:test", "draft", False)
     controller.sendThread("group:test", "draft", True)
     assert len(queued) == 1
+
+
+def test_reply_to_a_maybe_group_message_asks_to_reply_to_the_sender_only(monkeypatch):
+    controller = BridgeController(backend=_Backend(), setup=object(), subscribe=False, autostart=False)
+    alice = {
+        "key": "address:phone:15551111111", "name": "Alice", "reply_ready": False,
+        "recipients": ["+15551111111"], "group_ambiguous": True,
+        "sender_reply_token": "sender:one",
+    }
+    _apply_threads(controller, [Thread.from_dict(alice)])
+    assert controller.threads[0]["can_compose"] is True
+    queued = []
+    prompts = []
+    monkeypatch.setattr(controller, "_run", lambda *args, **kwargs: queued.append(args))
+    controller.senderConfirmationRequested.connect(lambda *args: prompts.append(args))
+    controller.sendThread(alice["key"], "draft", False)
+    assert not queued
+    assert prompts == [(alice["key"], "draft", "Alice", "+15551111111")]
+    # Another message that may be from a group arrives while it asks.
+    _apply_threads(controller, [Thread.from_dict({**alice, "sender_reply_token": "sender:two"})])
+    controller.sendThread(alice["key"], "draft", True)
+    assert not queued
+    assert controller.errorText == ReplyDisposition.STALE_SENDER.message
+    # A second click on the same prompt sends nothing and says the same.
+    controller._set_error("")
+    controller.sendThread(alice["key"], "draft", True)
+    assert not queued
+    assert controller.errorText == ReplyDisposition.STALE_SENDER.message
+    controller.sendThread(alice["key"], "draft", False)
+    controller.sendThread(alice["key"], "draft", True)
+    assert len(queued) == 1
+    sent = []
+    controller._backend.send_to_thread = lambda *args, **kwargs: sent.append((args, kwargs))
+    queued[0][0]()
+    assert sent == [(
+        (alice["key"], "draft"),
+        {"confirm_group": True, "expected_group_token": "sender:two"},
+    )]
 
 
 def test_draft_completion_is_emitted_only_after_success(monkeypatch):
@@ -1924,6 +1963,11 @@ def test_phone_audio_hint_follows_the_typed_playing_field_from_a_refresh():
     audio = controller.phoneAudio
     assert audio["mismatch"] is True and audio["onPc"] is True
     assert audio["hint"] == "The iPhone is playing on its own speaker (chosen on the iPhone)."
+    assert audio["sync"] == ""
+    reported["phone_audio_delay_ms"] = 110
+    reported["phone_audio_delay_reporting"] = True
+    controller._apply_snapshot(controller._snapshot())
+    assert controller.phoneAudio["sync"] == "A/V sync: this computer reports 110 ms."
 
 
 def test_feature_hints_point_to_the_setting_for_each_opt_in():
@@ -2202,6 +2246,7 @@ def test_photos_load_only_while_watched_and_open_the_original(monkeypatch, tmp_p
     from blueferry import photos_view
     from blueferry.plugin_api.client import Photo
     from blueferry.plugin_api.testing import manifest
+    from blueferry.qt.thumbnails import thumbnail_url
 
     from .photo_fixtures import png
     from .test_photo_thumbnails import png_bomb
@@ -2232,7 +2277,9 @@ def test_photos_load_only_while_watched_and_open_the_original(monkeypatch, tmp_p
     assert controller.photos["loaded"] is False  # not watched: nothing loaded
     controller.watchPhotos(True)
     item = controller.photos["items"][0]
-    assert item["video"] is True and item["thumbnail"].endswith("/t.webp")
+    # Through the image provider: QML never opens the thumbnail path itself.
+    assert item["video"] is True and item["thumbnail"] == thumbnail_url(thumb)
+    assert item["thumbnail"].startswith("image://blueferry-thumbnail/")
     assert item["original"] == "" and controller.photos["ready"] is True
     assert not controller.busy
     # A thumbnail declaring 10 gigapixels never reaches QML's image loader.
@@ -2680,8 +2727,15 @@ def test_pinning_refreshes_the_list_and_explains_a_failure(monkeypatch):
 
 
 def test_muted_apps_are_read_only_while_shown_and_only_from_capable_daemons(monkeypatch):
+    from PySide6.QtCore import QCoreApplication
+    from PySide6.QtGui import QGuiApplication
+
     from blueferry.qt import controller as controller_module
     from tests.client_fakes import ManualRunner
+
+    # The QTimer below only runs inside an application, also when this test
+    # runs on its own.
+    _application = QCoreApplication.instance() or QGuiApplication([])
 
     timers = ManualRunner()
     monkeypatch.setattr(controller_module, "qt_timers", lambda _parent: timers.timer)
@@ -2739,11 +2793,98 @@ def test_muting_an_app_refreshes_the_list_and_reports_failures_in_the_section(mo
     controller.notificationAppsChanged.connect(lambda: changes.append(True))
     controller.setNotificationAppMuted("fail", True)
     assert controller.notificationApps["error"] == "local data is locked"
-    assert changes == [True]
+    # The error shows at once; the reread for the switches keeps it.
+    assert changes == [True, True]
     assert controller.errorText == ""
     controller.setNotificationAppMuted("com.example.mail", False)
     assert controller.notificationApps["error"] == ""
     assert backend.muted == set()
+
+
+class _ConfigurationFailure(Exception):
+    """The D-Bus error behind a refusal while settings.json can't be read."""
+
+    MESSAGE = ("settings.json could not be read, so the change was not saved; "
+               "repair or remove the file and try again")
+
+    def get_dbus_name(self):
+        return "io.weirdware.BlueFerry.Error.Configuration"
+
+    def get_dbus_message(self):
+        return self.MESSAGE
+
+
+def _configuration_error() -> BackendError:
+    try:
+        raise BackendError(_ConfigurationFailure.MESSAGE) from _ConfigurationFailure()
+    except BackendError as error:
+        return error
+
+
+def test_a_pin_refused_for_an_unreadable_settings_file_says_so(monkeypatch):
+    backend = _PinBackend()
+    controller = _inline_controller(monkeypatch, backend)
+    _allow_notifications(controller)
+    controller.watchNotifications(True)
+    backend.pin_error = _configuration_error()
+    controller.setNotificationPinned("k2", True)
+    text = controller.notificationsInfo["pinError"]
+    assert text == notification_pin_view.UNREADABLE_SETTINGS_TEXT
+    assert controller.errorText == ""
+    # The rows stay usable for the next try once the file is repaired.
+    assert [row["key"] for row in controller.notifications] == ["k1", "k2"]
+
+
+def test_a_mute_refused_for_an_unreadable_settings_file_shows_the_list_unavailable(
+    monkeypatch,
+):
+    backend = _PinBackend()
+    controller = BridgeController(backend=backend, setup=object(), subscribe=False, autostart=False)
+    _run_inline_any(controller, monkeypatch)
+    controller._status = {"notification_muted_app_count": 0}
+    controller.watchNotificationApps(True)
+    assert all(row["enabled"] for row in controller.notificationApps["rows"])
+
+    # settings.json broke after the list was read.
+    listed = backend.notification_apps
+
+    def unreadable():
+        return {**listed(), "mute_available": False}
+
+    def refuse(_app_id, _muted):
+        raise _configuration_error()
+
+    backend.notification_apps = unreadable
+    backend.set_notification_app_muted = refuse
+    controller.setNotificationAppMuted("com.example.mail", True)
+    apps = controller.notificationApps
+    assert apps["error"] == _ConfigurationFailure.MESSAGE
+    assert apps["available"] is False
+    assert not any(row["enabled"] for row in apps["rows"])
+    assert "settings.json can't be read" in apps["hint"]
+    assert controller.errorText == ""
+
+
+@pytest.mark.parametrize("change", [
+    {"storage_state": "locked"},
+    {"notification_content_shown": False},
+], ids=["locked", "content-hidden"])
+def test_the_raw_notification_answer_keeps_no_titles_or_bodies(monkeypatch, change):
+    backend = _PinBackend()
+    controller = _inline_controller(monkeypatch, backend)
+    _allow_notifications(controller)
+    controller.watchNotifications(True)
+    assert controller.notifications[0]["key"] == "k1"
+    assert "Hi" not in repr(controller._notification_reply)
+
+    controller._notification_history.sync_status({
+        "daemon": True, "notification_history_enabled": True,
+        "storage_state": "ready", "notification_content_shown": True, **change,
+    })
+    assert "Hi" not in repr(controller._notification_reply)
+    assert all(row["title"] == "" for row in controller.notifications)
+    if not controller.notifications:
+        assert controller._notification_reply == {}
 
 
 def test_notification_rows_without_pin_keys_hide_the_pin_control(monkeypatch):
@@ -2798,8 +2939,9 @@ class _CardBackend:
              "snippet": "at noon", "match_start": 3, "match_length": 4}]}}
 
 
-def _card_status(epoch=1):
-    return {"contact_card_count": 1, "contact_card_epoch": epoch, "search_result_limit": 50}
+def _card_status(epoch=1, photos=True):
+    return {"contact_card_count": 1, "contact_card_epoch": epoch, "search_result_limit": 50,
+            "contact_photos": photos}
 
 
 def test_contacts_are_read_while_watched_and_the_card_photo_is_served(monkeypatch):
@@ -2865,6 +3007,134 @@ def test_contact_list_row_photos_are_served_by_card_id(monkeypatch):
     assert controller.avatar_bytes(key) == b"\x89PNG row"
     controller.watchContacts(False)
     assert controller.avatar_bytes(key) is None
+
+
+@pytest.mark.parametrize("status", [
+    {"contact_photos": False},
+    {"contact_photos": True, "contact_photos_state": "unknown"},
+], ids=["off", "unknown"])
+def test_the_card_photo_goes_once_contact_photos_are_off_or_unknown(monkeypatch, status):
+    backend = _CardBackend()
+    controller = _inline_controller(monkeypatch, backend)
+    controller._status = _card_status()
+    controller.statusChanged.emit()
+    controller.watchContacts(True)
+    controller.openContact("c1")
+    photo = controller.contactCard["photo"]
+    assert photo.startswith("image://blueferry-avatar/")
+    from blueferry.qt.avatars import address_from_id
+
+    key = address_from_id(photo.split("image://blueferry-avatar/", 1)[1])
+    assert controller.avatar_bytes(key) == b"\x89PNG photo"
+
+    controller._status = {**_card_status(), **status}
+    controller.statusChanged.emit()
+    assert controller.contactCard["open"] is True
+    assert controller.contactCard["photo"] == ""
+    assert controller.avatar_bytes(key) is None
+    assert all(not row.get("has_photo") for row in controller.contacts["rows"])
+
+
+def test_a_new_card_epoch_drops_the_shown_cards_at_once(monkeypatch):
+    backend = _CardBackend()
+    controller = _inline_controller(monkeypatch, backend)
+    queued: list = []
+    run_inline = controller._run
+    monkeypatch.setattr(controller, "_run", lambda *args, **kwargs: queued.append(
+        lambda: run_inline(*args, **kwargs)))
+
+    def drain():
+        while queued:
+            queued.pop(0)()
+
+    controller._status = _card_status()
+    controller.statusChanged.emit()
+    controller.watchContacts(True)
+    drain()
+    controller.openContact("c1")
+    drain()
+    assert controller.contacts["rows"] and controller.contactCard["photo"]
+
+    controller._status = _card_status(epoch=2)
+    controller.statusChanged.emit()
+    # Before the new page arrives: nothing of the old epoch is shown.
+    assert queued
+    assert controller.contacts["rows"] == []
+    assert controller.contactCard["photo"] == ""
+    drain()
+    assert controller.contacts["rows"]
+
+
+@pytest.mark.parametrize("signal", ["history", "call-history"])
+def test_history_signals_drop_the_search_answer_and_search_again(monkeypatch, signal):
+    backend = _CardBackend()
+    controller = _inline_controller(monkeypatch, backend)
+    controller._status = _card_status()
+    controller.statusChanged.emit()
+    controller.setSearchQuery("noon")
+    controller._search._timer._timer.timeout.emit()
+    assert backend.searches == [("noon", 20)]
+    assert controller.searchResults["sections"]
+
+    if signal == "history":
+        controller._historyChanged({})
+    else:
+        controller._callHistoryInvalidated()
+    assert controller.searchResults["sections"] == []
+    assert controller.searchResults["loading"] is True
+    controller._search._timer._timer.timeout.emit()
+    assert backend.searches == [("noon", 20), ("noon", 20)]
+    assert controller.searchResults["sections"]
+
+
+def test_a_status_with_locked_storage_drops_the_search_answer(monkeypatch):
+    backend = _CardBackend()
+    controller = _inline_controller(monkeypatch, backend)
+    controller._status = {**_card_status(), "storage_state": "unlocked"}
+    controller.statusChanged.emit()
+    controller.setSearchQuery("noon")
+    controller._search._timer._timer.timeout.emit()
+    assert controller.searchResults["sections"]
+
+    controller._status = {**_card_status(), "storage_state": "locked"}
+    controller.statusChanged.emit()
+    assert controller.searchResults["sections"] == []
+
+
+def test_a_searched_call_beyond_the_first_page_is_read(monkeypatch):
+    from blueferry.limits import MAX_CALL_HISTORY_QUERY_LIMIT
+    from blueferry.models import CallHistoryEntry
+    from blueferry.qt.controller import CALL_HISTORY_PAGE
+
+    limits: list[int] = []
+    retained = [CallHistoryEntry.from_dict({
+        "direction": "incoming", "timestamp": f"2026-10-{1 + n // 100:02d}T10:00:00+00:00",
+        "address": f"+1555{n:04d}", "id": f"call-{n}",
+    }) for n in range(CALL_HISTORY_PAGE + 1)]
+
+    class Backend:
+        def call_history(self, limit=200):
+            limits.append(limit)
+            return retained[:limit]
+
+    controller = _inline_controller(monkeypatch, Backend())
+    controller._status = {"call_history_enabled": True}
+    controller.watchCallHistory(True)
+    assert limits == [CALL_HISTORY_PAGE]
+    # A hit inside the shown page reads nothing more.
+    controller.revealCall("call-0")
+    assert limits == [CALL_HISTORY_PAGE]
+
+    oldest = f"call-{CALL_HISTORY_PAGE}"
+    controller.revealCall(oldest)
+    assert limits == [CALL_HISTORY_PAGE, MAX_CALL_HISTORY_QUERY_LIMIT]
+    ids = [i for row in controller.callHistoryRows["all"] for i in row["ids"]]
+    assert oldest in ids
+
+    # Leaving the page goes back to the first page next time.
+    controller.watchCallHistory(False)
+    controller.watchCallHistory(True)
+    assert limits[-1] == CALL_HISTORY_PAGE
 
 
 def test_contact_query_waits_for_a_pause(monkeypatch):

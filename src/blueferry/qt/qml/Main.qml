@@ -108,6 +108,8 @@ Kirigami.ApplicationWindow {
         } else if (target.kind === "call") {
             focusedCallId = ""  // the same hit again scrolls to it again
             focusedCallId = target.call_id
+            // Search covers every retained call; the page reads the newest.
+            bridge.revealCall(target.call_id)
             openRecentCalls()
         }
     }
@@ -185,6 +187,13 @@ Kirigami.ApplicationWindow {
             return
         }
         iphoneSettingsPage = pageStack.push(iphonePageLoader.item)
+    }
+
+    function openPluginSettings() {
+        openPhoneSettings()
+        const page = iphonePageLoader.item as SettingsPage
+        if (page)
+            page.open("plugins")
     }
 
     function closePhoneSettings() {
@@ -356,6 +365,44 @@ Kirigami.ApplicationWindow {
 
     pageStack.initialPage: messagesPage
 
+    // Files dragged anywhere onto the window go to a "Send to…" target
+    // (file_drop_view.py). Below the pages: a plugin card item that takes
+    // files keeps its own DropArea.
+    DropArea {
+        id: windowDropArea
+        objectName: "windowDropArea"
+        anchors.fill: parent
+        z: -1
+        onEntered: drag => {
+            if (!drag.hasUrls)
+                drag.accepted = false
+        }
+        onDropped: drop => {
+            if (!drop.hasUrls)
+                return
+            drop.acceptProposedAction()
+            root.bridge.dropFiles(drop.urls)
+        }
+    }
+
+    FileDropLayer {
+        id: fileDropLayer
+        anchors.fill: parent
+        z: 1000
+        bridge: root.bridge
+        active: windowDropArea.containsDrag
+        onPluginSettingsRequested: root.openPluginSettings()
+    }
+
+    Connections {
+        target: root.bridge
+        // Older or test bridges have no drop zone.
+        ignoreUnknownSignals: true
+        function onFileDropNotice(text, ok) {
+            root.showPassiveNotification(text, ok ? "short" : "long")
+        }
+    }
+
     Kirigami.PromptDialog {
         id: rosterChangedDialog
         property var thread: null
@@ -480,6 +527,12 @@ Kirigami.ApplicationWindow {
     GroupConfirmationDialog {
         id: confirmGroupDialog
         objectName: "confirmGroupDialog"
+        bridge: root.bridge
+    }
+
+    SenderConfirmationDialog {
+        id: confirmSenderDialog
+        objectName: "confirmSenderDialog"
         bridge: root.bridge
     }
 

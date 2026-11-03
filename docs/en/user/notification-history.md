@@ -28,7 +28,9 @@ Notifications** under **Show Popups**.
 
 The **Notifications** tab lists the newest first, with the app, the time
 and, if allowed, title and text; the terminal client shows the same list
-under **iPhone Notifications** in its command palette. From a terminal:
+under **iPhone Notifications** in its command palette, and the Quickshell
+panel under **iPhone settings › Notifications** with **Show Recent
+Notifications** (see [Clients](clients.md)). From a terminal:
 
 ```bash
 blueferry notifications recent             # the last 20
@@ -48,9 +50,16 @@ they dropped out of the last 200. In the clients, use **Pin** / **Unpin** on
 an entry. In the KDE client the pin button appears when you point at an
 entry or move the keyboard focus to it; a pinned entry keeps its **Unpin**
 button visible and shows a pin on its icon. Entries removed on the iPhone and
-entries of [muted apps](notification-mute.md) are greyed out. When 20 are
-pinned, **Pin** is disabled and the tab says so; a failed pin or unpin is
-explained above the list. From a terminal, use the key shown at the end of
+entries of [muted apps](notification-mute.md) are greyed out there. When 20
+are pinned, **Pin** is disabled and the tab says so; a failed pin or unpin is
+explained above the list. In the GTK client it is the pin button at the end
+of each entry; pinned entries show a pin icon, and once 20 are pinned the
+button of the other entries is greyed out, with the reason in its tooltip,
+while pinned entries can still be unpinned. In the terminal client's
+**iPhone Notifications**, `P` pins and unpins. In the Quickshell panel's
+**Show Recent Notifications** each entry has **Pin** / **Unpin**; removed
+entries and those of muted apps are greyed out, and at 20 pins only
+**Unpin** stays available. From a terminal, use the key shown at the end of
 each line:
 
 ```bash

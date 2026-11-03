@@ -81,6 +81,12 @@ from blueferry.history import (
 )
 from blueferry.limits import MAX_PINNED_NOTIFICATIONS
 from blueferry.media import MediaController, MediaControlSettings
+from blueferry.message_backfill import (
+    MessageBackfill,
+    collect_history,
+    history_enabled,
+    store_backfill,
+)
 from blueferry.notification_apps import MutedAppsStore, NotificationApps
 from blueferry.notification_log import NotificationLog
 from blueferry.notification_pins import PinnedNotificationsStore
@@ -89,7 +95,7 @@ from blueferry.notification_policy import (
     NotificationPolicyStore,
 )
 from blueferry.obex.map_events import MapEventListener
-from blueferry.obex.map_query import lookup_otp_metadata
+from blueferry.obex.map_query import list_inbox_since, lookup_otp_metadata
 from blueferry.obex.mns_watch import MnsWatch
 from blueferry.obex.sessions import SessionManager
 from blueferry.obex.worker import ObexWorker
@@ -207,9 +213,10 @@ class Daemon:
         self._photo_erase_pending = False
         self._photo_erase_running = False
         self._photo_erase_generation = 0
+        self._photo_cache_owed = False
         if self.photo_settings.enabled:
             self.photo_files = self._avatar_files
-        else:
+        elif self.photo_settings.known:
             self._photo_erase_pending = not self._erase_contact_photos()
         self.connectivity = Connectivity()
         self.notification_policy = NotificationPolicyStore()
@@ -253,6 +260,22 @@ class Daemon:
         self.plugin_popups: PluginPopups | None = None
         self.listener: MapEventListener | None = None
         self.mns_watch: MnsWatch | None = None
+        # Missed incoming messages, listed once per MAP/MNS connection while
+        # message history is on. Late-bound timers so test patches apply.
+        self.backfill = MessageBackfill(
+            enabled=lambda: history_enabled(self.storage),
+            session_path=lambda: getattr(self.sessions.map, "path", None),
+            submit=lambda *args, **kwargs: self.obex_worker.submit(*args, **kwargs),
+            list_inbox=list_inbox_since,
+            collect=lambda: collect_history(self.storage),
+            store=lambda payloads, handles, floor: store_backfill(
+                self.storage, payloads, handles, floor,
+            ),
+            resolve_contact=lambda raw: self.contacts.resolve(raw),
+            on_changed=self._backfill_changed,
+            schedule=lambda delay, callback: GLib.timeout_add_seconds(delay, callback),
+            cancel=lambda source: GLib.source_remove(source),
+        )
         # One MAP reconnect per MNS outage; seeing MNS again rearms it.
         self._mns_reconnect_spent = False
         self.ancs: AncsClient | None = None
@@ -361,10 +384,12 @@ class Daemon:
         )
         # Opt-in, memory-only list of recent iPhone app notifications.
         # Pinned records persist in settings.json under the storage policy.
-        # With the list off nothing is retained: stored pins are deleted.
+        # With the list off nothing is retained: stored pins are deleted,
+        # by the storage retry once settings.json reads again if it can't now.
         pins = PinnedNotificationsStore(storage=self.storage)
-        if not config.NOTIFICATION_HISTORY:
-            pins.clear()
+        self._stale_pins = None if config.NOTIFICATION_HISTORY else pins
+        self._stale_pins_failed = False
+        self._delete_stale_pins()
         self.notification_log: NotificationLog | None = (
             NotificationLog(
                 show_content=config.SHOW_NOTIFICATION_CONTENT, idle=GLib.idle_add,
@@ -456,7 +481,7 @@ class Daemon:
             contacts=self.contacts,
             submit=lambda *args, **kwargs: self.obex_worker.submit(*args, **kwargs),
             on_refreshed=self._contacts_refreshed,
-            photos=self._contact_photos_enabled,
+            photos=lambda: self.photo_settings.saved,
         )
         # Opt-in: until the user turns it on nothing is pulled, stored, or
         # scheduled, and no CallHistorySync exists.
@@ -518,7 +543,9 @@ class Daemon:
             observe=self._recovery_observation,
             probe=lambda: probe_map(self.sessions.map_path),
             probe_health=lambda: self.ancs.probe_health() if self.ancs else None,
-            reset_le=lambda: self.bearers.recover_le_transport(allow_disconnected=True),
+            reset_le=lambda since: self.bearers.recover_le_transport(
+                allow_disconnected=True, since=since,
+            ),
             pause=self._pause_for_recovery,
             resume=self._resume_after_recovery,
             blocked=lambda: self.bluez_health.unresponsive,
@@ -1167,6 +1194,8 @@ class Daemon:
     def _retry_storage(self) -> bool:
         # A daemon activated before the desktop keyring opens must recover
         # without requiring a client launch. Wallet I/O stays off the GLib loop.
+        self._settle_contact_photos()
+        self._delete_stale_pins()
         try:
             if self._dbus_service is not None:
                 self._dbus_service.retry_storage_unlock()
@@ -1191,6 +1220,41 @@ class Daemon:
 
     def _contact_photos_enabled(self) -> bool:
         return self.photo_settings.enabled
+
+    def _delete_stale_pins(self) -> None:
+        """With the notification list off, delete the saved pins once readable."""
+        if self._stale_pins is None:
+            return
+        try:
+            self._stale_pins.clear(strict=True)
+        except (OSError, ValueError) as error:
+            if not self._stale_pins_failed:
+                log.warning("could not delete pinned notifications: %s", type(error).__name__)
+            self._stale_pins_failed = True
+            return
+        self._stale_pins = None
+
+    def _settle_contact_photos(self) -> None:
+        """Apply the saved contact-photo choice once settings.json reads again.
+
+        Until then photos are neither erased, fetched nor shown.
+        """
+        if not self.photo_settings.known and self.photo_settings.reload():
+            if self.photo_settings.enabled:
+                self.photo_files = self._avatar_files
+                # A cache prepared while the choice was unknown has no photos,
+                # including one a preparation still running will install.
+                self._photo_cache_owed = True
+            else:
+                self._photo_erase_pending = True
+                self._queue_photo_erase()
+            # Pulls skipped while the choice was unknown are owed now.
+            if self.contact_sync.needed():
+                self.contact_sync.refresh()
+            self._emit_status()
+        if self._photo_cache_owed and self.storage.status.can_read:
+            self._photo_cache_owed = False
+            self._reload_contact_photos()
 
     def _contact_photo_path(self, address: str | None) -> str | None:
         photo_files = self.photo_files
@@ -1239,7 +1303,7 @@ class Daemon:
                 return  # _erase_contact_photos logged the failure; retry later
             if generation == self._photo_erase_generation:
                 self._photo_erase_pending = False
-            self._photos_erased()
+            self._reload_contact_photos()
             if self._photo_erase_pending:
                 self._queue_photo_erase()
             elif self.photo_settings.enabled:
@@ -1258,12 +1322,12 @@ class Daemon:
         except Exception as error:
             failed(error)
 
-    def _photos_erased(self) -> None:
-        # Reload the cache without photo references and tell clients.
+    def _reload_contact_photos(self) -> None:
+        # Reload the cache with or without photo references and tell clients.
         try:
             self.contacts.refresh()
         except Exception as error:
-            log.warning("could not reload contacts after erasing photos: %s",
+            log.warning("could not reload contacts after a photo change: %s",
                         type(error).__name__)
         self._emit_status()
 
@@ -1291,11 +1355,11 @@ class Daemon:
         self._clear_photo_files()
         self.contacts.adopt_cache(prepared.contacts)
         self.contact_sync.storage_prepared()
-        self.events.seed_historical_ancs(prepared.historical_ancs)
         if self.call_history is not None:
             self.call_history.adopt(prepared.call_history)
         if prepared.has_messages:
             self._mark_setup_task(MESSAGE_NOTIFICATIONS)
+        self._settle_contact_photos()
 
     def _on_storage_changed(self) -> None:
         self._clear_photo_files()
@@ -1308,6 +1372,8 @@ class Daemon:
             self.notification_log.storage_changed()
         # Saved mutes become readable (or unreadable) with the storage.
         self.notification_apps.storage_changed()
+        # Unlocking (or enabling) history catches up on what MAP missed.
+        self.backfill.request("storage changed")
         self._emit_status()
 
     def _initialize(self) -> bool:
@@ -1628,6 +1694,7 @@ class Daemon:
     def _profiles_lost(self, _reason: str) -> None:
         """Stop consumers that hold objects belonging to old sessions."""
         self.solicitation.set_needed(True)
+        self.backfill.stop()
         if self.mns_watch is not None:
             self.mns_watch.stop()
             self.mns_watch = None
@@ -1714,7 +1781,7 @@ class Daemon:
         if self.sessions.map is not None and self.listener is None:
             self.listener = MapEventListener(
                 sessions=self.sessions,
-                on_sms=self.events.message,
+                on_sms=self._map_message,
                 on_read=self._message_read,
                 resolve_contact=lambda raw: self.contacts.resolve(raw),
                 submit_obex=self.obex_worker.submit,
@@ -1726,9 +1793,19 @@ class Daemon:
                 on_present=self._mns_present,
             )
             self.mns_watch.start()
+            self.backfill.request("MAP connected")
+
+    def _map_message(self, event) -> None:
+        """A live MNS message; a copy the backfill already stored only notifies."""
+        self.events.message(event, persist=self.backfill.live_message(event))
+
+    def _backfill_changed(self) -> None:
+        if self._dbus_service is not None:
+            self._dbus_service.emit_history_changed()
 
     def _mns_present(self) -> None:
         self._mns_reconnect_spent = False
+        self.backfill.request("MAP notifications connected")
 
     def _mns_missing(self, reason: str) -> None:
         """Recreate MAP, whose registration is what makes the iPhone open MNS."""
@@ -1989,8 +2066,13 @@ class Daemon:
         }
 
     def _contact_photo_status(self) -> dict[str, object]:
+        settings = self.photo_settings
         status: dict[str, object] = {
-            "contact_photos": self.photo_settings.enabled,
+            # False while the choice is unknown, as for older clients.
+            "contact_photos": settings.enabled,
+            "contact_photos_state": (
+                "unknown" if not settings.known else "on" if settings.enabled else "off"
+            ),
             "contact_photo_cleanup_pending": (
                 self._photo_erase_pending or self._avatar_files.cleanup_pending
             ),
@@ -2173,6 +2255,7 @@ class Daemon:
         self.bluez_health.stop()
         self.profiles.stop()
         self.contact_sync.stop()
+        self.backfill.stop()
         if self.call_history is not None:
             self.call_history.stop()
         for tid_attr in (
@@ -2241,7 +2324,9 @@ class Daemon:
     def _cleanup_bluetooth_worker(self) -> None:
         # Queued erasures may have been cancelled by shutdown. The worker is
         # now past every in-flight pull, so the last cleanup cannot be undone.
-        if self._photo_erase_pending or not self.photo_settings.enabled:
+        if self._photo_erase_pending or (
+            self.photo_settings.known and not self.photo_settings.enabled
+        ):
             self._erase_contact_photos()
         # A second daemon still runs stop() when claiming the name fails. It
         # must not replay or clear recovery state belonging to the live owner.

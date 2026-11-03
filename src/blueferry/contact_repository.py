@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+import threading
 import time
 from collections.abc import Sequence
 from contextlib import closing
@@ -24,7 +25,12 @@ from blueferry.limits import (
     MAX_CONTACT_NAME_CHARS,
     MAX_PHONEBOOK_CONTACTS,
 )
-from blueferry.storage_security import CorruptStorageError, StorageSecurity
+from blueferry.sqlite_files import is_damaged, remove_database
+from blueferry.storage_security import (
+    ENCRYPTED_STORAGE,
+    CorruptStorageError,
+    StorageSecurity,
+)
 
 log = logging.getLogger(__name__)
 
@@ -87,6 +93,11 @@ _PHOTO_READ_TIMEOUT_SECONDS = 0.05
 # an interrupted write (SQLITE_READONLY_ROLLBACK) that only a writer can undo.
 _BUSY_ERROR_NAMES = frozenset({"SQLITE_BUSY", "SQLITE_LOCKED"})
 _BUSY_ERROR_PREFIXES = ("SQLITE_BUSY_", "SQLITE_LOCKED_", "SQLITE_READONLY_")
+
+# Held for a write's or clear's whole connection, never for a PBAP transfer.
+# A reset on the GLib loop waits here for a sync's write to close, so it never
+# deletes the file while that connection could still create a journal for it.
+_STORE_LOCK = threading.Lock()
 
 PhotoRef = int
 ContactEntry = tuple[ContactRecord, PhotoRef | None]
@@ -158,12 +169,19 @@ class ContactRepository:
         if _has_photo_table(connection):
             connection.execute("DELETE FROM contact_photos")
 
-    def clear(self) -> None:
-        with closing(_open_db()) as connection:
-            connection.execute("PRAGMA secure_delete = ON")
-            with connection:
-                self._delete_all(connection)
-            connection.execute("VACUUM")
+    def clear(self, *, discard_damaged: bool = False) -> None:
+        """Erase the cache; ``discard_damaged`` deletes a file SQLite can't read."""
+        with _STORE_LOCK:
+            try:
+                with closing(_open_db()) as connection:
+                    connection.execute("PRAGMA secure_delete = ON")
+                    with connection:
+                        self._delete_all(connection)
+                    connection.execute("VACUUM")
+            except sqlite3.DatabaseError as error:
+                if not discard_damaged or not is_damaged(error):
+                    raise
+                remove_database(config.CONTACTS_DB)
 
     def clear_photos(self) -> bool:
         """Erase retained photos only; return whether any existed.
@@ -207,11 +225,13 @@ class ContactRepository:
 
         Photos are stored only under a storage policy object, sealed with the
         same key and replaced in the same transaction as their contacts.
-        Card details likewise exist only inside the sealed payload; the
-        plaintext tables keep the messaging addresses alone.
+        Card details likewise exist only inside the sealed payload, and only
+        under the encrypted policy: the unencrypted one keeps the messaging
+        addresses alone.
         """
         now = time.time()
-        with closing(_open_db()) as connection:
+        keep_details = self._keeps_details()
+        with _STORE_LOCK, closing(_open_db()) as connection:
             connection.execute("PRAGMA secure_delete = ON")
             with connection:
                 self._delete_all(connection)
@@ -237,7 +257,7 @@ class ContactRepository:
                             if details is not None and index < len(details)
                             else EMPTY_DETAILS
                         )
-                        if card:
+                        if card and keep_details:
                             entry["details"] = card.to_storage()
                         if photo is not None:
                             cursor = connection.execute(
@@ -316,9 +336,16 @@ class ContactRepository:
             connection.execute("DELETE FROM contacts")
         return True
 
+    def _keeps_details(self) -> bool:
+        return (
+            self.storage is not None
+            and self.storage.status.policy == ENCRYPTED_STORAGE
+        )
+
     def _secure_records(self, connection: sqlite3.Connection) -> list[ContactCard]:
         if self.storage is None or not self.storage.status.can_read:
             return []
+        keep_details = self._keeps_details()
         records: list[ContactCard] = []
         for (payload,) in connection.execute(
             "SELECT payload FROM secure_contacts ORDER BY id LIMIT ?",
@@ -355,7 +382,10 @@ class ContactRepository:
                     if type(raw_photo) is int and raw_photo > 0
                     else None
                 )
-                card = ContactDetails.from_storage(value.get("details"))
+                card = (
+                    ContactDetails.from_storage(value.get("details"))
+                    if keep_details else EMPTY_DETAILS
+                )
             except CorruptStorageError:
                 self.storage.fail_closed(
                     "Encrypted contacts could not be authenticated"

@@ -79,7 +79,8 @@ class PhoneAudioSwitch(_StatusSwitch):
         sensitive = (
             status.get("daemon") is True and audio["available"] and not audio["pending"]
         )
-        return bool(audio["on_pc"]), str(audio["hint"]), bool(sensitive)
+        subtitle = "\n".join(line for line in (audio["hint"], audio["sync"]) if line)
+        return bool(audio["on_pc"]), subtitle, bool(sensitive)
 
     def _save(self, active: bool, done, failed) -> None:
         self._client.set_phone_audio_route_async("pc" if active else "phone", done, failed)

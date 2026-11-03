@@ -10,7 +10,12 @@ is hidden. Typing in the search field reloads the first page after
 demand (:meth:`ContactBook.load_more`). Card ids are only valid within one
 ``contact_card_epoch``: when :meth:`ContactBook.apply_status` sees the epoch
 change, a shown list is reloaded and an open card is read again, which
-answers "changed or removed" (``NotFound``) for a stale id.
+answers "changed or removed" (``NotFound``) for a stale id. The rows and
+the card read under the old epoch are dropped at once, since a storage
+lock or reset also moves it. Photos follow
+``contact_photos``: once it is off or unknown, the open card's photo and
+every photo hint are dropped at once, including from answers still on
+their way; turning it on reads the list and the open card again.
 
 List rows show photos instead of initials once loaded: a client passes the
 ids of the rows on screen to :meth:`ContactBook.request_photos`, which reads
@@ -45,7 +50,7 @@ MAX_QUERY_CHARS = 128
 # again when their rows come back into view.
 MAX_ROW_PHOTOS = 400
 # Status keys whose change invalidates loaded row photos.
-_PHOTO_STATUS_KEYS = ("contact_photos", "contact_photo_revision")
+_PHOTO_STATUS_KEYS = ("contact_photos", "contact_photos_state", "contact_photo_revision")
 
 _STALE = object()
 
@@ -86,7 +91,13 @@ class ContactBook:
         self._watched = False
         self._supported = False
         self._epoch: object = None
+        self._photos = False
+        # Moves on whenever photos turn on or off; answers to reads made
+        # before keep no photo.
+        self._photo_generation = 0
         self._query = ""
+        # The query of the rows shown; paging waits until they match.
+        self._rows_query = ""
         self._list_serial = 0
         self._card_serial = 0
         self._rows: list[dict[str, Any]] = []
@@ -155,7 +166,7 @@ class ContactBook:
             "count": len(self._rows),
             "count_text": contacts_view.count_text(self._page) if loaded else "",
             "hint": contacts_view.empty_hint(self._page) if loaded and not self._error else "",
-            "has_more": loaded and contacts_view.has_more(self._page),
+            "has_more": self._can_page(),
             "error": self._error,
             "placeholder": contacts_view.search_placeholder(),
         }
@@ -163,15 +174,26 @@ class ContactBook:
     # ---- inputs ---------------------------------------------------------
 
     def apply_status(self, status: Mapping[str, Any]) -> None:
-        """A GetStatus answer: capability and card epoch."""
+        """A GetStatus answer: capability, card epoch and the photo option."""
         supported = contacts_view.supported(status)
         epoch = status.get(contacts_view.EPOCH_KEY) if supported else None
-        changed = epoch != self._epoch
         previous, self._epoch = self._epoch, epoch
         photo_status = (epoch, *(status.get(key) for key in _PHOTO_STATUS_KEYS))
         if photo_status != self._photo_status:
             self._photo_status = photo_status
             self._drop_row_photos()
+        changed = previous is not None and epoch != previous
+        if changed:
+            self._drop_cards()
+        photos = contacts_view.photos_shown(status)
+        if photos != self._photos:
+            self._photos = photos
+            self._photo_generation += 1
+            if not photos:
+                self._drop_photos()
+            else:
+                # Hints and the photo were left out while photos were off.
+                changed = True
         if supported != self._supported:
             self._supported = supported
             if supported:
@@ -179,7 +201,7 @@ class ContactBook:
             else:
                 self._forget()
             return
-        if changed and previous is not None and supported:
+        if changed and supported:
             self.reload()
             if self._card["open"]:
                 self.open(self._card["id"])
@@ -212,10 +234,12 @@ class ContactBook:
         self._load(0, replace=True)
 
     def load_more(self) -> None:
-        """Append the next page, when there is one and none is loading."""
-        if not (self._watched and self._supported and self._loaded) or self._loading:
-            return
-        if not contacts_view.has_more(self._page):
+        """Append the next page, when there is one and none is loading.
+
+        Nothing loads between a query change and its first page: the next
+        offset belongs to the rows of the previous query.
+        """
+        if not self._watched or self._loading or not self._can_page():
             return
         self._load(contacts_view.next_offset(self._page), replace=False)
 
@@ -226,6 +250,7 @@ class ContactBook:
             return
         self._card_serial += 1
         serial = self._card_serial
+        generation = self._photo_generation
         # Reading the open card again keeps it on screen until the answer.
         same = self._card["open"] and self._card["id"] == contact_id
         if not same:
@@ -256,6 +281,9 @@ class ContactBook:
                 self._photo = photo if isinstance(photo, bytes) else b""
                 self._card = {**_empty_card(), **contacts_view.card_view(document),
                               "open": True, "id": contact_id}
+                if not self._photos or generation != self._photo_generation:
+                    self._card = self._without_photo(self._card)
+                    self._photo = b""
             self._on_change()
 
         def failed(message: str) -> None:
@@ -275,7 +303,9 @@ class ContactBook:
         client calls again as the visible rows change. A failed read is
         forgotten so the next call tries again.
         """
-        if self._fetch_photos is None or not (self._watched and self._supported):
+        if self._fetch_photos is None or not (
+            self._watched and self._supported and self._photos
+        ):
             return
         with_photo = {row["id"] for row in self._rows if row.get("has_photo")}
         wanted: list[str] = []
@@ -338,6 +368,40 @@ class ContactBook:
 
     # ---- internals ------------------------------------------------------
 
+    def _can_page(self) -> bool:
+        return (
+            self._supported and self._loaded and self._query == self._rows_query
+            and contacts_view.has_more(self._page)
+        )
+
+    @staticmethod
+    def _without_photo(item: dict[str, Any]) -> dict[str, Any]:
+        return {**item, "has_photo": False, "photo_retry": False} if (
+            item.get("has_photo") or item.get("photo_retry")
+        ) else item
+
+    def _drop_cards(self) -> None:
+        """The card epoch moved: nothing read under the old one stays shown."""
+        self._list_serial += 1
+        self._card_serial += 1
+        self._rows, self._page, self._loaded, self._loading = [], {}, False, False
+        if self._card["open"]:
+            self._card = {**_empty_card(), "open": True, "id": self._card["id"]}
+        self._photo = b""
+        self._drop_row_photos()
+        self._on_change()
+
+    def _drop_photos(self) -> None:
+        """Photos were turned off or became unknown: drop them now."""
+        self._drop_row_photos()
+        rows = [self._without_photo(row) for row in self._rows]
+        card = self._without_photo(self._card)
+        if self._photo or card is not self._card or any(
+            new is not old for new, old in zip(rows, self._rows, strict=True)
+        ):
+            self._rows, self._card, self._photo = rows, card, b""
+            self._on_change()
+
     def _forget(self) -> None:
         self._timer.stop()
         self._list_serial += 1
@@ -362,6 +426,7 @@ class ContactBook:
         serial = self._list_serial
         query = self._query
         fetch = self._fetch_page
+        generation = self._photo_generation
         self._loading = True
         self._on_change()
 
@@ -372,8 +437,11 @@ class ContactBook:
             self._error = ""
             page = contacts_view.normalize_page(value)
             rows = contacts_view.list_rows(page)
+            if not self._photos or generation != self._photo_generation:
+                rows = [self._without_photo(row) for row in rows]
             if replace:
                 self._rows = rows
+                self._rows_query = query
             else:
                 seen = {row["id"] for row in self._rows}
                 self._rows = self._rows + [row for row in rows if row["id"] not in seen]

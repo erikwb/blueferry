@@ -104,66 +104,50 @@ def _event(body: str = "hello"):
     )
 
 
-def _historical(event) -> dict:
-    return {
-        "kind": "ancs_notification",
-        **{
-            field: getattr(event, field)
-            for field in (
-                "notification_id",
-                "device_path",
-                "app_id",
-                "app_name",
-                "title",
-                "subtitle",
-                "body",
-                "category",
-                "is_silent",
-                "is_preexisting",
-                "positive_action",
-                "negative_action",
-            )
-        },
-        "seen_at": "2026-08-08T12:00:00+00:00",
-    }
-
-
-def test_replayed_ancs_event_is_not_sent_to_any_sink():
+def test_repeated_ancs_event_is_delivered_once():
     event = _event()
-    dispatcher = EventDispatcher(
-        object(),
-        defer_mark_read=lambda _path: None,
-        historical_ancs=[_historical(event)],
-    )
+    dispatcher = EventDispatcher(object(), defer_mark_read=lambda _path: None)
     sink = _Sink()
     service = _Service()
     dispatcher.sinks = [sink]
     dispatcher.set_dbus_service(service)
 
     dispatcher.ancs(event)
+    dispatcher.ancs(event)
 
-    assert sink.events == []
-    assert service.events == []
+    assert sink.events == [event]
+    assert service.events == ["changed"]
 
 
-def test_modified_notification_with_same_id_is_delivered_once():
+def test_modified_notification_with_same_id_is_delivered():
     previous = _event("old body")
     current = _event("new body")
-    dispatcher = EventDispatcher(
-        object(),
-        defer_mark_read=lambda _path: None,
-        historical_ancs=[_historical(previous)],
-    )
+    dispatcher = EventDispatcher(object(), defer_mark_read=lambda _path: None)
     sink = _Sink()
-    service = _Service()
     dispatcher.sinks = [sink]
-    dispatcher.set_dbus_service(service)
 
+    dispatcher.ancs(previous)
     dispatcher.ancs(current)
     dispatcher.ancs(current)
 
-    assert sink.events == [current]
-    assert service.events == ["changed"]
+    assert sink.events == [previous, current]
+
+
+def test_reused_uid_after_session_reset_is_delivered_again():
+    # iOS reuses UIDs across ANCS sessions; an identical new notification
+    # must still reach history so its group correlation is not lost.
+    first = _event("ok")
+    second = _event("ok")
+    dispatcher = EventDispatcher(object(), defer_mark_read=lambda _path: None)
+    sink = _Sink()
+    dispatcher.sinks = [sink]
+
+    dispatcher.ancs(first)
+    dispatcher.ancs(first)
+    dispatcher.ancs_session_reset()
+    dispatcher.ancs(second)
+
+    assert sink.events == [first, second]
 
 
 def test_system_notification_only_reaches_explicit_ephemeral_sink():
@@ -463,3 +447,26 @@ def test_mirrored_removal_and_session_reset_reach_popup_sinks() -> None:
     dispatcher.ancs_mirror_removed(42)
     dispatcher.ancs_session_reset()
     assert calls == [("close", 42), ("forget",)]
+
+
+def test_a_message_already_in_history_still_notifies_without_a_new_row():
+    class Named:
+        def __init__(self, name):
+            self.name = name
+            self.handled = []
+
+        def handle(self, event):
+            self.handled.append(event)
+
+    dispatcher = EventDispatcher(object(), defer_mark_read=lambda _path: None)
+    history, popups = Named("sqlite"), Named("libnotify")
+    service = _Service()
+    dispatcher.sinks = [history, popups]
+    dispatcher.set_dbus_service(service)
+    event = SimpleNamespace(kind="sms_received", handle="message1")
+
+    dispatcher.message(event, persist=False)
+
+    assert history.handled == []
+    assert popups.handled == [event]
+    assert service.events == ["changed"]

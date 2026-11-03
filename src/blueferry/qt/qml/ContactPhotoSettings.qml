@@ -13,6 +13,8 @@ ColumnLayout {
     required property var bridge
     readonly property var status: bridge.status || ({})
     readonly property bool available: status.daemon === true && !bridge.busy
+    // While settings.json can't be read the saved choice is unknown.
+    readonly property bool unknown: status.contact_photos_state === "unknown"
 
     Kirigami.Heading { text: qsTr("Contact Photos"); level: 2 }
     Kirigami.FormLayout {
@@ -23,7 +25,7 @@ ColumnLayout {
             Layout.fillWidth: true
             text: qsTr("Show contact photos from the iPhone")
             checked: photoSettings.status.contact_photos === true
-            enabled: photoSettings.available
+            enabled: photoSettings.available && !photoSettings.unknown
             onClicked: photoSettings.bridge.setContactPhotos(checked)
             Accessible.description: photoCaption.text
         }
@@ -33,8 +35,10 @@ ColumnLayout {
             Layout.fillWidth: true
             wrapMode: Text.WordWrap
             font: Kirigami.Theme.smallFont
-            text: qsTr("Photos are kept with your contacts and arrive with the next contact "
-                + "sync. Turning this off erases them.")
+            text: photoSettings.unknown
+                ? qsTr("Unavailable while settings.json cannot be read")
+                : qsTr("Photos are kept with your contacts and arrive with the next contact "
+                    + "sync. Turning this off erases them.")
         }
     }
 }

@@ -18,6 +18,7 @@ from blueferry.tui import (
     GroupConfirmScreen,
     GroupMembersScreen,
     MessageRow,
+    SenderConfirmScreen,
     TuiState,
     _initials,
     _one_line,
@@ -805,6 +806,51 @@ def test_textual_group_members_suggest_contacts_and_save_then_send() -> None:
     _run_headless(scenario())
 
 
+def test_textual_reply_to_a_maybe_group_message_asks_to_reply_to_the_sender_only() -> None:
+    class Backend(_Backend):
+        def send_to_thread(self, key, body, *, confirm_group=False, expected_group_token=""):
+            self.sent.append((key, body, confirm_group, expected_group_token))
+            return "/transfer/1"
+
+    async def scenario() -> None:
+        backend = Backend()
+        backend.loaded = [Thread.from_dict({
+            **_thread("one", "Alice", "ok", reply_ready=False).to_dict(),
+            "group_ambiguous": True, "sender_reply_token": "sender:one",
+        })]
+        app = BlueFerryApp(TuiState(backend), monitor_factory=lambda: None)
+
+        async def send() -> SenderConfirmScreen:
+            composer = app.query_one("#composer", TextArea)
+            assert not composer.disabled
+            composer.text = "just you"
+            composer.focus()
+            await pilot.press("enter")
+            for _attempt in range(30):
+                if isinstance(app.screen, SenderConfirmScreen):
+                    break
+                await pilot.pause(0.05)
+            assert isinstance(app.screen, SenderConfirmScreen)
+            return app.screen
+
+        async with app.run_test(size=(120, 40)) as pilot:
+            await _wait_for_threads(app, pilot, 1)
+            screen = await send()
+            assert "Reply to Alice only?" in screen.query_one(".dialog-title", Static).render().plain
+            await pilot.press("escape")
+            assert app.query_one("#composer", TextArea).text == "just you"
+            assert backend.sent == []
+            await send()
+            await pilot.click("#confirm-send")
+            for _attempt in range(30):
+                if backend.sent:
+                    break
+                await pilot.pause(0.05)
+            assert backend.sent == [("one", "just you", True, "sender:one")]
+
+    _run_headless(scenario())
+
+
 def test_textual_search_and_narrow_conversation_navigation() -> None:
     async def scenario() -> None:
         app = BlueFerryApp(TuiState(_Backend()), monitor_factory=lambda: None)
@@ -1110,6 +1156,17 @@ def test_textual_sound_switch_moves_the_iphone_audio_and_explains_refusals() -> 
             await _wait_for_static_text_containing(
                 app, pilot, "#connection-summary", "sound here",
             )
+            backend.reported = {
+                "phone_audio_route": "pc", "phone_audio_playing": "pc",
+                "phone_audio_delay_ms": 110, "phone_audio_delay_reporting": True,
+            }
+            await app._apply_snapshot(app.state.fetch_snapshot())
+            await _wait_for_static_text_containing(
+                app, pilot, "#connection-summary", "A/V sync: 110 ms",
+            )
+            # The terse fragment, not the sentence from the settings.
+            summary = str(app.query_one("#connection-summary").render())
+            assert summary.endswith("A/V sync: 110 ms"), summary
 
     _run_headless(scenario())
 

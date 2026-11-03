@@ -39,11 +39,21 @@ Kontaktansicht in den Clients:
   solange der Reiter offen ist, und lädt von selbst neu, wenn der
   Hintergrunddienst neu startet oder die Kontakte neu synchronisiert wurden.
 - **GTK-Client:**
-  noch nicht; nutze die Kommandozeile.
+  der Reiter **Contacts** listet die Karten mit einem Suchfeld (es sucht
+  beim Tippen, nach einer kurzen Pause) und lädt weitere Karten, wenn du ans
+  Ende scrollst. Eine Karte zeigt alle Angaben; **Call** fragt nach, bevor
+  es die erste Nummer wählt, **Message** öffnet die Unterhaltung damit oder
+  beginnt eine neue, und jede Nummer oder Adresse hat eigene Knöpfe zum
+  Anrufen, Schreiben, Mailen und Kopieren. Die Liste wird nur gelesen,
+  solange der Reiter offen ist, und lädt von selbst neu, wenn der
+  Hintergrunddienst neu startet oder die Kontakte neu synchronisiert wurden.
 - **Terminal-Client:**
-  noch nicht; nutze die Kommandozeile.
+  `C` öffnet die Kontakte mit Suche, den Details der Karte und Call, Send a
+  Message und Copy (siehe [Clients](clients.md#kontakte-und-suche)).
 - **Quickshell-Panel:**
-  noch nicht; nutze die Kommandozeile.
+  der Suchknopf (oder `Strg+F`) findet einen Kontakt und ruft eine seiner
+  Nummern an oder schreibt an eine Nummer oder Adresse (siehe
+  [Clients](clients.md#kontakte-und-suche-im-panel)).
 
 ## Fotos
 

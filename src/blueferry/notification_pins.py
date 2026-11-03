@@ -112,10 +112,14 @@ class PinnedNotificationsStore:
     def load(
         self, *, show_content: bool, max_chars: int,
     ) -> tuple[list[dict[str, object]], bool]:
-        """Valid stored records (oldest pin first) and whether to rewrite them."""
+        """Valid stored records (oldest pin first) and whether to rewrite them.
+
+        Raises :class:`~blueferry.settings_store.UnreadableSettingsError`
+        while settings.json can't be read, rather than reporting no pins.
+        """
         if self.memory_only or not self.readable():
             return [], False
-        raw = self._preference.read()
+        raw = self._preference.load()
         if raw is None:
             return [], False
         if not isinstance(raw, list):
@@ -140,12 +144,15 @@ class PinnedNotificationsStore:
             return
         stored = [stored_form(record) for record in records]
         if not stored:
-            self._preference.clear()
+            # Unpinning the last record must not pass for done while the
+            # file can't be read: the saved pin would return on restart.
+            self._preference.clear(strict=True)
             return
         self._preference.write(stored)
 
     def migrate(self) -> None:
         self._preference.migrate()
 
-    def clear(self) -> None:
-        self._preference.clear()
+    def clear(self, *, strict: bool = False) -> None:
+        """Delete the stored pins; ``strict`` raises while the file can't be read."""
+        self._preference.clear(strict=strict)

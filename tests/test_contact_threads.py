@@ -122,6 +122,7 @@ def test_merged_operations_preserve_stars_read_and_delete_all_addresses(
     sessions = SimpleNamespace(map=None, map_path="/map")
     operations = BackendOperations(sessions, BackendDependencies(
         contacts=resolver, starred_threads=store,
+        submit_obex=lambda operation, *, on_success, on_error: on_success(operation()),
     ))
     merged = operations.list_threads(10)[0]
     assert merged["starred"]
