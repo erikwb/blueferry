@@ -51,7 +51,8 @@ Wahl hat Vorrang.
 blueferry media                # was gerade läuft (wie "status")
 blueferry media toggle         # Wiedergabe/Pause
 blueferry media next           # auch: play, pause, previous
-blueferry media volume-up      # auch: volume-down (eine iPhone-Stufe)
+blueferry media volume up      # auch: volume down (eine iPhone-Stufe)
+blueferry media volume         # die zuletzt vom iPhone gemeldete Lautstärke
 blueferry media skip-forward   # auch: skip-backward (fester Sprung der App)
 blueferry media like           # auch: dislike, bookmark, repeat, shuffle
 blueferry media --json         # Rohstatus für Skripte
@@ -65,6 +66,17 @@ einer Wiederverbindung manchmal gar nicht. BlueFerry fragt dann auf dieser
 Verbindung einmal nach. Bis die Liste da ist, zeigt `blueferry media` die
 Befehle als unbekannt, und BlueFerry sendet einen Befehl wie gewünscht; das
 iPhone ignoriert oder verweigert einen, den die App nicht kennt.
+
+### Lautstärke
+
+`blueferry media volume up` und `volume down` ändern die Lautstärke des
+iPhones um eine Stufe, wie die Lautstärketasten am iPhone, und bestätigen das
+mit dem Stand, den das iPhone vor dem Schritt gemeldet hat, etwa „Turned the
+iPhone volume up (was 40%).“ Apples Mediendienst kennt kein „Lautstärke auf
+60 % setzen“; der neue Wert erscheint kurz danach in `blueferry media`, sobald
+das iPhone ihn meldet. Bietet die spielende App keine Lautstärkeregelung an,
+sagt BlueFerry das und sendet nichts. Die älteren Schreibweisen `volume-up`
+und `volume-down` funktionieren weiterhin.
 
 Im Kirigami-Client erscheint über den Unterhaltungen eine kleine Leiste mit
 Titel, Interpret und den Tasten Zurück/Wiedergabe-Pause/Weiter, solange etwas
