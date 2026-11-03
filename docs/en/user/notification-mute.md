@@ -19,12 +19,21 @@ You can also mute an app before it ever sent a notification, by its bundle
 ID. BlueFerry fetches app notifications only while **All iPhone Notifications** is
 selected, so with another policy the list holds only muted apps.
 
-In the GTK client, *Settings → Notifications* shows the same list under
-**Muted apps**, with a switch per app and a note when the list is limited
-(locked storage, another notification policy, the limit or the environment
-filter below); entries of muted apps are dimmed in its Notifications tab.
-The other graphical clients and the terminal client get the list in a
-separate change; until then use the command line there.
+In the KDE client open **Settings › Notifications**: the **Muted apps**
+section lists the same apps with a switch each (on = muted), plus a note when
+something limits the list (another popup policy, locked storage, the limit or
+the environment filter below). It updates by itself while it is open, and the
+**Notifications** tab greys out the entries of muted apps. The section is
+missing while the background service is too old to mute apps; restart it
+after upgrading. In the GTK client, *Settings → Notifications* shows the same
+list under **Muted apps**, also with a switch per app and the same note, and
+its Notifications tab dims the entries of muted apps. The terminal client has
+the list under *Settings → Notifications → Muted apps*, with a checkbox per
+app, and dims the muted apps' entries in its notification list. The
+Quickshell panel shows it as **Muted apps** under **iPhone settings ›
+Notifications**, each app with **Mute** / **Unmute** and the same note, and
+greys out the muted apps' entries in **Show Recent Notifications** (see
+[Clients](clients.md)).
 
 ## What muting does and doesn't do
 
@@ -57,6 +66,10 @@ the list says so, so you know why some apps never show up.
 - While the wallet is locked, or with **Do not retain local data**, no app
   is muted and muting is unavailable. BlueFerry never overwrites the saved
   list while it cannot read it.
+- While `settings.json` itself can't be read, muting and unmuting are
+  refused; repair or remove the file and try again. Apps muted before the
+  file broke stay muted. If the service started while the file was broken,
+  their popups show until the file reads again.
 - The D-Bus signal `NotificationAppsChanged` carries no content; clients
   fetch the list with `ListNotificationApps`. `GetStatus` reports only the
   number of muted apps (`notification_muted_app_count`).

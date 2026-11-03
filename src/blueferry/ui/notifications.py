@@ -206,6 +206,9 @@ class NotificationsPage(Gtk.Box):
 
     def _render(self) -> None:
         rows = self.history.rows
+        if not rows:
+            # Cleared for access, content or profile: the records go too.
+            self._snapshot = {}
         view = phone_link_view.notifications_view(self.history.info, self._opt_in_hint)
         self.content_banner.set_title(view["contentHint"])
         self.content_banner.set_revealed(bool(view["contentHint"]))

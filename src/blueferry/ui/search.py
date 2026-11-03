@@ -115,10 +115,20 @@ class SearchDialog(Adw.Dialog):
     def apply_status(self, status: dict) -> None:
         self.model.apply_status(status)
 
+    def invalidate(self) -> None:
+        """History or call history changed: drop the shown hits, search again."""
+        self.model.invalidate()
+
     def open(self, parent: Gtk.Widget) -> None:
         self.entry.set_text("")
         self.present(parent)
         self.entry.grab_focus()
+
+    def dismiss(self) -> None:
+        """The window is no longer shown: close and forget the search."""
+        if self.get_root() is not None:
+            self.close()
+        self._forget()
 
     def activate_row(self, index: int) -> None:
         """Open hit ``index`` (in display order) and close the search."""

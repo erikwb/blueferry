@@ -69,14 +69,20 @@ from blueferry.limits import (
     MAX_THREAD_QUERY_LIMIT,
     MIN_SEARCH_QUERY_CHARS,
 )
-from blueferry.named_groups import UNNAMED_GROUP_PREFIX, stored_named_group_key
+from blueferry.named_groups import is_unnamed_group_key, stored_named_group_key
 from blueferry.notification_log import PinLimitError
 from blueferry.notification_open import MAX_ACTIVATION_TOKEN_CHARS, MAX_CLICK_ID_CHARS
 from blueferry.notification_open_map import open_map_entries
 from blueferry.obex.map_query import list_recent_messages
 from blueferry.obex.map_send import send_group_message, send_message
 from blueferry.protocol import MESSAGES_API_VERSION
-from blueferry.recipients import InvalidRecipient, group_confirmation_token, validate_recipient
+from blueferry.recipients import (
+    SENDER_REPLY_TOKEN_PREFIX,
+    InvalidRecipient,
+    group_confirmation_token,
+    validate_recipient,
+)
+from blueferry.settings_store import UnreadableSettingsError
 from blueferry.storage_security import (
     NO_STORAGE,
     STORAGE_POLICIES,
@@ -161,6 +167,10 @@ class _SearchOutcome:
     result: dict[str, Any]
     index: ThreadSearchIndex | None = None
     contacts: ContactIndex | None = None
+    # What the job read, so a reply can drop groups that went stale while
+    # it was queued (see BackendOperations._finish_search).
+    version: tuple[int, int, tuple[int, ...]] | None = None
+    records: list[CallRecord] | None = None
 
 
 class NotificationPolicy(Protocol):
@@ -220,6 +230,10 @@ class GroupRoutes(Protocol):
         in_use: Iterable[str] | None = None,
     ) -> None: ...
 
+    def hold_roster_warnings(
+        self, warnings: Iterable[tuple[Iterable[str], str, str]],
+    ) -> None: ...
+
     def discard(self, thread_keys: Iterable[str]) -> None: ...
 
     def clear(self) -> None: ...
@@ -250,7 +264,7 @@ class CallHistory(Protocol):
 
     def sync(self, success: Success, failure: Failure) -> None: ...
 
-    def clear(self) -> None: ...
+    def clear(self, *, discard_damaged: bool = False) -> None: ...
 
 
 class CallControl(Protocol):
@@ -367,6 +381,8 @@ class BackendOperations:
         self.sessions = sessions
         self.dependencies = dependencies or BackendDependencies()
         self._confirmed_groups: dict[str, str] = {}
+        self._roster_check_pending = False
+        self._deleting = False
         # Content-free GetStatus marker for click-rule edits. Clients reread
         # the rules only when it changes; a random start makes a restarted
         # daemon's value differ from what a client last saw.
@@ -406,6 +422,7 @@ class BackendOperations:
 
     def prepare_conversations(
         self, submit: Callable[..., object], ready: Callable[[], None], failure: Failure,
+        retry: Callable[[], bool] | None = None,
     ) -> None:
         def job_factory() -> Callable[[], list[dict]]:
             stars = self._starred_keys()
@@ -439,7 +456,7 @@ class BackendOperations:
                 return
             failure(error)
 
-        self._conversations.prepare_async(submit, job_factory, ready, failed)
+        self._conversations.prepare_async(submit, job_factory, ready, failed, retry)
 
     def _require_map(self) -> None:
         if self.sessions.map is None:
@@ -519,7 +536,13 @@ class BackendOperations:
         failure: Failure,
         *,
         expected_group_token: str = "",
+        refresh: Callable[[Callable[[], None], Failure], None] | None = None,
     ) -> None:
+        """Queue a reply, then re-resolve its route when its turn comes.
+
+        ``refresh`` brings the conversation projection up to date off the
+        main loop before that check; without it the check rebuilds inline.
+        """
         if len(expected_group_token) > MAX_GROUP_CONFIRMATION_TOKEN_CHARS:
             raise InvalidArgumentsError("group confirmation token is too long")
         if not thread_key.strip():
@@ -527,11 +550,82 @@ class BackendOperations:
         if len(thread_key) > 1024:
             raise InvalidArgumentsError("thread key is too long")
         self._validate_body(body)
+        accepted = self._thread_route(
+            thread_key, confirm_group, expected_group_token,
+        )[1]
+        map_path = self.sessions.map_path
+
+        def send() -> None:
+            try:
+                thread, recipients, token = self._thread_route(
+                    thread_key, confirm_group, expected_group_token,
+                )
+            except Exception as error:
+                failure(error)
+                return
+            if recipients != accepted:
+                failure(NotReadyError(
+                    "the conversation changed; review it before sending"
+                ))
+                return
+            if token is None:
+                self._queue_send(recipients[0], body, success, failure)
+                return
+
+            def succeeded(transfer: str) -> None:
+                self._remember_confirmed_group(str(thread["key"]), token)
+                if self.dependencies.on_group_sent is not None:
+                    try:
+                        self.dependencies.on_group_sent(
+                            recipients, thread["key"],
+                            thread["name"], body, transfer,
+                            thread["members"],
+                        )
+                    except Exception:
+                        log.exception("on_group_sent hook failed (message was still sent)")
+                success(transfer)
+
+            self._queue(
+                lambda: send_group_message(map_path, recipients, body),
+                succeeded,
+                lambda error: self._operation_failed("Send", error, failure),
+            )
+
+        def dequeued(_result: object) -> None:
+            # Messages fetched by work queued ahead of this reply are in
+            # history now, and may have made the thread read-only or moved
+            # its destination.
+            if refresh is None:
+                send()
+            else:
+                refresh(send, failure)
+
+        # A no-op holds the reply's place in the Bluetooth queue and returns
+        # it to the main loop when its turn comes.
+        self._queue(lambda: None, dequeued, failure)
+
+    def _thread_route(
+        self, thread_key: str, confirm_group: bool, expected_group_token: str,
+    ) -> tuple[dict, list[str], str | None]:
+        """Return a thread, its destinations and, for a group, its roster token."""
         thread = self._conversations.find(thread_key)
         if thread is None:
             raise NotFoundError("thread no longer exists in local history")
         thread_key = str(thread["key"])
-        if not thread["reply_ready"] or not thread["recipients"]:
+        if (
+            not thread["is_group"] and confirm_group
+            and expected_group_token.startswith(SENDER_REPLY_TOKEN_PREFIX)
+        ):
+            # The latest message may have been sent to a group; the user
+            # confirmed a reply to the sender alone for exactly these messages
+            # and this address. Once those change, even to an unambiguous
+            # message, the user has to look again.
+            if expected_group_token != thread.get("sender_reply_token"):
+                raise ConfirmationRequiredError(
+                    "a newer message arrived; review the "
+                    "conversation before replying"
+                )
+        elif not thread["reply_ready"] or not thread["recipients"]:
             raise NotReadyError("thread has no unambiguous reply destination")
         self._require_map()
 
@@ -570,31 +664,11 @@ class BackendOperations:
                     "confirm the displayed participant list before replying "
                     "to this group"
                 )
-
-            def succeeded(transfer: str) -> None:
-                self._remember_confirmed_group(thread_key, token)
-                if self.dependencies.on_group_sent is not None:
-                    try:
-                        self.dependencies.on_group_sent(
-                            group_recipients, thread["key"],
-                            thread["name"], body, transfer,
-                            thread["members"],
-                        )
-                    except Exception:
-                        log.exception("on_group_sent hook failed (message was still sent)")
-                success(transfer)
-
-            map_path = self.sessions.map_path
-            self._queue(
-                lambda: send_group_message(map_path, group_recipients, body),
-                succeeded,
-                lambda error: self._operation_failed("Send", error, failure),
-            )
-            return
+            return thread, group_recipients, token
 
         if len(thread["recipients"]) != 1:
             raise NotReadyError("one-to-one thread has an invalid recipient set")
-        self._queue_send(thread["recipients"][0], body, success, failure)
+        return thread, [thread["recipients"][0]], None
 
     def list_events(self, kinds: Iterable[object], limit: int) -> list[dict]:
         raw_kinds = list(kinds)
@@ -662,8 +736,60 @@ class BackendOperations:
         if store is not None:
             store.clear()
 
+    def _hold_roster_warnings(self, threads: Sequence[dict]) -> None:
+        """Save each shown roster warning with its roster.
+
+        The warning exists only while the outsider's messages are in the
+        projection. Without this, their expiry would restore the old roster
+        and its old approval. Listing conversations holds them too, because
+        nothing else retries a save that failed, was skipped while storage
+        was locked, or never ran because the projection could not be read.
+        """
+        store = self.dependencies.group_routes
+        storage = self.dependencies.storage
+        if store is None or (storage is not None and not storage.status.can_write):
+            return
+        warnings = [
+            (
+                conversation_keys(thread), str(thread["roster_warning_id"]),
+                str(thread.get("unexpected_sender") or ""),
+            )
+            for thread in threads
+            if thread.get("roster_changed") and thread.get("roster_warning_id")
+        ]
+        if not warnings:
+            return
+        try:
+            store.hold_roster_warnings(warnings)
+        except (OSError, ValueError, RuntimeError):
+            log.exception("could not retain group roster warnings")
+
+    def hold_roster_warnings(self, submit: Callable[..., object]) -> None:
+        """Save roster warnings when history changes, even if no client lists.
+
+        Otherwise a new sender's messages could expire before anyone lists
+        conversations, and the warning would never be saved.
+        """
+        if self._roster_check_pending or not self._group_routes():
+            return
+        self._roster_check_pending = True
+
+        def ready() -> None:
+            self._roster_check_pending = False
+            self._hold_roster_warnings(self._conversations.threads())
+
+        def failed(error: Exception) -> None:
+            self._roster_check_pending = False
+            log.warning("could not check saved group rosters: %s", error)
+
+        try:
+            self.prepare_conversations(submit, ready, failed)
+        except Exception as error:
+            failed(error)
+
     def _present_threads(self, threads: Sequence[dict]) -> list[dict]:
         presented = sort_threads(threads, starred_keys=self._starred_keys())
+        self._hold_roster_warnings(presented)
         rosters = {
             str(item["key"]): group_confirmation_token(
                 item.get("recipients") or [], item.get("roster_warning_id"),
@@ -697,6 +823,8 @@ class BackendOperations:
             result = store.set_starred(thread["key"], bool(starred))
             self._conversations.invalidate()
             return result
+        except UnreadableSettingsError:
+            raise
         except ValueError as error:
             raise InvalidArgumentsError(str(error)) from error
 
@@ -878,6 +1006,7 @@ class BackendOperations:
         }
         if len(selected) < MIN_SEARCH_QUERY_CHARS:
             return lambda: _SearchOutcome(result)
+        version = self._search_version()
         threads = self._conversations.threads()
         index = self._search_index
         if index is not None and not index.matches(threads):
@@ -905,19 +1034,80 @@ class BackendOperations:
                     records, selected, bounded,
                     resolver.resolve if resolver is not None else None,
                 ))
-            return _SearchOutcome(result, built, resolver)
+            return _SearchOutcome(
+                result, built, resolver, version=version, records=records,
+            )
 
         return run
 
+    def _search_version(self) -> tuple[int, int, tuple[int, ...]]:
+        storage = self.dependencies.storage
+        return (
+            self._conversations.generation,
+            storage.revision if storage is not None else 0,
+            history_revision(storage=storage),
+        )
+
+    @staticmethod
+    def _only_appended(
+        before: tuple[int, int, tuple[int, ...]], after: tuple[int, int, tuple[int, ...]],
+    ) -> bool:
+        """Whether history only gained messages: nothing deleted, pruned or changed.
+
+        Event ids are AUTOINCREMENT, so every removal shows as fewer new rows
+        than the newest id advanced by.
+        """
+        generation, key, (count, newest, changes) = before
+        now_generation, now_key, (now_count, now_newest, now_changes) = after
+        return (
+            (generation, key, changes) == (now_generation, now_key, now_changes)
+            and now_newest >= newest and now_count - count == now_newest - newest
+        )
+
     def _finish_search(self, outcome: _SearchOutcome) -> dict[str, Any]:
-        """Keep the folded caches the job built, if they are still current."""
-        current = self._conversations.cached_threads
-        if outcome.index is not None and current is not None and outcome.index.matches(current):
-            self._search_index = outcome.index
+        """Drop groups that went stale while queued; keep still-current caches.
+
+        Locked storage, a deletion, a reset or a contact reload since the
+        snapshot empties the affected groups, and so does call history that
+        was turned off or changed: a reply never carries what is already gone.
+        New messages alone keep the results; their HistoryChanged follows.
+        """
+        result, index = outcome.result, outcome.index
+        storage = self.dependencies.storage
+        readable = storage is None or storage.status.can_read
         contacts = self.dependencies.contacts
-        if outcome.contacts is not None and contacts is not None:
-            contacts.adopt_card_haystacks(outcome.contacts)
-        return outcome.result
+        if outcome.version is not None and (
+            not readable
+            or not self._only_appended(outcome.version, self._search_version())
+        ):
+            for group in ("conversations", "messages"):
+                result[group].update(total=0, results=[])
+            index = None
+        resolver = outcome.contacts
+        # Call names were resolved through the same snapshot.
+        contacts_stale = resolver is not None and (
+            not readable or contacts is None
+            or getattr(resolver, "card_epoch", None) != getattr(contacts, "card_epoch", None)
+        )
+        if contacts_stale:
+            result["contacts"].update(
+                total=0, results=[], available=contacts is not None,
+            )
+        elif not self._contact_photos_enabled():
+            for card in result["contacts"]["results"]:
+                card["has_photo"] = False
+        if outcome.records is not None:
+            history = self._current_call_history() if readable else None
+            if contacts_stale or history is None or history.records() != outcome.records:
+                result["calls"].update(
+                    total=0, results=[], available=history is not None,
+                )
+        current = self._conversations.cached_threads
+        if index is not None and current is not None and index.matches(current):
+            self._search_index = index
+        if resolver is not None and contacts is not None:
+            contacts.adopt_card_haystacks(resolver)
+        return result
 
     def contact_card_photos(self, contact_ids: Sequence[str]) -> dict[str, bytes]:
         """Photos of several cards by id, for the avatars of a contact list.
@@ -992,6 +1182,33 @@ class BackendOperations:
     def set_group_participants(
         self, thread_key: str, recipients: Sequence[object]
     ) -> dict:
+        """Save a group's roster and return the rebuilt thread, inline."""
+        return self._group_thread(self._save_group_participants(thread_key, recipients))
+
+    def set_group_participants_async(
+        self, submit: Callable[..., object], thread_key: str,
+        recipients: Sequence[object], success: Success, failure: Failure,
+    ) -> None:
+        """Save a group's roster, then rebuild the projection on the worker."""
+        saved = self._save_group_participants(thread_key, recipients)
+
+        def ready() -> None:
+            try:
+                success(self._group_thread(saved))
+            except Exception as error:
+                failure(error)
+
+        self.prepare_conversations(submit, ready, failure)
+
+    def _group_thread(self, thread_key: str) -> dict:
+        updated = self._conversations.find(thread_key)
+        if updated is None:
+            raise NotFoundError("thread no longer exists in local history")
+        return self._present_threads([updated])[0]
+
+    def _save_group_participants(
+        self, thread_key: str, recipients: Sequence[object]
+    ) -> str:
         """Persist an explicit reply roster for a group BlueFerry can't route.
 
         Named groups are keyed by their name, unnamed ones by the member names
@@ -1005,7 +1222,7 @@ class BackendOperations:
         thread_key = str(thread["key"])
         if not thread.get("is_group") or (
             thread.get("group_origin") != "named"
-            and not thread_key.startswith(UNNAMED_GROUP_PREFIX)
+            and not is_unnamed_group_key(thread_key)
         ):
             raise InvalidArgumentsError(
                 "participants can only be supplied for a named group or an "
@@ -1067,6 +1284,8 @@ class BackendOperations:
                     for key in conversation_keys(existing)
                 },
             )
+        except UnreadableSettingsError:
+            raise
         except (OSError, RuntimeError, ValueError) as error:
             log.error("could not retain group participants: %s", error)
             raise NotReadyError(
@@ -1074,13 +1293,12 @@ class BackendOperations:
             ) from error
         self._forget_confirmed_groups(conversation_keys(thread))
         self.invalidate_conversations()
-        updated = self._conversations.find(thread_key)
-        if updated is None:
-            raise NotFoundError("thread no longer exists in local history")
-        return self._present_threads([updated])[0]
+        return thread_key
 
     def invalidate_conversations(self) -> None:
         self._conversations.invalidate()
+        # The folded bodies are a decrypted copy of the old projection.
+        self._search_index = None
 
     def status(self) -> dict:
         status = {
@@ -1137,14 +1355,14 @@ class BackendOperations:
         self._clear_confirmed_groups()
         self.invalidate_conversations()
 
-    def _clear_call_history(self) -> None:
+    def _clear_call_history(self, *, discard_damaged: bool = False) -> None:
         # Erase the file even when the feature is off: it may hold calls from
         # a time when it was enabled. The next sync seeds silently again.
         history = self._current_call_history()
         if history is not None:
-            history.clear()
+            history.clear(discard_damaged=discard_damaged)
         else:
-            clear_call_history()
+            clear_call_history(discard_damaged=discard_damaged)
 
     def _current_call_history(self) -> CallHistory | None:
         provider = self.dependencies.call_history
@@ -1153,7 +1371,100 @@ class BackendOperations:
     def delete_threads(
         self, thread_keys: Sequence[object], confirmed: bool
     ) -> int:
-        """Erase complete local conversations resolved from opaque keys."""
+        """Erase complete local conversations resolved from opaque keys, inline."""
+        selected, preference_keys = self._plan_deletion(thread_keys, confirmed)
+        resolved = self._resolve_deletion(
+            selected, self.dependencies.storage,
+            self.dependencies.contacts, self._group_routes(),
+        )
+        return self._commit_deletion(selected, preference_keys, resolved)
+
+    def delete_threads_async(
+        self, submit: Callable[..., object], thread_keys: Sequence[object],
+        confirmed: bool, success: Success, failure: Failure,
+    ) -> None:
+        """Erase conversations after correlating the whole archive on the worker.
+
+        A result is committed only if no history, roster, star, contact or
+        storage change arrived meanwhile. Otherwise the deletion starts again
+        from a fresh projection, so stale row identifiers are never erased.
+        """
+        if self._deleting:
+            raise NotReadyError(
+                "conversations are already being deleted; try again shortly"
+            )
+
+        def failed(error: Exception) -> None:
+            self._deleting = False
+            failure(error)
+
+        def guarded(step: Callable[..., None]) -> Callable[..., None]:
+            def run(*args: Any) -> None:
+                try:
+                    step(*args)
+                except Exception as error:
+                    failed(error)
+            return run
+
+        def worker_failed(error: Exception) -> None:
+            if isinstance(error, CorruptStorageError):
+                storage = self.dependencies.storage
+                if storage is not None:
+                    storage.fail_closed(str(error))
+                error = NotReadyError(str(error))
+            failed(error)
+
+        # Stale archive reads and stale refreshes share one budget, so a
+        # steady stream of messages ends the deletion instead of starving it.
+        retries = 2
+
+        def retry() -> bool:
+            nonlocal retries
+            retries -= 1
+            return retries >= 0
+
+        def attempt() -> None:
+            selected, preference_keys = self._plan_deletion(thread_keys, confirmed)
+            version = self._conversation_version()
+
+            def resolved(result: tuple[set[int], set[str]] | Exception) -> None:
+                if self._conversation_version() != version:
+                    if not retry():
+                        raise NotReadyError(
+                            "conversations changed during deletion; try again"
+                        )
+                    self.prepare_conversations(
+                        submit, guarded(attempt), failed, retry,
+                    )
+                    return
+                if isinstance(result, Exception):
+                    return worker_failed(result)
+                removed = self._commit_deletion(selected, preference_keys, result)
+                self._deleting = False
+                success(removed)
+
+            submit(
+                self._deletion_job(selected),
+                on_success=guarded(resolved), on_error=guarded(resolved),
+            )
+
+        self._deleting = True
+        try:
+            attempt()
+        except Exception:
+            self._deleting = False
+            raise
+
+    def _conversation_version(self) -> tuple[int, tuple[int, ...]]:
+        return (
+            self._conversations.generation,
+            history_revision(storage=self.dependencies.storage),
+        )
+
+    def _plan_deletion(
+        self, thread_keys: Sequence[object], confirmed: bool
+    ) -> tuple[list[str], set[str]]:
+        """Validate a deletion against the prepared projection."""
         if not confirmed:
             raise ConfirmationRequiredError(
                 "conversation deletion requires explicit confirmation"
@@ -1187,6 +1498,36 @@ class BackendOperations:
         storage = self.dependencies.storage
         if storage is not None and not storage.status.can_write:
             raise NotReadyError(storage.status.detail)
+        return selected, preference_keys
+
+    def _deletion_job(
+        self, selected: list[str]
+    ) -> Callable[[], tuple[set[int], set[str]]]:
+        """Capture the deletion's inputs on GLib for a worker-side read."""
+        routes = self._group_routes()
+        contacts = self.dependencies.contacts
+        resolver = contacts.snapshot() if contacts is not None else None
+        storage = self.dependencies.storage
+        reader = storage.snapshot() if storage is not None else None
+
+        def resolve() -> tuple[set[int], set[str]]:
+            try:
+                resolved = self._resolve_deletion(selected, reader, resolver, routes)
+                if reader is not None and reader.status.state == "error":
+                    raise CorruptStorageError(reader.status.detail)
+                return resolved
+            finally:
+                if reader is not None:
+                    reader.close()
+
+        return resolve
+
+    @staticmethod
+    def _resolve_deletion(
+        selected: list[str], storage: StorageSecurity | None,
+        contacts: ContactIndex | None, routes: Sequence[dict],
+    ) -> tuple[set[int], set[str]]:
+        """Return the archive rows and group keys a deletion must erase."""
         try:
             # Anchor the visible projection before replaying the full archive.
             recent_rows = read_event_rows(
@@ -1199,11 +1540,11 @@ class BackendOperations:
                     CORRELATED_ANCS_ROW_IDS_FIELD: [],
                 }
                 for event_id, event in recent_rows
-            ] + self._group_routes(), self.dependencies.contacts)
+            ] + list(routes), contacts)
             anchor_keys: dict[int, str] = {}
             recent_evidence_ids: set[int] = set()
             for event in recent:
-                projected_key = thread_key(event, self.dependencies.contacts)
+                projected_key = thread_key(event, contacts)
                 if event.get("kind") not in MESSAGE_KINDS:
                     continue
                 if projected_key is None or projected_key not in selected:
@@ -1225,14 +1566,14 @@ class BackendOperations:
                     CORRELATED_ANCS_ROW_IDS_FIELD: [],
                 }
                 for event_id, event in all_rows
-            ] + self._group_routes(), self.dependencies.contacts)
+            ] + list(routes), contacts)
             resolved_keys = set(selected)
             for event in correlated:
                 event_id = int(event.get(HISTORY_ROW_ID_FIELD, -1))
                 anchored_key = anchor_keys.get(event_id)
                 if anchored_key is None:
                     continue
-                resolved_key = thread_key(event, self.dependencies.contacts)
+                resolved_key = thread_key(event, contacts)
                 if (
                     anchored_key.startswith("group:")
                     and resolved_key is not None
@@ -1245,7 +1586,7 @@ class BackendOperations:
                 if event.get("kind") in MESSAGE_KINDS
                 and (
                     int(event.get(HISTORY_ROW_ID_FIELD, -1)) in anchor_keys
-                    or thread_key(event, self.dependencies.contacts) in resolved_keys
+                    or thread_key(event, contacts) in resolved_keys
                 )
             ]
             event_ids = recent_evidence_ids | {
@@ -1279,18 +1620,31 @@ class BackendOperations:
                 ) or (
                     kind == "sms_seen"
                     and (
-                        thread_key(event, self.dependencies.contacts) in resolved_keys
+                        thread_key(event, contacts) in resolved_keys
                         or str(event.get("handle") or "") in selected_handles
                     )
                 )
                 if not belongs:
                     continue
                 event_ids.add(row_id)
+            return event_ids, resolved_keys
+        except (OSError, RuntimeError, ValueError, sqlite3.Error) as error:
+            log.error("could not delete conversations: %s", error)
+            raise NotReadyError("could not delete local conversations") from error
+
+    def _commit_deletion(
+        self, selected: list[str], preference_keys: set[str],
+        resolved: tuple[set[int], set[str]],
+    ) -> int:
+        event_ids, resolved_keys = resolved
+        storage = self.dependencies.storage
+        try:
             if not event_ids:
                 raise NotFoundError(
                     "selected conversations no longer exist in local history"
                 )
-            if delete_event_rows(event_ids, storage=storage) == 0:
+            # A later reconnect must not fetch the deleted messages again.
+            if delete_event_rows(event_ids, storage=storage, raise_floor=True) == 0:
                 raise NotFoundError(
                     "selected conversations no longer exist in local history"
                 )
@@ -1322,6 +1676,9 @@ class BackendOperations:
             raise InvalidArgumentsError(
                 f"local data policy must be one of: {choices}"
             )
+        # Erasing for a policy that is only assumed could remove data the
+        # saved one keeps, or keep plaintext that should be encrypted.
+        self.dependencies.storage.require_known_policy()
         if selected != self.dependencies.storage.status.policy:
             # Never mix plaintext and ciphertext in one archive. Clear before
             # changing policy so a crash can leave stale settings or an empty
@@ -1329,20 +1686,23 @@ class BackendOperations:
             self._erase_retained_data()
         return selected
 
-    def _erase_retained_data(self) -> None:
-        """Erase every store the storage policy protects; none needs the key."""
-        clear_events()
-        clear_contact_cache()
-        self._clear_call_history()
+    def _erase_retained_data(self, *, discard_damaged: bool = False) -> None:
+        """Erase every store the storage policy protects; none needs the key.
+
+        ``discard_damaged`` deletes databases SQLite cannot read, for a reset.
+        """
+        clear_events(discard_damaged=discard_damaged)
+        clear_contact_cache(discard_damaged=discard_damaged)
+        self._clear_call_history(discard_damaged=discard_damaged)
         if self.dependencies.starred_threads is not None:
             self.dependencies.starred_threads.clear()
         if self.dependencies.group_routes is not None:
             self.dependencies.group_routes.clear()
+        if self.dependencies.notification_log is not None:
+            self.dependencies.notification_log.forget_pins()
         if self.dependencies.notification_apps is not None:
             # Sealed under the old key; it could not be read afterwards.
             self.dependencies.notification_apps.clear()
-        if self.dependencies.notification_log is not None:
-            self.dependencies.notification_log.forget_pins()
         self._clear_confirmed_groups()
 
     def reset_storage_async(
@@ -1352,7 +1712,8 @@ class BackendOperations:
         """Erase all retained local data, then prepare storage under a new key.
 
         The way out when retained data cannot be opened: its keyring key is
-        gone or replaced, or the records failed authentication.
+        gone or replaced, the records failed authentication, or a database
+        is damaged.
         """
         if not confirmed:
             raise ConfirmationRequiredError(
@@ -1363,6 +1724,8 @@ class BackendOperations:
             raise NotReadyError("local storage is unavailable")
         if storage.busy and not storage.cancel_passive_request():
             raise NotReadyError("a desktop wallet request is already pending")
+        # A reset starts over under the saved policy, so it must be readable.
+        storage.require_known_policy()
         completed = False
 
         def succeeded(status: StorageStatus) -> None:
@@ -1374,8 +1737,9 @@ class BackendOperations:
                 failure(error)
 
         # Erase before the key goes, as for a policy change: a crash leaves
-        # an empty archive, never records whose key has been deleted.
-        self._erase_retained_data()
+        # an empty archive, never records whose key has been deleted. Damaged
+        # databases go too, or they would block the way out.
+        self._erase_retained_data(discard_damaged=True)
         if self.dependencies.notification_log is not None:
             self.dependencies.notification_log.clear()
         storage.change_async(
@@ -1489,6 +1853,8 @@ class BackendOperations:
             raise NotReadyError("notification policy storage is unavailable")
         try:
             selected = self.dependencies.notification_policy.set(value)
+        except UnreadableSettingsError:
+            raise
         except ValueError as error:
             raise InvalidArgumentsError(str(error)) from error
         if self.dependencies.on_notification_policy_changed is not None:
@@ -1507,6 +1873,8 @@ class BackendOperations:
             selected = self.dependencies.notification_policy.set_contacts_only(
                 enabled
             )
+        except UnreadableSettingsError:
+            raise
         except ValueError as error:
             raise InvalidArgumentsError(str(error)) from error
         if self.dependencies.on_notification_policy_changed is not None:
@@ -1527,6 +1895,8 @@ class BackendOperations:
             selected = self.dependencies.notification_policy.set_ancs_actions(
                 enabled
             )
+        except UnreadableSettingsError:
+            raise
         except ValueError as error:
             raise InvalidArgumentsError(str(error)) from error
         if self.dependencies.on_notification_policy_changed is not None:
@@ -1549,6 +1919,8 @@ class BackendOperations:
             return apps.set_muted(app_id, bool(muted))
         except StorageUnavailableError as error:
             raise NotReadyError(str(error)) from error
+        except UnreadableSettingsError:
+            raise
         except ValueError as error:
             raise InvalidArgumentsError(str(error)) from error
 
@@ -1571,6 +1943,8 @@ class BackendOperations:
             selected = self.dependencies.notification_policy.set_mirror_removals(
                 enabled
             )
+        except UnreadableSettingsError:
+            raise
         except ValueError as error:
             raise InvalidArgumentsError(str(error)) from error
         if self.dependencies.on_notification_policy_changed is not None:
@@ -1584,6 +1958,8 @@ class BackendOperations:
             raise NotReadyError("proximity lock is unavailable")
         try:
             return dict(configure(enabled, grace_sec))
+        except UnreadableSettingsError:
+            raise
         except ValueError as error:
             raise InvalidArgumentsError(str(error)) from error
         except OSError as error:
@@ -1608,6 +1984,8 @@ class BackendOperations:
             raise InvalidArgumentsError("bundle ID and target must be strings")
         try:
             mapping = policy.set_open_target(bundle_id, target)
+        except UnreadableSettingsError:
+            raise
         except ValueError as error:
             raise InvalidArgumentsError(str(error)) from error
         self._open_map_revision += 1
@@ -1636,6 +2014,8 @@ class BackendOperations:
             raise InvalidArgumentsError("invalid bundle ID")
         try:
             removed = policy.remove_open_target(bundle_id)
+        except UnreadableSettingsError:
+            raise
         except ValueError as error:
             raise InvalidArgumentsError(str(error)) from error
         if removed:
@@ -1716,6 +2096,8 @@ class BackendOperations:
             raise NotReadyError("call history is unavailable")
         try:
             return dict(configure(enabled, missed_call_notifications))
+        except UnreadableSettingsError:
+            raise
         except ValueError as error:
             raise InvalidArgumentsError(str(error)) from error
         except OSError as error:
@@ -1808,6 +2190,10 @@ class BackendOperations:
                 "the notification list is off; turn it on with "
                 "'blueferry features on notification_history'"
             )
+        if self.dependencies.storage is not None:
+            # Pins are saved under the policy in settings.json; while the file
+            # can't be read, say so rather than that storage is locked.
+            self.dependencies.storage.require_known_policy()
         self._require_notification_storage()
         try:
             return log_.set_pinned(str(key), bool(pinned))
@@ -1845,6 +2231,8 @@ class BackendOperations:
             return features.set(str(name), bool(enabled))
         except KeyError:
             raise InvalidArgumentsError("unknown feature") from None
+        except UnreadableSettingsError:
+            raise
         except (OSError, ValueError) as error:
             raise NotReadyError(f"could not store the setting: {type(error).__name__}") from None
 
@@ -1857,7 +2245,7 @@ class BackendOperations:
         audio.set_route(
             route, success,
             lambda error: failure(
-                error if isinstance(error, NotReadyError)
+                error if isinstance(error, (NotReadyError, UnreadableSettingsError))
                 else OperationFailedError("AudioRoute", error)
             ),
         )
@@ -1878,6 +2266,8 @@ class BackendOperations:
             raise NotReadyError("media control settings are unavailable")
         try:
             return dict(configure(enabled))
+        except UnreadableSettingsError:
+            raise
         except ValueError as error:
             raise InvalidArgumentsError(str(error)) from error
         except OSError as error:
@@ -1907,6 +2297,8 @@ class BackendOperations:
             raise NotReadyError("Bluetooth tethering is unavailable in this backend")
         try:
             return dict(configure(enabled, autoconnect))
+        except UnreadableSettingsError:
+            raise
         except ValueError as error:
             raise InvalidArgumentsError(str(error)) from error
         except OSError as error:
@@ -1931,6 +2323,8 @@ class BackendOperations:
             raise NotReadyError("the phone battery warning is unavailable")
         try:
             return bool(configure(bool(enabled)).get("phone_battery_warning"))
+        except UnreadableSettingsError:
+            raise
         except ValueError as error:
             raise InvalidArgumentsError(str(error)) from error
         except OSError as error:
@@ -1944,6 +2338,8 @@ class BackendOperations:
             raise NotReadyError("the automatic profile reset is unavailable")
         try:
             return bool(configure(bool(enabled)).get("profile_reset_auto"))
+        except UnreadableSettingsError:
+            raise
         except ValueError as error:
             raise InvalidArgumentsError(str(error)) from error
         except OSError as error:
@@ -1957,6 +2353,8 @@ class BackendOperations:
             raise NotReadyError("phone-call settings are unavailable")
         try:
             return dict(configure(bool(enabled)))
+        except UnreadableSettingsError:
+            raise
         except ValueError as error:
             raise InvalidArgumentsError(str(error)) from error
         except OSError as error:
@@ -1974,6 +2372,8 @@ class BackendOperations:
             raise NotReadyError("contact photo settings are unavailable")
         try:
             return dict(configure(bool(enabled)))
+        except UnreadableSettingsError:
+            raise
         except ValueError as error:
             raise InvalidArgumentsError(str(error)) from error
         except OSError as error:
@@ -1987,6 +2387,8 @@ class BackendOperations:
             raise NotReadyError("one-time code settings are unavailable")
         try:
             return dict(configure(bool(enabled)))
+        except UnreadableSettingsError:
+            raise
         except ValueError as error:
             raise InvalidArgumentsError(str(error)) from error
         except OSError as error:

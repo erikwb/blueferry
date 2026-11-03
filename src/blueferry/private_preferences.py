@@ -25,7 +25,19 @@ class PrivatePreference:
         self._storage = storage
 
     def read(self) -> object:
-        value = self._settings.read().get(self._key)
+        """The saved value; ``None`` also while settings.json can't be read."""
+        return self._value(self._settings.read())
+
+    def load(self) -> object:
+        """Like ``read``, but raise UnreadableSettingsError while settings.json can't be read."""
+        return self._value(self._settings.load())
+
+    def require_readable(self) -> None:
+        """Raise UnreadableSettingsError while settings.json can't be read."""
+        self._settings.load()
+
+    def _value(self, document: dict) -> object:
+        value = document.get(self._key)
         storage = self._storage
         if storage is None or value is None:
             return value
@@ -59,15 +71,26 @@ class PrivatePreference:
             # cannot open these records.
             self.read()
 
-    def write(self, value: object) -> None:
+    @property
+    def writable(self) -> bool:
+        return self._storage is None or self._storage.status.can_write
+
+    def write(self, value: object, **plain: object) -> None:
+        """Save ``value``, and in the same update any non-sensitive ``plain`` keys."""
         if self._storage is not None:
             value = self._storage.encrypt(
                 json.dumps(value, ensure_ascii=False, separators=(",", ":")),
                 purpose=self._key + "-v1",
             )
-        self._settings.update(**{self._key: value})
+        self._settings.update(**{self._key: value, **plain})
 
-    def clear(self) -> None:
+    def setting(self, key: str) -> object:
+        """A non-sensitive key saved beside this preference."""
+        return self._settings.read().get(key)
+
+    def clear(self, *, strict: bool = False) -> None:
+        """Remove the preference; ``strict`` raises while the file can't be read."""
         # Clearing must also work while the keyring is locked or policy changes.
-        if self._settings.read().get(self._key) is not None:
+        saved = self._settings.load() if strict else self._settings.read()
+        if saved.get(self._key) is not None:
             self._settings.update(**{self._key: None})

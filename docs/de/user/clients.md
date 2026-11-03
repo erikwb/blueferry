@@ -51,6 +51,10 @@ LocalSend, die Fotos des iPhones über USB). Der Bereich bleibt, wie du ihn
 verlassen hast, und klappt von selbst auf, wenn ein Plugin etwas Neues
 bringt, etwa eine laufende Übertragung.
 
+Zieh Dateien aus der Dateiverwaltung irgendwo aufs Fenster, um sie über ein
+Plugin mit **Send to…** wie LocalSend ans iPhone zu senden; siehe
+[Dateien aufs Fenster ziehen](plugins.md#dateien-aufs-fenster-ziehen).
+
 Die Lupe in der Kopfzeile, `Strg+K` oder `Strg+F` öffnet die
 [Suche](search.md) über Unterhaltungen, Nachrichten, Kontakte und Anrufe.
 Ein Treffer öffnet die Unterhaltung bei dieser Nachricht, die Kontaktkarte
@@ -86,10 +90,14 @@ Verbindung, Akku und Empfang des iPhones, was gerade läuft (mit zurück,
 Wiedergabe/Pause und weiter) und Schnellschalter für [den
 Ton](phone-audio.md) und die [Abwesenheitssperre](proximity-lock.md).
 Ausgeschaltete Funktionen bleiben sichtbar, aber ausgegraut, mit der
-Einstellung, die sie einschaltet. Rechts gibt es drei Reiter:
+Einstellung, die sie einschaltet. Rechts liegen die Reiter:
 
 - **Messages**: Unterhaltungen mit den Filtern All, Unread und Starred und
   der Chat.
+- **Contacts**: die [Kontaktkarten](contacts.md) mit einem Suchfeld; eine
+  Karte zeigt jede Nummer mit Bezeichnung, E-Mail- und Postadressen,
+  Firma, Funktion und Foto, mit **Call** und **Message** (öffnet die
+  Unterhaltung mit dieser Nummer oder eine neue Nachricht).
 - **Calls**: [Anrufe](calls.md) mit Wählfeld und laufenden Anrufen als
   Karten (annehmen, halten, auflegen, Tastentöne für den aktiven Anruf) und die [Anrufliste](call-history.md)
   nach Tagen gruppiert, mit All und Missed.
@@ -99,13 +107,22 @@ Einstellung, die sie einschaltet. Rechts gibt es drei Reiter:
 In einem schmalen Fenster klappt die Karte hinter den Telefon-Knopf in der
 Kopfzeile.
 
+Zieh Dateien aus der Dateiverwaltung irgendwo aufs Fenster, um sie über ein
+Plugin mit **Send to…** wie LocalSend ans iPhone zu senden; siehe
+[Dateien aufs Fenster ziehen](plugins.md#dateien-aufs-fenster-ziehen).
+
+Die Lupe in der Kopfzeile, `Strg+K` oder `Strg+F` öffnet die
+[Suche](search.md) über Unterhaltungen, Nachrichten, Kontakte und Anrufe.
+Ein Treffer öffnet die Unterhaltung bei dieser Nachricht, die Kontaktkarte
+oder den Anruf in der Anrufliste.
+
 **Settings** (das Zahnrad in der Kopfzeile) hat links Kategorien, wie KDEs
 Systemeinstellungen:
 
 | Kategorie | Inhalt |
 | --- | --- |
 | Phone | Kopplung, Verbindungszustand, **Run Diagnostics** (dieselben Prüfungen wie `blueferry doctor`, im Fenster angezeigt), Kontaktabgleich, Kontaktfotos |
-| Notifications | Welche Ereignisse Popups erzeugen, nur Kontakte, Klickregeln, Mitteilungsinhalt, Aktionsknöpfe, Mitteilungen mit dem iPhone abgleichen, beim Wegklicken als gelesen markieren |
+| Notifications | Welche Ereignisse Popups erzeugen, nur Kontakte, Klickregeln, Mitteilungsinhalt, Aktionsknöpfe, Mitteilungen mit dem iPhone abgleichen, beim Wegklicken als gelesen markieren, stummgeschaltete Apps |
 | Calls & Audio | Anrufe, Anrufliste, Akku-Warnung, [iPhone-Ton am Computer](phone-audio.md), Mediensteuerung |
 | Network | [Bluetooth-Tethering](bluetooth-tethering.md), iPhone-Internet teilen, automatische Hotspot-Verbindung |
 | Security | Einmalcodes, Abwesenheitssperre, lokale Daten und ihre Verschlüsselung, Verlauf löschen |
@@ -188,9 +205,9 @@ erscheint nur, wenn der laufende Hintergrunddienst sie anbietet.
 | Kategorie | Was du dort findest |
 |---|---|
 | Phone | Kopplung, Verbindungszustand mit **Reconnect**, automatisches Zurücksetzen einer hängenden Verbindung, **Run Diagnostics**, Kontaktabgleich (**Sync Contacts**), Kontaktfotos |
-| Notifications | Welche Ereignisse Popups erzeugen, nur Kontakte, Mitteilungsinhalt, Aktionsknöpfe, Mitteilungen mit dem iPhone abgleichen, beim Wegklicken als gelesen markieren, letzte Mitteilungen behalten und die Liste dieser Mitteilungen |
+| Notifications | Welche Ereignisse Popups erzeugen, nur Kontakte, stummgeschaltete Apps, Mitteilungsinhalt, Aktionsknöpfe, Mitteilungen mit dem iPhone abgleichen, beim Wegklicken als gelesen markieren, letzte Mitteilungen behalten und die Liste dieser Mitteilungen mit **Pin** / **Unpin** |
 | Calls & Audio | Telefonanrufe, Anrufliste und Popups für verpasste Anrufe, Akku-Warnung, iPhone-Ton auf diesem Computer, Mediensteuerung und MPRIS |
-| Security | Einmalcodes, Abwesenheitssperre, die lokale Speicherung |
+| Security | Einmalcodes, Abwesenheitssperre, die lokale Speicherung und **Reset Local Storage…**, wenn sich die gespeicherten Daten nicht öffnen lassen |
 | About | Der Hintergrunddienst, seine Version und **Restart Service** |
 
 Schalter, die einen Neustart brauchen, zeigen oben auf der Seite den
@@ -203,7 +220,54 @@ stattdessen in `local.env` setzt.
 erlaubt, Titel und Text. Die Liste wird nur gelesen, solange sie sichtbar
 ist, folgt neuen Mitteilungen und wird vergessen, sobald du sie
 ausblendest oder die Seite verlässt. Ist sie aus, leer oder nicht
-verfügbar, sagt sie, warum.
+verfügbar, sagt sie, warum. **Pin** / **Unpin** an einem Eintrag behält ihn
+in der Liste, auch über Neustarts hinweg; angeheftete Einträge stehen oben
+und sind mit **Pinned** markiert. Auf dem iPhone entfernte Einträge sind mit
+**Removed on iPhone** gekennzeichnet; sie und Einträge stummgeschalteter
+Apps erscheinen ausgegraut. Bei 20 angehefteten Einträgen bleibt nur
+**Unpin** verfügbar, und die Liste sagt das.
+
+**Muted apps** (unter Notifications, mit einem Hintergrunddienst,
+der Apps stummschalten kann) listet die iPhone-Apps, die sich seit dem Start
+des Dienstes gemeldet haben, jede mit **Mute** / **Unmute**. Eine
+stummgeschaltete App zeigt kein Desktop-Popup; auf dem iPhone ändert sich
+nichts. Die Liste folgt Änderungen von anderswo, etwa mit
+`blueferry notifications mute`.
+
+Während etwas läuft, hat der Wiedergabestreifen unter der Kopfzeile auch
+Knöpfe für leiser und lauter sowie die Lautstärke, die das iPhone zuletzt
+gemeldet hat. Jeder Druck verstellt die iPhone-Lautstärke um eine Stufe; die
+Knöpfe sind ausgegraut, wenn die spielende App keine Lautstärkeregelung
+anbietet.
+
+| | Qt | GTK | TUI | Quickshell | CLI |
+|---|---|---|---|---|---|
+| iPhone-Lautstärkeknöpfe und Pegel | ✓ Telefon-Karte, Now Playing | ✓ Telefon-Karte | ✓ `-` / `+`, iPhone Overview | ✓ Wiedergabestreifen | ✓ `blueferry media volume up\|down` |
+| Mitteilungen anheften/lösen | ✓ Reiter Notifications | ✓ Reiter Notifications | ✓ iPhone Notifications, `P` | ✓ Show Recent Notifications | ✓ `blueferry notifications pin\|unpin KEY` |
+| Apps stummschalten | ✓ Settings › Notifications | ✓ Settings › Notifications | ✓ Settings › Notifications › Muted apps | ✓ iPhone settings › Notifications | ✓ `blueferry notifications apps\|mute\|unmute` |
+
+Die Mitteilungsliste des Panels hat keine weiteren Aktionen pro Eintrag (sie
+öffnet und beantwortet keine Mitteilungen), daher sieht eine Mitteilung, auf
+die das iPhone nicht mehr reagieren kann, dort bis auf **Removed on
+iPhone** gleich aus.
+
+### Kontakte und Suche im Panel
+
+Der Suchknopf (⌕) neben **+** oder `Strg+F` öffnet **Search**, wenn der
+Hintergrunddienst [Kontaktkarten](contacts.md) oder die [globale
+Suche](search.md) kennt. Mit leerem Feld listet sie die Kontakte, mit
+**More contacts** für die nächste Seite. Ab zwei Zeichen durchsucht sie
+Unterhaltungen, Nachrichten, Kontakte und Anrufe zugleich, kurz nach dem
+letzten Tastendruck; die Treffer sind gruppiert, und die passenden Wörter
+einer Nachricht sind fett. Ein Klick auf eine Unterhaltung oder Nachricht
+öffnet sie. Ein Klick auf einen Kontakt zeigt seine Nummern, E-Mail- und
+Postadressen: **Call** ruft eine Nummer nach einer Bestätigung an,
+**Message** öffnet **New message** mit der Nummer oder Adresse. Ein
+Anruf-Treffer hat **Call** und **Message** für den Anrufer. **Call** ist mit
+Begründung ausgegraut, bis Telefonate eingeschaltet und bereit sind. Das
+Panel hat keine Anrufansicht; annehmen, halten und auflegen geht auf dem
+iPhone oder in einem anderen Client. Solange das Fenster zu ist, wird nichts
+davon gelesen, und beim Schließen wird es vergessen.
 
 ### Was das Panel weglässt
 
@@ -217,11 +281,13 @@ anderen Clients:
 | Begleitwerkzeuge | Desktop-Helfer richtet man einmal ein; das ist keine Aufgabe für ein Panel | Qt- oder GTK-Einstellungen, `blueferry tools` |
 | Nachrichtenverlauf löschen | Bietet auch der Terminal-Client nicht an | `blueferry history-clear` |
 | Click Rules, letzte Anrufe, das Anruf-Panel | Noch nicht im Quickshell-Client | Qt-, GTK- oder Terminal-Client |
+| Kontaktfotos, Einträge einer Karte kopieren, eine E-Mail schreiben (Mail-Programm), einen Anruf-Treffer in den letzten Anrufen öffnen | Die Suche im Panel findet nur einen Kontakt zum Anrufen oder Schreiben; eine Liste der letzten Anrufe hat das Panel nicht | `blueferry contacts show --photo`; die letzten Anrufe im Qt-, GTK- oder Terminal-Client |
 
 Das Panel lädt keinen Übersetzungskatalog, seine eigenen Beschriftungen
 sind deshalb englisch. Texte aus dem gemeinsamen BlueFerry-Code, etwa der
-Hinweis zum Wiederverbinden, der Neustart-Hinweis oder der Platzhalter der
-Mitteilungsliste, folgen deiner Sprache.
+Hinweis zum Wiederverbinden, der Neustart-Hinweis, der Platzhalter der
+Mitteilungsliste, die Texte zum Anheften und Stummschalten oder die
+Lautstärke, folgen deiner Sprache.
 
 ## Terminal (TUI)
 
@@ -248,7 +314,7 @@ Hintergrunddienst sie anbietet.
 | Kategorie | Inhalt |
 |---|---|
 | Phone | Zustand des Hintergrunddienstes, **Reconnect** (auch `b`), automatisches Zurücksetzen einer hängenden Verbindung (auch `B`), **Run Diagnostics**, Kontaktabgleich, Kontaktfotos |
-| Notifications | Welche Ereignisse Popups erzeugen, nur Kontakte, **Click Rules** (auch `l`), Mitteilungsinhalt, Aktionsknöpfe, Mitteilungen mit dem iPhone abgleichen, beim Wegklicken als gelesen markieren, letzte iPhone-Mitteilungen behalten |
+| Notifications | Welche Ereignisse Popups erzeugen, nur Kontakte, **Click Rules** (auch `l`), [stummgeschaltete Apps](notification-mute.md), Mitteilungsinhalt, Aktionsknöpfe, Mitteilungen mit dem iPhone abgleichen, beim Wegklicken als gelesen markieren, letzte iPhone-Mitteilungen behalten |
 | Calls & Audio | Telefonate, Anrufliste und Popups für verpasste Anrufe, Akkuwarnung, iPhone-Ton auf diesem Computer (auch `a`), Mediensteuerung und MPRIS |
 | Security | Einmalcodes, Sperre bei Abwesenheit, die Speichereinstellung (nur angezeigt; ändern mit `blueferry storage-policy-set`) |
 | About | Version, der Hintergrunddienst mit **Restart Service**, die Tastenbelegung |
@@ -272,8 +338,13 @@ Terminal-Client noch nicht.
 **iPhone Overview** in der Befehlspalette ist die Telefon-Karte des
 Terminals: der Name des iPhones, die Verbindung, Akku, Empfang und Netz, was
 gerade läuft, und für jede ausgeschaltete optionale Funktion der Schalter,
-der sie einschaltet, samt seiner Kategorie in Settings. Die Knöpfe öffnen die
-Mitteilungsliste, die letzten Anrufe, das Anruf-Panel und Settings.
+der sie einschaltet, samt seiner Kategorie in Settings. Unter der Wiedergabe
+steuern **Volume Down**, **Play/Pause** und **Volume Up** das iPhone, ohne
+die Übersicht zu schließen; außerhalb eines Textfelds ändern auch `-` und
+`+` (oder `=`, dieselbe Taste ohne Umschalt) die Lautstärke. Sie bewegt sich
+jeweils um eine iPhone-Stufe, und neben dem Titel steht der Wert, den das
+iPhone zuletzt gemeldet hat. Die übrigen Knöpfe öffnen die Mitteilungsliste,
+die letzten Anrufe, das Anruf-Panel und Settings.
 
 **iPhone Notifications** (in der Palette und in der Übersicht) listet die
 letzten Mitteilungen von iPhone-Apps, die **Keep recent iPhone
@@ -281,7 +352,12 @@ notifications** behält: App, Zeit und, wenn erlaubt, Titel und Text. Die
 Liste wird nur gelesen, solange sie offen ist, folgt neuen Mitteilungen und
 wird beim Schließen vergessen. Ist sie ausgeschaltet, leer oder nicht
 verfügbar, sagt sie warum; **Open Notification Settings** führt zu
-Settings › Notifications.
+Settings › Notifications. `P` (oder **Pin**) heftet die gewählte Mitteilung
+an oder löst sie; angeheftete stehen oben und sind mit **Pinned** markiert.
+Einträge, die das iPhone entfernt hat, zeigen **Removed on iPhone** und sind
+abgeblendet, ebenso die Einträge von Apps, die unter Settings › Notifications
+› **Muted apps** stummgeschaltet sind; dort hat jede App ihr eigenes
+Kästchen.
 
 Das Anruf-Panel (`c` oder **Phone Calls** in der Palette) beschreibt jeden
 Anruf wie Qt und GTK (eingehend, gehalten, die Dauer). Seine eine Knopfreihe
@@ -299,6 +375,31 @@ bestätigt.
 Anrufe, `s` (oder **Refresh from iPhone**) liest die Liste des iPhones neu
 ein. Enter oder **Call Back** ruft die gewählte Nummer nach der
 Bestätigung an, **Send a Message** beginnt eine neue Nachricht an sie.
+
+### Kontakte und Suche
+
+`C` (Umschalt+c; oder **Contacts** in der Palette) öffnet die
+[Kontaktkarten](contacts.md) des iPhones. Die Liste folgt dem Suchfeld kurz
+nach dem letzten Tastendruck und lädt weitere Kontakte nach, sobald du ihr
+Ende erreichst. Enter zeigt die gewählte Karte: Name, Funktion und Firma,
+dann jede Nummer, E-Mail- und Postadresse mit ihrer Bezeichnung. Auf einer
+Zeile der Karte ruft `c` (oder **Call**) die Nummer nach der Bestätigung an,
+`m` (oder **Send a Message**) beginnt eine neue Nachricht an die Nummer oder
+E-Mail-Adresse, und `y` (oder **Copy**) kopiert den Eintrag über das
+Terminal (OSC 52). Enter macht das Erste davon, das die Zeile anbietet.
+Kontaktfotos und das Schreiben einer E-Mail im Mail-Programm bietet das
+Terminal nicht an; kopiere die Adresse stattdessen. Startet der
+Hintergrunddienst neu oder liest er die Kontakte neu ein, werden die Liste
+und eine offene Karte neu gelesen; eine Karte, die sich inzwischen geändert
+hat, sagt das.
+
+`f` (oder **Search Everything** in der Palette) ist die [globale
+Suche](search.md): ein Feld für Unterhaltungen, Nachrichten, Kontakte und
+Anrufe, gruppiert, mit den passenden Wörtern einer Nachricht hervorgehoben.
+Sie sucht kurz nach dem letzten Tastendruck; Enter im Feld springt zu den
+Treffern. Enter auf einem Treffer öffnet ihn: die Unterhaltung (bei der
+Nachricht), die Kontaktkarte oder **Recent calls** mit diesem Anruf
+ausgewählt. `/` bleibt der Schnellfilter der Unterhaltungsliste.
 
 ## Kommandozeile
 

@@ -217,6 +217,17 @@ def test_plaintext_cache_keeps_no_details(isolated_state) -> None:
     assert record == ("Alice", ["15551112222"], []) and photo is None and details is EMPTY
 
 
+def test_unencrypted_policy_keeps_no_details(storage) -> None:
+    storage.set_policy("plaintext")
+    assert storage.status.can_write
+    _store(storage)
+    raw = config.CONTACTS_DB.read_bytes()
+    for detail in (b"Springfield", b"Example Corp", b"Chief", b"Boat", b"Cabin"):
+        assert detail not in raw
+    [alice, _bob] = ContactRepository(storage).load_cards()
+    assert alice[0][0] == "Alice Example" and alice[2] is EMPTY
+
+
 def test_cards_page_query_and_keep_ids_across_unchanged_resyncs(storage) -> None:
     _store(storage)
     resolver = ContactsResolver(storage=storage)

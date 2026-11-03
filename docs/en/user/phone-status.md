@@ -19,8 +19,10 @@ flowchart LR
 ```
 
 - **Battery**: from the phone's standard GATT Battery Service (Battery Level
-  characteristic), read once and then followed through notifications;
-  BlueZ's `Battery1` is used only while that reading is missing. This is
+  characteristic). Where BlueZ's battery plugin already follows it (BlueZ's
+  `Battery1` with the source "GATT Battery Service"), BlueFerry uses that
+  value and leaves the characteristic to BlueZ; otherwise BlueFerry reads it
+  once and follows its notifications itself. This is
   exact to 1 %. With calls on and no LE value, the hands-free value (20 %
   steps, shown as "about") is used instead.
 - **Signal and network**: only with calls on, from oFono.

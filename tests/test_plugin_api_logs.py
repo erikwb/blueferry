@@ -115,6 +115,32 @@ def test_setup_logging_refuses_a_symlinked_file_and_never_raises(
     assert target.read_text() == ""
 
 
+def test_setup_logging_skips_a_fifo_log_without_waiting_for_a_reader(
+    tmp_path, clean_root_logger, capsys,
+) -> None:
+    env = {"XDG_STATE_HOME": str(tmp_path)}
+    directory = plugin_logs.log_directory(env)
+    directory.mkdir(parents=True)
+    fifo = directory / "io.example.f.log"
+    os.mkfifo(fifo, 0o600)
+    result = []
+    starter = threading.Thread(
+        target=lambda: result.append(plugin_logs.setup_logging("io.example.f", environ=env)),
+        daemon=True,
+    )
+    starter.start()
+    starter.join(timeout=5)
+    if starter.is_alive():
+        # Release the blocked open so the hang fails this test only.
+        os.close(os.open(fifo, os.O_RDONLY | os.O_NONBLOCK))
+        starter.join(timeout=5)
+        pytest.fail("plugin logging blocked on a FIFO until a reader appeared")
+    assert result == [None]
+    assert "log unavailable" in capsys.readouterr().err
+    assert not any(getattr(handler, "blueferry_plugin_id", None) == "io.example.f"
+                   for handler in clean_root_logger.handlers)
+
+
 def test_level_comes_from_the_environment(tmp_path, clean_root_logger) -> None:
     env = {"XDG_STATE_HOME": str(tmp_path), plugin_logs.LEVEL_VARIABLE: "debug"}
     path = plugin_logs.setup_logging("io.example.d", environ=env)

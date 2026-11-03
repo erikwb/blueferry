@@ -22,7 +22,11 @@ nothing.
 Search in the clients:
 
 - **KDE client:**
-  not yet; use the command line.
+  the magnifier in the header, `Ctrl+K` or `Ctrl+F` opens the search. It
+  searches as you type, after a short pause, and shows the same groups with
+  up to 20 hits each; arrow keys and Enter, or a click, open a hit: the
+  conversation scrolled to the message, the contact card, or the call in the
+  call history. Closing the search forgets the results.
 - **GTK client:**
   the magnifier in the header bar, `Ctrl+K` or `Ctrl+F` opens the search. It
   searches as you type, after a short pause, and shows the same groups with
@@ -30,9 +34,13 @@ Search in the clients:
   any other: the conversation scrolled to the message, the contact card, or
   the call in the call history. Closing the search forgets the results.
 - **Terminal client:**
-  not yet; use the command line.
+  `f` opens the same search as you type, with up to 20 hits per group, and
+  Enter on a hit opens the conversation, contact card or call (see
+  [Clients](clients.md#contacts-and-search)).
 - **Quickshell panel:**
-  not yet; use the command line.
+  the search button (or `Ctrl+F`) searches as you type, shows up to 10 hits
+  per group and opens a conversation or contact card from a hit (see
+  [Clients](clients.md#contacts-and-search-in-the-panel)).
 
 ## What is searched
 

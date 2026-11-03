@@ -13,6 +13,7 @@ from blueferry.backend_operations import BackendDependencies, BackendOperations,
 from blueferry.background_worker import BackgroundWorker
 from blueferry.bus import get_session_bus
 from blueferry.client_activation import GTK_CLIENT
+from blueferry.dbus_object import StrictObject
 from blueferry.dbus_security import CallerGuard
 from blueferry.errors import (
     BlueFerryError,
@@ -39,7 +40,7 @@ from blueferry.protocol import (
 log = logging.getLogger(__name__)
 
 
-class MessagesService(dbus.service.Object):
+class MessagesService(StrictObject):
     """Translate stable Messages1 wire types to :class:`BackendOperations`."""
 
     def __init__(
@@ -54,7 +55,9 @@ class MessagesService(dbus.service.Object):
         self._caller_guard = caller_guard or CallerGuard(bus_name.get_bus())
         self._change_revision = 0
         self.operations = operations or BackendOperations(sessions, dependencies)
-        self._projection_worker = BackgroundWorker("blueferry-projection", maximum=1)
+        # One coalesced projection plus one conversation deletion's archive
+        # read; the executor still runs them one at a time.
+        self._projection_worker = BackgroundWorker("blueferry-projection", maximum=2)
         # Matching only; a few queued keystrokes, then NotReady until it drains.
         self._search_worker = BackgroundWorker("blueferry-search", maximum=4)
         # One active lookup plus an interactive request queued behind a
@@ -120,6 +123,11 @@ class MessagesService(dbus.service.Object):
             error_handler,
         )
 
+    def _refresh_conversations(self, ready, failure) -> None:
+        self.operations.prepare_conversations(
+            self._projection_worker.submit, ready, failure,
+        )
+
     @dbus.service.method(
         IFACE, in_signature="ss", out_signature="s",
         async_callbacks=("reply_handler", "error_handler"),
@@ -155,6 +163,7 @@ class MessagesService(dbus.service.Object):
             lambda: self.operations.send_to_thread(
                 thread_key, body, bool(confirm_group), reply_handler,
                 lambda error: error_handler(self._dbus_error(error)),
+                refresh=self._refresh_conversations,
             ),
             error_handler,
         )
@@ -174,6 +183,7 @@ class MessagesService(dbus.service.Object):
                 thread_key, body, bool(confirm_group), reply_handler,
                 lambda error: error_handler(self._dbus_error(error)),
                 expected_group_token=expected_group_token,
+                refresh=self._refresh_conversations,
             ),
             error_handler,
         )
@@ -325,14 +335,20 @@ class MessagesService(dbus.service.Object):
     def SetGroupParticipants(
         self, thread_key: str, recipients, reply_handler, error_handler, sender=None,
     ) -> None:
-        def update() -> None:
-            result = self._json_response(
-                self.operations.set_group_participants(thread_key, recipients)
-            )
+        def updated(thread) -> None:
+            result = self._json_response(thread)
             self.emit_history_changed()
             reply_handler(result)
 
-        self._conversation_call(sender, "settings", update, error_handler)
+        self._conversation_call(
+            sender, "settings",
+            lambda: self.operations.set_group_participants_async(
+                self._projection_worker.submit, thread_key, recipients,
+                lambda thread: self._async(lambda: updated(thread), error_handler),
+                lambda error: error_handler(self._dbus_error(error)),
+            ),
+            error_handler,
+        )
 
     @dbus.service.method(
         IFACE, in_signature="", out_signature="s", sender_keyword="sender"
@@ -360,14 +376,19 @@ class MessagesService(dbus.service.Object):
     def DeleteThreads(
         self, thread_keys, confirmed: bool, reply_handler, error_handler, sender=None,
     ) -> None:
-        def delete() -> None:
-            removed = self.operations.delete_threads(
-                thread_keys, bool(confirmed)
-            )
+        def deleted(removed: int) -> None:
             self.emit_history_changed()
             reply_handler(removed)
 
-        self._conversation_call(sender, "conversation-delete", delete, error_handler)
+        self._conversation_call(
+            sender, "conversation-delete",
+            lambda: self.operations.delete_threads_async(
+                self._projection_worker.submit, thread_keys, bool(confirmed),
+                lambda removed: self._async(lambda: deleted(removed), error_handler),
+                lambda error: error_handler(self._dbus_error(error)),
+            ),
+            error_handler,
+        )
 
     @dbus.service.method(
         IFACE, in_signature="", out_signature="s", sender_keyword="sender"
@@ -950,7 +971,7 @@ class MessagesService(dbus.service.Object):
     )
     def Hangup(self, call_id: str, reply_handler, error_handler, sender=None) -> None:
         self._call_control(
-            sender, "calls-control",
+            sender, "calls-hangup",
             lambda success, failure: self.operations.hangup_call(
                 str(call_id), lambda _result: success(), failure,
             ),
@@ -963,7 +984,7 @@ class MessagesService(dbus.service.Object):
     )
     def HangupAll(self, reply_handler, error_handler, sender=None) -> None:
         self._call_control(
-            sender, "calls-control",
+            sender, "calls-hangup",
             lambda success, failure: self.operations.hangup_all_calls(
                 lambda _result: success(), failure,
             ),
@@ -1129,6 +1150,10 @@ class MessagesService(dbus.service.Object):
             ))
         except Exception:
             log.exception("history invalidation signal emit failed")
+        try:
+            self.operations.hold_roster_warnings(self._projection_worker.submit)
+        except Exception:
+            log.exception("could not check saved group rosters")
 
     def emit_status(self) -> None:
         try:

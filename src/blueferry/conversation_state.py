@@ -9,7 +9,11 @@ from blueferry.client import BackendError
 from blueferry.events import canonical_address
 from blueferry.i18n import _
 from blueferry.models import BackendStatus, Thread
-from blueferry.recipients import InvalidRecipient, validate_recipient
+from blueferry.recipients import (
+    SENDER_REPLY_TOKEN_PREFIX,
+    InvalidRecipient,
+    validate_recipient,
+)
 
 MAX_GROUP_PARTICIPANTS = 20
 
@@ -56,6 +60,10 @@ class ReplyDisposition(str, Enum):
     STALE_GROUP = "stale-group"
     # The client asks who is in the group, then plans the reply again.
     NEEDS_PARTICIPANTS = "needs-participants"
+    # The latest message may be from a group; the client asks whether the
+    # reply goes to its sender alone, then plans it with confirm_group.
+    CONFIRM_SENDER = "confirm-sender"
+    STALE_SENDER = "stale-sender"
 
     @property
     def message(self) -> str:
@@ -68,6 +76,12 @@ class ReplyDisposition(str, Enum):
             ),
             ReplyDisposition.NEEDS_PARTICIPANTS: _(
                 "Confirm who is in this group before replying"
+            ),
+            ReplyDisposition.CONFIRM_SENDER: _(
+                "Confirm that this reply goes only to the sender"
+            ),
+            ReplyDisposition.STALE_SENDER: _(
+                "A new message arrived. Review the conversation and send again."
             ),
         }.get(self, "")
 
@@ -106,6 +120,8 @@ class ConversationState:
         self._status_error = ""
         self._thread_error = ""
         self.notice = ""
+        # Thread key to the confirmation token of a group roster, or of a
+        # reply to the sender alone, that the user approved this session.
         self.confirmed_groups: dict[str, str] = {}
         self.warned_roster_changes: set[str] = set()
         self.contact_results: list[tuple[str, str]] = []
@@ -209,9 +225,24 @@ class ConversationState:
         if selected is None:
             return ReplyPlan(ReplyDisposition.NO_THREAD, None, message)
         if expected_group_token is not None and expected_group_token != selected.confirmation_token:
-            return ReplyPlan(ReplyDisposition.STALE_GROUP, selected, message)
+            # A confirmed sender-only reply went stale because a message arrived.
+            return ReplyPlan(
+                ReplyDisposition.STALE_SENDER
+                if expected_group_token.startswith(SENDER_REPLY_TOKEN_PREFIX)
+                else ReplyDisposition.STALE_GROUP,
+                selected, message,
+            )
         if selected.is_group and selected.participants_required:
             return ReplyPlan(ReplyDisposition.NEEDS_PARTICIPANTS, selected, message)
+        if selected.sender_reply_token and not selected.reply_ready:
+            if (
+                confirm_group
+                or self.confirmed_groups.get(selected.key) == selected.sender_reply_token
+            ):
+                return ReplyPlan(
+                    ReplyDisposition.READY, selected, message, confirm_group=True,
+                )
+            return ReplyPlan(ReplyDisposition.CONFIRM_SENDER, selected, message)
         if not selected.reply_ready:
             return ReplyPlan(ReplyDisposition.READ_ONLY, selected, message)
         if (
@@ -241,7 +272,7 @@ class ConversationState:
         if not plan.ready or plan.thread is None:
             raise ValueError("cannot complete a blocked reply plan")
         thread = plan.thread
-        if thread.is_group and plan.confirm_group:
+        if plan.confirm_group and (thread.is_group or thread.sender_reply_token):
             self.confirmed_groups[thread.key] = thread.confirmation_token
         if not preserve_selection:
             self.selected_key = thread.key

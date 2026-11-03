@@ -117,7 +117,7 @@ def test_preferences_follow_retention_policy(tmp_path, policy):
 def test_full_collections_fit_with_encryption_and_long_keys(tmp_path):
     path = tmp_path / "settings.json"
     _, stars, groups = _stores(path)
-    keys = [f"group:participants:{i}:" + "é" * 990 for i in range(200)]
+    keys = [f"address:{i}:" + "é" * 999 for i in range(200)]
     for key in keys:
         stars.set_starred(key, True)
         groups.remember(key, "roster")

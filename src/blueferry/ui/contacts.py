@@ -8,10 +8,13 @@ card and its photo, when it is hidden. The search field reloads the list
 after a short pause; further pages load when the list is scrolled to its
 end. **Call** goes through the window's confirmation dialog, **Message**
 opens the conversation with that number or a new message. Every field
-comes from the iPhone and is shown as plain text; the photo is decoded by
-the bounded avatar decoder. List rows show initials until the model has
-read the photos of the rows on screen; those are decoded on the client's
-worker and kept in memory only, like the rows.
+comes from the iPhone and is shown as plain text. The photo arrives as
+bytes over D-Bus (never a path) and is decoded by the bounded avatar decoder
+on a worker; it goes as soon as the book drops it, and a late decode of a
+dropped photo is ignored.
+List rows show initials until the model has read the photos of the rows on
+screen; those are decoded on the client's worker and kept in memory only,
+like the rows.
 """
 
 from __future__ import annotations
@@ -99,6 +102,10 @@ class ContactsPage(Gtk.Box):
         self._decoded_lock = threading.Lock()
         timers = timer or glib_timer
         self._photo_timer = timers(self._request_visible_photos)
+        self._shown_photo = b""
+        self._photo_serial = 0
+        # Decoding is not for the GTK thread.
+        self._decoder = client.task_runner("contact-photo")
         self.book = ContactBook(
             runner=client, timer=timers,
             fetch_page=client.contact_cards, fetch_card=client.contact,
@@ -372,6 +379,7 @@ class ContactsPage(Gtk.Box):
             for contact_id, avatar in self._row_avatars.items():
                 avatar.set_custom_image(self._row_texture(contact_id))
             self._schedule_photos()
+        self._render_photo()
         if view["rows"]:
             self.list_stack.set_visible_child_name("list")
         elif view["loading"]:
@@ -423,6 +431,11 @@ class ContactsPage(Gtk.Box):
         self.card_banner.set_title(card["error"])
         self.card_banner.set_revealed(card["open"] and bool(card["error"]))
         if not card["open"]:
+            # Forgotten by the book: nothing of it stays in hidden widgets.
+            self.title_label.set_label("")
+            self.subtitle_label.set_label("")
+            self.avatar.set_text("")
+            self._clear_sections()
             self.card_stack.set_visible_child_name("empty")
             self.card_header.set_visible(False)
             return
@@ -432,12 +445,7 @@ class ContactsPage(Gtk.Box):
         self.subtitle_label.set_visible(bool(card["subtitle"]))
         self.avatar.set_text(avatar_text(card["initials"]))
         self.avatar.set_show_initials(bool(card["initials"]))
-        photo = self.book.photo
-        self.avatar.set_custom_image(decode_avatar(photo) if photo else None)
-        child = self.sections.get_first_child()
-        while child is not None:
-            self.sections.remove(child)
-            child = self.sections.get_first_child()
+        self._clear_sections()
         for section in card["sections"]:
             group = Adw.PreferencesGroup(title=GLib.markup_escape_text(section["title"]))
             for item in section["rows"]:
@@ -445,6 +453,30 @@ class ContactsPage(Gtk.Box):
             self.sections.append(group)
         self._render_card_actions(card)
         self.card_stack.set_visible_child_name("card")
+
+    def _clear_sections(self) -> None:
+        child = self.sections.get_first_child()
+        while child is not None:
+            self.sections.remove(child)
+            child = self.sections.get_first_child()
+
+    def _render_photo(self) -> None:
+        """Follow the book's photo, which can go while the card stays."""
+        photo = self.book.photo if self.book.card["open"] else b""
+        if photo == self._shown_photo:
+            return
+        self._shown_photo = photo
+        self._photo_serial += 1
+        self.avatar.set_custom_image(None)
+        if not photo:
+            return
+        serial = self._photo_serial
+
+        def decoded(texture) -> None:
+            if serial == self._photo_serial:
+                self.avatar.set_custom_image(texture)
+
+        self._decoder.submit(lambda: decode_avatar(photo), decoded, lambda _message: None)
 
     def _render_card_actions(self, card: dict[str, Any]) -> None:
         # Calling asks first and explains when calls are off or not ready.

@@ -11,7 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from blueferry import config, contact_repository
+from blueferry import config, contact_repository, settings_store
 from blueferry.contacts import ContactsResolver
 from blueferry.history import (
     append_event,
@@ -22,7 +22,7 @@ from blueferry.history import (
     scrub_unprotected_events,
 )
 from blueferry.limits import MAX_CONTACT_ADDRESSES_PER_CARD
-from blueferry.settings_store import SettingsStore
+from blueferry.settings_store import SettingsStore, UnreadableSettingsError
 from blueferry.storage_security import (
     KEY_MISSING_DETAIL,
     CorruptStorageError,
@@ -734,6 +734,135 @@ def test_key_check_is_written_after_preparation_and_dropped_with_the_policy(
     prepare(policy="encrypted")
     assert storage.status.can_write  # The new key is now the one on record.
     assert settings.read()["storage_key_check"] != sealed
+
+
+def test_settings_read_failure_during_preparation_is_retried(tmp_path, monkeypatch) -> None:
+    from gi.repository import GLib
+
+    monkeypatch.setattr(GLib, "timeout_add_seconds", lambda *_args: 1)
+    monkeypatch.setattr(GLib, "source_remove", lambda _source: True)
+    path = tmp_path / "settings.json"
+    settings = SettingsStore(path)
+    settings.update(local_data="encrypted", starred_thread_keys="ciphertext")
+    saved = path.read_text(encoding="utf-8")
+    storage = StorageSecurity(settings=settings, key_provider=_KeyProvider(), initialize=False)
+
+    def unreadable(*_args, **_kwargs):
+        raise OSError("transient")
+
+    pending = []
+    storage.change_async(
+        lambda operation, **handlers: pending.append((operation, handlers)),
+        on_success=lambda _status: None, on_error=lambda error: pytest.fail(str(error)),
+        prepare=lambda _candidate: None,
+    )
+    # The file read before the request; it fails while preparation runs.
+    monkeypatch.setattr(settings_store, "read_private_text", unreadable)
+    operation, handlers = pending.pop()
+    with pytest.raises(UnreadableSettingsError) as raised:
+        operation()
+    handlers["on_error"](raised.value)
+
+    assert storage.status.state == "locked"  # A passive retry may still unlock it.
+    assert path.read_text(encoding="utf-8") == saved
+
+
+@pytest.mark.parametrize("read", [
+    pytest.param(OSError("transient"), id="transient"),
+    pytest.param("{not json", id="malformed"),
+])
+def test_unreadable_settings_never_offer_the_storage_reset(
+    tmp_path, monkeypatch, read,
+) -> None:
+    # The reset erases saved data; it is for a damaged database, not settings.json.
+    from gi.repository import GLib
+
+    monkeypatch.setattr(GLib, "timeout_add_seconds", lambda *_args: 1)
+    monkeypatch.setattr(GLib, "source_remove", lambda _source: True)
+    settings = SettingsStore(tmp_path / "settings.json")
+    settings.update(local_data="encrypted")
+    storage = StorageSecurity(settings=settings, key_provider=_KeyProvider(), initialize=False)
+
+    def unreadable(*_args, **_kwargs):
+        if isinstance(read, Exception):
+            raise read
+        return read
+
+    pending = []
+    storage.change_async(
+        lambda operation, **handlers: pending.append((operation, handlers)),
+        on_success=lambda _status: None, on_error=lambda error: pytest.fail(str(error)),
+        prepare=lambda _candidate: None,
+    )
+    # The file read before the request; it fails while preparation runs.
+    monkeypatch.setattr(settings_store, "read_private_text", unreadable)
+    operation, handlers = pending.pop()
+    with pytest.raises(UnreadableSettingsError) as raised:
+        operation()
+    handlers["on_error"](raised.value)
+
+    # Locked, so the retry tick reads the file again.
+    assert storage.status.state == "locked"
+    assert "settings.json cannot be read" in storage.status.detail
+    assert not storage.reset_offered
+
+
+@pytest.mark.parametrize("saved", ["missing", "damaged", "failed_once"])
+def test_unreadable_settings_retain_no_history(tmp_path, monkeypatch, saved) -> None:
+    from gi.repository import GLib
+
+    monkeypatch.setattr(GLib, "timeout_add_seconds", lambda *_args: 1)
+    monkeypatch.setattr(GLib, "source_remove", lambda _source: True)
+    path = tmp_path / "settings.json"
+    if saved == "damaged":
+        path.write_text("{not json", encoding="utf-8")
+    elif saved == "failed_once":
+        # The user chose to retain nothing, and the key is still in the wallet.
+        SettingsStore(path).update(local_data="none")
+        read_private_text = settings_store.read_private_text
+        failures = [OSError("transient")]
+
+        def flaky_read(*args, **kwargs):
+            if failures:
+                raise failures.pop()
+            return read_private_text(*args, **kwargs)
+
+        monkeypatch.setattr(settings_store, "read_private_text", flaky_read)
+    events = tmp_path / "events.sqlite"
+    storage = StorageSecurity(
+        settings=SettingsStore(path), key_provider=_KeyProvider(), initialize=False,
+    )
+    storage.require_preparation()
+
+    # Daemon startup: a passive unlock with preparation, as the retry tick does.
+    pending = []
+    storage.change_async(
+        lambda operation, **handlers: pending.append((operation, handlers)),
+        on_success=lambda _status: None, on_error=lambda error: pytest.fail(str(error)),
+        allow_prompt=False, prepare=lambda _candidate: None,
+    )
+    if pending:
+        operation, handlers = pending.pop()
+        handlers["on_success"](operation())
+    try:
+        append_event({"kind": "sms_received", "body": "private"}, path=events, storage=storage)
+    except StorageUnavailableError:
+        pass
+
+    with closing(sqlite3.connect(events)) as database:
+        rows = database.execute("SELECT payload_json FROM events").fetchall()
+    if saved == "missing":
+        assert storage.status.policy == "encrypted"
+        assert storage.status.can_write
+        assert len(rows) == 1 and is_encrypted_value(rows[0][0])
+    elif saved == "damaged":
+        assert storage.status.state == "locked"
+        assert "settings.json cannot be read" in storage.status.detail
+        assert rows == []
+        assert path.read_text(encoding="utf-8") == "{not json"
+    else:
+        assert storage.status.policy == "none"
+        assert rows == []
 
 
 def test_revision_tracks_key_and_policy_changes_only(tmp_path) -> None:

@@ -464,7 +464,12 @@ def test_doctor_work_does_not_wait_for_daemon_reads(monkeypatch) -> None:
     monkeypatch.setattr(client_module.GLib, "idle_add", idle_add)
     release_read = threading.Event()
     client = client_module.DaemonClient()
-    monkeypatch.setattr(client, "_call_backend", lambda _operation: release_read.wait(5))
+    from blueferry.models import BackendStatus
+
+    monkeypatch.setattr(
+        client, "_call_backend",
+        lambda _operation: release_read.wait(5) and BackendStatus(),
+    )
     reports = []
     read_done = threading.Event()
     try:
@@ -653,6 +658,12 @@ def test_pins_and_muted_apps_use_their_workers_and_shared_texts(monkeypatch) -> 
         dbus.exceptions.DBusException(
             "Did not receive a reply", name="org.freedesktop.DBus.Error.NoReply",
         ),
+        # settings.json can't be read (main's pins refuse with Configuration).
+        dbus.exceptions.DBusException(
+            "settings.json can't be read, so local storage was not changed; "
+            "repair or remove the file and try again",
+            name="io.weirdware.BlueFerry.Error.Configuration",
+        ),
     ])
 
     class Backend:
@@ -676,7 +687,7 @@ def test_pins_and_muted_apps_use_their_workers_and_shared_texts(monkeypatch) -> 
     results, errors = [], []
     try:
         client.set_notification_pinned_async("k1", True, results.append, errors.append)
-        for _refusal in range(4):
+        for _refusal in range(5):
             client.set_notification_pinned_async(
                 "refused", True, results.append, errors.append)
         client.set_notification_pinned_async("plain", True, results.append, errors.append)
@@ -688,11 +699,12 @@ def test_pins_and_muted_apps_use_their_workers_and_shared_texts(monkeypatch) -> 
     assert results == [True, {"apps": [], "mute_available": True}, True]
     assert errors == [
         notification_pin_view.FULL_TEXT, notification_pin_view.UNSUPPORTED_TEXT,
-        "The name is not activatable", "Did not receive a reply", "Daemon is not running",
+        "The name is not activatable", "Did not receive a reply",
+        notification_pin_view.UNREADABLE_SETTINGS_TEXT, "Daemon is not running",
     ]
-    assert pinned == [("k1", True), *[("refused", True)] * 4, ("plain", True)]
+    assert pinned == [("k1", True), *[("refused", True)] * 5, ("plain", True)]
     assert muted == [("com.example.Chat", True)]
-    assert submitted == [*["mutation"] * 6, "read", "mutation"]
+    assert submitted == [*["mutation"] * 7, "read", "mutation"]
 
 
 def test_notification_apps_changed_is_forwarded_as_a_gobject_signal(monkeypatch) -> None:
@@ -748,3 +760,31 @@ def test_contact_cards_and_search_are_blocking_reads_for_the_shared_models(
         {"query": "noon", "limit": 20},
     ]
     assert submitted == ["read"] * 4
+
+
+def test_every_status_answer_is_also_sent_as_status_read(monkeypatch) -> None:
+    """Contact photos and search follow every GetStatus answer, not only the card's."""
+    from blueferry.models import BackendStatus
+
+    answers = iter([{"daemon": True, "contact_photos": True}, RuntimeError("gone")])
+
+    class Backend:
+        def status(self):
+            answer = next(answers)
+            if isinstance(answer, Exception):
+                raise answer
+            return BackendStatus.from_dict(answer)
+
+    client, submitted = _recording_client(monkeypatch, Backend())
+    seen, results, errors = [], [], []
+    client.connect("status-read", lambda _client, status: seen.append(status))
+    try:
+        client.get_status_async(results.append)
+        client.get_status_async(results.append, errors.append)
+    finally:
+        client.stop()
+    assert seen[0]["contact_photos"] is True
+    # A failed read counts as an unknown status: photos go.
+    assert seen[1] == BackendStatus().to_dict() and seen[1].get("contact_photos") is not True
+    assert len(results) == 1 and errors == ["gone"]
+    assert submitted == ["read", "read"]
