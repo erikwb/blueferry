@@ -50,6 +50,8 @@ from blueferry.limits import (
     MAX_CONTACT_ADDRESS_CHARS,
     MAX_CONTACT_ID_CHARS,
     MAX_CONTACT_PAGE,
+    MAX_CONTACT_PHOTO_BATCH,
+    MAX_CONTACT_PHOTO_BATCH_BYTES,
     MAX_CONTACT_QUERY_CHARS,
     MAX_CONTACT_RESULTS,
     MAX_CONVERSATION_EVENTS,
@@ -152,6 +154,8 @@ class ContactIndex(Protocol):
                ContactDetails, int | None] | None: ...
 
     def load_photo(self, ref: int) -> bytes | None: ...
+
+    def load_photos(self, refs: Sequence[int]) -> dict[int, bytes]: ...
 
     def adopt_card_haystacks(self, snapshot: object) -> None: ...
 
@@ -1104,6 +1108,54 @@ class BackendOperations:
         if resolver is not None and contacts is not None:
             contacts.adopt_card_haystacks(resolver)
         return result
+
+    def contact_card_photos(self, contact_ids: Sequence[str]) -> dict[str, bytes]:
+        """Photos of several cards by id, for the avatars of a contact list.
+
+        At most ``MAX_CONTACT_PHOTO_BATCH`` ids per call. Ids that are
+        unknown or stale, cards without a photo, and photos past the reply's
+        byte budget (``MAX_CONTACT_PHOTO_BATCH_BYTES``) are left out, so an
+        absent id is not proof that a card has no photo. Empty while contact
+        photos are off; ``NotReady`` while a sync holds the photo store.
+        Bytes are bounded JPEG/PNG that the caller decodes with a hardened
+        loader; the daemon never decodes pixels.
+        """
+        if isinstance(contact_ids, (str, bytes)):
+            raise InvalidArgumentsError("contact ids must be a list")
+        if len(contact_ids) > MAX_CONTACT_PHOTO_BATCH:
+            raise InvalidArgumentsError("too many contact ids")
+        selected: list[str] = []
+        for value in contact_ids:
+            contact_id = str(value).strip()
+            if not contact_id or len(contact_id) > MAX_CONTACT_ID_CHARS:
+                raise InvalidArgumentsError("contact id is empty or too long")
+            if contact_id not in selected:
+                selected.append(contact_id)
+        contacts = self.dependencies.contacts
+        if contacts is None:
+            raise NotReadyError("contact cache is unavailable")
+        if not selected or not self._contact_photos_enabled():
+            return {}
+        refs: dict[str, int] = {}
+        for contact_id in selected:
+            found = contacts.card(contact_id)
+            if found is not None and found[3] is not None:
+                refs[contact_id] = found[3]
+        if not refs:
+            return {}
+        try:
+            loaded = contacts.load_photos(list(refs.values()))
+        except PhotoStoreBusy as error:
+            raise NotReadyError("contact photos are being updated; try again") from error
+        photos: dict[str, bytes] = {}
+        budget = MAX_CONTACT_PHOTO_BATCH_BYTES
+        for contact_id, ref in refs.items():
+            photo = loaded.get(ref)
+            if not photo or len(photo) > budget:
+                continue
+            photos[contact_id] = photo
+            budget -= len(photo)
+        return photos
 
     def contact_photo(self, address: str) -> bytes:
         """Return the validated photo of the one contact owning ``address``.

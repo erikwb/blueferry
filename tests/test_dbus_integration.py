@@ -1216,6 +1216,34 @@ def test_mirror_removals_setter_round_trips_and_reports_status(public_service) -
     assert len(changes) == 2
 
 
+def _raw_call(name, member, args, signature, interface=MESSAGES_IFACE):
+    """Send ``args`` with exactly ``signature``, which dbus-python never checks.
+
+    A proxy call would convert the arguments to the introspected types; a raw
+    message shows what the service does with the wrong ones.
+    """
+    outcome = {}
+
+    def request() -> None:
+        connection = dbus.SessionBus(private=True, mainloop=dbus.mainloop.NULL_MAIN_LOOP)
+        try:
+            message = dbus.lowlevel.MethodCallMessage(name, OBJECT_PATH, interface, member)
+            if signature:
+                message.append(*args, signature=signature)
+            reply = connection.send_message_with_reply_and_block(message, 5)
+            outcome["value"] = reply.get_args_list()
+        except dbus.exceptions.DBusException as error:
+            outcome["error"] = error.get_dbus_name()
+        finally:
+            connection.close()
+
+    client_thread = threading.Thread(target=request)
+    client_thread.start()
+    _dispatch_until(lambda: not client_thread.is_alive())
+    client_thread.join(timeout=1)
+    return outcome
+
+
 def test_raw_call_with_the_wrong_argument_types_is_rejected(public_service) -> None:
     name, _pending, _policy, _changes, service = public_service
     cleared = []
@@ -1250,6 +1278,22 @@ def test_raw_call_with_the_wrong_argument_types_is_rejected(public_service) -> N
         "boolean": [],
     }
     assert cleared == [False]
+
+
+def test_contact_card_photos_reject_wrongly_typed_ids(public_service) -> None:
+    name, _pending, _policy, _changes, service = public_service
+    asked = []
+    service.operations.contact_card_photos = asked.append
+
+    for args, signature in (
+        # A plain string is not a one-id list; list() would split it.
+        (("c1",), "s"),
+        (([1, 2],), "au"),
+        ((["c1"], "c2"), "ass"),
+    ):
+        outcome = _raw_call(name, "GetContactCardPhotos", args, signature)
+        assert outcome == {"error": "org.freedesktop.DBus.Error.InvalidArgs"}, signature
+    assert asked == []
 
 
 def test_raw_call_to_a_python_attribute_gets_the_usual_error(public_service) -> None:

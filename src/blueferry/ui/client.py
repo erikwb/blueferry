@@ -867,6 +867,10 @@ class DaemonClient(GObject.Object):
         """
         return self._call_backend(lambda backend: backend.contact(contact_id))
 
+    def contact_card_photos(self, contact_ids: list[str]) -> dict[str, bytes]:
+        """GetContactCardPhotos (list avatars); blocking, only through :meth:`submit`."""
+        return self._call_backend(lambda backend: backend.contact_card_photos(contact_ids))
+
     def search(self, query: str, limit: int) -> dict:
         """Search; blocking, so only for work passed to :meth:`submit`."""
         return self._call_backend(lambda backend: backend.search(query, limit))
