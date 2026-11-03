@@ -77,6 +77,8 @@ class EventDispatcher:
         contact_photo: Callable[[str | None], str | None] | None = None,
         perform_ancs_action=None,
         ancs_actions_enabled: Callable[[], bool] | None = None,
+        ancs_app_seen: Callable[[str, str], None] | None = None,
+        ancs_app_muted: Callable[[str], bool] | None = None,
         on_call_action: Callable[[str, str], None] | None = None,
         plugin_action=None,
         notification_sink_factory: Callable[..., Sink] = LibnotifySink,
@@ -99,6 +101,10 @@ class EventDispatcher:
         self.contact_photo = contact_photo
         self.perform_ancs_action = perform_ancs_action
         self.ancs_actions_enabled = ancs_actions_enabled
+        # Memory-only list of apps that sent notifications (notification_apps).
+        self.ancs_app_seen = ancs_app_seen
+        # Live check: hide the desktop popup of an app the user muted.
+        self.ancs_app_muted = ancs_app_muted
         self.on_call_action = on_call_action
         # Click on a plugin popup's button (plugin_notify.PluginPopups.invoke).
         self.plugin_action = plugin_action
@@ -240,6 +246,8 @@ class EventDispatcher:
             options["contact_photo"] = self.contact_photo
         if self.plugin_action is not None:
             options["on_plugin_action"] = self.plugin_action
+        if self.ancs_app_muted is not None:
+            options["app_muted"] = self.ancs_app_muted
         try:
             sink = self._notification_sink_factory(
                 defer_mark_read=self.defer_mark_read,
@@ -499,6 +507,11 @@ class EventDispatcher:
         self._seen_ancs.move_to_end(fingerprint)
         while len(self._seen_ancs) > MAX_ANCS_FINGERPRINTS:
             self._seen_ancs.popitem(last=False)
+        if event.app_id != MESSAGES_APP_ID and self.ancs_app_seen is not None:
+            try:
+                self.ancs_app_seen(event.app_id, event.app_name)
+            except Exception:
+                log.exception("could not record a notification app")
         for sink in self.sinks:
             if event.app_id != MESSAGES_APP_ID and not bool(
                 getattr(sink, "accepts_system_ancs", False)

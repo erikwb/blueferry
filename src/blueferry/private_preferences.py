@@ -25,7 +25,19 @@ class PrivatePreference:
         self._storage = storage
 
     def read(self) -> object:
-        value = self._settings.read().get(self._key)
+        """The saved value; ``None`` also while settings.json can't be read."""
+        return self._value(self._settings.read())
+
+    def load(self) -> object:
+        """Like ``read``, but raise UnreadableSettingsError while settings.json can't be read."""
+        return self._value(self._settings.load())
+
+    def require_readable(self) -> None:
+        """Raise UnreadableSettingsError while settings.json can't be read."""
+        self._settings.load()
+
+    def _value(self, document: dict) -> object:
+        value = document.get(self._key)
         storage = self._storage
         if storage is None or value is None:
             return value

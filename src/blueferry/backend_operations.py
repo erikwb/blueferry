@@ -79,6 +79,7 @@ from blueferry.storage_security import (
     CorruptStorageError,
     StorageSecurity,
     StorageStatus,
+    StorageUnavailableError,
 )
 from blueferry.threads import (
     MESSAGE_KINDS,
@@ -158,6 +159,16 @@ class NotificationPolicy(Protocol):
     def mirror_removals(self) -> bool: ...
 
     def set_mirror_removals(self, enabled: bool) -> bool: ...
+
+
+class NotificationAppList(Protocol):
+    def payload(self) -> dict[str, Any]: ...
+
+    def set_muted(self, app_id: object, muted: bool) -> bool: ...
+
+    def muted_count(self) -> int: ...
+
+    def clear(self) -> None: ...
 
 
 class StarredThreads(Protocol):
@@ -278,6 +289,8 @@ class BackendDependencies:
     notification_policy: NotificationPolicy | None = None
     on_notification_policy_changed: Callable[[], None] | None = None
     starred_threads: StarredThreads | None = None
+    # Seen iPhone apps joined with the saved muted ones (notification_apps).
+    notification_apps: NotificationAppList | None = None
     confirmed_groups: ConfirmedGroups | None = None
     group_routes: GroupRoutes | None = None
     storage: StorageSecurity | None = None
@@ -985,6 +998,11 @@ class BackendOperations:
         if self.dependencies.notification_policy is not None:
             # Also the capability marker: daemons without click rules lack it.
             status["notification_open_map_revision"] = self._open_map_revision
+        if self.dependencies.notification_apps is not None:
+            # Also the capability marker for ListNotificationApps.
+            status["notification_muted_app_count"] = (
+                self.dependencies.notification_apps.muted_count()
+            )
         calls = self.dependencies.calls
         if calls is not None:
             # A backend without the calls feature reports no calls keys at all.
@@ -1352,6 +1370,9 @@ class BackendOperations:
             self.dependencies.starred_threads.clear()
         if self.dependencies.group_routes is not None:
             self.dependencies.group_routes.clear()
+        if self.dependencies.notification_apps is not None:
+            # Sealed under the old key; it could not be read afterwards.
+            self.dependencies.notification_apps.clear()
         self._clear_confirmed_groups()
 
     def reset_storage_async(
@@ -1551,6 +1572,27 @@ class BackendOperations:
         if self.dependencies.on_notification_policy_changed is not None:
             self.dependencies.on_notification_policy_changed()
         return selected
+
+    def list_notification_apps(self) -> dict[str, Any]:
+        """Seen iPhone apps and the muted ones (see notification_apps)."""
+        apps = self.dependencies.notification_apps
+        if apps is None:
+            raise NotReadyError("notification apps are unavailable in this backend")
+        return apps.payload()
+
+    def set_notification_app_muted(self, app_id: str, muted: bool) -> bool:
+        """Hide or show the desktop popups of one iPhone app."""
+        apps = self.dependencies.notification_apps
+        if apps is None:
+            raise NotReadyError("notification apps are unavailable in this backend")
+        try:
+            return apps.set_muted(app_id, bool(muted))
+        except StorageUnavailableError as error:
+            raise NotReadyError(str(error)) from error
+        except UnreadableSettingsError:
+            raise
+        except ValueError as error:
+            raise InvalidArgumentsError(str(error)) from error
 
     def reconnect_phone(self) -> str:
         """Clear the Classic backoff and page the iPhone once now."""

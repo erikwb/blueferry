@@ -79,6 +79,7 @@ def test_tether_interface_is_small_and_its_signal_is_content_free() -> None:
     assert set(_exported(EVENTS_IFACE, "_dbus_is_signal")) == {
         "HistoryChanged", "StatusChanged", "OpenMessageRequested",
         "NowPlayingChanged", "CallsChanged", "CallHistoryChanged", "NotificationsChanged",
+        "NotificationAppsChanged",
     }
 
 
@@ -147,6 +148,16 @@ def test_call_errors_map_to_their_documented_names() -> None:
     failed = MessagesService._dbus_error(OperationFailedError("Call", RuntimeError("+4179 secret")))
     assert failed.get_dbus_name() == "io.weirdware.BlueFerry.Error.CallFailed"
     assert "+4179" not in failed.get_dbus_message()
+
+
+def test_notification_apps_signal_is_content_free() -> None:
+    signals = _exported(EVENTS_IFACE, "_dbus_is_signal")
+    assert signals["NotificationAppsChanged"]._dbus_signature == ""
+    methods = _exported(MESSAGES_IFACE, "_dbus_is_method")
+    assert methods["ListNotificationApps"]._dbus_in_signature == ""
+    assert methods["ListNotificationApps"]._dbus_out_signature == "s"
+    assert methods["SetNotificationAppMuted"]._dbus_in_signature == "sb"
+    assert methods["SetNotificationAppMuted"]._dbus_out_signature == "b"
 
 
 def test_phone_audio_status_keys_are_documented_and_survive_the_client_model() -> None:

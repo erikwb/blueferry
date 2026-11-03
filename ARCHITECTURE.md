@@ -42,6 +42,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `group_routes.py` | Saved group reply rosters in the settings document, outside history retention. |
 | `starred_threads.py` | Persistent starred-conversation keys in the settings document. |
 | `notification_policy.py` | Persistent desktop notification preferences, including per-app click rules. |
+| `notification_apps.py` | iPhone apps seen sending notifications (memory only, bounded) joined with the muted apps saved under the storage policy; the live popup check. |
 | `notification_log.py` | Opt-in, memory-only ring of recent non-Messages ANCS notifications for `ListNotifications` (content-gated, never on disk). |
 | `notification_open_map.py` | Strict validation and exact-match resolution of notification click rules (bundle ID to http(s) URL or desktop-entry ID). |
 | `private_preferences.py` | Encrypts a whole preference collection under the storage policy. |
@@ -65,6 +66,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `media.py` | Opt-in now-playing projection, media command policy, coalesced change listeners, and the persisted opt-in (`MediaControlSettings`). |
 | `phone_audio_route.py` | Content-free iPhone A2DP route (`pc`/`phone`/`unavailable`) and A/V sync delay (`MediaTransport1.Delay`) from BlueZ `MediaTransport1`/`Device1` over GDBus, switched through `ConnectProfile`/`DisconnectProfile`; also where the sound plays (`phone_audio_playing`) from `MediaTransport1.State` and the AMS playback state, debounced. |
 | `gio_dbus.py` | `GioBus`: a two-method seam (typed asynchronous `call`, `subscribe`) over a `Gio.DBusConnection`, with dbus-python-compatible error names; used by `phone_audio_route.py`. |
+| `notification_apps_view.py`, `cli_notifications.py` | Toolkit-free rows, hints and index toggles for the muted-apps list (`Messages1.ListNotificationApps`); `blueferry notifications apps/mute/unmute`. |
 | `phone_audio_view.py` | Toolkit-free wording of the PC/iPhone sound switch for every client. |
 | `media_volume_view.py` | Toolkit-free iPhone volume up/down buttons and level label (from `GetNowPlaying`) for every client and `blueferry media volume`. |
 | `features.py` | The `local.env` switches without a runtime setter of their own that clients may store in settings.json (`Messages1.GetFeatures/SetFeature`): notification content, mark read on dismiss, and notification history. |
