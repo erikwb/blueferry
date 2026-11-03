@@ -177,7 +177,7 @@ erscheint nur, wenn der laufende Hintergrunddienst sie anbietet.
 | Phone | Kopplung, Verbindungszustand mit **Reconnect**, automatisches Zurücksetzen einer hängenden Verbindung, **Run Diagnostics**, Kontaktabgleich (**Sync Contacts**), Kontaktfotos |
 | Notifications | Welche Ereignisse Popups erzeugen, nur Kontakte, Mitteilungsinhalt, Aktionsknöpfe, Mitteilungen mit dem iPhone abgleichen, beim Wegklicken als gelesen markieren, letzte Mitteilungen behalten und die Liste dieser Mitteilungen |
 | Calls & Audio | Telefonanrufe, Anrufliste und Popups für verpasste Anrufe, Akku-Warnung, iPhone-Ton auf diesem Computer, Mediensteuerung und MPRIS |
-| Security | Einmalcodes, Abwesenheitssperre, die lokale Speicherung |
+| Security | Einmalcodes, Abwesenheitssperre, die lokale Speicherung und **Reset Local Storage…**, wenn sich die gespeicherten Daten nicht öffnen lassen |
 | About | Der Hintergrunddienst, seine Version und **Restart Service** |
 
 Schalter, die einen Neustart brauchen, zeigen oben auf der Seite den

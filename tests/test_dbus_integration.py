@@ -10,16 +10,18 @@ import time
 from dataclasses import replace
 
 import dbus
+import dbus.lowlevel
 import dbus.mainloop
 import dbus.service
 import pytest
 from gi.repository import GLib
 
-from blueferry import config
+from blueferry import backend_operations, config
 from blueferry.backend_operations import BackendDependencies
 from blueferry.client import BackendClient
 from blueferry.contacts import ContactsResolver
 from blueferry.dbus_service import MessagesService
+from blueferry.group_routes import GroupRoutesStore
 from blueferry.grouping import named_group_key
 from blueferry.history import append_event, read_events
 from blueferry.protocol import (
@@ -603,6 +605,99 @@ def test_projection_does_not_block_status_and_retries_after_history_changes(
     assert [message["body"] for message in threads[0]["messages"]] == ["first", "newer"]
 
 
+def _hold_off_main_loop(entered, release, threads, operation):
+    def held(*args, **kwargs):
+        threads.add(threading.get_ident())
+        result = operation(*args, **kwargs)
+        if not release.is_set():
+            entered.set()
+            assert release.wait(4), "worker fixture was not released"
+        return result
+    return held
+
+
+def test_saving_group_members_rebuilds_conversations_off_the_main_loop(
+    public_service, isolated_state, monkeypatch,
+):
+    name, _pending, _policy, _changes, service = public_service
+    service.operations.dependencies = replace(
+        service.operations.dependencies, group_routes=GroupRoutesStore(),
+    )
+    seen_at = "2026-01-01T12:00:00+00:00"
+    append_event({
+        "kind": "sms_received", "handle": "1", "body": "tee time",
+        "sender_address": "+15551111111", "contact_name": "Alice", "seen_at": seen_at,
+    })
+    append_event({
+        "kind": "ancs_notification", "app_id": "com.apple.MobileSMS", "title": "Alice",
+        "subtitle": "Golf", "body": "tee time", "seen_at": seen_at,
+    })
+    listed_thread, listed = _request_in_thread(name, "ListThreads", dbus.UInt32(10))
+    _dispatch_until(lambda: not listed_thread.is_alive())
+    [group] = json.loads(str(listed["value"]))
+    entered, release, threads = threading.Event(), threading.Event(), set()
+    monkeypatch.setattr(service.operations, "_project_conversations", _hold_off_main_loop(
+        entered, release, threads, service.operations._project_conversations,
+    ))
+    members = ["+15551111111", "+15553333333"]
+    save_thread, saved = _request_in_thread(
+        name, "SetGroupParticipants", group["key"], dbus.Array(members, signature="s"),
+    )
+    try:
+        _dispatch_until(entered.is_set)
+        status_thread, status = _request_in_thread(name, "GetStatus")
+        _dispatch_until(lambda: not status_thread.is_alive())
+        assert "error" not in status
+        assert save_thread.is_alive()
+    finally:
+        release.set()
+        _dispatch_until(lambda: not save_thread.is_alive())
+    assert "error" not in saved
+    assert json.loads(str(saved["value"]))["recipients"] == members
+    assert threading.get_ident() not in threads
+
+
+def test_deleting_a_conversation_reads_history_off_the_main_loop(
+    public_service, isolated_state, monkeypatch,
+):
+    name, _pending, _policy, _changes, _service = public_service
+    alice = {"kind": "sms_received", "handle": "1", "sender_address": "+15551111111", "body": "a"}
+    append_event(alice)
+    append_event({**alice, "handle": "2", "sender_address": "+15552222222", "body": "b"})
+    listed_thread, listed = _request_in_thread(name, "ListThreads", dbus.UInt32(10))
+    _dispatch_until(lambda: not listed_thread.is_alive())
+    [key] = [
+        thread["key"] for thread in json.loads(str(listed["value"]))
+        if thread["messages"][0]["body"] == "a"
+    ]
+    entered, release, threads = threading.Event(), threading.Event(), set()
+    read_rows = backend_operations.read_event_rows
+    held_read = _hold_off_main_loop(entered, release, threads, read_rows)
+    monkeypatch.setattr(
+        backend_operations, "read_event_rows",
+        # Hold only the complete archive read, after it has returned.
+        lambda **kwargs: (held_read if kwargs.get("limit") is None else read_rows)(**kwargs),
+    )
+    delete_thread, deleted = _request_in_thread(
+        name, "DeleteThreads", dbus.Array([key], signature="s"), True,
+    )
+    try:
+        _dispatch_until(entered.is_set)
+        status_thread, status = _request_in_thread(name, "GetStatus")
+        _dispatch_until(lambda: not status_thread.is_alive())
+        assert "error" not in status
+        assert delete_thread.is_alive()
+        # Arrives after the archive was read; it must not survive the deletion.
+        append_event({**alice, "handle": "3", "body": "late"})
+    finally:
+        release.set()
+        _dispatch_until(lambda: not delete_thread.is_alive())
+    assert "error" not in deleted
+    assert int(deleted["value"]) == 1
+    assert [event["body"] for event in read_events()] == ["b"]
+    assert threading.get_ident() not in threads
+
+
 def test_checked_group_send_rejects_a_stale_snapshot_over_the_public_api(
     public_service, tmp_path, monkeypatch,
 ):
@@ -635,6 +730,10 @@ def test_checked_group_send_rejects_a_stale_snapshot_over_the_public_api(
     send_thread, sent = _request_in_thread(
         name, "SendToThreadChecked", key, "private draft", True, group_confirmation_token(updated),
     )
+    _dispatch_until(lambda: not pending.empty())
+    # The reply's turn in the queue; it re-resolves the group, then sends.
+    _turn, turn_reached, _turn_failed = pending.get_nowait()
+    turn_reached(None)
     _dispatch_until(lambda: not pending.empty())
     # Never execute the Bluetooth operation; supply the fake worker result.
     _operation, success, _failure = pending.get_nowait()
@@ -974,7 +1073,7 @@ def test_call_history_round_trip_and_content_free_signal(public_service) -> None
         def sync(self, success, _failure):
             success(1)
 
-        def clear(self):
+        def clear(self, *, discard_damaged=False):
             pass
 
     service.operations.dependencies = replace(
@@ -1107,3 +1206,63 @@ def test_mirror_removals_setter_round_trips_and_reports_status(public_service) -
     assert outcome == {"before": False, "on": True, "status": True, "off": False}
     assert policy.mirror_removals is False
     assert len(changes) == 2
+
+
+def test_raw_call_with_the_wrong_argument_types_is_rejected(public_service) -> None:
+    name, _pending, _policy, _changes, service = public_service
+    cleared = []
+    service.operations.clear_history = cleared.append
+    outcome = {}
+
+    def call(value, signature):
+        message = dbus.lowlevel.MethodCallMessage(
+            name, OBJECT_PATH, MESSAGES_IFACE, "ClearHistory"
+        )
+        message.append(value, signature=signature)
+        return connection.send_message_with_reply_and_block(message, 5)
+
+    def change() -> None:
+        try:
+            try:
+                call("false", "s")
+            except dbus.exceptions.DBusException as error:
+                outcome["string"] = error.get_dbus_name()
+            outcome["boolean"] = call(False, "b").get_args_list()
+        finally:
+            connection.close()
+
+    connection = dbus.SessionBus(private=True, mainloop=dbus.mainloop.NULL_MAIN_LOOP)
+    client_thread = threading.Thread(target=change)
+    client_thread.start()
+    _dispatch_until(lambda: not client_thread.is_alive())
+    client_thread.join(timeout=1)
+
+    assert outcome == {
+        "string": "org.freedesktop.DBus.Error.InvalidArgs",
+        "boolean": [],
+    }
+    assert cleared == [False]
+
+
+def test_raw_call_to_a_python_attribute_gets_the_usual_error(public_service) -> None:
+    name, _pending, _policy, _changes, _service = public_service
+    outcome = {}
+
+    def call() -> None:
+        try:
+            message = dbus.lowlevel.MethodCallMessage(
+                name, OBJECT_PATH, MESSAGES_IFACE, "caller_guard"
+            )
+            connection.send_message_with_reply_and_block(message, 5)
+        except dbus.exceptions.DBusException as error:
+            outcome["error"] = error.get_dbus_name()
+        finally:
+            connection.close()
+
+    connection = dbus.SessionBus(private=True, mainloop=dbus.mainloop.NULL_MAIN_LOOP)
+    client_thread = threading.Thread(target=call)
+    client_thread.start()
+    _dispatch_until(lambda: not client_thread.is_alive())
+    client_thread.join(timeout=1)
+
+    assert outcome == {"error": "org.freedesktop.DBus.Python.AttributeError"}

@@ -19,6 +19,10 @@ ShellRoot {
   property var participantEntries: []
   property string groupParticipantsDraft: ""
   property var rosterChangedThread: null
+  // A reply held while asking whether it goes to the sender only, and the
+  // conversation as shown when it asked.
+  property var senderConfirmThread: null
+  property string senderConfirmDraft: ""
   property string errorText: ""
   property bool phoneSettingsVisible: false
   property var backendStatus: ({})
@@ -76,6 +80,8 @@ ShellRoot {
     && phoneSettingsPage.notificationsExpanded
   property bool storagePolicyBusy: false
   property bool storageUnlockBusy: false
+  property bool storageResetBusy: false
+  property string storageResetNotice: ""
 
   ConversationLogic { id: conversationLogic }
 
@@ -139,6 +145,17 @@ ShellRoot {
       storageUnlockBusy = true
       backendBridge.request("unlock_storage", {})
     }
+  }
+
+  // Like the other clients: only while the daemon offers the reset, and
+  // only from the confirmation popup.
+  function resetStorage() {
+    if (!storageResetPopup.offered || storageResetBusy || storagePolicyBusy) return
+    // The reset obtains its own key, so skip the automatic unlock.
+    storageUnlockAttempted = true
+    storageResetBusy = true
+    storageResetNotice = ""
+    backendBridge.request("reset_storage", {confirmed: true})
   }
 
   // Qt 6.12 hands arrays in a var signal argument over as sequence wrappers,
@@ -275,12 +292,35 @@ ShellRoot {
       openGroupParticipants(thread, composer.text)
       return
     }
+    if (conversationLogic.needsSenderConfirmation(thread)) {
+      senderConfirmThread = thread
+      senderConfirmDraft = composer.text
+      senderConfirmPopup.open()
+      return
+    }
     sendBusy = true
     backendBridge.request("send_to_thread", {
       thread_key: thread.key,
       body: composer.text,
       confirm_group: thread.is_group,
       expected_group_token: groupSignature(thread)
+    })
+  }
+
+  // The answer covers only the messages shown when it asked; the backend
+  // refuses it once another message that may be from a group arrives.
+  function sendToSenderOnly() {
+    const thread = senderConfirmThread
+    const selected = selectedThread()
+    senderConfirmPopup.close()
+    if (!thread || !selected || selected.key !== thread.key
+        || composer.text !== senderConfirmDraft) return
+    sendBusy = true
+    backendBridge.request("send_to_thread", {
+      thread_key: thread.key,
+      body: senderConfirmDraft,
+      confirm_group: true,
+      expected_group_token: String(thread.sender_reply_token || "")
     })
   }
 
@@ -527,6 +567,14 @@ ShellRoot {
           root.storageDetail = result.storage_detail || root.storageDetail
         }
         root.reload()
+      } else if (method === "reset_storage") {
+        root.storageResetBusy = false
+        if (typeof result === "object" && result !== null) {
+          root.storageState = result.storage_state || root.storageState
+          root.storageDetail = result.storage_detail || root.storageDetail
+        }
+        root.storageResetNotice = "Local storage reset"
+        root.reload()
       } else if (method === "set_phone_battery_warning") {
         root.batteryWarning.saved(result === true, root.statusBusy)
         root.reload()
@@ -656,6 +704,12 @@ ShellRoot {
       } else if (method === "unlock_storage") {
         root.storageUnlockBusy = false
         root.errorText = message
+      } else if (method === "reset_storage") {
+        root.storageResetBusy = false
+        // Beside the button: a reload clears the error banner.
+        root.storageResetNotice = "Could not reset local storage: "
+          + (message || "BlueFerry is unavailable")
+        root.reload()
       } else if (method === "set_phone_battery_warning") {
         root.batteryWarning.failed(root.backendStatus.phone_battery_warning === true)
         root.errorText = message || "Could not save the battery warning preference"
@@ -721,6 +775,7 @@ ShellRoot {
           root.otpAutocopy.failed(root.backendStatus.otp_autocopy === true)
         root.storagePolicyBusy = false
         root.storageUnlockBusy = false
+        root.storageResetBusy = false
         if (root.batteryWarning.busy)
           root.batteryWarning.failed(root.backendStatus.phone_battery_warning === true)
         if (root.mirrorRemovals.busy)
@@ -1400,6 +1455,7 @@ ShellRoot {
           doctor: root.doctor
           notificationList: root.notificationList
           contactsSyncNotice: root.contactsSyncNotice
+          storageResetNotice: root.storageResetNotice
           busy: ({notifications: root.notificationPolicyBusy,
                   contactsOnly: root.contactsOnlyNotificationsBusy,
                   ancsActions: root.ancsActionsBusy,
@@ -1419,12 +1475,14 @@ ShellRoot {
                   syncContacts: root.syncContactsBusy,
                   features: Object.keys(root.featurePending).length > 0,
                   restart: root.restartBusy,
-                  storage: root.storagePolicyBusy})
+                  storage: root.storagePolicyBusy || root.storageResetBusy,
+                  storageReset: root.storageResetBusy})
           visible: root.phoneSettingsVisible
           Layout.fillWidth: true
           Layout.fillHeight: true
           onCloseRequested: root.phoneSettingsVisible = false
           onPairingIssueRequested: pairingIssuePopup.open()
+          onStorageResetRequested: if (storageResetPopup.offered) storageResetPopup.open()
           onErrorRequested: message => root.errorText = message
           onReloadRequested: root.reload()
           onOperationRequested: (method, args) => {
@@ -1584,6 +1642,74 @@ ShellRoot {
               onClicked: {
                 pairingIssuePopup.close()
                 setupController.openPairingIssue()
+              }
+            }
+          }
+        }
+      }
+
+      Popup {
+        id: storageResetPopup
+        objectName: "storageResetPopup"
+        // The popup goes away with the offer, such as when the data opens
+        // again or the daemon stops, so a stale one cannot erase anything.
+        readonly property bool offered: root.backendStatus.daemon === true
+          && root.backendStatus.storage_reset === true
+        onOfferedChanged: if (!offered) close()
+        parent: applicationSurface
+        x: Math.max(0, (applicationSurface.width - width) / 2)
+        y: Math.max(0, (applicationSurface.height - height) / 2)
+        width: Math.min(theme.scaled(440), applicationSurface.width - theme.scaled(24))
+        modal: true
+        focus: true
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        padding: theme.scaled(18)
+
+        background: Rectangle {
+          color: theme.windowSurface
+          border.color: theme.divider
+          radius: theme.panelRadius
+        }
+
+        Overlay.modal: Rectangle {
+          color: Qt.rgba(theme.windowSurface.r, theme.windowSurface.g,
+                         theme.windowSurface.b, 0.72)
+        }
+
+        contentItem: ColumnLayout {
+          spacing: theme.scaled(12)
+          FerryLabel {
+            ferryTheme: theme
+            text: "Reset local storage?"
+            font.bold: true
+            font.pixelSize: theme.headingSize
+          }
+          FerryLabel {
+            ferryTheme: theme
+            Layout.fillWidth: true
+            wrapMode: Text.Wrap
+            text: "This permanently deletes local message history, cached contacts, call history and conversation preferences, and replaces BlueFerry's keyring key. Nothing is deleted from the iPhone."
+          }
+          RowLayout {
+            Layout.alignment: Qt.AlignRight
+            FerryButton {
+              id: storageResetCancelButton
+              objectName: "storageResetCancelButton"
+              ferryTheme: theme
+              text: "Cancel"
+              onClicked: storageResetPopup.close()
+            }
+            FerryButton {
+              id: storageResetConfirmButton
+              objectName: "storageResetConfirmButton"
+              ferryTheme: theme
+              text: "Erase and start over"
+              highlighted: true
+              enabled: storageResetPopup.offered && !root.storageResetBusy
+                && !root.storagePolicyBusy
+              onClicked: {
+                root.resetStorage()
+                storageResetPopup.close()
               }
             }
           }
@@ -1809,6 +1935,67 @@ ShellRoot {
                   body: newMessageBody.text
                 })
               }
+            }
+          }
+        }
+      }
+
+      Popup {
+        id: senderConfirmPopup
+        objectName: "senderConfirmPopup"
+        parent: applicationSurface
+        x: Math.max(0, (applicationSurface.width - width) / 2)
+        y: Math.max(0, (applicationSurface.height - height) / 2)
+        width: Math.min(theme.scaled(500), applicationSurface.width - theme.scaled(24))
+        modal: true
+        focus: true
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        padding: theme.scaled(18)
+
+        background: Rectangle {
+          color: theme.windowSurface
+          border.color: theme.divider
+          radius: theme.panelRadius
+        }
+
+        Overlay.modal: Rectangle {
+          color: Qt.rgba(theme.windowSurface.r, theme.windowSurface.g,
+                         theme.windowSurface.b, 0.72)
+        }
+
+        contentItem: ColumnLayout {
+          spacing: theme.scaled(12)
+          FerryLabel {
+            ferryTheme: theme
+            Layout.fillWidth: true
+            wrapMode: Text.Wrap
+            text: root.senderConfirmThread
+              ? "Reply to " + root.senderConfirmThread.name + " only?" : ""
+            font.bold: true
+            font.pixelSize: theme.headingSize
+          }
+          FerryLabel {
+            ferryTheme: theme
+            Layout.fillWidth: true
+            wrapMode: Text.Wrap
+            text: root.senderConfirmThread
+              ? "The latest message may have been sent in a group. Your reply goes only to "
+                + (root.senderConfirmThread.recipients || []).join(", ") + "."
+              : ""
+          }
+          RowLayout {
+            Layout.alignment: Qt.AlignRight
+            FerryButton {
+              ferryTheme: theme
+              text: "Cancel"
+              onClicked: senderConfirmPopup.close()
+            }
+            FerryButton {
+              ferryTheme: theme
+              objectName: "senderConfirmSend"
+              text: "Reply only to sender"
+              highlighted: true
+              onClicked: root.sendToSenderOnly()
             }
           }
         }
