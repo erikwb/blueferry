@@ -1204,6 +1204,9 @@ def _exercise_contacts():
     assert ("cards", 0, "") in client.names(), "the list is read again"
 
     # Leaving the tab forgets the cards.
+    page.open_contact("c1")
+    client.take(("card", "c1"))[1]((ADA_CARD, b""))
+    assert page.title_label.get_label() == "<b>Ada</b> Lovelace"
     window.show_tab("messages")
     _settle()
     assert _rows(page.list) == [] and page.book.photo == b""
