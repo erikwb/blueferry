@@ -4,6 +4,10 @@
 
 ### Added
 
+- `blueferry media volume up|down` sends one iPhone volume step and confirms
+  it with the last reported level; `blueferry media volume` prints the level.
+  A shared presenter (`media_volume_view`) prepares the volume buttons for the
+  graphical and terminal clients.
 - Shared presenter `file_drop_view` for the coming drop zones of the KDE
   and GTK main windows; nothing changes for users until those land. It
   holds the decisions and texts, so both clients will send dropped files to

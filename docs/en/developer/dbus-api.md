@@ -159,6 +159,20 @@ backend. Media calls have their own rate-limit buckets.
 | `SendMediaCommand` | `s command` | `play`, `pause`, `toggle`, `next`, `previous`, `volume-up`, `volume-down`, `repeat`, `shuffle`, `skip-forward`, `skip-backward`, `like`, `dislike`, `bookmark`; only commands the iPhone currently offers are sent |
 | `SetPhoneAudioRoute` | `s route` → `s accepted` | `pc` opens, `phone` closes the iPhone's A2DP stream; `NotReady` while unavailable or busy, `AudioRouteFailed` when BlueZ refuses; own rate-limit bucket |
 
+**Volume.** There is no separate volume method: a client sends
+`SendMediaCommand("volume-up")` or `("volume-down")`, one relative iPhone step
+each (Apple Media Service has no absolute volume). The level is read-only,
+`player.volume` in `GetNowPlaying` (0.0 to 1.0, `null` until the iPhone
+reports it). Volume steps share the `media-command` rate-limit bucket (60 per
+minute, 1200 per hour) with the other media commands, which is ample for
+button presses. A step the current player does not advertise in
+`supported_commands` is refused with `NotReady` ("the iPhone does not
+currently offer this media command") and nothing is sent; while
+`supported_commands_known` is false it is sent as asked. With media control
+off or not connected the call also fails with `NotReady`; a refused GATT
+write arrives as `MediaCommandFailed`. Clients derive the buttons from
+`blueferry.media_volume_view.volume_controls(snapshot)`.
+
 The phone-audio keys in `GetStatus` (independent of the media-control
 opt-in; clients show the switch only when `phone_audio_route` exists):
 
