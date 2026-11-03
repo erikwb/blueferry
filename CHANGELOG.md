@@ -4,6 +4,10 @@
 
 ### Added
 
+- A lasting desktop notification while an iPhone call is in progress, with
+  the caller, the start time, an **On hold** state, and a **Hang up** button.
+  Closing it never ends the call
+  ([#230](https://github.com/erikwb/blueferry/issues/230)).
 - Contact cards: the contact cache now keeps each number with its iPhone
   label, labelled email addresses, postal addresses, company and job title,
   inside the encrypted contact records only. `Messages1.ListContactCards`
