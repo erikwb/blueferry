@@ -25,7 +25,6 @@ UNSUPPORTED_TEXT = _("The running BlueFerry service cannot pin notifications; re
 UNKNOWN_KEY_TEXT = _("This notification is no longer in the list.")
 LOCKED_TEXT = _("Local data is locked. Unlock it to pin notifications.")
 OFF_TEXT = _("The notification list is off.")
-CONFIGURATION_TEXT = _("Pins can't be changed while settings.json can't be read.")
 GENERIC_ERROR_TEXT = _("Could not change the pin.")
 FULL_TEXT = _("The pinned list is full; unpin a notification first.")
 TOO_LONG_TEXT = _("The pinned notifications are too long to store; unpin one first.")
@@ -117,9 +116,6 @@ def pin_error_text(error_name: object, message: object = "") -> str:
         return UNREADABLE_SETTINGS_TEXT
     if name.endswith(".NotReady"):
         return OFF_TEXT if "notification list is off" in text else LOCKED_TEXT
-    if name.endswith(".Configuration"):
-        # Pins are saved in settings.json; nothing is written while it is broken.
-        return CONFIGURATION_TEXT
     if name.endswith(".InvalidArgs"):
         if "unknown notification key" in text:
             return UNKNOWN_KEY_TEXT

@@ -459,7 +459,7 @@ def test_a_pin_refused_while_settings_json_cannot_be_read_says_so() -> None:
                 await _highlight(pilot, screen, index)
                 screen.action_toggle_pin()
                 await _until(
-                    pilot, lambda: screen.pin_error == notification_pin_view.CONFIGURATION_TEXT,
+                    pilot, lambda: screen.pin_error == notification_pin_view.UNREADABLE_SETTINGS_TEXT,
                 )
                 await _until(pilot, lambda: not screen.pinning)
                 assert "settings.json can't be read" in _text(
