@@ -22,7 +22,7 @@ from PySide6.QtCore import SLOT, QObject, QThreadPool, QUrl, Signal, Slot
 from blueferry import plugin_surfaces as surfaces
 from blueferry.file_drop_view import FileDrop
 from blueferry.plugin_api import OBJECT_PATH, SIGNAL_CARD_CHANGED, SURFACES_INTERFACE
-from blueferry.plugin_surfaces_model import PluginSurfacesModel
+from blueferry.plugin_surfaces_model import PluginSurfacesModel, SendGate
 from blueferry.qt.tasks import QtTaskRunner, qt_timers
 
 
@@ -62,19 +62,19 @@ class PluginSurfaces(QObject):
             pool = QThreadPool(self)
             pool.setMaxThreadCount(2)
         self._pool = pool
+        # One SendFiles at a time across "Send to…", card sends and drops.
+        gate = SendGate()
         self.model = PluginSurfacesModel(
             runner=QtTaskRunner(pool), timer=qt_timers(self), opener=opener,
             on_change=self.changed.emit, watch=self._watch,
             load_cards=load_cards, load_targets=load_targets, card_names=card_names,
             share_available=share_available, invoke=invoke, find=find, send=send,
-            card_choice=card_choice,
+            card_choice=card_choice, gate=gate,
         )
         self.file_drop = FileDrop(
             runner=QtTaskRunner(pool), notify=self.dropNotice.emit,
             on_change=self.dropChanged.emit, on_sent=self.model.schedule_reload,
-            load_targets=load_targets, send=send,
-            # One SendFiles per plugin at a time: a drop waits for "Send to…".
-            is_sending=lambda: self.model.sending,
+            load_targets=load_targets, send=send, gate=gate,
         )
 
     def state(self) -> dict:

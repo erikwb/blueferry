@@ -106,11 +106,10 @@ blueferry photos recent
 
 ### Dropping files on the window
 
-Not available yet: the KDE and GTK windows get their drop zone in a coming
-release. Until then, use **Send to…** on the card or `blueferry send`. This
-is how it will work:
+The GTK window gets its drop zone in a coming release; until then, use
+**Send to…** on the card or `blueferry send` there.
 
-Drag files from the file manager anywhere onto the KDE or GTK main window:
+Drag files from the file manager anywhere onto the KDE main window:
 **Drop to send to iPhone** appears, and when you let go BlueFerry hands the
 files to a **Send to…** target:
 
@@ -128,7 +127,7 @@ with a note. A card item that takes files still gets the files dropped on it.
 
 | | Qt | GTK | TUI | Quickshell | CLI |
 |---|---|---|---|---|---|
-| Drop files on the window | coming | coming | — a terminal gets no file drops | — the panel has no drop zone and does not manage plugins | `blueferry send FILE… [--to PLUGIN]` |
+| Drop files on the window | ✓ | coming | — a terminal gets no file drops | — the panel has no drop zone and does not manage plugins | `blueferry send FILE… [--to PLUGIN]` |
 
 ## Logs and privacy
 

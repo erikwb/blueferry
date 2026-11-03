@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 from pathlib import Path
 
 import pytest
@@ -90,20 +91,65 @@ def test_several_targets_wait_for_the_pick_and_a_folder_is_skipped(app, tmp_path
     assert sent == [(ABLAGE.key, [str(path.resolve()) for path in files])]
 
 
+def _gated_adapter(track, release, sent, notices):
+    """One target whose SendFiles waits for ``release``, as a slow plugin."""
+    def send(target, files):
+        assert release.wait(5)
+        sent.append((target.key, files))
+        return surfaces.Outcome(True, "Sent.")
+
+    adapter = track(PluginSurfaces(
+        load_cards=lambda: [], share_available=lambda: True,
+        load_targets=lambda: surfaces.ShareTargets([PHONE], []), send=send,
+        card_names=lambda: [], card_choice=lambda *_args: PHONE,
+    ))
+    adapter.dropNotice.connect(lambda text, ok: notices.append((text, ok)))
+    return adapter
+
+
 def test_a_drop_waits_while_send_to_is_sending(app, tmp_path, track):
     payload = tmp_path / "a.txt"
     payload.write_text("x")
+    release = threading.Event()
     sent: list[tuple] = []
     notices: list[tuple] = []
-    adapter = _adapter(track, [PHONE], sent, notices)
-    adapter.model._update(busy="send:" + PHONE.key)  # "Send to…" is running
+    adapter = _gated_adapter(track, release, sent, notices)
+    adapter.load_targets()
+    wait(lambda: adapter.state()["targetsLoaded"])
+    adapter.send(PHONE.key, [QUrl.fromLocalFile(str(payload))])  # "Send to…" runs
     adapter.drop([QUrl.fromLocalFile(str(payload))])
-    assert notices == [("Still busy with the last drop; try again in a moment.", False)]
+    wait(lambda: notices != [])
+    assert notices == [("Other files are still being sent; try again in a moment.", False)]
     assert adapter.file_drop.state()["phase"] == "idle"
-    adapter.model._update(busy="")
+    release.set()
+    wait(lambda: not adapter.state()["busy"])
+    assert len(sent) == 1
     adapter.drop([QUrl.fromLocalFile(str(payload))])
     wait(lambda: ("Sent.", True) in notices)
-    assert sent == [(PHONE.key, [str(payload.resolve())])]
+    assert len(sent) == 2
+
+
+def test_send_to_waits_while_a_drop_is_sending(app, tmp_path, track):
+    payload = tmp_path / "a.txt"
+    payload.write_text("x")
+    release = threading.Event()
+    sent: list[tuple] = []
+    notices: list[tuple] = []
+    adapter = _gated_adapter(track, release, sent, notices)
+    adapter.load_targets()
+    wait(lambda: adapter.state()["targetsLoaded"])
+    adapter.drop([QUrl.fromLocalFile(str(payload))])
+    wait(lambda: adapter.file_drop.state()["phase"] == "sending")
+    adapter.send(PHONE.key, [QUrl.fromLocalFile(str(payload))])
+    assert adapter.state()["message"] == (
+        "Other files are still being sent; try again in a moment.")
+    assert not adapter.state()["busy"]
+    adapter.send_from_card(PHONE.plugin_id, PHONE.target_id, "iPhone",
+                           [QUrl.fromLocalFile(str(payload))])
+    assert not adapter.state()["busy"]
+    release.set()
+    wait(lambda: ("Sent.", True) in notices)
+    assert len(sent) == 1
 
 
 def test_no_target_leaves_the_explanation_for_the_window(app, tmp_path, track):
