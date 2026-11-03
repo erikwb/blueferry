@@ -451,7 +451,7 @@ def test_sound_route_caption_shows_the_av_sync_line_under_the_hint() -> None:
             caption = screen.query_one("#opt-phone_audio-caption", Static)
             assert str(caption.render()).split("\n") == [
                 "Playing on this computer.",
-                "A/V sync: 110 ms delay reported to the iPhone.",
+                "A/V sync: this computer reports 110 ms.",
             ]
             # Without an open stream only the hint is left.
             backend.extra.pop("phone_audio_delay_reporting")
@@ -928,6 +928,8 @@ class _MuteBackend(_OptionsBackend):
         ]
         self.app_loads = 0
         self.mute_error: str | None = None
+        self.mute_error_name = ""
+        self.mute_available = True
         self.apps_error: str | None = None
 
     def notification_apps(self) -> dict:
@@ -936,14 +938,14 @@ class _MuteBackend(_OptionsBackend):
             raise BackendError(self.apps_error)
         return {
             "apps": [dict(app) for app in self.apps], "max_muted": 100,
-            "mute_available": True, "all_notifications": True,
+            "mute_available": self.mute_available, "all_notifications": True,
             "env_allowlist": False, "env_blocklist": True,
         }
 
     def set_notification_app_muted(self, app_id: str, muted: bool) -> bool:
         self._record("mute", app_id, muted)
         if self.mute_error:
-            raise BackendError(self.mute_error)
+            raise BackendError(self.mute_error, dbus_name=self.mute_error_name)
         for app in self.apps:
             if app["app_id"] == app_id:
                 app["muted"] = muted
@@ -985,6 +987,49 @@ def test_muted_apps_list_each_app_with_a_checkbox_and_save_a_change() -> None:
             assert "[b]storage locked[/b]" in _plain(screen, "#options-error")
             await _until(pilot, lambda: not screen.muting)
             await _until(pilot, lambda: _mute_boxes(screen)["com.example.mail"].value is True)
+
+    asyncio.run(scenario())
+
+
+def test_a_mute_refused_while_settings_json_cannot_be_read_shows_why_and_locks_the_list() -> None:
+    async def scenario() -> None:
+        backend = _MuteBackend()
+        app = _app(backend)
+        async with app.run_test(size=(120, 60)) as pilot:
+            screen = await _open(app, pilot, "notifications")
+            await _until(pilot, lambda: len(_mute_boxes(screen)) == 2)
+            assert not _mute_boxes(screen)["com.example.chat"].disabled
+
+            # settings.json broke meanwhile: the daemon refuses with
+            # Configuration, saves nothing and now lists mute_available false.
+            backend.mute_error = (
+                "settings.json could not be read, so the change was not saved; "
+                "repair or remove the file and try again"
+            )
+            backend.mute_error_name = "io.weirdware.BlueFerry.Error.Configuration"
+            backend.mute_available = False
+            _mute_boxes(screen)["com.example.chat"].toggle()
+            await _until(pilot, lambda: "could not be read" in _plain(screen, "#options-error"))
+            await _until(pilot, lambda: not screen.muting)
+            await _until(pilot, lambda: all(box.disabled for box in _mute_boxes(screen).values()))
+            boxes = _mute_boxes(screen)
+            # The daemon's state again: chat unmuted, mail still muted.
+            assert boxes["com.example.chat"].value is False
+            assert boxes["com.example.mail"].value is True
+            assert "settings.json can't be read" in _plain(screen, "#options-muted-apps-hint")
+
+            # An unavailable list sends nothing, not even an unmute.
+            calls = list(backend.calls)
+            screen._set_muted("com.example.mail", False)
+            await pilot.pause(0.2)
+            assert backend.calls == calls
+
+            # Once the file reads again the list can be changed again.
+            backend.mute_error = None
+            backend.mute_available = True
+            screen.apps_changed()
+            await _until(pilot, lambda: not _mute_boxes(screen)["com.example.chat"].disabled)
+            assert "settings.json" not in _plain(screen, "#options-muted-apps-hint")
 
     asyncio.run(scenario())
 

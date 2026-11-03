@@ -229,7 +229,10 @@ class ContactsScreen(ModalScreen[ContactsResult]):
         self._dirty = True
         if not self._rendering:
             self._rendering = True
-            self.run_worker(self._render_changes(), group="contacts-render")
+            # The function, not a coroutine: a worker cancelled with the
+            # screen before it starts then leaves no coroutine unawaited.
+            # Textual's overloads infer Never for an async function.
+            self.run_worker(self._render_changes, group="contacts-render")  # type: ignore[arg-type]
 
     async def _render_changes(self) -> None:
         try:

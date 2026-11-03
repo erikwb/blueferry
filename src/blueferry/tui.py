@@ -319,6 +319,9 @@ class _EventMonitor:
     def __init__(self) -> None:
         self.handles: deque[str] = deque()
         self.invalidated = False
+        # HistoryChanged on its own: a StatusChanged also reloads the
+        # snapshot, but only stored history can make a search hit stale.
+        self.history_changed = False
         self.calls_changed = False
         self.tether_changed = False
         self.now_playing_changed = False
@@ -334,7 +337,7 @@ class _EventMonitor:
         }
         self._matches = [
             bus.add_signal_receiver(
-                lambda _props: self._invalidate(),
+                lambda _props: self._history_changed(),
                 signal_name="HistoryChanged",
                 **common,
             ),
@@ -412,6 +415,14 @@ class _EventMonitor:
 
     def _invalidate(self) -> None:
         self.invalidated = True
+
+    def _history_changed(self) -> None:
+        self.history_changed = True
+        self.invalidated = True
+
+    def take_history_changed(self) -> bool:
+        changed, self.history_changed = self.history_changed, False
+        return changed
 
     def pump(self) -> tuple[bool, str | None]:
         while self._context.pending():
@@ -1227,11 +1238,17 @@ class BlueFerryApp(App[None]):
         take_media = getattr(self._monitor, "take_now_playing_changed", None)
         if take_media is not None and take_media():
             self._load_now_playing()
-        take_history = getattr(self._monitor, "take_call_history_changed", None)
-        if take_history is not None and take_history() and isinstance(
-            self.screen, RecentCallsScreen,
-        ):
+        take_history = getattr(self._monitor, "take_history_changed", None)
+        history_changed = take_history is not None and take_history()
+        take_call_history = getattr(self._monitor, "take_call_history_changed", None)
+        call_history_changed = take_call_history is not None and take_call_history()
+        if call_history_changed and isinstance(self.screen, RecentCallsScreen):
             self.screen.refresh_calls()
+        if history_changed or call_history_changed:
+            # A shown search answer may name a deleted message or call.
+            for screen in self.screen_stack:
+                if isinstance(screen, SearchScreen):
+                    screen.data_changed()
         take_notifications = getattr(self._monitor, "take_notifications_changed", None)
         if take_notifications is not None and take_notifications():
             for screen in self.screen_stack:

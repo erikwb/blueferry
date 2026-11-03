@@ -599,3 +599,191 @@ def test_the_command_palette_lists_contacts_and_search() -> None:
             assert "Search Everything" in titles
 
     _run_headless(scenario())
+
+
+# -- the merged core models' status and change signals --------------------
+
+
+class _HistoryMonitor:
+    """Content-free HistoryChanged / CallHistoryChanged / StatusChanged."""
+
+    def __init__(self) -> None:
+        self.invalidated = False
+        self.history = False
+        self.call_history = False
+
+    def pump(self):
+        invalidated, self.invalidated = self.invalidated, False
+        return invalidated, None
+
+    def take_history_changed(self) -> bool:
+        changed, self.history = self.history, False
+        return changed
+
+    def take_call_history_changed(self) -> bool:
+        changed, self.call_history = self.call_history, False
+        return changed
+
+    def close(self) -> None:
+        pass
+
+
+def _results(screen: SearchScreen) -> str:
+    return screen.body_text if list(screen.query(ResultItem)) else ""
+
+
+def test_history_and_call_history_changes_drop_the_shown_hits_and_search_again() -> None:
+    backend = _ContactsBackend()
+    backend.search_reply = _SEARCH_REPLY
+    monitor = _HistoryMonitor()
+
+    async def scenario() -> None:
+        app = BlueFerryApp(TuiState(backend), monitor_factory=lambda: monitor)
+        async with app.run_test(size=(130, 44)) as pilot:
+            screen = await _search(app, pilot, backend, "lunch")
+            assert "lunch at [b]noon[/b]?" in screen.body_text
+            searches = len(backend.searches)
+
+            # A StatusChanged with the same status reloads the snapshot only.
+            monitor.invalidated = True
+            await pilot.pause(0.6)
+            assert len(backend.searches) == searches
+
+            # The conversation was deleted: its message hit must go.
+            backend.search_reply = {**_SEARCH_REPLY, "messages": {"total": 0, "results": []}}
+            monitor.history = True
+            await _until(pilot, lambda: len(backend.searches) == searches + 1)
+            await _until(pilot, lambda: "noon" not in _results(screen))
+            assert backend.searches[-1] == ("lunch", 20)
+
+            # The call history changed: its call hit must go.
+            backend.search_reply = {
+                **backend.search_reply, "calls": {"total": 0, "available": True, "results": []},
+            }
+            monitor.call_history = True
+            await _until(pilot, lambda: len(backend.searches) == searches + 2)
+            await _until(pilot, lambda: "Missed call" not in _results(screen))
+
+    _run_headless(scenario())
+
+
+def test_event_monitor_tells_history_changed_from_status_changed(monkeypatch) -> None:
+    from blueferry import tui as tui_module
+
+    receivers: dict[str, object] = {}
+
+    class _Match:
+        def remove(self) -> None:
+            pass
+
+    class _Bus:
+        def add_signal_receiver(self, handler, *, signal_name, **_kwargs):
+            receivers[signal_name] = handler
+            return _Match()
+
+    monkeypatch.setattr(tui_module, "get_session_bus", lambda: _Bus())
+    monitor = tui_module._EventMonitor()
+    receivers["StatusChanged"]()
+    assert monitor.invalidated and not monitor.take_history_changed()
+    monitor.invalidated = False
+    receivers["HistoryChanged"]({})
+    # Both reload the snapshot; only HistoryChanged makes a search stale.
+    assert monitor.invalidated
+    assert monitor.take_history_changed()
+    assert not monitor.take_history_changed()
+    receivers["CallHistoryChanged"]()
+    assert monitor.take_call_history_changed()
+    monitor.close()
+
+
+def test_every_status_reaches_both_the_contact_book_and_the_search() -> None:
+    backend = _ContactsBackend()
+    backend.search_reply = _SEARCH_REPLY
+
+    async def scenario() -> None:
+        app = BlueFerryApp(TuiState(backend), monitor_factory=lambda: None)
+        async with app.run_test(size=(130, 44)) as pilot:
+            contacts = await _open_contacts(app, pilot)
+            # The search opens over the contacts; both stay in the stack.
+            app.push_screen(SearchScreen(backend, status=app.state.status.to_dict()))
+            await _until(pilot, lambda: _search_screen(app) is not None)
+            search = _search_screen(app)
+            assert search is not None
+            await pilot.press(*"lunch")
+            await _until(pilot, lambda: bool(list(search.query(ResultItem))))
+            pages, searches = len(backend.card_calls), len(backend.searches)
+
+            # A storage lock moves the card epoch and the storage state.
+            backend.extra["contact_card_epoch"] = 2
+            backend.extra["storage_state"] = "locked"
+            app._load_data()
+            await _until(pilot, lambda: len(backend.card_calls) == pages + 1)
+            await _until(pilot, lambda: len(backend.searches) == searches + 1)
+            assert contacts.book.view()["loaded"] is True
+
+    _run_headless(scenario())
+
+
+def test_a_new_card_epoch_drops_the_old_rows_and_card_at_once() -> None:
+    backend = _ContactsBackend()
+    release = threading.Event()
+    pages = backend.contact_cards
+
+    def held(offset: int = 0, limit: int = 150, query: str = "") -> dict:
+        if backend.extra.get("contact_card_epoch") == 2:
+            release.wait(5)
+        return pages(offset, limit, query)
+
+    card = backend.contact
+
+    def held_card(contact_id: str) -> tuple[dict, bytes]:
+        if backend.extra.get("contact_card_epoch") == 2:
+            release.wait(5)
+        return card(contact_id)
+
+    backend.contact_cards = held  # type: ignore[method-assign]
+    backend.contact = held_card  # type: ignore[method-assign]
+
+    async def scenario() -> None:
+        app = BlueFerryApp(TuiState(backend), monitor_factory=lambda: None)
+        async with app.run_test(size=(130, 44)) as pilot:
+            screen = await _open_contacts(app, pilot)
+            screen.open_card("c0")
+            await _until(pilot, lambda: _card_rendered(screen))
+
+            backend.extra["contact_card_epoch"] = 2
+            app._load_data()
+            # Nothing read under the old epoch stays while the new page loads.
+            try:
+                await _until(pilot, lambda: not list(screen.query(ContactItem)))
+                await _until(pilot, lambda: not list(screen.query(DetailItem)))
+                assert "Person 001" not in screen.body_text
+                assert "Loading…" in str(screen.query_one("#contacts-state").render())
+            finally:
+                release.set()
+            await _until(pilot, lambda: bool(list(screen.query(ContactItem))))
+            await _until(pilot, lambda: _card_rendered(screen))
+
+    _run_headless(scenario())
+
+
+def test_the_contact_book_drops_photos_once_the_option_is_unknown() -> None:
+    # The fake reports contact photos on, so the book keeps GetContact's photo.
+    backend = _ContactsBackend(contact_photos=True, contact_photos_state="on")
+
+    async def scenario() -> None:
+        app = BlueFerryApp(TuiState(backend), monitor_factory=lambda: None)
+        async with app.run_test(size=(130, 44)) as pilot:
+            screen = await _open_contacts(app, pilot)
+            screen.open_card("c0")
+            await _until(pilot, lambda: _card_rendered(screen))
+            assert screen.book.photo == b"\xff\xd8photo"
+
+            # settings.json can't be read: the choice is unknown, photos go.
+            backend.extra["contact_photos"] = False
+            backend.extra["contact_photos_state"] = "unknown"
+            app._load_data()
+            await _until(pilot, lambda: screen.book.photo == b"")
+            assert screen.card is not None  # the card itself stays
+
+    _run_headless(scenario())

@@ -11,8 +11,10 @@ wording come from the shared :mod:`blueferry.search_view`.
 The typing delay, superseded answers and the daemon's ``NotReady`` (tried
 again after the typing delay, a few times, then "busy") come from the
 shared :class:`blueferry.search_model.GlobalSearch`, the one the Qt and GTK
-clients use. Every blocking backend call runs off the UI thread, and iPhone
-text is rendered as Rich ``Text`` after ``terminal_text``.
+clients use. ``HistoryChanged``, ``CallHistoryChanged`` and a change of the
+searched sources in ``GetStatus`` drop the shown answer and search again
+(``GlobalSearch.invalidate``). Every blocking backend call runs off the UI
+thread, and iPhone text is rendered as Rich ``Text`` after ``terminal_text``.
 """
 from __future__ import annotations
 
@@ -142,6 +144,10 @@ class SearchScreen(ModalScreen[SearchResult]):
         self._status = dict(status)
         self.model.apply_status(self._status)
 
+    def data_changed(self) -> None:
+        """``HistoryChanged`` or ``CallHistoryChanged``: search again."""
+        self.model.invalidate()
+
     @property
     def query_text(self) -> str:
         return self.model.query
@@ -165,7 +171,13 @@ class SearchScreen(ModalScreen[SearchResult]):
 
     def _changed(self) -> None:
         if self.is_attached:
-            self.run_worker(self._render_results(), group="search-render", exclusive=True)
+            # The function, not a coroutine: a render cancelled before it
+            # starts (exclusive) then leaves no coroutine unawaited. Textual's
+            # overloads infer Never for an async function.
+            self.run_worker(
+                self._render_results,  # type: ignore[arg-type]
+                group="search-render", exclusive=True,
+            )
 
     # -- rendering -----------------------------------------------------
 
