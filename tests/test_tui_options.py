@@ -6,7 +6,16 @@ import asyncio
 import threading
 
 import pytest
-from textual.widgets import Button, Checkbox, Select, Static, TabbedContent, TextArea
+from textual.widgets import (
+    Button,
+    Checkbox,
+    Input,
+    OptionList,
+    Select,
+    Static,
+    TabbedContent,
+    TextArea,
+)
 
 from blueferry import tui_doctor
 from blueferry.client import BackendError
@@ -144,6 +153,24 @@ class _OptionsBackend(_Backend):
 
     def notification_open_map(self) -> list:
         return []
+
+    def call_audio_devices(self) -> dict:
+        self._record("audio_devices")
+        return {
+            "outputs": [{"name": "alsa_output.a50", "description": "A50 [b]Chat[/b]",
+                         "default": True}],
+            "inputs": [{"name": "alsa_input.cam", "description": "Webcam", "default": False}],
+        }
+
+    def set_call_audio_device(self, direction: str, name: str) -> dict:
+        self._record("set_audio", direction, name)
+        self.extra[f"calls_audio_{direction}"] = name
+        return {f"calls_audio_{direction}": name}
+
+    def set_call_quick_replies(self, replies: list[str]) -> dict:
+        self._record("replies", list(replies))
+        self.extra["calls_quick_replies"] = list(replies)
+        return {"calls_quick_replies": list(replies)}
 
     def features(self) -> dict:
         self.feature_loads += 1
@@ -435,6 +462,148 @@ def test_sound_route_and_automatic_reset_are_options_too() -> None:
 
             screen.query_one("#opt-profile_reset_auto", Checkbox).toggle()
             await _until(pilot, lambda: ("auto_reset", True) in backend.calls)
+
+    asyncio.run(scenario())
+
+
+def test_call_speaker_and_microphone_are_saved_through_selects() -> None:
+    async def scenario() -> None:
+        backend = _OptionsBackend()
+        app = _app(backend)
+        async with app.run_test(size=(120, 50)) as pilot:
+            screen = await _open(app, pilot, "calls")
+            group = screen.query_one("#options-group-call-audio")
+            assert group.display is False  # calls off or an older daemon
+            assert ("audio_devices",) not in backend.calls
+
+            backend.extra.update(calls_audio_output="alsa_output.gone", calls_audio_input="")
+            screen.load_status()
+            await _until(pilot, lambda: ("audio_devices",) in backend.calls)
+            speaker = screen.query_one("#options-call-audio-output", Select)
+            await _until(pilot, lambda: len(speaker.choices) == 3)
+            assert group.display is True
+            assert [label for label, _value in speaker.choices] == [
+                "Same as system (A50 [b]Chat[/b])", "A50 [b]Chat[/b]",
+                "alsa_output.gone (not connected)",
+            ]
+            assert speaker.value == "alsa_output.gone"
+            await pilot.pause(0.2)
+            # Rendering never writes the choice back.
+            assert not [call for call in backend.calls if call[0] == "set_audio"]
+
+            microphone = screen.query_one("#options-call-audio-input", Select)
+            microphone.value = "alsa_input.cam"
+            await _until(pilot, lambda: ("set_audio", "input", "alsa_input.cam") in backend.calls)
+            await _until(pilot, lambda: not screen.pending)
+            assert screen.values["calls_audio_input"] == "alsa_input.cam"
+            assert microphone.value == "alsa_input.cam"
+
+    asyncio.run(scenario())
+
+
+def test_decline_replies_are_listed_added_edited_and_removed() -> None:
+    async def scenario() -> None:
+        backend = _OptionsBackend()
+        app = _app(backend)
+        async with app.run_test(size=(120, 60)) as pilot:
+            screen = await _open(app, pilot, "calls")
+            group = screen.query_one("#options-group-call-replies")
+            assert group.display is False  # calls off or an older daemon
+
+            backend.extra["calls_quick_replies"] = ["Driving [b]now[/b]", "Later"]
+            screen.load_status()
+            await _until(pilot, lambda: group.display)
+            replies = screen.query_one("#options-replies", OptionList)
+            assert [str(replies.get_option_at_index(i).prompt) for i in range(2)] == [
+                "Driving [b]now[/b]", "Later",
+            ]
+            add = screen.query_one("#options-reply-add", Button)
+            save = screen.query_one("#options-reply-save", Button)
+            field = screen.query_one("#options-reply-text", Input)
+            assert not add.disabled and not save.display
+            assert field.max_length == 160
+
+            # Add: validated first, then the whole list is saved.
+            field.value = "Later"
+            screen.reply_add()
+            await pilot.pause(0.05)
+            assert "already exists" in _plain(screen, "#options-reply-error")
+            assert not [call for call in backend.calls if call[0] == "replies"]
+            field.value = "  In a meeting "
+            screen.reply_add()
+            await _until(pilot, lambda: (
+                "replies", ["Driving [b]now[/b]", "Later", "In a meeting"]) in backend.calls)
+            await _until(pilot, lambda: not screen.pending and field.value == "")
+            assert not screen.query_one("#options-reply-error").display
+
+            # Enter on a reply edits it in the field; Save replaces it.
+            replies.focus()
+            replies.highlighted = 1
+            await pilot.press("enter")
+            await _until(pilot, lambda: field.value == "Later")
+            assert save.display and add.disabled
+            field.value = "Call you later"
+            await pilot.press("enter")
+            await _until(pilot, lambda: (
+                "replies", ["Driving [b]now[/b]", "Call you later", "In a meeting"],
+            ) in backend.calls)
+            await _until(pilot, lambda: not screen.pending and not save.display)
+
+            replies.focus()
+            replies.highlighted = 0
+            await pilot.press("enter")
+            await _until(pilot, lambda: field.value == "Driving [b]now[/b]")
+            screen.reply_remove()
+            await _until(pilot, lambda: (
+                "replies", ["Call you later", "In a meeting"]) in backend.calls)
+
+    asyncio.run(scenario())
+
+
+def test_decline_replies_show_the_empty_state_and_the_limit() -> None:
+    async def scenario() -> None:
+        backend = _OptionsBackend()
+        backend.extra["calls_quick_replies"] = []
+        app = _app(backend)
+        async with app.run_test(size=(120, 60)) as pilot:
+            screen = await _open(app, pilot, "calls")
+            await _until(pilot, lambda: screen.query_one("#options-group-call-replies").display)
+            assert not screen.query_one("#options-replies").display
+            assert "No saved replies" in _plain(screen, "#options-replies-empty")
+            field = screen.query_one("#options-reply-text", Input)
+            screen.reply_add()
+            await pilot.pause(0.05)
+            assert "cannot be empty" in _plain(screen, "#options-reply-error")
+
+            backend.extra["calls_quick_replies"] = [f"Reply {n}" for n in range(5)]
+            screen.load_status()
+            add = screen.query_one("#options-reply-add", Button)
+            await _until(pilot, lambda: add.disabled)
+            assert not screen.query_one("#options-replies-empty").display
+            field.value = "One more"
+            screen.reply_submitted()
+            await pilot.pause(0.05)
+            assert "At most 5" in _plain(screen, "#options-reply-error")
+            assert not [call for call in backend.calls if call[0] == "replies"]
+
+    asyncio.run(scenario())
+
+
+def test_a_failed_reply_save_keeps_the_text_and_shows_the_error() -> None:
+    async def scenario() -> None:
+        backend = _OptionsBackend(fail=True)
+        backend.extra["calls_quick_replies"] = ["Busy"]
+        app = _app(backend)
+        async with app.run_test(size=(120, 60)) as pilot:
+            screen = await _open(app, pilot, "calls")
+            field = screen.query_one("#options-reply-text", Input)
+            field.value = "Soon"
+            screen.reply_add()
+            await _until(pilot, lambda: bool(screen.error) and not screen.pending)
+            assert "could not save" in _plain(screen, "#options-error")
+            assert field.value == "Soon"
+            replies = screen.query_one("#options-replies", OptionList)
+            assert replies.option_count == 1
 
     asyncio.run(scenario())
 
