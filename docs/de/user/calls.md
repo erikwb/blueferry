@@ -29,6 +29,15 @@ flowchart LR
   nicht von selbst).
 - Zeigt bei einem eingehenden Anruf eine Desktop-Mitteilung mit **Answer**
   und **Decline**. Sie schließt sich, sobald es nicht mehr klingelt.
+- Während eines Gesprächs (hier oder am iPhone angenommen, oder ein
+  ausgehender Anruf, sobald er verbunden ist) bleibt eine Mitteilung
+  stehen: **Call with** und der Anrufer, die Startzeit („since 15:14“) und
+  **Hang up**. Beim Halten steht dort **On hold**. Wer die Mitteilung
+  schließt, beendet damit nie den Anruf; sie bleibt zu, bis der Anruf
+  gehalten oder fortgesetzt wird. Endet der Anruf, verschwindet sie. Mit
+  `BLUEFERRY_SHOW_NOTIFICATION_CONTENT=false` zeigt sie keinen Anrufer;
+  ein Wechsel auf **No notifications** schließt offene Anruf-Mitteilungen
+  sofort.
 - Der Qt- und der GTK-Client zeigen laufende Anrufe als Karten im Tab
   **Calls** (annehmen, halten/fortsetzen, auflegen und, solange ein Anruf
   aktiv ist, Tastentöne: jede Taste des Wählfelds und jede außerhalb eines
@@ -36,7 +45,15 @@ flowchart LR
   „Sent: …“; ein Feld für Tastentöne mit **Send Tones** nimmt ganze Folgen
   wie eine PIN), der
   Terminal-Client ein Anruf-Panel (`c`: annehmen, halten/fortsetzen, auflegen, Tastentöne,
-  Kontaktvorschläge) und die CLI die Befehlsgruppe `calls`:
+  Kontaktvorschläge) und die CLI die Befehlsgruppe `calls`. Läuft ein
+  angenommener Anruf, zeigen die Karten, das Panel und `blueferry calls`
+  seine Dauer (`2:05`, ab einer Stunde `1:02:05`), gezählt ab dem Annehmen
+  hier oder am iPhone (oder sobald die Gegenseite abnimmt), nicht ab dem
+  ersten Klingeln. Die Desktop-Mitteilung nennt nur die Startzeit: Würde sie
+  jede Sekunde erneuert, zeigten manche Mitteilungsdienste sie jedes Mal neu
+  an oder legten jede Änderung im Verlauf ab. Startet das Backend während
+  eines Anrufs neu und meldet oFono keine Startzeit, beginnt die Dauer wieder
+  bei 0:00.
 
   ```bash
   blueferry calls                 # Zustand und laufende Anrufe
