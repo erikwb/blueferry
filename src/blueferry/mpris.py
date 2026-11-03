@@ -26,6 +26,7 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Callable
+from pathlib import Path
 
 import dbus
 import dbus.bus
@@ -390,6 +391,10 @@ class MprisPlayer(StrictObject):
             metadata["xesam:album"] = dbus.String(state.album)
         if state.duration:
             metadata["mpris:length"] = dbus.Int64(int(state.duration * 1_000_000))
+        cover = self._media.cover_path
+        if cover and (state.title or state.artist or state.album):
+            # An owner-only local file (AVRCP cover art); see cover_art.py.
+            metadata["mpris:artUrl"] = dbus.String(Path(cover).as_uri())
         return dbus.Dictionary(metadata, signature="sv")
 
     def _supports(self, *commands: RemoteCommandID) -> bool:
