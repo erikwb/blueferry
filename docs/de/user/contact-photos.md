@@ -65,6 +65,11 @@ und wiederholt fehlgeschlagene Löschversuche automatisch.
 `blueferry contact-photos status` zeigt an, ob sie noch aussteht oder
 abgeschlossen ist. Beim Start mit ausgeschalteter Option werden auch Reste bereinigt.
 
+Kann `~/.config/blueferry/settings.json` nicht gelesen werden, kennt
+BlueFerry die gespeicherte Wahl nicht. Gespeicherte Fotos bleiben erhalten,
+werden aber nicht angezeigt, und die Clients zeigen die Option als nicht
+verfügbar, bis die Datei repariert oder entfernt ist.
+
 **Bevor du zu einer älteren BlueFerry-Version zurückgehst**, die Option
 zuerst ausschalten und warten, bis `blueferry contact-photos status` die
 Bereinigung als abgeschlossen meldet. Wenn du das vergisst, löscht die ältere Version sie zusammen mit den

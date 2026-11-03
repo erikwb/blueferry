@@ -9,6 +9,7 @@ import pytest
 from blueferry import config
 from blueferry.backend_operations import BackendDependencies, BackendOperations
 from blueferry.call_history import (
+    CALL_ENTRY_ID_HEX_CHARS,
     INCOMING,
     MISSED,
     OUTGOING,
@@ -91,8 +92,8 @@ class _History:
     def sync(self, success, failure):
         self.sync_calls.append((success, failure))
 
-    def clear(self):
-        clear_call_history()
+    def clear(self, *, discard_damaged=False):
+        clear_call_history(discard_damaged=discard_damaged)
         self.discarded += 1
         self._records = []
 
@@ -127,7 +128,10 @@ def test_list_applies_contact_names_bounds_and_newest_first_order(storage) -> No
 
     assert len(listed) == 1
     assert [entry["direction"] for entry in full] == [MISSED, OUTGOING, INCOMING, INCOMING]
+    assert len(full[0]["id"]) == CALL_ENTRY_ID_HEX_CHARS
+    assert "15551230001" not in full[0]["id"]
     assert full[0] == {
+        "id": full[0]["id"],
         "direction": MISSED,
         "timestamp": (NOW - timedelta(minutes=1)).isoformat(),
         "address": "+15551230001",

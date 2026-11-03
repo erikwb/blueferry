@@ -19,13 +19,13 @@ BlueFerry's messaging focus.
   `blueferry media` reports that the LE link state is unknown.
 - The command line works everywhere. Every client shows what is playing
   with previous/play-pause/next while media control is on (see below). The
-  Kirigami, GTK and Quickshell clients also have the switch; in the terminal
-  client, turn it on with the command line.
+  Kirigami, GTK, Quickshell and terminal clients also have the switch.
 
 ## Turn it on
 
 In the Kirigami, GTK or Quickshell client, open the iPhone settings and
-switch on **Media Control**. From a terminal:
+switch on **Media Control**. In the terminal client, it is **Show and Control
+What the iPhone Is Playing** under Settings › Calls & Audio. From a terminal:
 
 ```bash
 blueferry media enable    # blueferry media disable turns it off again
@@ -48,7 +48,8 @@ precedence.
 blueferry media                # what is playing (same as "status")
 blueferry media toggle         # play/pause
 blueferry media next           # also: play, pause, previous
-blueferry media volume-up      # also: volume-down (one iPhone step)
+blueferry media volume up      # also: volume down (one iPhone step)
+blueferry media volume         # the volume the iPhone last reported
 blueferry media skip-forward   # also: skip-backward (the app's fixed skip)
 blueferry media like           # also: dislike, bookmark, repeat, shuffle
 blueferry media --json         # the raw status for scripts
@@ -63,13 +64,36 @@ connection. Until the list arrives, `blueferry media` shows the commands as
 unknown, and BlueFerry sends a command as asked; the iPhone ignores or
 refuses one the app lacks.
 
-In the Kirigami client a small bar with title, artist and
-previous/play-pause/next buttons appears above the conversations while
-something is playing. The Quickshell client shows the same strip under its
-header, the GTK client on the phone card above its tabs, and
+### Volume
+
+`blueferry media volume up` and `volume down` move the iPhone's volume by one
+step, as the iPhone's own volume buttons do, and confirm with the level the
+iPhone reported before the step, for example "Turned the iPhone volume up
+(was 40%)." Apple's media service has no "set volume to 60 %"; the new
+level shows up in `blueferry media` a moment later, once the iPhone reports
+it. If the app that is playing does not offer volume control, BlueFerry says
+so and sends nothing. The older spellings `volume-up` and `volume-down` still
+work.
+
+In the Kirigami client the **Now Playing** part of the phone card has a
+second row under the transport buttons: the level the iPhone last reported
+("Volume 40%") and **Volume Down** / **Volume Up** buttons, one step per
+click. They are greyed out, with a short note, while the playing app offers
+no volume control. The GTK client has the same steps as two buttons next to
+play/pause on its phone card, with the last reported level between them; a
+button is greyed out, with the reason in its tooltip, when the app that is
+playing does not offer that step. The Quickshell client puts the two
+buttons and the last reported level in its now-playing strip; they are
+greyed out when the playing app does not offer volume control. The terminal
+client's volume keys are listed below.
+
+In the Kirigami client the **Now Playing** part of the phone card shows
+title, artist and previous/play-pause/next buttons while something is
+playing. The Quickshell client shows the same strip under its header, the GTK client on the phone card above its tabs, and
 the terminal client in a line under the status pills, where `p`, `[` and `]`
-play/pause, go back and skip. None of them is shown, and no client asks the
-backend, while the option is off.
+play/pause, go back and skip, and `-` and `+` (or `=`) step the volume (its
+iPhone overview has Volume Down, Play/Pause and Volume Up buttons). None of
+them is shown, and no client asks the backend, while the option is off.
 
 ```mermaid
 flowchart LR

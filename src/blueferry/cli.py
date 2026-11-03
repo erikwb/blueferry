@@ -14,7 +14,7 @@ from blueferry.cli_audio import audio
 from blueferry.cli_call_history import call_history_app
 from blueferry.cli_calls import calls_app, phone_status
 from blueferry.cli_common import setup_logging as _setup_logging
-from blueferry.cli_contacts import contact_photos_app, contacts_photo
+from blueferry.cli_contacts import contact_photos_app, contacts_app, contacts_photo
 from blueferry.cli_features import features_app
 from blueferry.cli_media import media
 from blueferry.cli_messages import sms_list, sms_send
@@ -25,6 +25,7 @@ from blueferry.cli_photos import photos_app
 from blueferry.cli_plugins import PLUGINS_CONTEXT, plugins
 from blueferry.cli_proximity import proximity_app
 from blueferry.cli_reconnect import reconnect
+from blueferry.cli_search import search
 from blueferry.cli_surfaces import cards as plugin_cards
 from blueferry.cli_surfaces import send as send_files
 from blueferry.cli_tether import tether
@@ -174,6 +175,8 @@ def doctor(verbose: bool = typer.Option(False, "-v", "--verbose")):
     if not _doctor_hfp_plugin(log):
         warnings = True
     if not _doctor_mns(log):
+        warnings = True
+    if not _doctor_av_sync(log):
         warnings = True
     _doctor_profile_reset(log)
 
@@ -511,6 +514,37 @@ def _running_backend_status() -> dict | None:
     return dict(status.extra)
 
 
+def _doctor_av_sync(log: logging.Logger) -> bool:
+    """Report AVDTP delay reporting of the phone's audio stream; False = warning."""
+    status = _running_backend_status()
+    if status is None:
+        log.info("Backend not running; skipped the A/V sync check")
+        return True
+    if "phone_audio_delay_reporting" not in status:
+        log.info("Backend does not report A/V sync; skipped the check")
+        return True
+    reporting = status.get("phone_audio_delay_reporting")
+    if reporting is None:
+        log.info(
+            "No iPhone audio stream open; skipped the A/V sync check. "
+            "Play the iPhone's sound on this computer, then run doctor again."
+        )
+        return True
+    if reporting is True:
+        delay = status.get("phone_audio_delay_ms")
+        valid = isinstance(delay, int) and not isinstance(delay, bool)
+        shown = f"{delay} ms" if valid else "unknown"
+        log.info("A/V sync: delay reporting active, audio delay %s  OK", shown)
+        return True
+    log.warning(
+        "A/V sync: BlueZ exports no delay for the iPhone's audio stream "
+        "(BlueZ 5.70 to 5.77 only while it is nonzero, or the audio server's "
+        "sink does not register delay reporting); "
+        "video on the iPhone may be out of sync with the sound here."
+    )
+    return False
+
+
 def _doctor_hfp_plugin(log: logging.Logger) -> bool:
     """Warn when bluetoothd's hfp plugin competes with oFono; False = warning."""
     from blueferry.bluetooth_capabilities import hfp_plugin_conflict, hfp_plugin_hint
@@ -765,6 +799,8 @@ app.command("contacts-photo")(contacts_photo)
 app.command("sms-list")(sms_list)
 app.command("sms-send")(sms_send)
 app.add_typer(contact_photos_app, name="contact-photos")
+app.add_typer(contacts_app, name="contacts")
+app.command("search")(search)
 app.add_typer(proximity_app, name="proximity-lock")
 # Earlier names of "otp status" and "otp check", kept for scripts.
 app.command("otp-status", hidden=True)(otp_status)

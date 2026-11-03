@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -19,9 +20,19 @@ def config_path() -> Path:
 
 
 def read_settings(path: Path | None = None) -> dict:
+    return read_json(path or config_path())
+
+
+def read_json(path: Path) -> dict:
+    # O_NONBLOCK keeps a FIFO from blocking the open; the fstat below rejects
+    # it, and the flag has no effect on reads from a regular file. Symlinks
+    # are still followed.
     try:
-        with (path or config_path()).open(encoding="utf-8") as stream:
-            value = json.loads(stream.read(MAX_SETTINGS_BYTES))
+        descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
+        with os.fdopen(descriptor, "rb") as stream:
+            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                return {}
+            value = json.loads(stream.read(MAX_SETTINGS_BYTES).decode("utf-8"))
     except (OSError, ValueError):
         return {}
     return value if isinstance(value, dict) else {}
