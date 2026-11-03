@@ -105,6 +105,9 @@ ShellRoot {
   property bool contactCardsBusy: false
   property bool dialBusy: false
   property var contactCardEpoch: undefined
+  // search_model.SOURCE_KEYS of the last status: a change means the shown
+  // hits may name data that is gone or locked.
+  property string searchSources: ""
   readonly property bool contactCardsSupported:
     typeof root.backendStatus.contact_card_count === "number"
   readonly property bool searchSupported:
@@ -408,10 +411,14 @@ ShellRoot {
 
   // An empty or one-letter query lists (or filters) the contact cards; a
   // longer one searches everything when the daemon can.
+  function searchesEverything(query) {
+    return root.searchSupported && (query.length >= 2 || !root.contactCardsSupported)
+  }
+
   function runSearch(query) {
     root.searchQuery = query
     root.searchError = ""
-    if (root.searchSupported && (query.length >= 2 || !root.contactCardsSupported)) {
+    if (root.searchesEverything(query)) {
       backendBridge.cancelLatest("contact_cards")
       root.contactCardsBusy = false
       backendBridge.requestLatest("search", {query: query})
@@ -420,6 +427,18 @@ ShellRoot {
       root.searchResults = ({})
       if (root.contactCardsSupported) root.loadContactCards(0)
     }
+  }
+
+  // The searched data changed (search_model.GlobalSearch.invalidate): drop
+  // the shown hits and an answer still on its way, then search again after
+  // the typing delay, so a burst of change signals searches once.
+  function invalidateSearch() {
+    if (!searchPopup.visible || !root.searchesEverything(root.searchQuery)) return
+    backendBridge.cancelLatest("search")
+    root.searchResults = ({})
+    root.searchError = ""
+    root.searchBusyRetries = 0
+    searchTimer.restart()
   }
 
   function loadContactCards(offset) {
@@ -484,6 +503,7 @@ ShellRoot {
         const daemonReturned = result.daemon === true && root.backendStatus.daemon !== true
         root.backendStatus = result
         if (daemonReturned && root.featuresWanted) root.loadFeatures()
+        let searchedAgain = false
         if (result.contact_card_epoch !== root.contactCardEpoch) {
           // Card ids from the old epoch may be gone: read the list again.
           const epochWasKnown = root.contactCardEpoch !== undefined
@@ -491,8 +511,15 @@ ShellRoot {
           if (epochWasKnown && searchPopup.visible) {
             root.contactCard = ({})
             root.runSearch(root.searchQuery)
+            searchedAgain = true
           }
         }
+        const sources = JSON.stringify(["storage_policy", "storage_state",
+          "call_history_enabled", "contact_card_epoch", "contact_photos",
+          "contact_photos_state"].map(key => result[key]))
+        const sourcesChanged = root.searchSources !== "" && sources !== root.searchSources
+        root.searchSources = sources
+        if (sourcesChanged && !searchedAgain) root.invalidateSearch()
         if (typeof result.bluetooth_restart_command === "string")
           root.bluetoothRestartCommand = result.bluetooth_restart_command
         var policy = result.notification_policy || "messages"
@@ -951,7 +978,12 @@ ShellRoot {
     function onEventReceived(name, data) {
       data = root.plainValue(data)
       if (name === "open-message") root.openMessage(String(data || ""))
-      else if (name === "history-changed" || name === "status-changed") root.reload()
+      else if (name === "history-changed" || name === "status-changed") {
+        // Messages changed: hits for them may be gone (GlobalSearch.invalidate).
+        if (name === "history-changed") root.invalidateSearch()
+        root.reload()
+      }
+      else if (name === "call-history-changed") root.invalidateSearch()
       else if (name === "now-playing-changed") root.refreshNowPlaying()
       else if (name === "notifications-changed" && root.notificationListWatched)
         root.refreshNotificationList()

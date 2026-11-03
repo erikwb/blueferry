@@ -246,12 +246,16 @@ def notification_apps_reply(
 def contact_cards_reply(payload: object) -> dict[str, Any]:
     """``contacts_view.list_view`` for the panel's contact search.
 
-    Rows carry ``id``, ``title``, ``subtitle``, ``initials`` and
-    ``has_photo``; ``offset`` is the page's start (0 replaces the list,
-    more appends) and ``next_offset`` asks for the following page.
+    Rows carry ``id``, ``title``, ``subtitle`` and ``initials``;
+    ``offset`` is the page's start (0 replaces the list, more appends) and
+    ``next_offset`` asks for the following page. The panel shows no card
+    photos, so ``has_photo`` is always False: no photo hint reaches it,
+    whatever the contact-photo option.
     """
+    view = contacts_view.list_view(payload)
     return {
-        **contacts_view.list_view(payload),
+        **view,
+        "rows": [{**row, "has_photo": False} for row in view["rows"]],
         "offset": contacts_view.normalize_page(payload)["offset"],
     }
 
@@ -516,11 +520,13 @@ class QuickshellBridge:
             state = self.client.set_notification_pinned(key, pinned)
         except BackendError as error:
             name, message = _dbus_error(error)
-            return {
-                "saved": False,
-                "pinned": not pinned,
-                "error": notification_pin_view.pin_error_text(name, message),
-            }
+            if name.endswith(".Configuration"):
+                # settings.json can't be read: the daemon's message says so
+                # and how to fix it; the shared wording has no case for it.
+                text = message
+            else:
+                text = notification_pin_view.pin_error_text(name, message)
+            return {"saved": False, "pinned": not pinned, "error": text}
         return {"saved": True, "pinned": state is True, "error": ""}
 
     def _notification_apps(self) -> dict[str, Any]:
@@ -571,6 +577,13 @@ class QuickshellBridge:
             try:
                 muted = self.client.set_notification_app_muted(*target)
             except BackendError as error:
+                # Refused, e.g. with Configuration while settings.json can't
+                # be read: reread so the rows show whether muting is still
+                # available, and keep the list read before the write if not.
+                try:
+                    payload = notification_apps_view.normalize(self.client.notification_apps())
+                except BackendError:
+                    pass
                 return notification_apps_reply(
                     payload, error=notification_apps_view.change_failed_text(error)
                 )
@@ -925,6 +938,12 @@ def _install_signal_receivers(bridge: QuickshellBridge) -> list[object]:
         bus.add_signal_receiver(
             lambda: bridge.emit_event("notifications-changed"),
             signal_name="NotificationsChanged",
+            **common,
+        ),
+        # Content-free; the shell searches again while its search is shown.
+        bus.add_signal_receiver(
+            lambda: bridge.emit_event("call-history-changed"),
+            signal_name="CallHistoryChanged",
             **common,
         ),
         # Content-free; the shell rereads the muted apps while Settings shows.

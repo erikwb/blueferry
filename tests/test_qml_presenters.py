@@ -4587,19 +4587,19 @@ def test_quickshell_sound_switch_follows_the_route_and_sends_it(qml_engine, quic
         **base, "phone_audio_route": "pc",
         "phone_audio_view": {
             "available": True, "hint": "Playing on this computer.",
-            "sync": "A/V sync: 110 ms delay reported to the iPhone.",
+            "sync": "A/V sync: this computer reports 110 ms.",
         },
     })
     QGuiApplication.processEvents()
     assert sync.property("visible") is True
-    assert sync.property("text") == "A/V sync: 110 ms delay reported to the iPhone."
+    assert sync.property("text") == "A/V sync: this computer reports 110 ms."
     # Screen readers hear the hint and the sync line with the switch.
     from PySide6.QtQml import QQmlEngine, QQmlProperty
 
     description = QQmlProperty(switch, "Accessible.description",
                                QQmlEngine.contextForObject(switch))
     assert description.read() == (
-        "Playing on this computer. A/V sync: 110 ms delay reported to the iPhone.")
+        "Playing on this computer. A/V sync: this computer reports 110 ms.")
     page.setProperty("status", {
         **base, "phone_audio_route": "phone",
         "phone_audio_view": {"available": True, "hint": "Playing on the iPhone."},
@@ -7559,6 +7559,161 @@ Item {
     )
     log = result.stdout + result.stderr
     assert result.returncode == 0 and "BLUEFERRY_QS_SEARCH_OK" in log, log
+    assert "ReferenceError" not in log and "TypeError" not in log, log
+
+
+@pytest.mark.private_dbus
+def test_quickshell_search_runs_again_when_the_searched_data_changes(
+    tmp_path, quickshell_environment,
+):
+    """The real shell: HistoryChanged, CallHistoryChanged and a status with
+    other search sources drop the shown hits and an answer on its way, and
+    search again once after the typing delay (GlobalSearch.invalidate)."""
+    import shutil
+    import subprocess
+
+    executable = shutil.which("quickshell")
+    if executable is None:
+        pytest.skip("Quickshell is not installed")
+    for source in (ROOT / "data/quickshell").glob("*.qml"):
+        shutil.copyfile(source, tmp_path / source.name)
+    shutil.copyfile(
+        ROOT / "src/blueferry/qt/qml/ConversationLogic.qml",
+        tmp_path / "ConversationLogic.qml",
+    )
+    (tmp_path / "Theme.qml").write_text("import QtQuick\nThemePalette {}\n")
+    # No process can be started by either injected transport.
+    (tmp_path / "SetupTransport.qml").write_text('''import QtQuick
+Item {
+  signal lineReceived(int id, string kind, string line)
+  signal finished(int id, string kind, int code, string output, string diagnostic)
+  function execute(id, kind, command, interactive) {}
+  function cancel(id) {}
+  function write(id, text) {}
+}
+''')
+    (tmp_path / "BackendBridge.qml").write_text('''import QtQuick
+Item {
+  property bool desktopClient: false
+  property int nextId: 1
+  property var log: []
+  property var lastArgs: ({})
+  signal response(string method, int requestId, var result)
+  signal failure(string method, int requestId, string message)
+  signal eventReceived(string name, var data)
+  function request(method, args) { log.push(method); return nextId++; }
+  function requestLatest(method, args) { log.push("latest:" + method); lastArgs = args; }
+  function cancelLatest(method) { log.push("cancel:" + method); }
+  function take(entry) {
+    const found = log.filter(item => item === entry).length;
+    log = log.filter(item => item !== entry);
+    return found;
+  }
+}
+''')
+    config = tmp_path / "shell.qml"
+    source = config.read_text()
+    probe = r'''
+  Timer {
+    interval: 200; running: true
+    onTriggered: {
+      function check(value, message) { if (!value) throw new Error(message); }
+      function find(item, name) {
+        if (item.objectName === name) return item;
+        const children = item.contentItem ? [item.contentItem] : [];
+        for (let index = 0; index < item.children.length; ++index) children.push(item.children[index]);
+        for (const child of children) {
+          const found = find(child, name);
+          if (found) return found;
+        }
+        return null;
+      }
+      const base = {daemon: true, contact_card_count: 2, contact_card_epoch: 5,
+        search_result_limit: 50, storage_policy: "encrypted", storage_state: "ready",
+        call_history_enabled: true, contact_photos: true, contact_photos_state: "on"};
+      function status(id, extra) {
+        backendBridge.response("status", id, Object.assign({}, base, extra));
+      }
+      function shown() {
+        backendBridge.response("search", 100, {rows: [{kind: "call", title: "Ana"}], hint: ""});
+        check(root.searchResults.rows.length === 1, "search reply ignored");
+        backendBridge.log = [];
+      }
+      // Dropped at once, searched again only after the typing delay, once.
+      function searchedAgain(what, cancels) {
+        check(backendBridge.take("cancel:search") === (cancels || 1), what + ": answer on its way kept");
+        check(root.searchResults.rows === undefined, what + ": old hits still shown");
+        check(backendBridge.take("latest:search") === 0, what + ": searched before the delay");
+        check(searchTimer.running, what + ": no new search planned");
+        searchTimer.stop();
+        searchTimer.triggered();
+        check(backendBridge.take("latest:search") === 1 && backendBridge.lastArgs.query === "ana",
+          what + ": not searched again");
+        shown();
+      }
+      try {
+        setupController.configured = true;
+        root.presentWindow();
+        status(1, {});
+        searchPopup.open();
+        const field = find(searchPanel, "searchField");
+        check(field !== null, "search field missing");
+        field.text = "ana";
+        root.runSearch("ana");
+        shown();
+
+        backendBridge.eventReceived("history-changed", null);
+        searchedAgain("HistoryChanged");
+        backendBridge.eventReceived("call-history-changed", null);
+        searchedAgain("CallHistoryChanged");
+        // A burst of signals searches once.
+        backendBridge.eventReceived("call-history-changed", null);
+        backendBridge.eventReceived("history-changed", null);
+        searchedAgain("burst", 2);
+
+        status(2, {storage_state: "locked"});
+        searchedAgain("storage locked");
+        status(3, {storage_state: "locked", call_history_enabled: false});
+        searchedAgain("call history off");
+        status(4, {storage_state: "locked", call_history_enabled: false,
+          contact_photos: false, contact_photos_state: "unknown"});
+        searchedAgain("photo choice unknown");
+        // Other status keys leave the hits alone.
+        status(5, {storage_state: "locked", call_history_enabled: false,
+          contact_photos: false, contact_photos_state: "unknown", connected: true});
+        check(backendBridge.take("cancel:search") === 0 && root.searchResults.rows.length === 1
+          && !searchTimer.running, "unrelated status dropped the hits");
+
+        // The contact list (no global search shown) is not searched.
+        field.text = "a";
+        root.runSearch("a");
+        backendBridge.log = [];
+        backendBridge.eventReceived("call-history-changed", null);
+        check(!searchTimer.running && backendBridge.take("cancel:search") === 0,
+          "contact list searched on a call change");
+
+        // Closed: nothing is searched.
+        searchPopup.close();
+        backendBridge.log = [];
+        backendBridge.eventReceived("history-changed", null);
+        status(6, {storage_state: "ready"});
+        check(!searchTimer.running && backendBridge.take("latest:search") === 0
+          && backendBridge.take("cancel:search") === 0, "searched while closed");
+        console.log("BLUEFERRY_QS_SEARCH_INVALIDATE_OK");
+      } catch (error) {
+        console.error(error);
+      }
+      Qt.quit();
+    }
+  }
+'''
+    config.write_text(source[:source.rfind("}")] + probe + "}\n")
+    result = subprocess.run(
+        [executable, "--path", str(config)], env=quickshell_environment,
+        capture_output=True, text=True, timeout=10, check=False,
+    )
+    log = result.stdout + result.stderr
+    assert result.returncode == 0 and "BLUEFERRY_QS_SEARCH_INVALIDATE_OK" in log, log
     assert "ReferenceError" not in log and "TypeError" not in log, log
 
 
