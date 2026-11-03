@@ -20,7 +20,9 @@
   CLI: `blueferry search`.
 - Client models: `contacts_model` and `search_model` hold the paging,
   typing delay, stale-id and busy handling of the contact list and the
-  global search for the KDE, GTK and terminal clients; recent-call rows
+  global search for the KDE, GTK and terminal clients, drop contact photos
+  once the option is off and search results once their data changes
+  (`GlobalSearch.invalidate`); recent-call rows
   from `phone_overview.call_groups` carry the ids of the folded calls.
 
 ## [0.9.1](https://github.com/erikwb/blueferry/releases/tag/v0.9.1) - 2026-10-30
