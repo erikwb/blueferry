@@ -42,8 +42,9 @@ All paths are relative to `src/blueferry/` unless noted.
 | `group_routes.py` | Saved group reply rosters in the settings document, outside history retention. |
 | `starred_threads.py` | Persistent starred-conversation keys in the settings document. |
 | `notification_policy.py` | Persistent desktop notification preferences, including per-app click rules. |
+| `notification_log.py` | Opt-in, memory-only ring of recent non-Messages ANCS notifications for `ListNotifications` (content-gated), with opaque record keys, removal marking, session-reset detaching and pins. |
+| `notification_pins.py` | Pinned notification records in the settings document under the storage policy (bounded count and size, malformed entries dropped). |
 | `notification_apps.py` | iPhone apps seen sending notifications (memory only, bounded) joined with the muted apps saved under the storage policy; the live popup check. |
-| `notification_log.py` | Opt-in, memory-only ring of recent non-Messages ANCS notifications for `ListNotifications` (content-gated, never on disk). |
 | `notification_open_map.py` | Strict validation and exact-match resolution of notification click rules (bundle ID to http(s) URL or desktop-entry ID). |
 | `private_preferences.py` | Encrypts a whole preference collection under the storage policy. |
 | `settings_store.py` | Small atomic store shared by daemon-owned preferences. |
@@ -191,7 +192,8 @@ All paths are relative to `src/blueferry/` unless noted.
 | `cli_proximity.py` | `proximity-lock` status, dry run, enable, and disable. |
 | `cli_reconnect.py` | `reconnect`: manual Classic reconnect that waits for the outcome. |
 | `reconnect_view.py` | Toolkit-neutral texts for the manual reconnect and rate limits (Qt banner and settings, GTK settings, TUI key `b`, CLI); `ManualReconnect` keeps the notice after Reconnect until the status shows the outcome (Qt and GTK). |
-| `cli_notifications.py` | `notifications open-map` rule editing and `notifications recent`. |
+| `cli_notifications.py` | `notifications open-map` rule editing, `notifications recent` and `pin`/`unpin`. |
+| `notification_pin_view.py` | Toolkit-neutral pin labels, row flags and error texts for the notification list (all clients). |
 | `cli_media.py` | `blueferry media` now-playing status, commands, and `enable`/`disable`. |
 | `cli_audio.py` | `blueferry audio [status\|pc\|phone]`. |
 | `cli_features.py` | `blueferry features [on\|off NAME]`. |

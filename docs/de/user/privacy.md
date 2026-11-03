@@ -79,8 +79,9 @@ Unterhaltungen einen Neustart überstehen. Du entscheidest, wie:
 - Ein Wechsel des Speichermodus leert den bisherigen Cache, damit
   verschlüsselte und unverschlüsselte Daten nie gemischt werden.
 - Markierte Unterhaltungen, gespeicherte Gruppenmitglieder,
-  Gruppenbestätigungen und [stummgeschaltete Apps](notification-mute.md)
-  folgen demselben Speichermodus.
+  Gruppenbestätigungen, angeheftete iPhone-Mitteilungen und
+  [stummgeschaltete Apps](notification-mute.md) folgen demselben
+  Speichermodus.
 - `blueferry history-clear` löscht den lokalen Nachrichtenverlauf.
 - Solange noch Daten mit einem Speicherschlüssel verschlüsselt sind, ersetzt
   BlueFerry ihn nie, wenn er fehlt, und merkt, wenn der Schlüsselbund einen

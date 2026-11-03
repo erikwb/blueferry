@@ -75,6 +75,10 @@
 - OpenRC support, English and German documentation, and WSL2 setup guidance.
 - Report a stable opaque phone profile ID in `GetStatus` for clients that need
   to scope local per-phone metadata.
+- Pin entries of the opt-in iPhone notification list so they stay listed,
+  also across restarts, until unpinned (`Messages1.SetNotificationPinned`,
+  `blueferry notifications pin`/`unpin`). Pins are saved under the local data
+  policy, at most 20; entries removed on the iPhone are marked as such.
 
 ### Fixed
 

@@ -478,6 +478,20 @@ class BackendClient:
         except (dbus.exceptions.DBusException, ValueError) as error:
             raise BackendError(_dbus_message(error)) from error
 
+    def set_notification_pinned(self, key: str, pinned: bool) -> bool:
+        """Pin or unpin a listed iPhone notification; returns the new state."""
+        try:
+            return bool(self._iface(MESSAGES_IFACE).SetNotificationPinned(
+                str(key), dbus.Boolean(pinned), timeout=POLICY_CALL_TIMEOUT_SEC,
+            ))
+        except dbus.exceptions.DBusException as error:
+            if error.get_dbus_name() == "org.freedesktop.DBus.Error.UnknownMethod":
+                raise BackendError(
+                    "the running backend cannot pin notifications; "
+                    "restart it after upgrading"
+                ) from error
+            raise BackendError(_dbus_message(error)) from error
+
     def features(self) -> dict:
         """Allowlisted local.env switches (Messages1.GetFeatures)."""
         try:
