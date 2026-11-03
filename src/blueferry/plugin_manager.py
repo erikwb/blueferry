@@ -670,16 +670,7 @@ def _restore_on_failure(paths: Sequence[Path]) -> Iterator[None]:
     backups: list[tuple[Path, Path | None]] = []
     try:
         for path in paths:
-            backup = None
-            if path.exists():
-                fd, name = tempfile.mkstemp(prefix=f".{path.name}.backup-", dir=path.parent)
-                os.close(fd)
-                backup = Path(name)
-                try:
-                    shutil.copy2(path, backup)
-                except BaseException:
-                    backup.unlink(missing_ok=True)
-                    raise
+            backup = _back_up(path) if path.exists() else None
             backups.append((path, backup))
         yield
     except BaseException:
