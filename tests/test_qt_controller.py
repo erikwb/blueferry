@@ -8,6 +8,7 @@ import pytest
 
 pytest.importorskip("PySide6")
 
+from blueferry import notification_pin_view
 from blueferry.client import BackendError, TetherUnsupportedError
 from blueferry.conversation_state import ConversationSnapshot, ReplyDisposition
 from blueferry.models import BackendStatus, Thread
@@ -2828,8 +2829,7 @@ def test_a_pin_refused_for_an_unreadable_settings_file_says_so(monkeypatch):
     backend.pin_error = _configuration_error()
     controller.setNotificationPinned("k2", True)
     text = controller.notificationsInfo["pinError"]
-    assert text == ("settings.json can't be read, so pins can't be changed. Repair or "
-                    "remove the file and try again.")
+    assert text == notification_pin_view.UNREADABLE_SETTINGS_TEXT
     assert controller.errorText == ""
     # The rows stay usable for the next try once the file is repaired.
     assert [row["key"] for row in controller.notifications] == ["k1", "k2"]

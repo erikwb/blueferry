@@ -30,9 +30,17 @@ Suche in den Clients:
   den Anruf in der Anrufliste. Beim Schließen vergisst die Suche die
   Ergebnisse.
 - **GTK-Client:**
-  noch nicht; nutze die Kommandozeile.
+  die Lupe in der Kopfzeile, `Strg+K` oder `Strg+F` öffnen die Suche. Sie
+  sucht beim Tippen, nach einer kurzen Pause, und zeigt dieselben Gruppen
+  mit je bis zu 20 Treffern; Enter öffnet den ersten Treffer, ein Klick oder
+  die Pfeiltasten jeden anderen: die Unterhaltung bei der Nachricht, die
+  Kontaktkarte oder den Anruf in der Anrufliste. Beim Schließen vergisst die
+  Suche die Ergebnisse.
 - **Terminal-Client:**
-  noch nicht; nutze die Kommandozeile.
+  `f` öffnet dieselbe Suche beim Tippen, mit je bis zu 20 Treffern pro
+  Gruppe, und Enter auf einem Treffer öffnet die Unterhaltung, die
+  Kontaktkarte oder den Anruf (siehe
+  [Clients](clients.md#kontakte-und-suche)).
 - **Quickshell-Panel:**
   noch nicht; nutze die Kommandozeile.
 

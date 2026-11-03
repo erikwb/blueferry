@@ -22,11 +22,16 @@ selected, so with another policy the list holds only muted apps.
 In the KDE client open **Settings › Notifications**: the **Muted apps**
 section lists the same apps with a switch each (on = muted), plus a note when
 something limits the list (another popup policy, locked storage, the limit or
-the environment filter). It updates by itself while it is open, and the
+the environment filter below). It updates by itself while it is open, and the
 **Notifications** tab greys out the entries of muted apps. The section is
 missing while the background service is too old to mute apps; restart it
-after upgrading. The GTK, Quickshell and terminal clients get the same list
-in a separate change; until then use the command line there.
+after upgrading. In the GTK client, *Settings → Notifications* shows the same
+list under **Muted apps**, also with a switch per app and the same note, and
+its Notifications tab dims the entries of muted apps. The terminal client has
+the list under *Settings → Notifications → Muted apps*, with a checkbox per
+app, and dims the muted apps' entries in its notification list. The
+Quickshell client gets the list in a separate change; until then use the
+command line there.
 
 ## What muting does and doesn't do
 

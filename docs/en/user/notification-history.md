@@ -48,10 +48,13 @@ they dropped out of the last 200. In the clients, use **Pin** / **Unpin** on
 an entry. In the KDE client the pin button appears when you point at an
 entry or move the keyboard focus to it; a pinned entry keeps its **Unpin**
 button visible and shows a pin on its icon. Entries removed on the iPhone and
-entries of [muted apps](notification-mute.md) are greyed out. When 20 are
-pinned, **Pin** is disabled and the tab says so; a failed pin or unpin is
-explained above the list. From a terminal, use the key shown at the end of
-each line:
+entries of [muted apps](notification-mute.md) are greyed out there. When 20
+are pinned, **Pin** is disabled and the tab says so; a failed pin or unpin is
+explained above the list. In the GTK client it is the pin button at the end
+of each entry; pinned entries show a pin icon, and the button is greyed out,
+with the reason in its tooltip, once 20 are pinned. In the terminal client's
+**iPhone Notifications**, `P` pins and unpins. From a terminal, use the key
+shown at the end of each line:
 
 ```bash
 blueferry notifications pin KEY

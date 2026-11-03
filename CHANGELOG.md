@@ -42,17 +42,35 @@
   it with the last reported level; `blueferry media volume` prints the level.
   A shared presenter (`media_volume_view`) prepares the volume buttons for the
   graphical and terminal clients.
+- Pin entries of the opt-in iPhone notification list so they stay listed,
+  also across restarts, until unpinned (`Messages1.SetNotificationPinned`,
+  `blueferry notifications pin`/`unpin`). Pins are saved under the local data
+  policy, at most 20; entries removed on the iPhone are marked as such.
 - KDE client: volume down/up buttons and the reported level under the
   now-playing transport buttons; **Pin**/**Unpin** on entries of the
   Notifications tab, with a pin marker, greyed-out entries removed on the
   iPhone or from muted apps, and the pin limit and errors shown above the
   list; a **Muted apps** section in Settings › Notifications with a switch per
   app, refreshed on `NotificationAppsChanged` while it is shown.
-- Shared presenter `file_drop_view` for the drop zones of the KDE main
-  window and the coming GTK one. It holds the decisions and texts, so both
+- Terminal client: `-` and `+` step the iPhone volume, the now-playing line
+  shows the reported level, and the iPhone overview has Volume Down,
+  Play/Pause and Volume Up buttons. `P` pins or unpins the selected entry of
+  iPhone Notifications, which marks pinned entries and dims removed ones and
+  those of muted apps. Settings › Notifications › Muted apps mutes single
+  apps with a checkbox each.
+- Terminal client: `C` (or **Contacts** in the command palette) lists the
+  contact cards with a search field and paging, shows every number, email
+  and postal address of the selected card, and calls, messages or copies the
+  selected entry. `f` (or **Search Everything**) searches conversations,
+  messages, contacts and calls as you type and opens the hit: the
+  conversation, the contact card or the call in Recent calls. Contact
+  photos are not shown.
+- Shared presenter `file_drop_view` for the drop zones of the KDE and GTK
+  main windows (both below). It holds the decisions and texts, so both
   clients send dropped files to a **Send to…** target the same way (the
   only target at once, a picker for several with the session's last pick
-  preselected, or an explanation when no `share` plugin is there). Only local files, 1 to 64; folders and
+  preselected, or an explanation when no `share` plugin is there). Only
+  local files, 1 to 64; folders and
   remote URIs are skipped with a note, and a client never runs two
   `SendFiles` at once across "Send to…", card sends and drops.
 - KDE client: files dragged anywhere onto the main window go to a
@@ -67,6 +85,8 @@
   AVDTP delay reporting in `blueferry doctor`.
 - KDE client: the iPhone sound switches in Settings and on the phone card
   show the A/V sync line under the sound status.
+- Terminal client: the connection summary shows the A/V sync line next to
+  the iPhone sound status.
 - Catch up on incoming messages that arrived while the iPhone was
   disconnected. After each MAP or MNS reconnect, and only while message
   history is kept and unlocked, the backend lists the iPhone's inbox once
@@ -79,6 +99,25 @@
   messages that may be from a group. Messages sent from the iPhone itself
   remain unavailable (related to
   [#280](https://github.com/erikwb/blueferry/issues/280)).
+- GTK client: volume down/up buttons with the reported level on the phone
+  card, Pin/Unpin on each Notifications entry (removed and muted-app entries
+  dimmed), and a **Muted apps** group under Settings › Notifications.
+- GTK client: a **Contacts** tab lists the contact cards with a search
+  field (searching after a short pause while typing) and loads more cards
+  at the end of the list; a card shows every labelled number, email and
+  postal address, company, job title and photo, with **Call** (asks first)
+  and **Message**, and the list reloads when `contact_card_epoch` changes.
+  A global search (header button, `Ctrl+K` or `Ctrl+F`) shows the grouped
+  hits and opens the conversation at the message, the contact card or the
+  call.
+- GTK client: files dragged anywhere onto the main window go to a
+  **Send to…** target (hint "Drop to send to iPhone"): the only target at
+  once with a toast, a picker for several (the session's last pick
+  preselected), or an explanation with a button to Settings › Plugins when
+  no `share` plugin is there. Only local `file://` URIs, 1 to 64 files;
+  folders and remote URIs are skipped.
+- GTK client: the iPhone sound rows in Settings and the quick switches show
+  the A/V sync line under the sound status.
 
 ### Fixed
 
@@ -153,10 +192,6 @@
 - OpenRC support, English and German documentation, and WSL2 setup guidance.
 - Report a stable opaque phone profile ID in `GetStatus` for clients that need
   to scope local per-phone metadata.
-- Pin entries of the opt-in iPhone notification list so they stay listed,
-  also across restarts, until unpinned (`Messages1.SetNotificationPinned`,
-  `blueferry notifications pin`/`unpin`). Pins are saved under the local data
-  policy, at most 20; entries removed on the iPhone are marked as such.
 
 ### Fixed
 

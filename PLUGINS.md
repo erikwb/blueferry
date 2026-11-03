@@ -350,14 +350,14 @@ Where it shows up:
   A click on an item runs its `primary` action; the others are buttons. A
   plugin that crashes, times out or sends broken JSON shows a dimmed line
   with the reason instead of its items.
-- **Share**: "Send to…" at the end of the card's "From Plugins" section (Qt)
-  and `blueferry send FILE… [--to PLUGIN[:TARGET]] [--list]` (`PLUGIN` is the id
-  or alias; without `--to` the only target is used). Whether "Send to…"
-  appears comes from the manifests; `ShareTargets` (which starts the plugin)
-  is called only when the user opens it or drops files. The Qt main
-  window has a drop zone, and the GTK one is coming (`file_drop_view.py`);
-  it sends dropped files to the same targets: the
-  only one at once, else a picker. Only regular local files are sent, 1 to
+- **Share**: "Send to…" at the end of the card's "From Plugins" section (Qt
+  and GTK) and `blueferry send FILE… [--to PLUGIN[:TARGET]] [--list]`
+  (`PLUGIN` is the id or alias; without `--to` the only target is used).
+  Whether "Send to…" appears comes from the manifests; `ShareTargets` (which
+  starts the plugin) is called only when the user opens it or drops files.
+  The Qt and GTK main windows have a drop zone (`file_drop_view.py`); it
+  sends dropped files to the same targets: the only one at once, else a
+  picker. Only regular local files are sent, 1 to
   64, as `SendFiles` requires; folders are skipped. A client runs one
   `SendFiles` at a time across "Send to…", card sends and drops.
 - **Notify** (content-free since 1.5): the plugin queues the popup (at most

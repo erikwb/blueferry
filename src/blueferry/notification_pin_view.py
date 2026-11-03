@@ -28,9 +28,9 @@ OFF_TEXT = _("The notification list is off.")
 GENERIC_ERROR_TEXT = _("Could not change the pin.")
 FULL_TEXT = _("The pinned list is full; unpin a notification first.")
 TOO_LONG_TEXT = _("The pinned notifications are too long to store; unpin one first.")
-SETTINGS_UNREADABLE_TEXT = _(
-    "settings.json can't be read, so pins can't be changed. Repair or remove "
-    "the file and try again."
+UNREADABLE_SETTINGS_TEXT = _(
+    "settings.json can't be read, so the pin was not changed. "
+    "Repair or remove the file and try again."
 )
 
 
@@ -112,7 +112,8 @@ def pin_error_text(error_name: object, message: object = "") -> str:
     if name.endswith(".UnknownMethod"):
         return UNSUPPORTED_TEXT
     if name.endswith(".Configuration"):
-        return SETTINGS_UNREADABLE_TEXT
+        # Pins are saved in settings.json; while it can't be read nothing changes.
+        return UNREADABLE_SETTINGS_TEXT
     if name.endswith(".NotReady"):
         return OFF_TEXT if "notification list is off" in text else LOCKED_TEXT
     if name.endswith(".InvalidArgs"):

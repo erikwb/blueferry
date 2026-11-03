@@ -22,14 +22,20 @@ nur, solange **All iPhone Notifications** gewählt ist; mit einer anderen
 Richtlinie enthält die Liste nur die stummgeschalteten Apps.
 
 Im KDE-Client unter **Settings › Notifications** listet der Abschnitt
-**Muted apps** dieselben Apps mit je einem Schalter (an = stumm), dazu einen
-Hinweis, wenn etwas die Liste einschränkt (eine andere Popup-Richtlinie,
-gesperrter Speicher, die Obergrenze oder der Umgebungsfilter). Solange er
-offen ist, aktualisiert er sich selbst, und der Reiter **Notifications**
-graut die Einträge stummgeschalteter Apps aus. Ist der Hintergrunddienst zu
-alt zum Stummschalten, fehlt der Abschnitt; nach dem Update den Dienst neu
-starten. Der GTK-, der Quickshell- und der Terminal-Client bekommen dieselbe
-Liste mit einer separaten Änderung; bis dahin dort die Kommandozeile nutzen.
+**Muted apps** (stummgeschaltete Apps) dieselben Apps mit je einem Schalter
+(an = stumm), dazu einen Hinweis, wenn etwas die Liste einschränkt (eine
+andere Mitteilungsrichtlinie, gesperrte lokale Daten, die Höchstzahl oder der
+Umgebungsfilter unten). Solange er offen ist, aktualisiert er sich selbst,
+und der Reiter **Notifications** graut die Einträge stummgeschalteter Apps
+aus. Ist der Hintergrunddienst zu alt zum Stummschalten, fehlt der Abschnitt;
+nach dem Update den Dienst neu starten. Im GTK-Client zeigt **Settings ›
+Notifications** dieselbe Liste in der Gruppe **Muted apps**, ebenfalls mit
+einem Schalter pro App und demselben Hinweis; sein Reiter **Notifications**
+blendet die Einträge stummgeschalteter Apps ab. Der Terminal-Client hat die
+Liste unter Settings › Notifications › **Muted apps**, mit einem Kästchen je
+App, und blendet die Einträge stummgeschalteter Apps in seiner
+Mitteilungsliste ab. Der Quickshell-Client bekommt die Liste mit einer
+separaten Änderung; bis dahin nutze dort die Kommandozeile.
 
 ## Was Stummschalten tut und was nicht
 
@@ -62,8 +68,9 @@ hin, damit du weißt, warum manche Apps nie auftauchen.
   `ancs_muted_apps` in `~/.config/blueferry/settings.json` gespeichert, im
   selben [Speichermodus](privacy.md#lokale-daten) wie markierte Unterhaltungen
   (standardmäßig verschlüsselt). Ein Wechsel des Speichermodus löscht sie.
-- Solange die Wallet gesperrt ist oder **Do not retain local data** gewählt
-  ist, ist keine App stummgeschaltet und Stummschalten nicht möglich.
+- Solange der Schlüsselbund gesperrt ist oder **Keine lokalen Daten
+  behalten** gewählt ist, ist keine App stummgeschaltet und Stummschalten
+  nicht möglich.
   BlueFerry überschreibt die gespeicherte Liste nie, solange es sie nicht
   lesen kann.
 - Solange `settings.json` selbst nicht lesbar ist, wird Stummschalten und
