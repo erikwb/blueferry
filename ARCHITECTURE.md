@@ -310,7 +310,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `qt/qml/CallHistorySettings.qml` | Call-history opt-in checkboxes in the iPhone settings. |
 | `qt/qml/NowPlayingBar.qml` | Opt-in iPhone now-playing bar with transport buttons. |
 | `qt/qml/MediaControlSettings.qml` | Media-control opt-in checkbox and state; loaded only for daemons that report it. |
-| `quickshell_bridge.py` | Persistent stdin/stdout JSON bridge from Quickshell to the session D-Bus API. Settings replies are built on the shared `features_view`, `phone_link_view.notifications_view`, `reconnect_view` and `doctor_report` helpers. Lists (threads, contacts, feature switches, recent notifications) are plain JSON arrays; Qt 6.12 hands arrays in a `var` signal argument over as sequence wrappers that fail `Array.isArray` (#213), so `shell.qml` passes every reply and event through `plainValue()`, a JSON round trip; content-free D-Bus signals become events (`status-changed`, `now-playing-changed`, `notifications-changed`, …). |
+| `quickshell_bridge.py` | Persistent stdin/stdout JSON bridge from Quickshell to the session D-Bus API. Settings replies are built on the shared `features_view`, `phone_link_view.notifications_view`, `notification_pin_view`, `notification_apps_view`, `media_volume_view`, `reconnect_view` and `doctor_report` helpers, the contact search and global search on `contacts_view` and `search_view` (flat rows: the card's detail rows with call/message flags, search hits with the match split out and the caller's number on call hits), a busy (`NotReady`) search answered as `busy` so the panel retries it, and `dial` for the confirmed Call; row edits the panel sends by index (muted apps) reread the list under a lock right before writing. Lists (threads, contacts, feature switches, recent notifications) are plain JSON arrays; Qt 6.12 hands arrays in a `var` signal argument over as sequence wrappers that fail `Array.isArray` (#213), so `shell.qml` passes every reply and event through `plainValue()`, a JSON round trip; content-free D-Bus signals become events (`status-changed`, `now-playing-changed`, `notifications-changed`, `notification-apps-changed`, …). |
 
 ### Quickshell client (`data/quickshell/`)
 
@@ -334,6 +334,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `AvatarCache.qml`, `ContactAvatar.qml` | Bounded asynchronous contact photos in the conversation list and header; the bridge delivers validated bytes as data URLs without writing avatar files. |
 | `SavedChoice.qml` | The same for Quickshell checkboxes that save through the daemon. |
 | `QuickshellPhoneStatus.qml` | Optional iPhone battery/signal caption in the header (hidden when unknown). |
+| `QuickshellSearch.qml` | The panel's contact search and global search: contact cards with paging, one card's numbers and addresses with Call and Message, grouped search hits that open conversations and cards; `shell.qml` reads them only while the search popup is open and confirms every call. |
 | `QuickshellNowPlaying.qml` | Opt-in now-playing strip with transport buttons; renders the bridge's array-free `now_playing` view. |
 
 `data/blueferry-quickshell` is the launcher script, and

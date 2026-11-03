@@ -49,7 +49,9 @@ Contact view in the clients:
   `C` opens the contacts with search, the card details and Call, Send a
   Message and Copy (see [Clients](clients.md#contacts-and-search)).
 - **Quickshell panel:**
-  not yet; use the command line.
+  the search button (or `Ctrl+F`) finds a contact and calls or writes to one
+  of its numbers or addresses (see
+  [Clients](clients.md#contacts-and-search-in-the-panel)).
 
 ## Photos
 

@@ -32,6 +32,12 @@
   global search (header magnifier, `Ctrl+K` or `Ctrl+F`) shows the grouped
   hits and opens the conversation at the message, the contact card or the
   call.
+- Quickshell: a search button (and Ctrl+F) opens a popup that lists and
+  searches the contact cards and, from two characters on, searches
+  conversations, messages, contacts and calls. Hits open their
+  conversation or contact card; a card's numbers and addresses and call
+  hits offer Call (confirmed first) and Message. Read only while the popup
+  is open.
 - Mute the desktop popups of single iPhone apps: `Messages1.ListNotificationApps`
   lists the apps seen since the daemon started (memory only) plus the muted
   ones, `SetNotificationAppMuted` saves a choice under the storage policy, and
@@ -65,6 +71,12 @@
   messages, contacts and calls as you type and opens the hit: the
   conversation, the contact card or the call in Recent calls. Contact
   photos are not shown.
+- Quickshell: volume down/up buttons with the iPhone's level in the
+  now-playing strip, **Pin** / **Unpin** in the recent notification list
+  (removed entries and entries of muted apps greyed out, the pin limit
+  shown), and **Muted apps** under iPhone settings › Notifications. The
+  bridge gains `set_notification_pinned`, `notification_apps` and
+  `toggle_notification_app` and forwards `NotificationAppsChanged`.
 - Shared presenter `file_drop_view` for the drop zones of the KDE and GTK
   main windows (both below). It holds the decisions and texts, so both
   clients send dropped files to a **Send to…** target the same way (the
@@ -87,6 +99,8 @@
   show the A/V sync line under the sound status.
 - Terminal client: the connection summary shows the A/V sync line next to
   the iPhone sound status.
+- Quickshell: the phone settings show the A/V sync line under the iPhone
+  sound switch.
 - Catch up on incoming messages that arrived while the iPhone was
   disconnected. After each MAP or MNS reconnect, and only while message
   history is kept and unlocked, the backend lists the iPhone's inbox once

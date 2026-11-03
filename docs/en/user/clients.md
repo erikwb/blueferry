@@ -200,7 +200,7 @@ background service offers it.
 | Category | What you find there |
 |---|---|
 | Phone | Pairing, connection health with **Reconnect**, resetting a stuck connection automatically, **Run Diagnostics**, **Sync Contacts**, contact photos |
-| Notifications | Which events create popups, contacts only, notification content, action buttons, sync notifications with iPhone, mark read on dismiss, keeping recent iPhone notifications, and the recent notifications themselves |
+| Notifications | Which events create popups, contacts only, muted apps, notification content, action buttons, sync notifications with iPhone, mark read on dismiss, keeping recent iPhone notifications, and the recent notifications themselves with **Pin** / **Unpin** |
 | Calls & Audio | Phone calls, call history and missed-call popups, battery warning, iPhone sound on this computer, media control and MPRIS |
 | Security | One-time codes, away lock, the local storage setting, and **Reset Local Storage…** when the saved data can't be opened |
 | About | The background service, its version and **Restart Service** |
@@ -213,7 +213,49 @@ switch greyed out with the `local.env` variable to set instead.
 recent iPhone notifications** keeps: the app, the time and, if allowed,
 title and text. The list is read only while it is shown, follows new
 notifications, and is forgotten when you hide it or leave the page. When it
-is off, empty or unavailable, it says why.
+is off, empty or unavailable, it says why. **Pin** / **Unpin** on an entry
+keeps it in the list, also across restarts; pinned entries come first and
+are marked **Pinned**. Entries removed on the iPhone say **Removed on
+iPhone**; they and entries from muted apps are greyed out. At 20 pins only
+**Unpin** stays available and the list says so.
+
+**Muted apps** (under Notifications, with a background service that can mute
+apps) lists the iPhone apps seen since the service started, each with
+**Mute** / **Unmute**. A muted app shows no desktop popup; nothing changes on
+the iPhone. The list follows changes made elsewhere, for example with
+`blueferry notifications mute`.
+
+While something is playing, the now-playing strip under the header also has
+volume down and up buttons and the level the iPhone last reported. Each press
+moves the iPhone volume one step; the buttons are greyed out when the playing
+app does not offer volume control.
+
+| | Qt | GTK | TUI | Quickshell | CLI |
+|---|---|---|---|---|---|
+| iPhone volume buttons and level | ✓ phone card, Now Playing | ✓ phone card | ✓ `-` / `+`, iPhone Overview | ✓ now-playing strip | ✓ `blueferry media volume up\|down` |
+| Pin / unpin notifications | ✓ Notifications tab | ✓ Notifications tab | ✓ iPhone Notifications, `P` | ✓ Show Recent Notifications | ✓ `blueferry notifications pin\|unpin KEY` |
+| Mute apps | ✓ Settings › Notifications | ✓ Settings › Notifications | ✓ Settings › Notifications › Muted apps | ✓ iPhone settings › Notifications | ✓ `blueferry notifications apps\|mute\|unmute` |
+
+The panel's notification list has no other row actions (it does not open or
+answer notifications), so a notification the iPhone can no longer act on
+looks the same there apart from **Removed on iPhone**.
+
+### Contacts and search in the panel
+
+The search button (⌕) next to **+**, or `Ctrl+F`, opens **Search** with a
+background service that has [contact cards](contacts.md) or the [global
+search](search.md). With an empty field it lists the contacts, with
+**More contacts** for the next page. Typing at least two characters
+searches conversations, messages, contacts and calls at once, a moment
+after you stop typing; the hits are grouped and the matching words of a
+message are shown in bold. Click a conversation or message to open it.
+Click a contact to see its numbers, email and postal addresses: **Call**
+calls a number after a confirmation, **Message** opens **New message** with
+the number or address filled in. A call hit has **Call** and **Message**
+for the caller. **Call** is greyed out, with the reason, until phone calls
+are on and ready. The panel has no calls view, so answer, hold and hang up
+on the iPhone or in another client. Nothing of this is read while the
+popup is closed, and it is forgotten when you close it.
 
 ### What the panel leaves out
 
@@ -226,10 +268,12 @@ Quickshell is a compact panel, so some parts stay with the other clients:
 | Companion tools | Setting up desktop helpers is a one-time job, not a panel task | Qt or GTK settings, `blueferry tools` |
 | Clearing the message history | Not offered by the terminal client either | `blueferry history-clear` |
 | Click Rules, recent calls, the calls panel | Not in the Quickshell client yet | Qt, GTK or terminal client |
+| Contact photos, copying card entries, writing an email (mail app), opening a call hit in the recent calls | The panel's search only finds a contact to call or write; it has no recent-calls list | `blueferry contacts show --photo`; recent calls in the Qt, GTK or terminal client |
 
 The panel loads no translation catalog, so its own labels are English.
 Texts that come from the shared BlueFerry code, such as the reconnect hint,
-the restart notice or the notification placeholder, follow your language.
+the restart notice, the notification placeholder, the pin and mute texts or
+the volume level, follow your language.
 
 ## Terminal (TUI)
 

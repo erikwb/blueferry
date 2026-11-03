@@ -42,7 +42,9 @@ Suche in den Clients:
   Kontaktkarte oder den Anruf (siehe
   [Clients](clients.md#kontakte-und-suche)).
 - **Quickshell-Panel:**
-  noch nicht; nutze die Kommandozeile.
+  der Suchknopf (oder `Strg+F`) sucht beim Tippen, zeigt je Gruppe bis zu 10
+  Treffer und öffnet aus einem Treffer die Unterhaltung oder die
+  Kontaktkarte (siehe [Clients](clients.md#kontakte-und-suche-im-panel)).
 
 ## Was durchsucht wird
 

@@ -34,8 +34,10 @@ einem Schalter pro App und demselben Hinweis; sein Reiter **Notifications**
 blendet die Einträge stummgeschalteter Apps ab. Der Terminal-Client hat die
 Liste unter Settings › Notifications › **Muted apps**, mit einem Kästchen je
 App, und blendet die Einträge stummgeschalteter Apps in seiner
-Mitteilungsliste ab. Der Quickshell-Client bekommt die Liste mit einer
-separaten Änderung; bis dahin nutze dort die Kommandozeile.
+Mitteilungsliste ab. Das Quickshell-Panel zeigt sie als **Muted apps** unter
+**iPhone settings › Notifications**, jede App mit **Mute** / **Unmute** und
+demselben Hinweis, und graut die Einträge stummgeschalteter Apps in **Show
+Recent Notifications** aus (siehe [Clients](clients.md)).
 
 ## Was Stummschalten tut und was nicht
 

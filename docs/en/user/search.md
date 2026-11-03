@@ -38,7 +38,9 @@ Search in the clients:
   Enter on a hit opens the conversation, contact card or call (see
   [Clients](clients.md#contacts-and-search)).
 - **Quickshell panel:**
-  not yet; use the command line.
+  the search button (or `Ctrl+F`) searches as you type, shows up to 10 hits
+  per group and opens a conversation or contact card from a hit (see
+  [Clients](clients.md#contacts-and-search-in-the-panel)).
 
 ## What is searched
 

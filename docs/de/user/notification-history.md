@@ -30,7 +30,9 @@ Notifications** unter **Show Popups**.
 
 Der Reiter **Notifications** zeigt die neuesten zuerst, mit App, Zeit und,
 wenn erlaubt, Titel und Text; der Terminal-Client zeigt dieselbe Liste
-unter **iPhone Notifications** in seiner Befehlspalette. Im Terminal:
+unter **iPhone Notifications** in seiner Befehlspalette und das
+Quickshell-Panel unter **iPhone settings › Notifications** mit **Show Recent
+Notifications** (siehe [Clients](clients.md)). Im Terminal:
 
 ```bash
 blueferry notifications recent             # die letzten 20
@@ -55,9 +57,13 @@ Einträge und Einträge [stummgeschalteter Apps](notification-mute.md) sind
 dort ausgegraut. Sind 20 angeheftet, ist **Pin** gesperrt und der Reiter sagt
 das; schlägt das Anheften oder Lösen fehl, steht der Grund über der Liste. Im
 GTK-Client ist es der Knopf mit der Stecknadel am Ende jedes Eintrags;
-angeheftete Einträge zeigen eine Stecknadel, und sind 20 angeheftet, ist der
-Knopf ausgegraut und sein Tooltip nennt den Grund. Im Terminal-Client geht es
-unter **iPhone Notifications** mit der Taste `P`. Auf der Kommandozeile geht
+angeheftete Einträge zeigen eine Stecknadel. Sind 20 angeheftet, ist der
+Knopf der übrigen Einträge ausgegraut und sein Tooltip nennt den Grund;
+angeheftete Einträge lassen sich weiter lösen. Im Terminal-Client geht es
+unter **iPhone Notifications** mit der Taste `P`. Im Quickshell-Panel hat
+unter **Show Recent Notifications** jeder Eintrag **Pin** / **Unpin**;
+entfernte Einträge und die stummgeschalteter Apps sind ausgegraut, und bei
+20 angehefteten bleibt nur **Unpin** verfügbar. Auf der Kommandozeile geht
 es mit dem Schlüssel, der am Ende jeder Zeile steht:
 
 ```bash

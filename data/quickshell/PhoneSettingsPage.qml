@@ -23,6 +23,16 @@ Rectangle {
   property var featurePending: ({})
   property var doctor: ({})
   property var notificationList: ({})
+  // The bridge's refusal of the last pin request (shared wording).
+  property string notificationPinError: ""
+  // The bridge's notification_apps_view.list_view: muted iPhone apps,
+  // only for daemons reporting notification_muted_app_count.
+  property var notificationApps: ({})
+  readonly property bool notificationAppsShown: typeof root.status.notification_muted_app_count === "number"
+    && root.notificationApps.supported === true
+  readonly property var notificationAppRows: root.notificationAppsShown
+    && root.notificationApps.rows && root.notificationApps.rows.length !== undefined
+    ? Array.prototype.slice.call(root.notificationApps.rows) : []
   property string contactsSyncNotice: ""
   property string storageResetNotice: ""
   // The list is private: shell.qml reads it only while this is set, and
@@ -624,6 +634,92 @@ Rectangle {
             });
           }
         }
+        // Muted apps: no desktop popup, nothing changes on the iPhone. The
+        // wording and rows come from the bridge (notification_apps_view); a
+        // toggle names the row by index and app ID, and the bridge rereads
+        // the list before it writes.
+        FerrySectionLabel {
+          objectName: "notificationAppsLabel"
+          ferryTheme: root.theme
+          visible: root.notificationAppsShown
+          text: String(root.notificationApps.label || "")
+        }
+        FerryLabel {
+          objectName: "notificationAppsDescription"
+          ferryTheme: root.theme
+          visible: root.notificationAppsShown && text !== ""
+          Layout.fillWidth: true
+          wrapMode: Text.Wrap
+          textFormat: Text.PlainText
+          text: String(root.notificationApps.description || "")
+        }
+        Repeater {
+          objectName: "notificationAppRows"
+          model: root.notificationAppRows
+          delegate: RowLayout {
+            id: appRow
+            required property var modelData
+            required property int index
+            readonly property var row: appRow.modelData || ({})
+            Layout.fillWidth: true
+            spacing: root.theme.scaled(6)
+            ColumnLayout {
+              Layout.fillWidth: true
+              spacing: 0
+              FerryLabel {
+                objectName: "notificationAppName" + appRow.index
+                ferryTheme: root.theme
+                Layout.fillWidth: true
+                elide: Text.ElideRight
+                textFormat: Text.PlainText
+                color: appRow.row.muted === true ? root.theme.muted : root.theme.windowText
+                text: String(appRow.row.name || "")
+              }
+              FerryLabel {
+                objectName: "notificationAppSubtitle" + appRow.index
+                ferryTheme: root.theme
+                Layout.fillWidth: true
+                visible: text !== ""
+                elide: Text.ElideRight
+                textFormat: Text.PlainText
+                color: root.theme.muted
+                font.pixelSize: root.theme.captionSize
+                text: String(appRow.row.subtitle || "")
+              }
+            }
+            FerryButton {
+              objectName: "notificationAppToggle" + appRow.index
+              ferryTheme: root.theme
+              text: String(appRow.row.toggle_label || "")
+              enabled: root.setup.configured && appRow.row.enabled === true
+                && root.busy.notificationApps !== true
+              Accessible.name: text + ": " + String(appRow.row.name || "")
+              onClicked: root.operationRequested("toggle_notification_app", {
+                index: appRow.index, app_id: String(appRow.row.app_id || "")
+              })
+            }
+          }
+        }
+        FerryLabel {
+          objectName: "notificationAppsHint"
+          ferryTheme: root.theme
+          visible: root.notificationAppsShown && text !== ""
+          Layout.fillWidth: true
+          wrapMode: Text.Wrap
+          textFormat: Text.PlainText
+          color: root.theme.muted
+          text: String(root.notificationApps.hint || "")
+        }
+        FerryLabel {
+          objectName: "notificationAppsError"
+          ferryTheme: root.theme
+          visible: root.notificationAppsShown && text !== ""
+          Layout.fillWidth: true
+          wrapMode: Text.Wrap
+          textFormat: Text.PlainText
+          color: root.theme.warning
+          text: String(root.notificationApps.error || "")
+        }
         FerrySectionLabel {
           ferryTheme: root.theme
           text: "Content and actions"
@@ -745,6 +841,9 @@ Rectangle {
           Layout.fillWidth: true
           visible: root.notificationsExpanded
           view: root.notificationList
+          pinBusy: root.busy.pin === true
+          pinError: root.notificationPinError
+          onPinRequested: (key, pinned) => root.operationRequested("set_notification_pinned", {key: key, pinned: pinned})
         }
         FerryCategoryHeading {
           objectName: "callsCategory"
@@ -866,7 +965,9 @@ Rectangle {
           text: "Play the iPhone's sound on this computer"
           checked: root.status.phone_audio_route === "pc"
           enabled: root.setup.configured && !root.busy.phoneAudio && view.available === true
-          Accessible.description: phoneAudioHint.text
+          // The hint and, while a stream is open, the A/V sync line.
+          Accessible.description: [phoneAudioHint.text, phoneAudioSync.text]
+              .filter(line => line !== "").join(" ")
           onClicked: root.operationRequested("set_phone_audio_route", {route: checked ? "pc" : "phone"})
         }
         FerryLabel {
@@ -877,6 +978,16 @@ Rectangle {
           Layout.fillWidth: true
           wrapMode: Text.Wrap
           text: (root.status.phone_audio_view || {}).hint || ""
+        }
+        // A/V sync of the open stream; empty while none is open.
+        FerryLabel {
+          id: phoneAudioSync
+          objectName: "phoneAudioSync"
+          ferryTheme: root.theme
+          visible: root.status.phone_audio_route !== undefined && text !== ""
+          Layout.fillWidth: true
+          wrapMode: Text.Wrap
+          text: (root.status.phone_audio_view || {}).sync || ""
         }
 
         // Only daemons that report the media-control keys support the settings.

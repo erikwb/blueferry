@@ -51,7 +51,9 @@ Kontaktansicht in den Clients:
   `C` öffnet die Kontakte mit Suche, den Details der Karte und Call, Send a
   Message und Copy (siehe [Clients](clients.md#kontakte-und-suche)).
 - **Quickshell-Panel:**
-  noch nicht; nutze die Kommandozeile.
+  der Suchknopf (oder `Strg+F`) findet einen Kontakt und ruft eine seiner
+  Nummern an oder schreibt an eine Nummer oder Adresse (siehe
+  [Clients](clients.md#kontakte-und-suche-im-panel)).
 
 ## Fotos
 

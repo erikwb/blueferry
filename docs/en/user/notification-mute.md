@@ -30,8 +30,10 @@ list under **Muted apps**, also with a switch per app and the same note, and
 its Notifications tab dims the entries of muted apps. The terminal client has
 the list under *Settings → Notifications → Muted apps*, with a checkbox per
 app, and dims the muted apps' entries in its notification list. The
-Quickshell client gets the list in a separate change; until then use the
-command line there.
+Quickshell panel shows it as **Muted apps** under **iPhone settings ›
+Notifications**, each app with **Mute** / **Unmute** and the same note, and
+greys out the muted apps' entries in **Show Recent Notifications** (see
+[Clients](clients.md)).
 
 ## What muting does and doesn't do
 
