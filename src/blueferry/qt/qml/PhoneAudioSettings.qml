@@ -12,7 +12,9 @@ SubtitleSwitch {
 
     horizontalPadding: 0
     text: qsTr("Play the iPhone's sound on this computer")
-    subtitle: phoneAudio.info.hint || ""
+    // The A/V sync line follows the route wording while a stream is open.
+    subtitle: [phoneAudio.info.hint || "", phoneAudio.info.sync || ""]
+        .filter(function(line) { return line !== "" }).join("\n")
     checked: phoneAudio.info.onPc === true
     enabled: phoneAudio.info.available === true && phoneAudio.bridge.status.daemon === true
     onToggled: {

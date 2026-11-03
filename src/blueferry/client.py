@@ -104,18 +104,6 @@ def _open_map_error(error: Exception) -> BackendError:
     return _backend_error(error)
 
 
-def _notification_apps_error(error: Exception) -> BackendError:
-    if (
-        isinstance(error, dbus.exceptions.DBusException)
-        and error.get_dbus_name() == "org.freedesktop.DBus.Error.UnknownMethod"
-    ):
-        return BackendError(
-            "the running backend cannot mute notification apps; "
-            "restart it after upgrading"
-        )
-    return _backend_error(error)
-
-
 class ContactNotFoundError(BackendError):
     """The card id no longer resolves (changed card or restarted daemon)."""
 
@@ -144,6 +132,18 @@ def _search_error(error: Exception) -> BackendError:
     ):
         return BackendError(
             "the running backend cannot search; restart it after upgrading"
+        )
+    return _backend_error(error)
+
+
+def _notification_apps_error(error: Exception) -> BackendError:
+    if (
+        isinstance(error, dbus.exceptions.DBusException)
+        and error.get_dbus_name() == "org.freedesktop.DBus.Error.UnknownMethod"
+    ):
+        return BackendError(
+            "the running backend cannot mute notification apps; "
+            "restart it after upgrading"
         )
     return _backend_error(error)
 

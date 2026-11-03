@@ -26,6 +26,7 @@ from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, Vertical
+from textual.css.query import NoMatches
 from textual.screen import ModalScreen
 from textual.widgets import Button, Input, ListItem, ListView, Static
 
@@ -33,7 +34,7 @@ from blueferry import contacts_view, phone_link_view
 from blueferry.contacts_model import MAX_QUERY_CHARS, ContactBook
 from blueferry.i18n import _
 from blueferry.text_safety import terminal_text
-from blueferry.tui_tasks import TextualTaskRunner, timer_factory
+from blueferry.tui_tasks import TextualTaskRunner, tearing_down, timer_factory
 
 ContactsResult = tuple[str, str] | None
 
@@ -229,7 +230,10 @@ class ContactsScreen(ModalScreen[ContactsResult]):
         self._dirty = True
         if not self._rendering:
             self._rendering = True
-            self.run_worker(self._render_changes(), group="contacts-render")
+            # The function, not a coroutine: a worker cancelled with the
+            # screen before it starts then leaves no coroutine unawaited.
+            # Textual's overloads infer Never for an async function.
+            self.run_worker(self._render_changes, group="contacts-render")  # type: ignore[arg-type]
 
     async def _render_changes(self) -> None:
         try:
@@ -251,6 +255,10 @@ class ContactsScreen(ModalScreen[ContactsResult]):
                             and self._shown_card["id"] == card["id"])
                     self._shown_card = card
                     await self._render_card(card, keep_index=same)
+        except NoMatches:
+            # Only while the screen closes; on a healthy screen it is a bug.
+            if not tearing_down(self):
+                raise
         finally:
             self._rendering = False
 
@@ -380,16 +388,19 @@ class ContactsScreen(ModalScreen[ContactsResult]):
     def _render_buttons(self) -> None:
         if not self._shown or not self.is_attached:
             return
-        call = self.query_one("#contacts-call", Button)
+        try:
+            call = self.query_one("#contacts-call", Button)
+            message = self.query_one("#contacts-message", Button)
+            copy = self.query_one("#contacts-copy", Button)
+        except NoMatches:
+            if tearing_down(self):  # the screen's widgets are being removed
+                return
+            raise
         hint = self.calls_hint
         call.disabled = not self._can(contacts_view.ACTION_DIAL) or bool(hint)
         call.tooltip = Text(_plain(hint)) if hint and self._can(contacts_view.ACTION_DIAL) else None
-        self.query_one("#contacts-message", Button).disabled = not self._can(
-            contacts_view.ACTION_MESSAGE,
-        )
-        self.query_one("#contacts-copy", Button).disabled = not self._can(
-            contacts_view.ACTION_COPY,
-        )
+        message.disabled = not self._can(contacts_view.ACTION_MESSAGE)
+        copy.disabled = not self._can(contacts_view.ACTION_COPY)
 
     @on(ListView.Highlighted, "#contacts-detail")
     def detail_highlighted(self) -> None:

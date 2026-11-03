@@ -36,6 +36,7 @@ from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.css.query import NoMatches
 from textual.screen import ModalScreen
 from textual.widget import Widget
 from textual.widgets import Button, Checkbox, Select, Static, TabbedContent, TabPane
@@ -52,7 +53,7 @@ from blueferry.reconnect_view import reconnect_view
 from blueferry.text_safety import terminal_text
 from blueferry.tui_doctor import DoctorScreen
 from blueferry.tui_plugin_settings import PluginsPane
-from blueferry.tui_tasks import TextualTaskRunner, TextualTimer
+from blueferry.tui_tasks import TextualTaskRunner, TextualTimer, tearing_down
 
 Values = Mapping[str, Any]
 
@@ -159,6 +160,20 @@ def _phone_audio_caption(values: Values) -> str:
     return "\n".join(line for line in (str(audio["hint"]), str(audio["sync"])) if line)
 
 
+def _contact_photos_unknown(values: Values) -> bool:
+    return values.get("contact_photos_state") == "unknown"
+
+
+def _contact_photos_caption(values: Values) -> str:
+    if _contact_photos_unknown(values):
+        return _("Unavailable while settings.json cannot be read")
+    return _(
+        "Photos are kept with your contacts and arrive with the next contact "
+        "sync. The terminal can't draw them; other clients and popups show "
+        "them. Turning this off erases them."
+    )
+
+
 def _battery_caption(values: Values) -> str:
     percent = values.get("phone_battery_warning_percent", 20)
     return _("One desktop notification per discharge, at {percent} % or less.").format(
@@ -207,12 +222,9 @@ SAVED_SWITCHES: dict[str, SavedSwitch] = {
         SavedSwitch(
             key="contact_photos",
             label=_("Show Contact Photos"),
-            caption=_text(_(
-                "Photos are kept with your contacts and arrive with the next contact "
-                "sync. The terminal can't draw them; other clients and popups show "
-                "them. Turning this off erases them."
-            )),
+            caption=_contact_photos_caption,
             shown=_saved_opt_in("contact_photos"),
+            editable=lambda values: not _contact_photos_unknown(values),
             save=lambda client, enabled, _values: client.set_contact_photos(enabled),
         ),
         SavedSwitch(
@@ -753,11 +765,12 @@ class OptionsScreen(ModalScreen[None]):
                     "blueferry storage-policy-set encrypted|plaintext|none.").format(
             policy=_STORAGE.get(storage, storage or "…"), state=storage_state or "…",
         )
+        detail = str(values.get("storage_detail") or "").rstrip(".")
+        if detail and storage_state not in {"ready", "disabled"}:
+            # Why local data is unavailable, such as an unreadable settings file.
+            caption += f" {detail}."
         if values.get("storage_reset") is True:
-            # The explanation, and the way out when the saved data's key is lost.
-            detail = str(values.get("storage_detail") or "").rstrip(".")
-            if detail:
-                caption += f" {detail}."
+            # The way out when the saved data's key is lost.
             caption += " " + _(
                 "To erase local data and start over, run blueferry storage-reset."
             )
@@ -823,7 +836,12 @@ class OptionsScreen(ModalScreen[None]):
             self._apps_shown = ids
 
             async def rebuild() -> None:
-                await self._rebuild_apps(rows)
+                try:
+                    await self._rebuild_apps(rows)
+                except NoMatches:
+                    # Only while the screen closes; otherwise it is a bug.
+                    if not tearing_down(self):
+                        raise
 
             # Textual's overloads infer Never for an async function.
             self.run_worker(rebuild, group="options-apps-render", exclusive=True)  # type: ignore[arg-type]
@@ -900,6 +918,12 @@ class OptionsScreen(ModalScreen[None]):
     def _save_switch(self, key: str, enabled: bool) -> None:
         switch = SAVED_SWITCHES.get(key)
         if switch is None or self.values is None or _held(key, self.pending):
+            return
+        if key == "contact_photos" and _contact_photos_unknown(self.values):
+            # A toggle queued before the status went unknown; the daemon would refuse it.
+            self.app.notify(_contact_photos_caption(self.values), severity="warning",
+                            markup=False)
+            self._render_state()
             return
         if enabled == switch.active(self.values):
             return

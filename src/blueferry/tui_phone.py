@@ -37,6 +37,7 @@ from textual.widgets import Button, ListItem, ListView, Static
 from blueferry import media_volume_view, phone_link_view
 from blueferry import phone_overview as overview
 from blueferry.i18n import _
+from blueferry.limits import MAX_CALL_HISTORY_QUERY_LIMIT
 from blueferry.models import BackendStatus, CallHistoryEntry, phone_status_fields
 from blueferry.text_safety import terminal_text
 from blueferry.tui_tasks import TextualTaskRunner
@@ -379,7 +380,9 @@ class RecentCallsScreen(ModalScreen[RecentCallsResult]):
         super().__init__()
         self._shown = False  # composed and mounted; widgets exist
         # A search hit's call id; its row is highlighted once the list loads.
+        # Search covers every retained call, so that list reads them all.
         self._focus_call_id = focus_call_id
+        self._limit = MAX_CALL_HISTORY_QUERY_LIMIT if focus_call_id else MAX_CALLS
         self._client = client
         self._status: Mapping[str, Any] = dict(status or {})
         self._now = now
@@ -432,7 +435,7 @@ class RecentCallsScreen(ModalScreen[RecentCallsResult]):
             return
         self._loading = True
         self._runner.submit(
-            lambda: self._client.call_history(MAX_CALLS),
+            lambda: self._client.call_history(self._limit),
             self._show, self._show_error, self._loaded,
         )
 

@@ -26,7 +26,10 @@ checked ``open_uri`` and then read the settings again.
 Every answer that arrives later is checked against the form shown now (a
 form generation counter and :meth:`PluginSettingsModel._current`), so it
 never reopens a closed form, lands in another plugin's form or opens a page
-for a plugin that was disabled meanwhile.
+for a plugin that was disabled meanwhile. Each call into a plugin first
+reads the saved list of disabled plugins on the runner, because another
+client or ``blueferry plugins disable`` may turn it off while its form is
+open.
 """
 from __future__ import annotations
 
@@ -38,7 +41,7 @@ from blueferry import plugin_logs
 from blueferry import plugin_settings_view as view
 from blueferry.client_tasks import TaskRunner, TimerFactory
 from blueferry.i18n import _
-from blueferry.plugin_api.client import PluginClient
+from blueferry.plugin_api.client import PluginClient, PluginError
 from blueferry.plugin_api.config_flow import (
     LOGIN_POLL_SECONDS,
     LOGIN_TIMEOUT_SECONDS,
@@ -47,6 +50,7 @@ from blueferry.plugin_api.config_flow import (
 from blueferry.plugin_api.manifest import PluginManifest
 from blueferry.plugin_index import DEFAULT_INDEX_URL, PluginIndex, check_index_url, index_urls
 from blueferry.plugin_manager import InstallError, PluginManager, PreparedInstall
+from blueferry.plugin_prefs import disabled_from
 from blueferry.plugin_stopper import stop_note, stop_ok
 
 
@@ -148,6 +152,17 @@ class PluginSettingsModel:
         checkout, cancelling a sign-in), so they stay off the UI thread."""
         self._runner.submit(operation, done, failed, finished)
 
+    def _enabled_client(self, manifest: PluginManifest) -> PluginClient:
+        """*Blocking*: the plugin's client, unless it is disabled now.
+
+        Calling a disabled plugin would start it again; the list may have
+        changed elsewhere since :meth:`load` read it.
+        """
+        if manifest.id in disabled_from(self._manager.settings()):
+            raise PluginError(_("{name} is disabled. Turn it on to change its settings.")
+                              .format(name=manifest.name))
+        return self._client(manifest)
+
     def _say(self, message: str, ok: bool = True) -> None:
         self._update(message=message, messageOk=ok)
 
@@ -156,7 +171,7 @@ class PluginSettingsModel:
     def load(self) -> None:
         def work() -> tuple:
             entries, ignored = self._manager.entries()
-            statuses = view.plugin_statuses(entries, self._client)
+            statuses = view.plugin_statuses(entries, self._enabled_client)
             return entries, ignored, statuses, index_urls(self._manager.settings())
 
         def done(value: tuple) -> None:
@@ -301,7 +316,8 @@ class PluginSettingsModel:
             self._update(config={**self._state["config"], "loaded": False, "loadError": ""})
         else:
             self._update(config=self._form(manifest, plugin_id, {}, loaded=False))
-        self._work("config", lambda: self._client(manifest).get_config(), done, on_error=failed)
+        self._work("config", lambda: self._enabled_client(manifest).get_config(), done,
+                   on_error=failed)
 
     def _current(self, plugin_id: str) -> PluginManifest | None:
         if self._state["config"].get("id") != plugin_id or plugin_id in self._disabled:
@@ -352,7 +368,7 @@ class PluginSettingsModel:
             elif current:
                 self._update(config={**self._state["config"], "errors": dict(result.errors)})
 
-        self._work("config", lambda: self._client(manifest).set_config(values), done)
+        self._work("config", lambda: self._enabled_client(manifest).set_config(values), done)
 
     def test_config(self, plugin_id: str, raw: Mapping[str, object]) -> None:
         """"Test connection": the plugin checks the typed values, nothing is saved."""
@@ -381,7 +397,7 @@ class PluginSettingsModel:
             if self._current(plugin_id) is not None:
                 self._set_status("test", False, text)
 
-        self._work("test", lambda: self._client(manifest).test_config(values), done,
+        self._work("test", lambda: self._enabled_client(manifest).test_config(values), done,
                    on_error=failed)
 
     def sign_in(self, plugin_id: str, raw: Mapping[str, object]) -> None:
@@ -400,15 +416,15 @@ class PluginSettingsModel:
         def start() -> LoginStep:
             if not current():
                 return LoginStep("cancelled")
-            return self._client(manifest).config_login(values)
+            return self._enabled_client(manifest).config_login(values)
 
         def done(step: LoginStep) -> None:
             if not current():
                 # Cancelled, closed or replaced: discard the answer and end
                 # any flow the plugin started before we could cancel it.
                 if step.state == "open":
-                    client = self._client(manifest)
-                    self._start(lambda: client.config_login_cancel(step.login_id))
+                    self._start(lambda: self._enabled_client(manifest)
+                                .config_login_cancel(step.login_id))
                 return
             if step.state == "open":
                 self._open(step.open_uri)
@@ -458,7 +474,8 @@ class PluginSettingsModel:
                 self._login_attempt = None
                 self._set_status("login", False, message or view.login_text("error"))
 
-        self._start(lambda: self._client(manifest).config_login_status(login_id), done, failed)
+        self._start(lambda: self._enabled_client(manifest).config_login_status(login_id),
+                    done, failed)
 
     def _login_finished(self, plugin_id: str, step: LoginStep) -> None:
         self._login_attempt = None
@@ -481,8 +498,8 @@ class PluginSettingsModel:
         if login is not None:
             manifest = self._manifests.get(login[0])
             if manifest is not None:
-                client = self._client(manifest)
-                self._start(lambda: client.config_login_cancel(login[1]))
+                self._start(lambda: self._enabled_client(manifest)
+                            .config_login_cancel(login[1]))
         return login
 
     def run_action(self, plugin_id: str, action_id: str) -> None:
@@ -504,7 +521,7 @@ class PluginSettingsModel:
             # closed or replaced, including a new form for the same plugin.
             if not current():
                 return None
-            return self._client(manifest).run_config_action(action_id)
+            return self._enabled_client(manifest).run_config_action(action_id)
 
         self._set_status("action", True, _("Working…"), pending=True)
 

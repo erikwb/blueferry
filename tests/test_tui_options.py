@@ -60,6 +60,7 @@ class _OptionsBackend(_Backend):
     ) -> None:
         super().__init__()
         self.photos = photos
+        self.photos_state: str | None = None
         self.otp = otp
         self.fail = fail
         self.saved_opt_ins = saved_opt_ins
@@ -74,7 +75,8 @@ class _OptionsBackend(_Backend):
     def status(self) -> BackendStatus:  # type: ignore[override]
         return BackendStatus(
             daemon=True, map=True, pbap=True, ancs=True,
-            contact_photos=self.photos, otp_autocopy=self.otp,
+            contact_photos=self.photos, contact_photos_state=self.photos_state,
+            otp_autocopy=self.otp,
             saved_opt_ins=self.saved_opt_ins, notification_policy=self.policy,
             phone_battery_warning=self.battery, storage_policy="encrypted",
             storage_state="ready", extra=dict(self.extra),
@@ -224,6 +226,56 @@ def test_options_screen_saves_the_contact_photo_opt_in() -> None:
 
             await pilot.press("o")
             await _until(pilot, lambda: not isinstance(app.screen, OptionsScreen))
+
+    asyncio.run(scenario())
+
+
+def test_an_unknown_contact_photo_choice_is_unavailable_until_it_reads() -> None:
+    async def scenario() -> None:
+        backend = _OptionsBackend()
+        backend.photos_state = "unknown"
+        app = _app(backend)
+        async with app.run_test(size=(120, 40)) as pilot:
+            screen = await _open(app, pilot)
+            checkbox = screen.query_one("#opt-contact_photos", Checkbox)
+            assert checkbox.display is True and checkbox.disabled is True
+            caption = _plain(screen, "#opt-contact_photos-caption")
+            assert "settings.json cannot be read" in caption
+            checkbox.focus()
+            await pilot.press("space")
+            await pilot.pause()
+            assert backend.saved == [] and checkbox.value is False
+
+            backend.photos, backend.photos_state = True, "on"
+            screen.status_changed(backend.status())
+            await pilot.pause()
+            assert checkbox.disabled is False and checkbox.value is True
+            assert "next contact sync" in _plain(screen, "#opt-contact_photos-caption")
+
+    asyncio.run(scenario())
+
+
+def test_a_photo_toggle_is_not_sent_once_the_choice_turns_unknown() -> None:
+    async def scenario() -> None:
+        backend = _OptionsBackend()
+        backend.photos_state = "off"
+        app = _app(backend)
+        notices: list[str] = []
+        app.notify = lambda message, **_kwargs: notices.append(message)  # type: ignore[method-assign]
+        async with app.run_test(size=(120, 40)) as pilot:
+            screen = await _open(app, pilot)
+            photos = screen.query_one("#opt-contact_photos", Checkbox)
+            otp = screen.query_one("#opt-otp_autocopy", Checkbox)
+            photos.toggle()
+            otp.toggle()
+            # settings.json stops reading before the Changed messages are handled.
+            backend.photos_state = "unknown"
+            screen.status_changed(backend.status())
+            await _until(pilot, lambda: ("otp_autocopy", True) in backend.calls)
+            await _until(pilot, lambda: not screen.pending)
+            assert not any(call[0] == "contact_photos" for call in backend.calls)
+            assert notices == ["Unavailable while settings.json cannot be read"]
+            assert photos.value is False and otp.value is True
 
     asyncio.run(scenario())
 
@@ -401,7 +453,7 @@ def test_sound_route_caption_shows_the_av_sync_line_under_the_hint() -> None:
             caption = screen.query_one("#opt-phone_audio-caption", Static)
             assert str(caption.render()).split("\n") == [
                 "Playing on this computer.",
-                "A/V sync: 110 ms delay reported to the iPhone.",
+                "A/V sync: this computer reports 110 ms.",
             ]
             # Without an open stream only the hint is left.
             backend.extra.pop("phone_audio_delay_reporting")
@@ -857,6 +909,26 @@ def test_a_status_forwarded_while_options_is_being_pushed_does_not_crash() -> No
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize("state", ["locked", "ready"])
+def test_storage_caption_says_why_local_data_is_unavailable(state) -> None:
+    detail = "Local data is not retained while settings.json cannot be read"
+
+    async def scenario() -> None:
+        backend = _OptionsBackend()
+        backend.status = lambda: BackendStatus(
+            daemon=True, storage_policy="encrypted", storage_state=state,
+            storage_detail=detail, extra=dict(_FULL_EXTRA),
+        )
+        app = _app(backend)
+        async with app.run_test(size=(160, 40)) as pilot:
+            screen = await _open(app, pilot, "security")
+            caption = _plain(screen, "#options-storage")
+            assert ("settings.json cannot be read" in caption) is (state == "locked")
+            assert "blueferry storage-reset" not in caption
+
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize("offered", [False, True])
 def test_storage_caption_names_the_reset_only_when_the_daemon_offers_it(offered) -> None:
     async def scenario() -> None:
@@ -880,6 +952,8 @@ class _MuteBackend(_OptionsBackend):
         ]
         self.app_loads = 0
         self.mute_error: str | None = None
+        self.mute_error_name = ""
+        self.mute_available = True
         self.apps_error: str | None = None
 
     def notification_apps(self) -> dict:
@@ -888,14 +962,14 @@ class _MuteBackend(_OptionsBackend):
             raise BackendError(self.apps_error)
         return {
             "apps": [dict(app) for app in self.apps], "max_muted": 100,
-            "mute_available": True, "all_notifications": True,
+            "mute_available": self.mute_available, "all_notifications": True,
             "env_allowlist": False, "env_blocklist": True,
         }
 
     def set_notification_app_muted(self, app_id: str, muted: bool) -> bool:
         self._record("mute", app_id, muted)
         if self.mute_error:
-            raise BackendError(self.mute_error)
+            raise BackendError(self.mute_error, dbus_name=self.mute_error_name)
         for app in self.apps:
             if app["app_id"] == app_id:
                 app["muted"] = muted
@@ -937,6 +1011,49 @@ def test_muted_apps_list_each_app_with_a_checkbox_and_save_a_change() -> None:
             assert "[b]storage locked[/b]" in _plain(screen, "#options-error")
             await _until(pilot, lambda: not screen.muting)
             await _until(pilot, lambda: _mute_boxes(screen)["com.example.mail"].value is True)
+
+    asyncio.run(scenario())
+
+
+def test_a_mute_refused_while_settings_json_cannot_be_read_shows_why_and_locks_the_list() -> None:
+    async def scenario() -> None:
+        backend = _MuteBackend()
+        app = _app(backend)
+        async with app.run_test(size=(120, 60)) as pilot:
+            screen = await _open(app, pilot, "notifications")
+            await _until(pilot, lambda: len(_mute_boxes(screen)) == 2)
+            assert not _mute_boxes(screen)["com.example.chat"].disabled
+
+            # settings.json broke meanwhile: the daemon refuses with
+            # Configuration, saves nothing and now lists mute_available false.
+            backend.mute_error = (
+                "settings.json could not be read, so the change was not saved; "
+                "repair or remove the file and try again"
+            )
+            backend.mute_error_name = "io.weirdware.BlueFerry.Error.Configuration"
+            backend.mute_available = False
+            _mute_boxes(screen)["com.example.chat"].toggle()
+            await _until(pilot, lambda: "could not be read" in _plain(screen, "#options-error"))
+            await _until(pilot, lambda: not screen.muting)
+            await _until(pilot, lambda: all(box.disabled for box in _mute_boxes(screen).values()))
+            boxes = _mute_boxes(screen)
+            # The daemon's state again: chat unmuted, mail still muted.
+            assert boxes["com.example.chat"].value is False
+            assert boxes["com.example.mail"].value is True
+            assert "settings.json can't be read" in _plain(screen, "#options-muted-apps-hint")
+
+            # An unavailable list sends nothing, not even an unmute.
+            calls = list(backend.calls)
+            screen._set_muted("com.example.mail", False)
+            await pilot.pause(0.2)
+            assert backend.calls == calls
+
+            # Once the file reads again the list can be changed again.
+            backend.mute_error = None
+            backend.mute_available = True
+            screen.apps_changed()
+            await _until(pilot, lambda: not _mute_boxes(screen)["com.example.chat"].disabled)
+            assert "settings.json" not in _plain(screen, "#options-muted-apps-hint")
 
     asyncio.run(scenario())
 
@@ -1021,3 +1138,45 @@ def test_a_failed_app_list_keeps_the_last_answer_and_only_shows_the_error() -> N
             assert locked not in _plain(screen, "#options-muted-apps-hint")
 
     asyncio.run(scenario())
+
+
+
+def _rebuild_apps_without_the_list(*, closing: bool) -> None:
+    async def scenario() -> None:
+        backend = _MuteBackend()
+        app = _app(backend)
+        async with app.run_test(size=(120, 60)) as pilot:
+            screen = await _open(app, pilot, "notifications")
+            await _until(pilot, lambda: bool(_mute_boxes(screen)))
+            gate = asyncio.Event()
+            original = screen._rebuild_apps
+
+            async def held(rows):
+                await gate.wait()
+                await original(rows)
+
+            screen._rebuild_apps = held
+            backend.apps.append({"app_id": "com.example.news", "app_name": "News",
+                                 "muted": False, "seen": True})
+            screen.apps_changed()
+            await pilot.pause(0.5)
+            # Textual removes a closing screen's widgets before it cancels
+            # the screen's workers; the rebuild then resumes.
+            await screen.query_one("#options-muted-apps-list").remove()
+            screen._closing = closing
+            try:
+                gate.set()
+                await pilot.pause(0.5)
+            finally:
+                screen._closing = False
+
+    asyncio.run(scenario())
+
+
+def test_a_muted_apps_rebuild_on_a_closing_screen_stops_quietly() -> None:
+    _rebuild_apps_without_the_list(closing=True)
+
+
+def test_a_missing_muted_apps_list_on_a_healthy_screen_still_fails() -> None:
+    with pytest.raises(Exception, match="options-muted-apps-list"):
+        _rebuild_apps_without_the_list(closing=False)

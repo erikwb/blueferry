@@ -25,13 +25,15 @@ The A/V sync delay is reported as ``phone_audio_delay_ms`` and
 ``phone_audio_delay_reporting``. With AVDTP Delay Reporting negotiated,
 bluetoothd exports the transport's ``Delay`` property (1/10 ms) and forwards
 what the audio server reports to the phone, which shifts video by it. A
-transport without ``Delay`` never negotiated delay reporting (older adapter or
-BlueZ); video can then run ahead of the sound. Both keys are ``None`` while no
-stream is open. The delay itself is only reported while the transport's
-``State`` is ``active``: an idle or pending transport reports
-``phone_audio_delay_ms`` as ``None`` (its last value would be stale), while
-``phone_audio_delay_reporting`` still says whether the property exists. A
-``Delay`` that is only invalidated keeps the last value. Both follow
+transport without ``Delay`` has no delay reporting: BlueZ 5.70 to 5.77 export
+the read-only ``Delay`` only while it is nonzero, and an audio server whose
+sink endpoint does not register ``DelayReporting`` gets none. Video can then
+run ahead of the sound. Both keys are ``None`` while no stream is open. The
+delay itself is only reported while the transport's ``State`` is ``active``:
+an idle or pending transport reports ``phone_audio_delay_ms`` as ``None`` (its
+last value would be stale), while ``phone_audio_delay_reporting`` still says
+whether the property exists. BlueZ lists ``Delay`` as invalidated only once
+it no longer exists, so that counts as no ``Delay``. Both follow
 ``PropertiesChanged`` for ``State`` and ``Delay``; nothing polls.
 
 Requires the desktop audio server to offer the A2DP sink role. BlueFerry no
@@ -114,9 +116,6 @@ Cancel = Callable[[int], object]
 ResumePlayback = Callable[[Callable[[], bool]], None]
 
 
-# A transport exports Delay, but no value has been seen (only invalidated).
-DELAY_UNKNOWN = -1
-
 class PhoneAudioRoute:
     """Content-free view of, and control over, the phone's A2DP stream."""
 
@@ -147,9 +146,7 @@ class PhoneAudioRoute:
         # Transport object path -> MediaTransport1.State.
         self._transports: dict[str, str] = {}
         # Transport object path -> MediaTransport1.Delay (1/10 ms), or None
-        # when the transport has no Delay (delay reporting not negotiated).
-        # Per transport: the Delay in 1/10 ms, None without the property (no
-        # delay reporting), DELAY_UNKNOWN while it exists with no value seen.
+        # while the transport does not export Delay.
         self._delays: dict[str, int | None] = {}
         self._known = False
         self._pending: str | None = None
@@ -210,7 +207,7 @@ class PhoneAudioRoute:
         delay = self._delays.get(path)
         if delay is None:
             return {"phone_audio_delay_ms": None, "phone_audio_delay_reporting": False}
-        if delay == DELAY_UNKNOWN or self._transports[path] != TRANSPORT_ACTIVE:
+        if self._transports[path] != TRANSPORT_ACTIVE:
             return {"phone_audio_delay_ms": None, "phone_audio_delay_reporting": True}
         return {
             "phone_audio_delay_ms": (delay + 5) // 10,
@@ -497,8 +494,8 @@ class PhoneAudioRoute:
     def _transport_changed(self, path, interface, changed, invalidated) -> None:
         if str(interface) != TRANSPORT_IFACE:
             return
-        delay_changed = "Delay" in changed or "Delay" in (invalidated or ())
-        if "State" not in changed and not delay_changed:
+        delay_gone = "Delay" in (invalidated or ())
+        if "State" not in changed and "Delay" not in changed and not delay_gone:
             return
         key = str(path)
         if key not in self._transports:
@@ -508,10 +505,10 @@ class PhoneAudioRoute:
             self._transports[key] = str(changed["State"])
         if "Delay" in changed:
             self._delays[key] = self._read_delay(changed)
-        elif delay_changed and self._delays.get(key) is None:
-            # Invalidated without a value: the property (and so delay
-            # reporting) is there; keep the last value, if any was seen.
-            self._delays[key] = DELAY_UNKNOWN
+        elif delay_gone:
+            # BlueZ invalidates a property only once it no longer exists
+            # (gdbus process_properties_from_interface).
+            self._delays[key] = None
         self._changed(before)
 
     def _properties_changed(self, interface, changed, _invalidated) -> None:

@@ -267,6 +267,19 @@ def test_status_reports_the_contact_photo_opt_in_only_when_the_daemon_does() -> 
     assert status.extra == {"contact_photo_count": 4}
 
 
+def test_status_keeps_the_contact_photo_state_beside_the_boolean() -> None:
+    assert "contact_photos_state" not in BackendStatus.from_dict({}).to_dict()
+    status = BackendStatus.from_dict(
+        {"contact_photos": False, "contact_photos_state": "unknown"}
+    )
+    assert status.contact_photos is False and status.contact_photos_state == "unknown"
+    assert status.to_dict()["contact_photos_state"] == "unknown"
+    assert status.extra == {}
+    # A state this client doesn't know leaves it with the boolean.
+    newer = BackendStatus.from_dict({"contact_photos": True, "contact_photos_state": "later"})
+    assert newer.contact_photos_state is None and newer.contact_photos is True
+
+
 def test_status_decodes_only_canonical_opaque_phone_profile_ids() -> None:
     profile_id = "01234567-89ab-4cde-8fab-0123456789ab"
     assert BackendStatus.from_dict({}).phone_profile_id is None

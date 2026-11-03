@@ -28,14 +28,30 @@ works; list the contacts again.
 Contact view in the clients:
 
 - **KDE client:**
-  not yet; use the command line.
+  the **Contacts** tab lists the cards with a search field (it searches as
+  you type, after a short pause) and loads more cards as you scroll. Choose
+  a card to see all its details; **Call** asks before it dials the first
+  number, **Message** opens the conversation with it or starts a new one,
+  and each number or address has its own call, message, email and copy
+  buttons. The list is read only while the tab is shown, and reloads by
+  itself when the background service restarts or the contacts were synced
+  again.
 - **GTK client:**
-  not yet; use the command line.
+  the **Contacts** tab lists the cards with a search field (it searches as
+  you type, after a short pause) and loads more cards when you scroll to the
+  end. Choose a card to see all its details; **Call** asks before it dials
+  the first number, **Message** opens the conversation with it or starts a
+  new one, and each number or address has its own call, message, email and
+  copy buttons. The list is read only while the tab is shown, and reloads by
+  itself when the background service restarts or the contacts were synced
+  again.
 - **Terminal client:**
   `C` opens the contacts with search, the card details and Call, Send a
   Message and Copy (see [Clients](clients.md#contacts-and-search)).
 - **Quickshell panel:**
-  not yet; use the command line.
+  the search button (or `Ctrl+F`) finds a contact and calls or writes to one
+  of its numbers or addresses (see
+  [Clients](clients.md#contacts-and-search-in-the-panel)).
 
 ## Photos
 

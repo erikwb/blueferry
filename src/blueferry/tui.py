@@ -328,6 +328,9 @@ class _EventMonitor:
     def __init__(self) -> None:
         self.handles: deque[str] = deque()
         self.invalidated = False
+        # HistoryChanged on its own: a StatusChanged also reloads the
+        # snapshot, but only stored history can make a search hit stale.
+        self.history_changed = False
         self.calls_changed = False
         self.tether_changed = False
         self.now_playing_changed = False
@@ -343,7 +346,7 @@ class _EventMonitor:
         }
         self._matches = [
             bus.add_signal_receiver(
-                lambda _props: self._invalidate(),
+                lambda _props: self._history_changed(),
                 signal_name="HistoryChanged",
                 **common,
             ),
@@ -421,6 +424,14 @@ class _EventMonitor:
 
     def _invalidate(self) -> None:
         self.invalidated = True
+
+    def _history_changed(self) -> None:
+        self.history_changed = True
+        self.invalidated = True
+
+    def take_history_changed(self) -> bool:
+        changed, self.history_changed = self.history_changed, False
+        return changed
 
     def pump(self) -> tuple[bool, str | None]:
         while self._context.pending():
@@ -539,6 +550,30 @@ class GroupConfirmScreen(ModalScreen[bool]):
 
     def action_cancel(self) -> None:
         self.dismiss(False)
+
+
+class SenderConfirmScreen(GroupConfirmScreen):
+    """Asks whether a reply to a message that may be from a group goes to
+    its sender only."""
+
+    def compose(self) -> ComposeResult:
+        name = _one_line(self.thread.name)
+        address = _one_line(", ".join(self.thread.recipients))
+        with Vertical(id="confirm-dialog", classes="dialog"):
+            # Names come from the phone; never parse them as markup.
+            yield Static(Text(f"Reply to {name} only?"), classes="dialog-title")
+            yield Static(
+                Text(
+                    "The latest message may have been sent in a group. "
+                    f"Your reply goes only to {address}."
+                ),
+                classes="dialog-copy",
+            )
+            with Horizontal(classes="dialog-actions"):
+                yield Button("Cancel", id="confirm-cancel")
+                yield Button(
+                    Text(f"Reply only to {name}"), variant="primary", id="confirm-send",
+                )
 
 
 class DeleteConversationScreen(ModalScreen[bool]):
@@ -1233,11 +1268,17 @@ class BlueFerryApp(App[None]):
         take_media = getattr(self._monitor, "take_now_playing_changed", None)
         if take_media is not None and take_media():
             self._load_now_playing()
-        take_history = getattr(self._monitor, "take_call_history_changed", None)
-        if take_history is not None and take_history() and isinstance(
-            self.screen, RecentCallsScreen,
-        ):
+        take_history = getattr(self._monitor, "take_history_changed", None)
+        history_changed = take_history is not None and take_history()
+        take_call_history = getattr(self._monitor, "take_call_history_changed", None)
+        call_history_changed = take_call_history is not None and take_call_history()
+        if call_history_changed and isinstance(self.screen, RecentCallsScreen):
             self.screen.refresh_calls()
+        if history_changed or call_history_changed:
+            # A shown search answer may name a deleted message or call.
+            for screen in self.screen_stack:
+                if isinstance(screen, SearchScreen):
+                    screen.data_changed()
         take_notifications = getattr(self._monitor, "take_notifications_changed", None)
         if take_notifications is not None and take_notifications():
             for screen in self.screen_stack:
@@ -2186,15 +2227,25 @@ class BlueFerryApp(App[None]):
                 ),
             )
             return
+        if plan.disposition is ReplyDisposition.CONFIRM_SENDER:
+            self.push_screen(
+                SenderConfirmScreen(thread),
+                lambda confirmed: self._group_reply_ready(
+                    confirmed, thread.key, body, plan.expected_group_token,
+                    cancelled="Reply cancelled",
+                ),
+            )
+            return
         self._begin_reply(thread.key, body, False, plan.expected_group_token)
 
     def _group_reply_ready(
         self, confirmed: bool, thread_key: str, body: str, expected_group_token: str,
+        *, cancelled: str = "Group reply cancelled",
     ) -> None:
         if confirmed:
             self._begin_reply(thread_key, body, True, expected_group_token)
         else:
-            self.state.notice = "Group reply cancelled"
+            self.state.notice = cancelled
             self._update_notice()
 
     def _begin_reply(

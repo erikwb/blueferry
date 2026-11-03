@@ -24,18 +24,22 @@ class PhotosTabModel:
         runner: TaskRunner,
         open_runner: TaskRunner | None = None,
         url: Callable[[object], str],
+        thumbnail_url: Callable[[object], str] | None = None,
         open_file: Callable[[object], None],
         on_change: Callable[[], None] = lambda: None,
         on_error: Callable[[str], None] = lambda _message: None,
     ) -> None:
         """``url`` turns a local path into the client's file URL ("" for
-        none); ``open_file`` shows a downloaded original. Both runners must
-        be independent of the client's backend queue. The model serializes
+        none), and ``thumbnail_url`` (``url`` by default) a thumbnail into
+        the URL its image loader takes; ``open_file`` shows a downloaded
+        original. Both runners must be independent of the client's backend
+        queue. The model serializes
         work and exposes its own busy state for both lists and originals.
         Only errors belonging to the current tab reach ``on_error``."""
         self._runner = runner
         self._open_runner = open_runner or runner
         self._url = url
+        self._thumbnail_url = thumbnail_url
         self._open_file = open_file
         self._on_change = on_change
         self._on_error = on_error
@@ -117,7 +121,8 @@ class PhotosTabModel:
                 return
             manifest, snapshot = value
             self._plugin = manifest
-            self._state = {**photos_view.loaded_state(snapshot, self._url), "busy": self._working}
+            self._state = {**photos_view.loaded_state(
+                snapshot, self._url, self._thumbnail_url), "busy": self._working}
             self._on_change()
 
         def failed(message: str) -> None:

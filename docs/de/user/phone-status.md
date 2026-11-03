@@ -19,8 +19,10 @@ flowchart LR
 ```
 
 - **Akku**: aus dem Standard-GATT-Battery-Service des Telefons (Merkmal
-  Battery Level), einmal gelesen und danach über Benachrichtigungen verfolgt;
-  BlueZ' `Battery1` wird nur verwendet, solange dieser Wert fehlt. Auf 1 %
+  Battery Level). Verfolgt ihn BlueZ' Akku-Plugin bereits (BlueZ' `Battery1`
+  mit der Quelle „GATT Battery Service“), übernimmt BlueFerry diesen Wert und
+  überlässt das Merkmal BlueZ; sonst liest BlueFerry es einmal und verfolgt
+  danach selbst die Benachrichtigungen. Auf 1 %
   genau. Sind
   Anrufe an und es gibt keinen LE-Wert, wird der Freisprech-Wert verwendet
   (20-%-Schritte, als „etwa“ angezeigt).

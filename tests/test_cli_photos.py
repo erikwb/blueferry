@@ -46,6 +46,25 @@ def test_load_recent_covers_missing_unconfigured_failing_and_ready(tmp_path) -> 
     assert photos_view.type_text(ready.photos[0]) == "Video"
 
 
+def test_load_recent_stops_when_the_plugin_is_disabled_after_its_status(
+        tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    plugin = manifest()
+
+    def disable(*_args):
+        # `blueferry plugins disable` or another client, mid-load.
+        (tmp_path / "config" / "blueferry").mkdir(parents=True)
+        (tmp_path / "config" / "blueferry" / "plugins.json").write_text(
+            json.dumps({"disabled": [plugin.id]}))
+        return '{"state": "ok"}'
+
+    transport = ScriptedTransport({"Status": disable, "ListRecent": "[]"})
+    snapshot = photos_view.load_recent(plugin, client_factory=lambda p: PluginClient(
+        p, transport=transport, cache_root=lambda: tmp_path))
+    assert [method for method, _args in transport.calls] == ["Status"]
+    assert not snapshot.present and not snapshot.ready
+
+
 def test_labels_use_local_time(monkeypatch) -> None:
     monkeypatch.setenv("TZ", "Europe/Zurich")
     import time

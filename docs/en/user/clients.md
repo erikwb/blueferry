@@ -12,13 +12,18 @@ desktops.
 
 The window is a phone overview. A card above the tabs shows the iPhone's
 name and connection, battery, signal and network, and what is playing (with
-previous, play/pause and next). Its **Quick Settings** button holds the
+previous, play/pause and next, and [volume down and up](media-control.md#volume)
+around the level the iPhone last reported). Its **Quick Settings** button holds the
 switches for [the sound](phone-audio.md) and the
 [away lock](proximity-lock.md). When something is off, the card says which
 setting turns it on. The tabs are switched in the header bar, or at the
 bottom in a narrow window:
 
 - **Messages**: conversations and the chat.
+- **Contacts**: the [contact cards](contacts.md) with a search field; a
+  card shows every number with its label, email and postal addresses,
+  company, job title and photo, with **Call** and **Message** (opens the
+  conversation with that number, or a new message).
 - **Calls**: running [phone calls](calls.md) with answer, hold/resume,
   hang up, keypad tones (0-9, `*`, `#`) for the active call and the sound
   switch, a dial pad that also searches your
@@ -26,8 +31,10 @@ bottom in a narrow window:
   with All and Missed, call back and message buttons, and **Refresh from
   iPhone**. Every call asks for confirmation first.
 - **Notifications**: the [recent iPhone notifications](notification-history.md)
-  of other apps. When the list is off, the tab says why and opens the
-  setting.
+  of other apps, with a pin button on each entry; pinned entries are listed
+  first, and entries removed on the iPhone or from
+  [muted apps](notification-mute.md) are dimmed. When the list is off, the
+  tab says why and opens the setting.
 - **Photos**: the newest photos and videos of a [photo plugin](plugins.md),
   with All, Photos and Videos; a click downloads the original and opens it,
   and an opened one can be dragged into other apps.
@@ -39,6 +46,15 @@ it) and **Tools** (screen mirroring, LocalSend, the iPhone's photos over
 USB). It stays as you left it and unfolds by itself when a plugin brings
 something new, such as a running transfer.
 
+Drag files from the file manager anywhere onto the window to send them to
+the iPhone through a **Send to…** plugin such as LocalSend; see
+[dropping files on the window](plugins.md#dropping-files-on-the-window).
+
+The magnifier in the header bar, `Ctrl+K` or `Ctrl+F` opens the
+[search](search.md) over conversations, messages, contacts and calls.
+Choosing a hit opens the conversation at that message, the contact card,
+or the call in the call history.
+
 **Settings** (main menu, `Ctrl+,`) has the same categories as the KDE
 client, one page each; the switcher sits in the header bar, or at the
 bottom in a narrow window, and the search button finds any setting:
@@ -46,7 +62,7 @@ bottom in a narrow window, and the search button finds any setting:
 | Category | What's there |
 | --- | --- |
 | Phone | Pairing, connection health with **Reconnect**, **Run Diagnostics** (the same checks as `blueferry doctor`; the report opens in its own dialog with a copy button), pairing report, contact sync, contact photos |
-| Notifications | Which events create popups, contacts only, click rules, notification content, action buttons, sync notifications with iPhone, mark read on dismiss, keeping recent notifications |
+| Notifications | Which events create popups, contacts only, [muted apps](notification-mute.md), click rules, notification content, action buttons, sync notifications with iPhone, mark read on dismiss, keeping recent notifications |
 | Calls & Audio | Phone calls, call history, battery warning, [iPhone sound on this computer](phone-audio.md), media control |
 | Network | Opt-in [Bluetooth tethering](bluetooth-tethering.md) |
 | Security | One-time codes, away lock, local storage and its encryption, Clear History |
@@ -68,11 +84,15 @@ The window is a phone overview. On the left, a card shows the iPhone's name,
 connection, battery and signal, what is playing (with previous, play/pause
 and next), and quick switches for [the sound](phone-audio.md) and the
 [away lock](proximity-lock.md). Features that are off stay visible but
-greyed out, with the setting that turns them on. On the right are three
+greyed out, with the setting that turns them on. On the right are the
 tabs:
 
 - **Messages**: conversations with All, Unread and Starred filters, and the
   chat.
+- **Contacts**: the [contact cards](contacts.md) with a search field; a
+  card shows every number with its label, email and postal addresses,
+  company, job title and photo, with **Call** and **Message** (opens the
+  conversation with that number, or a new message).
 - **Calls**: [phone calls](calls.md) with a dial pad and running calls as
   cards (answer, hold, hang up, keypad tones for the active call), and the [call history](call-history.md)
   grouped by day, with All and Missed. Dialing asks you to confirm the number;
@@ -85,13 +105,22 @@ Messages are marked read only while their conversation is visible and the
 window has focus. The phone card's sound switch controls media playback;
 it does not switch the audio of a phone call.
 
+Drag files from the file manager anywhere onto the window to send them to
+the iPhone through a **Send to…** plugin such as LocalSend; see
+[dropping files on the window](plugins.md#dropping-files-on-the-window).
+
+The magnifier in the header, `Ctrl+K` or `Ctrl+F` opens the
+[search](search.md) over conversations, messages, contacts and calls.
+Choosing a hit opens the conversation at that message, the contact card,
+or the call in the call history.
+
 **Settings** (the gear in the header) has categories on the left, like KDE's
 System Settings:
 
 | Category | What's there |
 | --- | --- |
 | Phone | Pairing, connection health, **Run Diagnostics** (the same checks as `blueferry doctor`, shown in the window), contact sync, contact photos |
-| Notifications | Which events create popups, contacts only, click rules, notification content, action buttons, sync notifications with iPhone, mark read on dismiss |
+| Notifications | Which events create popups, contacts only, click rules, notification content, action buttons, sync notifications with iPhone, mark read on dismiss, muted apps |
 | Calls & Audio | Phone calls, call history, battery warning, [iPhone sound on this computer](phone-audio.md), media control |
 | Network | [Bluetooth tethering](bluetooth-tethering.md), share iPhone Internet, automatic hotspot connection |
 | Security | One-time codes, away lock, local storage and its encryption, Clear History |
@@ -171,9 +200,9 @@ background service offers it.
 | Category | What you find there |
 |---|---|
 | Phone | Pairing, connection health with **Reconnect**, resetting a stuck connection automatically, **Run Diagnostics**, **Sync Contacts**, contact photos |
-| Notifications | Which events create popups, contacts only, notification content, action buttons, sync notifications with iPhone, mark read on dismiss, keeping recent iPhone notifications, and the recent notifications themselves |
+| Notifications | Which events create popups, contacts only, muted apps, notification content, action buttons, sync notifications with iPhone, mark read on dismiss, keeping recent iPhone notifications, and the recent notifications themselves with **Pin** / **Unpin** |
 | Calls & Audio | Phone calls, call history and missed-call popups, battery warning, iPhone sound on this computer, media control and MPRIS |
-| Security | One-time codes, away lock, the local storage setting |
+| Security | One-time codes, away lock, the local storage setting, and **Reset Local Storage…** when the saved data can't be opened |
 | About | The background service, its version and **Restart Service** |
 
 The switches that need a restart show the restart notice at the top of the
@@ -184,7 +213,49 @@ switch greyed out with the `local.env` variable to set instead.
 recent iPhone notifications** keeps: the app, the time and, if allowed,
 title and text. The list is read only while it is shown, follows new
 notifications, and is forgotten when you hide it or leave the page. When it
-is off, empty or unavailable, it says why.
+is off, empty or unavailable, it says why. **Pin** / **Unpin** on an entry
+keeps it in the list, also across restarts; pinned entries come first and
+are marked **Pinned**. Entries removed on the iPhone say **Removed on
+iPhone**; they and entries from muted apps are greyed out. At 20 pins only
+**Unpin** stays available and the list says so.
+
+**Muted apps** (under Notifications, with a background service that can mute
+apps) lists the iPhone apps seen since the service started, each with
+**Mute** / **Unmute**. A muted app shows no desktop popup; nothing changes on
+the iPhone. The list follows changes made elsewhere, for example with
+`blueferry notifications mute`.
+
+While something is playing, the now-playing strip under the header also has
+volume down and up buttons and the level the iPhone last reported. Each press
+moves the iPhone volume one step; the buttons are greyed out when the playing
+app does not offer volume control.
+
+| | Qt | GTK | TUI | Quickshell | CLI |
+|---|---|---|---|---|---|
+| iPhone volume buttons and level | ✓ phone card, Now Playing | ✓ phone card | ✓ `-` / `+`, iPhone Overview | ✓ now-playing strip | ✓ `blueferry media volume up\|down` |
+| Pin / unpin notifications | ✓ Notifications tab | ✓ Notifications tab | ✓ iPhone Notifications, `P` | ✓ Show Recent Notifications | ✓ `blueferry notifications pin\|unpin KEY` |
+| Mute apps | ✓ Settings › Notifications | ✓ Settings › Notifications | ✓ Settings › Notifications › Muted apps | ✓ iPhone settings › Notifications | ✓ `blueferry notifications apps\|mute\|unmute` |
+
+The panel's notification list has no other row actions (it does not open or
+answer notifications), so a notification the iPhone can no longer act on
+looks the same there apart from **Removed on iPhone**.
+
+### Contacts and search in the panel
+
+The search button (⌕) next to **+**, or `Ctrl+F`, opens **Search** with a
+background service that has [contact cards](contacts.md) or the [global
+search](search.md). With an empty field it lists the contacts, with
+**More contacts** for the next page. Typing at least two characters
+searches conversations, messages, contacts and calls at once, a moment
+after you stop typing; the hits are grouped and the matching words of a
+message are shown in bold. Click a conversation or message to open it.
+Click a contact to see its numbers, email and postal addresses: **Call**
+calls a number after a confirmation, **Message** opens **New message** with
+the number or address filled in. A call hit has **Call** and **Message**
+for the caller. **Call** is greyed out, with the reason, until phone calls
+are on and ready. The panel has no calls view, so answer, hold and hang up
+on the iPhone or in another client. Nothing of this is read while the
+popup is closed, and it is forgotten when you close it.
 
 ### What the panel leaves out
 
@@ -197,10 +268,12 @@ Quickshell is a compact panel, so some parts stay with the other clients:
 | Companion tools | Setting up desktop helpers is a one-time job, not a panel task | Qt or GTK settings, `blueferry tools` |
 | Clearing the message history | Not offered by the terminal client either | `blueferry history-clear` |
 | Click Rules, recent calls, the calls panel | Not in the Quickshell client yet | Qt, GTK or terminal client |
+| Contact photos, copying card entries, writing an email (mail app), opening a call hit in the recent calls | The panel's search only finds a contact to call or write; it has no recent-calls list | `blueferry contacts show --photo`; recent calls in the Qt, GTK or terminal client |
 
 The panel loads no translation catalog, so its own labels are English.
 Texts that come from the shared BlueFerry code, such as the reconnect hint,
-the restart notice or the notification placeholder, follow your language.
+the restart notice, the notification placeholder, the pin and mute texts or
+the volume level, follow your language.
 
 ## Terminal (TUI)
 

@@ -12,6 +12,10 @@ A content-free ``Plugin1.CardChanged`` schedules one coalesced reload
 from the owners of the bus names that ``watch`` receives after each load
 (the enabled card plugins), so no other session-bus client can make the
 card call every plugin in a loop. Clients see one plain ``state`` map.
+
+A client hands the same :class:`SendGate` to this model and to the window's
+drop zone (``file_drop_view.FileDrop``), so it never has two ``SendFiles``
+running at once.
 """
 from __future__ import annotations
 
@@ -25,6 +29,32 @@ from blueferry.plugin_api.surfaces import checked_share_paths
 from blueferry.text_safety import control_text
 
 RELOAD_DELAY_MS = 400
+
+
+def sending_elsewhere_notice() -> str:
+    return _("Other files are still being sent; try again in a moment.")
+
+
+class SendGate:
+    """One ``SendFiles`` at a time across a client: "Send to…", card sends
+    and dropped files. Only its holder releases it; UI thread only."""
+
+    def __init__(self) -> None:
+        self._holder: object | None = None
+
+    @property
+    def busy(self) -> bool:
+        return self._holder is not None
+
+    def acquire(self, holder: object) -> bool:
+        if self._holder is not None:
+            return False
+        self._holder = holder
+        return True
+
+    def release(self, holder: object) -> None:
+        if self._holder is holder:
+            self._holder = None
 
 
 class PluginSurfacesModel:
@@ -44,8 +74,10 @@ class PluginSurfacesModel:
         find: Callable[[str, str], Any] = surfaces.find_plugin,
         send: Callable[..., surfaces.Outcome] = surfaces.send,
         card_choice: Callable[..., surfaces.ShareChoice | None] = surfaces.card_choice,
+        gate: SendGate | None = None,
     ) -> None:
         self._runner = runner
+        self._gate = gate if gate is not None else SendGate()
         self._on_change = on_change
         self._watch = watch
         self._load_cards = load_cards
@@ -181,6 +213,9 @@ class PluginSurfacesModel:
         if choice is None:
             self._say(_("That target is gone; open \u201cSend to\u201d again."), False)
             return
+        if not self._gate.acquire(self):
+            self._say(sending_elsewhere_notice(), False)
+            return
         self._update(busy=f"send:{key}", message="")
         self._send_paths(lambda: choice, list(paths))
 
@@ -192,6 +227,9 @@ class PluginSurfacesModel:
         if self._state["busy"]:
             return
         if not paths:
+            return
+        if not self._gate.acquire(self):
+            self._say(sending_elsewhere_notice(), False)
             return
         self._update(busy=f"send:{plugin_id}:{target_id}", message="")
         self._send_paths(lambda: self._card_choice(plugin_id, target_id, label), list(paths))
@@ -213,7 +251,12 @@ class PluginSurfacesModel:
             return self._send(choice, files)
 
         def done(outcome: surfaces.Outcome) -> None:
+            self._gate.release(self)
             self._say(outcome.message, outcome.ok)
             self._timer.start(RELOAD_DELAY_MS)
 
-        self._run(work, done)
+        def failed(message: str) -> None:
+            self._gate.release(self)
+            self._say(message or _("The plugin did not answer."), False)
+
+        self._run(work, done, failed)
