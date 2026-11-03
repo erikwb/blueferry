@@ -237,6 +237,170 @@ def test_answers_after_hiding_are_dropped():
     assert book.rows == [] and book.view()["loaded"] is False
 
 
+# ---- row photos ---------------------------------------------------------
+
+class PhotoDaemon(Daemon):
+    def __init__(self) -> None:
+        super().__init__([
+            _card("c1", "Ada", has_photo=True),
+            _card("c2", "Bob"),
+            _card("c3", "Chloé", has_photo=True),
+            _card("c4", "Dan", has_photo=True),
+        ])
+        self.photo_calls: list[list[str]] = []
+        self.photos = {"c1": b"\xff\xd8ada", "c3": b"\x89PNGchloe"}
+        self.photo_fail = ""
+
+    def card_photos(self, ids):
+        self.photo_calls.append(list(ids))
+        if self.photo_fail:
+            raise RuntimeError(self.photo_fail)
+        return {key: self.photos[key] for key in ids if key in self.photos}
+
+
+def _photo_book(status=STATUS):
+    daemon = PhotoDaemon()
+    runner = Runner()
+    loaded: list[list[str]] = []
+    book = ContactBook(
+        runner=runner, timer=Timer, fetch_page=daemon.page, fetch_card=daemon.card,
+        fetch_photos=daemon.card_photos, on_photos=loaded.append,
+    )
+    book.apply_status(status)
+    book.watch(True)
+    runner.run_all()
+    return book, daemon, runner, loaded
+
+
+def test_row_photos_load_only_for_visible_rows_with_a_photo():
+    book, daemon, runner, loaded = _photo_book()
+    assert daemon.photo_calls == [] and book.row_photo("c1") == b""
+    book.request_photos(["c1", "c2", "c3"])
+    runner.run_all()
+    # Bob has no photo and is never asked for; Dan is not on screen.
+    assert daemon.photo_calls == [["c1", "c3"]]
+    assert loaded == [["c1", "c3"]]
+    assert book.row_photo("c1") == b"\xff\xd8ada" and book.row_photo("c2") == b""
+    revision = book.photo_revision
+    # Loaded rows and rows without a photo are not read again.
+    daemon.photos.pop("c3")
+    book.request_photos(["c1", "c3", "c4"])
+    runner.run_all()
+    assert daemon.photo_calls[-1] == ["c4"]
+    assert book.row_photo("c4") == b"" and book.photo_revision == revision
+    book.request_photos(["c4"])
+    runner.run_all()
+    assert len(daemon.photo_calls) == 2
+
+
+def test_row_photos_are_read_once_while_pending_and_batched():
+    from blueferry.limits import MAX_CONTACT_PHOTO_BATCH
+
+    book, daemon, runner, _loaded = _photo_book()
+    book.request_photos(["c1"])
+    book.request_photos(["c1", "c3"])
+    assert len(runner.queue) == 2
+    runner.run_all()
+    assert daemon.photo_calls == [["c1"], ["c3"]]
+    many = [_card(f"x{index}", f"P{index}", has_photo=True) for index in range(120)]
+    daemon.cards = many
+    book.reload()
+    runner.run_all()
+    book.request_photos(card["id"] for card in many)
+    runner.run_all()
+    assert len(daemon.photo_calls[-1]) == MAX_CONTACT_PHOTO_BATCH
+
+
+def test_row_photos_are_forgotten_with_the_rows_and_on_status_changes():
+    book, daemon, runner, _loaded = _photo_book()
+    book.request_photos(["c1"])
+    runner.run_all()
+    assert book.row_photo("c1")
+    book.apply_status({**STATUS, "contact_photo_revision": 2})
+    assert book.row_photo("c1") == b""
+    book.request_photos(["c1"])
+    runner.run_all()
+    assert book.row_photo("c1")
+    book.apply_status({**STATUS, "contact_card_epoch": 8})
+    runner.run_all()
+    assert book.row_photo("c1") == b""
+    book.request_photos(["c1"])
+    runner.run_all()
+    book.watch(False)
+    assert book.row_photo("c1") == b""
+    # Hidden: nothing is read.
+    calls = len(daemon.photo_calls)
+    book.request_photos(["c1"])
+    runner.run_all()
+    assert len(daemon.photo_calls) == calls
+
+
+@pytest.mark.parametrize("photos", [
+    {"contact_photos": False}, {"contact_photos_state": "unknown"},
+], ids=["off", "unknown"])
+def test_row_photos_go_and_are_not_read_while_photos_are_off_or_unknown(photos):
+    book, daemon, runner, loaded = _photo_book()
+    book.request_photos(["c1"])
+    runner.run_all()
+    assert book.row_photo("c1")
+    revision = book.photo_revision
+
+    book.apply_status({**STATUS, **photos})
+    assert book.row_photo("c1") == b"" and book.photo_revision > revision
+    runner.run_all()
+    calls = len(daemon.photo_calls)
+    book.request_photos(["c1", "c3"])
+    runner.run_all()
+    assert len(daemon.photo_calls) == calls and book.row_photo("c3") == b""
+
+    # A read already on its way when photos went off brings nothing back.
+    book.apply_status(STATUS)
+    runner.run_all()
+    book.request_photos(["c1"])
+    book.apply_status({**STATUS, **photos})
+    runner.run_all()
+    assert book.row_photo("c1") == b"" and loaded == [["c1"]]
+
+
+def test_a_late_photo_answer_from_before_an_epoch_change_is_dropped():
+    book, _daemon, runner, loaded = _photo_book()
+    book.request_photos(["c1"])
+    book.apply_status({**STATUS, "contact_card_epoch": 9})
+    runner.run_all()
+    assert loaded == [] and book.row_photo("c1") == b""
+
+
+def test_a_failed_photo_read_is_tried_again_and_without_a_fetcher_nothing_loads():
+    book, daemon, runner, _loaded = _photo_book()
+    daemon.photo_fail = "busy"
+    book.request_photos(["c1"])
+    runner.run_all()
+    assert book.row_photo("c1") == b""
+    daemon.photo_fail = ""
+    book.request_photos(["c1"])
+    runner.run_all()
+    assert book.row_photo("c1") and len(daemon.photo_calls) == 2
+    plain, _daemon2, plain_runner, _t, _c = _book(PhotoDaemon())
+    plain.watch(True)
+    plain_runner.run_all()
+    plain.request_photos(["c1"])
+    assert plain_runner.queue == []
+
+
+def test_photos_past_the_reply_budget_are_asked_for_again(monkeypatch):
+    from blueferry import contacts_model
+
+    monkeypatch.setattr(contacts_model, "MAX_CONTACT_PHOTO_BATCH_BYTES", 1)
+    book, daemon, runner, _loaded = _photo_book()
+    daemon.photos = {"c1": b"\xff\xd8ada"}
+    book.request_photos(["c1", "c3"])
+    runner.run_all()
+    # c3 may have been left out for the budget: not remembered as photo-less.
+    book.request_photos(["c1", "c3"])
+    runner.run_all()
+    assert daemon.photo_calls == [["c1", "c3"], ["c3"]]
+
+
 def _with_open_card():
     book, daemon, runner, timer, _changes = _book(
         Daemon([_card("c1", "Ada Lovelace", has_photo=True)]),
