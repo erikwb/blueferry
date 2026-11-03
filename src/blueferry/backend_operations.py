@@ -1589,6 +1589,8 @@ class BackendOperations:
             return apps.set_muted(app_id, bool(muted))
         except StorageUnavailableError as error:
             raise NotReadyError(str(error)) from error
+        except UnreadableSettingsError:
+            raise
         except ValueError as error:
             raise InvalidArgumentsError(str(error)) from error
 
