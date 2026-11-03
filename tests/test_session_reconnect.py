@@ -105,6 +105,46 @@ def test_failed_map_open_still_opens_and_keeps_pbap(monkeypatch) -> None:
     assert manager.pbap is pbap
 
 
+@pytest.mark.parametrize("removal", ["session removed", "obexd exited"])
+def test_session_removed_before_publication_fails_the_open(monkeypatch, removal) -> None:
+    reasons = []
+    released = []
+    manager = SessionManager(on_lost=reasons.append)
+    created = []
+
+    def create(target):
+        created.append(target)
+        session = ObexSession(target, f"/session/{target.lower()}{created.count(target)}")
+        if session.path == "/session/pbap1":
+            # The main loop handles the removal after CreateSession returned
+            # on the worker, but before open_all() publishes the session.
+            if removal == "session removed":
+                manager._on_interfaces_removed(session.path, ["org.bluez.obex.Session1"])
+            else:
+                manager._on_name_owner_changed("org.bluez.obex", ":1.2", "")
+        return session
+
+    monkeypatch.setattr(manager, "start_monitoring", lambda: None)
+    monkeypatch.setattr(sessions_mod, "_create_session", create)
+    monkeypatch.setattr(sessions_mod, "close_obex_profile_bus", released.append)
+
+    with pytest.raises(sessions_mod.SessionError, match="PBAP session disappeared"):
+        manager.open_all()
+
+    assert manager.pbap is None
+    assert released == ["PBAP"]
+    if removal == "session removed":
+        assert manager.map == ObexSession("MAP", "/session/map1")
+        assert reasons == []
+    else:
+        assert manager.map is None
+        assert reasons == ["obexd exited"]
+
+    manager.open_all()
+
+    assert manager.pbap == ObexSession("PBAP", "/session/pbap2")
+
+
 def test_close_clears_state_even_when_obexd_is_unreachable(monkeypatch) -> None:
     manager = SessionManager()
     manager.map = ObexSession("MAP", "/session/map")

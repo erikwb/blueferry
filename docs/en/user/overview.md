@@ -91,6 +91,10 @@ asks you who is in a group when it can't tell:
 - A message is filed under its group only when BlueFerry also receives the
   iPhone's notification for it. Without one, it appears in the sender's
   one-to-one conversation.
+- If a message in a one-to-one conversation may have been sent to a group,
+  for example the same "ok" in a group and to you, BlueFerry asks before you
+  reply whether your reply should go to the sender only. It asks again if
+  another such message arrives.
 
 ## Next steps
 

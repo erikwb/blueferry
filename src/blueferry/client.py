@@ -64,7 +64,17 @@ _MISSING_API_ERRORS = frozenset({
 
 
 class BackendError(BlueFerryError):
-    pass
+    """A failed backend call; ``dbus_name`` is the D-Bus error name, if any."""
+
+    def __init__(self, *args: object, dbus_name: str = "") -> None:
+        super().__init__(*args)
+        self.dbus_name = dbus_name
+
+
+def _dbus_name(error: Exception) -> str:
+    if isinstance(error, dbus.exceptions.DBusException):
+        return str(error.get_dbus_name() or "")
+    return ""
 
 
 def _dbus_message(error: Exception) -> str:
@@ -73,6 +83,11 @@ def _dbus_message(error: Exception) -> str:
             return RATE_LIMITED_TEXT
         return error.get_dbus_message() or str(error)
     return str(error)
+
+
+def _backend_error(error: Exception) -> BackendError:
+    """A BackendError for ``error`` that keeps its D-Bus error name."""
+    return BackendError(_dbus_message(error), dbus_name=_dbus_name(error))
 
 
 def _open_map_error(error: Exception) -> BackendError:
@@ -86,7 +101,7 @@ def _open_map_error(error: Exception) -> BackendError:
             "the running backend does not support notification click rules; "
             "restart it after upgrading"
         )
-    return BackendError(_dbus_message(error))
+    return _backend_error(error)
 
 
 class ContactNotFoundError(BackendError):
@@ -107,7 +122,7 @@ def _contact_cards_error(error: Exception) -> BackendError:
             "the running backend cannot show contact cards; "
             "restart it after upgrading"
         )
-    return BackendError(_dbus_message(error))
+    return _backend_error(error)
 
 
 def _search_error(error: Exception) -> BackendError:
@@ -118,7 +133,19 @@ def _search_error(error: Exception) -> BackendError:
         return BackendError(
             "the running backend cannot search; restart it after upgrading"
         )
-    return BackendError(_dbus_message(error))
+    return _backend_error(error)
+
+
+def _notification_apps_error(error: Exception) -> BackendError:
+    if (
+        isinstance(error, dbus.exceptions.DBusException)
+        and error.get_dbus_name() == "org.freedesktop.DBus.Error.UnknownMethod"
+    ):
+        return BackendError(
+            "the running backend cannot mute notification apps; "
+            "restart it after upgrading"
+        )
+    return _backend_error(error)
 
 
 class TetherUnsupportedError(BackendError):
@@ -198,7 +225,7 @@ class BackendClient:
             return BackendError(
                 "The running BlueFerry backend has no media control; update BlueFerry."
             )
-        return BackendError(_dbus_message(error))
+        return _backend_error(error)
 
     def now_playing(self) -> dict:
         """iPhone now-playing snapshot (``enabled`` is false unless opted in)."""
@@ -252,7 +279,7 @@ class BackendClient:
         try:
             return bool(self._iface(MESSAGES_IFACE).IsHealthy(timeout=5))
         except dbus.exceptions.DBusException as error:
-            raise BackendError(_dbus_message(error)) from error
+            raise _backend_error(error) from error
 
     def status(self, *, check_compatibility: bool = True) -> BackendStatus:
         """Read status; lifecycle recovery may inspect an older daemon first."""
@@ -282,7 +309,7 @@ class BackendClient:
                 thread_key, timeout=SNAPSHOT_CALL_TIMEOUT_SEC,
             ))
         except dbus.exceptions.DBusException as error:
-            raise BackendError(_dbus_message(error)) from error
+            raise _backend_error(error) from error
 
     def set_thread_starred(self, thread_key: str, starred: bool) -> bool:
         try:
@@ -291,7 +318,7 @@ class BackendClient:
                 timeout=SNAPSHOT_CALL_TIMEOUT_SEC,
             ))
         except dbus.exceptions.DBusException as error:
-            raise BackendError(_dbus_message(error)) from error
+            raise _backend_error(error) from error
 
     def events(self, kinds: list[str], limit: int = 1000) -> list[EventRecord]:
         try:
@@ -389,7 +416,7 @@ class BackendClient:
                 address, timeout=CONTACT_CALL_TIMEOUT_SEC, byte_arrays=True,
             )
         except dbus.exceptions.DBusException as error:
-            raise BackendError(_dbus_message(error)) from error
+            raise _backend_error(error) from error
         return valid_photo(bytes(value)) or b""
 
     def set_group_participants(
@@ -416,7 +443,7 @@ class BackendClient:
                 timeout=OBEX_CALL_TIMEOUT_SEC,
             ))
         except dbus.exceptions.DBusException as error:
-            raise BackendError(_dbus_message(error)) from error
+            raise _backend_error(error) from error
 
     def send(self, recipient: str, body: str) -> str:
         try:
@@ -424,7 +451,7 @@ class BackendClient:
                 recipient, body, timeout=OBEX_CALL_TIMEOUT_SEC,
             ))
         except dbus.exceptions.DBusException as error:
-            raise BackendError(_dbus_message(error)) from error
+            raise _backend_error(error) from error
 
     def recent(self, folder: str, limit: int) -> list[dict]:
         try:
@@ -440,7 +467,7 @@ class BackendClient:
                 timeout=OBEX_CALL_TIMEOUT_SEC
             ))
         except dbus.exceptions.DBusException as error:
-            raise BackendError(_dbus_message(error)) from error
+            raise _backend_error(error) from error
 
     def _call_history_iface(self) -> dbus.Interface:
         # CallHistory1 has no GetStatus; check compatibility through
@@ -457,7 +484,7 @@ class BackendClient:
                 dbus.UInt32(limit), timeout=SNAPSHOT_CALL_TIMEOUT_SEC,
             ))
         except (dbus.exceptions.DBusException, ValueError) as error:
-            raise BackendError(_dbus_message(error)) from error
+            raise _backend_error(error) from error
 
     def sync_call_history(self) -> int:
         try:
@@ -465,7 +492,7 @@ class BackendClient:
                 timeout=OBEX_CALL_TIMEOUT_SEC
             ))
         except dbus.exceptions.DBusException as error:
-            raise BackendError(_dbus_message(error)) from error
+            raise _backend_error(error) from error
 
     def set_call_history(self, enabled: bool, missed_call_notifications: bool) -> dict:
         try:
@@ -475,7 +502,7 @@ class BackendClient:
                 timeout=POLICY_CALL_TIMEOUT_SEC,
             ))
         except (dbus.exceptions.DBusException, ValueError) as error:
-            raise BackendError(_dbus_message(error)) from error
+            raise _backend_error(error) from error
 
     def clear_history(self) -> None:
         try:
@@ -483,7 +510,7 @@ class BackendClient:
                 dbus.Boolean(True), timeout=CLEAR_CALL_TIMEOUT_SEC
             )
         except dbus.exceptions.DBusException as error:
-            raise BackendError(_dbus_message(error)) from error
+            raise _backend_error(error) from error
 
     def delete_threads(self, thread_keys: list[str]) -> int:
         try:
@@ -493,7 +520,7 @@ class BackendClient:
                 timeout=DELETE_CALL_TIMEOUT_SEC,
             ))
         except dbus.exceptions.DBusException as error:
-            raise BackendError(_dbus_message(error)) from error
+            raise _backend_error(error) from error
 
     def notification_policy(self) -> str:
         try:
@@ -501,7 +528,7 @@ class BackendClient:
                 timeout=POLICY_CALL_TIMEOUT_SEC
             ))
         except dbus.exceptions.DBusException as error:
-            raise BackendError(_dbus_message(error)) from error
+            raise _backend_error(error) from error
 
     def set_notification_policy(self, policy: str) -> str:
         try:
@@ -509,7 +536,7 @@ class BackendClient:
                 policy, timeout=POLICY_CALL_TIMEOUT_SEC
             ))
         except dbus.exceptions.DBusException as error:
-            raise BackendError(_dbus_message(error)) from error
+            raise _backend_error(error) from error
 
     def contacts_only_notifications(self) -> bool:
         try:
@@ -519,7 +546,7 @@ class BackendClient:
                 )
             )
         except dbus.exceptions.DBusException as error:
-            raise BackendError(_dbus_message(error)) from error
+            raise _backend_error(error) from error
 
     def set_contacts_only_notifications(self, enabled: bool) -> bool:
         try:
@@ -529,7 +556,7 @@ class BackendClient:
                 )
             )
         except dbus.exceptions.DBusException as error:
-            raise BackendError(_dbus_message(error)) from error
+            raise _backend_error(error) from error
 
     def notifications(self, limit: int = 50) -> dict:
         """Recent iPhone app notifications (opt-in, memory only)."""
@@ -538,7 +565,22 @@ class BackendClient:
                 dbus.UInt32(max(1, int(limit))), timeout=STATUS_CALL_TIMEOUT_SEC,
             ))
         except (dbus.exceptions.DBusException, ValueError) as error:
-            raise BackendError(_dbus_message(error)) from error
+            raise _backend_error(error) from error
+
+    def set_notification_pinned(self, key: str, pinned: bool) -> bool:
+        """Pin or unpin a listed iPhone notification; returns the new state."""
+        try:
+            return bool(self._iface(MESSAGES_IFACE).SetNotificationPinned(
+                str(key), dbus.Boolean(pinned), timeout=POLICY_CALL_TIMEOUT_SEC,
+            ))
+        except dbus.exceptions.DBusException as error:
+            if error.get_dbus_name() == "org.freedesktop.DBus.Error.UnknownMethod":
+                raise BackendError(
+                    "the running backend cannot pin notifications; "
+                    "restart it after upgrading",
+                    dbus_name=_dbus_name(error),
+                ) from error
+            raise _backend_error(error) from error
 
     def features(self) -> dict:
         """Allowlisted local.env switches (Messages1.GetFeatures)."""
@@ -547,7 +589,7 @@ class BackendClient:
                 timeout=STATUS_CALL_TIMEOUT_SEC,
             ))
         except (dbus.exceptions.DBusException, ValueError) as error:
-            raise BackendError(_dbus_message(error)) from error
+            raise _backend_error(error) from error
 
     def set_feature(self, name: str, enabled: bool) -> str:
         """Store one switch; ``active``, ``restart-required`` or ``environment``."""
@@ -556,7 +598,7 @@ class BackendClient:
                 str(name), dbus.Boolean(enabled), timeout=POLICY_CALL_TIMEOUT_SEC,
             ))
         except dbus.exceptions.DBusException as error:
-            raise BackendError(_dbus_message(error)) from error
+            raise _backend_error(error) from error
 
     def set_ancs_notification_actions(self, enabled: bool) -> bool:
         try:
@@ -566,7 +608,7 @@ class BackendClient:
                 )
             )
         except dbus.exceptions.DBusException as error:
-            raise BackendError(_dbus_message(error)) from error
+            raise _backend_error(error) from error
 
     def set_mirror_notification_removals(self, enabled: bool) -> bool:
         try:
@@ -586,7 +628,7 @@ class BackendClient:
                 )
             )
         except dbus.exceptions.DBusException as error:
-            raise BackendError(_dbus_message(error)) from error
+            raise _backend_error(error) from error
 
     def set_auto_profile_reset(self, enabled: bool) -> bool:
         try:
@@ -596,7 +638,7 @@ class BackendClient:
                 )
             )
         except dbus.exceptions.DBusException as error:
-            raise BackendError(_dbus_message(error)) from error
+            raise _backend_error(error) from error
 
     def reconnect_phone(self) -> str:
         """Clear the Classic backoff and page the iPhone once now."""
@@ -607,7 +649,7 @@ class BackendClient:
                 )
             )
         except dbus.exceptions.DBusException as error:
-            raise BackendError(_dbus_message(error)) from error
+            raise _backend_error(error) from error
 
     def set_otp_autocopy(self, enabled: bool) -> dict:
         """Save the one-time code auto-copy opt-in; returns ``otp_autocopy``."""
@@ -639,7 +681,7 @@ class BackendClient:
                 timeout=POLICY_CALL_TIMEOUT_SEC,
             ))
         except (dbus.exceptions.DBusException, ValueError) as error:
-            raise BackendError(_dbus_message(error)) from error
+            raise _backend_error(error) from error
 
     def notification_open_map(self) -> list[dict[str, str]]:
         try:
@@ -658,6 +700,27 @@ class BackendClient:
             ))
         except (dbus.exceptions.DBusException, ValueError) as error:
             raise _open_map_error(error) from error
+
+    def notification_apps(self) -> dict:
+        """``ListNotificationApps``: seen iPhone apps and the muted ones.
+
+        Shape it with ``blueferry.notification_apps_view`` for display.
+        """
+        try:
+            return decode_mapping(self._iface(MESSAGES_IFACE).ListNotificationApps(
+                timeout=POLICY_CALL_TIMEOUT_SEC
+            ))
+        except (dbus.exceptions.DBusException, ValueError) as error:
+            raise _notification_apps_error(error) from error
+
+    def set_notification_app_muted(self, app_id: str, muted: bool) -> bool:
+        """Hide or show the desktop popups of one iPhone app; the new state."""
+        try:
+            return bool(self._iface(MESSAGES_IFACE).SetNotificationAppMuted(
+                app_id, dbus.Boolean(muted), timeout=POLICY_CALL_TIMEOUT_SEC
+            ))
+        except dbus.exceptions.DBusException as error:
+            raise _notification_apps_error(error) from error
 
     def open_notification_click(self, click_id: str, token: str) -> bool:
         try:
@@ -681,7 +744,7 @@ class BackendClient:
                 timeout=POLICY_CALL_TIMEOUT_SEC
             ))
         except dbus.exceptions.DBusException as error:
-            raise BackendError(_dbus_message(error)) from error
+            raise _backend_error(error) from error
 
     def set_storage_policy(self, policy: str) -> dict:
         try:
@@ -727,7 +790,7 @@ class BackendClient:
         try:
             return getattr(self._calls_iface(), method)(*args, timeout=timeout)
         except dbus.exceptions.DBusException as error:
-            raise BackendError(_dbus_message(error)) from error
+            raise _backend_error(error) from error
 
     def set_calls_enabled(self, enabled: bool) -> dict:
         try:

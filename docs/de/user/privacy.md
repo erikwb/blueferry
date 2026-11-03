@@ -50,6 +50,10 @@ ohne Inhalt:
 journalctl --user -u blueferry -f | grep "ANCS app observed"
 ```
 
+Diese Regeln sind ein harter Filter: Ausgeschlossene Apps werden nie geholt
+und nie aufgelistet. Um einzelne Apps ohne Änderung an `local.env`
+auszublenden, kannst du sie stattdessen [stummschalten](notification-mute.md).
+
 ### Klickregeln
 
 [Klickregeln](notification-click-rules.md) öffnen beim Klick auf das Popup
@@ -74,8 +78,10 @@ Unterhaltungen einen Neustart überstehen. Du entscheidest, wie:
   Client oder mit `blueferry storage-unlock`).
 - Ein Wechsel des Speichermodus leert den bisherigen Cache, damit
   verschlüsselte und unverschlüsselte Daten nie gemischt werden.
-- Markierte Unterhaltungen, gespeicherte Gruppenmitglieder und
-  Gruppenbestätigungen folgen demselben Speichermodus.
+- Markierte Unterhaltungen, gespeicherte Gruppenmitglieder,
+  Gruppenbestätigungen, angeheftete iPhone-Mitteilungen und
+  [stummgeschaltete Apps](notification-mute.md) folgen demselben
+  Speichermodus.
 - `blueferry history-clear` löscht den lokalen Nachrichtenverlauf.
 - Solange noch Daten mit einem Speicherschlüssel verschlüsselt sind, ersetzt
   BlueFerry ihn nie, wenn er fehlt, und merkt, wenn der Schlüsselbund einen
@@ -103,6 +109,34 @@ Löschversuche; `blueferry contact-photos status` zeigt ihren Abschluss an.
 Die Verschlüsselung schützt gespeicherte Daten. Andere Programme, die unter
 deinem Benutzer laufen, können trotzdem die D-Bus-API von BlueFerry nutzen
 und bei entsperrtem Schlüsselbund unter Umständen dessen Geheimnisse lesen.
+
+### Nachrichten, die ohne Verbindung ankamen
+
+Das iPhone meldet neue Nachrichten nur, solange es verbunden ist. Nach jedem
+erneuten Verbinden (Bluetooth wieder an, wieder in Reichweite, Aufwachen aus
+dem Ruhezustand) liest BlueFerry deshalb einmal den Posteingang des iPhones
+und ergänzt die eingehenden Nachrichten, die im Verlauf noch fehlen:
+
+- Das passiert nur, solange der Nachrichtenverlauf gespeichert und entsperrt
+  ist. Mit **Keine lokalen Daten behalten** oder bei gesperrtem
+  Schlüsselbund wird nichts gelesen. Eine eigene Einstellung gibt es nicht.
+- BlueFerry schaut ab kurz vor der neuesten gespeicherten Nachricht zurück,
+  nie weiter als `BLUEFERRY_HISTORY_RETENTION_DAYS`, und übernimmt höchstens
+  200 Nachrichten. Bei einer neuen Installation können das bis zu 200
+  Nachrichten aus dem Aufbewahrungszeitraum sein.
+- In BlueFerry gelöschte Nachrichten bleiben gelöscht: Nach dem Leeren des
+  Verlaufs, dem Löschen einer Unterhaltung oder einem Wechsel des
+  Speichermodus wird nichts Älteres erneut geholt. Gespeichert wird dafür nur
+  der Zeitpunkt des Löschens, ohne Inhalt.
+- Nachgeholte Nachrichten erscheinen in der Unterhaltungsliste ohne Popups
+  und ohne Kopieren von Einmalcodes, mit dem Gelesen-Status vom iPhone.
+- Das iPhone verrät nicht, ob eine solche Nachricht an eine Gruppe ging.
+  Bevor du darauf antwortest, fragt BlueFerry deshalb, ob die Antwort nur an
+  den Absender gehen soll, damit eine Antwort für eine Gruppe nicht aus
+  Versehen nur bei ihm landet. Schreibt der Absender wieder, antwortest du
+  ohne Rückfrage.
+- Nachrichten, die du am iPhone selbst gesendet hast, lassen sich nicht
+  nachholen: iOS hält den Gesendet-Ordner über Bluetooth leer.
 
 ## Dateien und Ordner
 
