@@ -30,6 +30,11 @@ MAX_ANCS_ACTIONABLE = 64
 MAX_ANCS_ACTIONS_IN_FLIGHT = 4
 # Desktop popups that still carry live iPhone action buttons.
 MAX_ANCS_ACTION_POPUPS = 64
+# Apps whose notifications this daemon run has seen (memory only, LRU), and
+# apps the user muted (saved in settings.json with their display name).
+MAX_ANCS_SEEN_APPS = 64
+MAX_ANCS_MUTED_APPS = 100
+MAX_ANCS_APP_NAME_CHARS = 256
 
 # AMS values are short display strings (titles, artists). A full Entity
 # Attribute read can exceed one notification, but never needs to be large.
@@ -67,6 +72,16 @@ MAX_CONTACT_RESULTS = 100
 # card with many long addresses runs to tens of kilobytes, so keep the page
 # small enough that a full page stays far inside the reply cap.
 MAX_CONTACT_PAGE = 150
+# Contact card ids are short hex digests (see contacts._card_id) of this
+# many hex characters, with a ``-N`` suffix for exact duplicates.
+CARD_ID_HEX_CHARS = 18
+MAX_CONTACT_ID_CHARS = 64
+# Messages1.Search: results per group (conversations, messages, contacts,
+# calls) and the excerpt shown around a message match.
+MAX_SEARCH_RESULTS = 50
+# Shorter queries match nearly everything; they return no results.
+MIN_SEARCH_QUERY_CHARS = 2
+MAX_SEARCH_SNIPPET_CHARS = 160
 MAX_DBUS_JSON_BYTES = 8 * 1024 * 1024
 
 # Long-lived daemon queues and subscriptions must remain bounded even if a
@@ -76,6 +91,13 @@ MAX_PENDING_READ_RECEIPTS = 2_000
 MAX_DESKTOP_MESSAGE_TRACKERS = 256
 MAX_PHONEBOOK_CONTACTS = 65_535
 MAX_CONTACT_ADDRESSES_PER_CARD = 64
+# Contact-card details beyond the messaging addresses (labels, postal
+# addresses, organization). Each text value is cut to MAX_CONTACT_DETAIL_CHARS
+# and each label to MAX_CONTACT_LABEL_CHARS; a card keeps at most
+# MAX_CONTACT_POSTAL_ADDRESSES_PER_CARD postal addresses.
+MAX_CONTACT_DETAIL_CHARS = 512
+MAX_CONTACT_LABEL_CHARS = 64
+MAX_CONTACT_POSTAL_ADDRESSES_PER_CARD = 16
 
 # Contact photos (opt-in). Measured on one iPhone (iOS 27, PBAP unfiltered
 # pull): iOS includes PHOTO, as small JPEG thumbnails. 42 of 3730 contacts
@@ -115,3 +137,8 @@ MAX_NOTIFICATION_OPEN_URL_CHARS = 2048
 # Clickable app popups are tracked separately from message popups so they
 # can never evict a message popup's read-state sync.
 MAX_NOTIFICATION_CLICK_TRACKERS = 64
+# Pinned iPhone app notifications survive restarts in settings.json. A pin is
+# a deliberate act, so the count is small; the byte cap bounds the encrypted
+# settings entry even when every pinned record carries long text.
+MAX_PINNED_NOTIFICATIONS = 20
+MAX_PINNED_NOTIFICATION_BYTES = 64 * 1024

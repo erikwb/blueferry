@@ -8,8 +8,9 @@ import pytest
 
 pytest.importorskip("PySide6")
 
+from blueferry import notification_pin_view
 from blueferry.client import BackendError, TetherUnsupportedError
-from blueferry.conversation_state import ConversationSnapshot
+from blueferry.conversation_state import ConversationSnapshot, ReplyDisposition
 from blueferry.models import BackendStatus, Thread
 from blueferry.qt.controller import BridgeController
 from blueferry.setup_client import ConfigurationState
@@ -836,6 +837,44 @@ def test_group_send_requires_explicit_approval_and_rejects_changed_roster(monkey
     controller.sendThread("group:test", "draft", False)
     controller.sendThread("group:test", "draft", True)
     assert len(queued) == 1
+
+
+def test_reply_to_a_maybe_group_message_asks_to_reply_to_the_sender_only(monkeypatch):
+    controller = BridgeController(backend=_Backend(), setup=object(), subscribe=False, autostart=False)
+    alice = {
+        "key": "address:phone:15551111111", "name": "Alice", "reply_ready": False,
+        "recipients": ["+15551111111"], "group_ambiguous": True,
+        "sender_reply_token": "sender:one",
+    }
+    _apply_threads(controller, [Thread.from_dict(alice)])
+    assert controller.threads[0]["can_compose"] is True
+    queued = []
+    prompts = []
+    monkeypatch.setattr(controller, "_run", lambda *args, **kwargs: queued.append(args))
+    controller.senderConfirmationRequested.connect(lambda *args: prompts.append(args))
+    controller.sendThread(alice["key"], "draft", False)
+    assert not queued
+    assert prompts == [(alice["key"], "draft", "Alice", "+15551111111")]
+    # Another message that may be from a group arrives while it asks.
+    _apply_threads(controller, [Thread.from_dict({**alice, "sender_reply_token": "sender:two"})])
+    controller.sendThread(alice["key"], "draft", True)
+    assert not queued
+    assert controller.errorText == ReplyDisposition.STALE_SENDER.message
+    # A second click on the same prompt sends nothing and says the same.
+    controller._set_error("")
+    controller.sendThread(alice["key"], "draft", True)
+    assert not queued
+    assert controller.errorText == ReplyDisposition.STALE_SENDER.message
+    controller.sendThread(alice["key"], "draft", False)
+    controller.sendThread(alice["key"], "draft", True)
+    assert len(queued) == 1
+    sent = []
+    controller._backend.send_to_thread = lambda *args, **kwargs: sent.append((args, kwargs))
+    queued[0][0]()
+    assert sent == [(
+        (alice["key"], "draft"),
+        {"confirm_group": True, "expected_group_token": "sender:two"},
+    )]
 
 
 def test_draft_completion_is_emitted_only_after_success(monkeypatch):
@@ -1989,6 +2028,11 @@ def test_phone_audio_hint_follows_the_typed_playing_field_from_a_refresh():
     audio = controller.phoneAudio
     assert audio["mismatch"] is True and audio["onPc"] is True
     assert audio["hint"] == "The iPhone is playing on its own speaker (chosen on the iPhone)."
+    assert audio["sync"] == ""
+    reported["phone_audio_delay_ms"] = 110
+    reported["phone_audio_delay_reporting"] = True
+    controller._apply_snapshot(controller._snapshot())
+    assert controller.phoneAudio["sync"] == "A/V sync: this computer reports 110 ms."
 
 
 def test_feature_hints_point_to_the_setting_for_each_opt_in():
@@ -2034,7 +2078,11 @@ def test_notifications_are_fetched_only_while_watched_and_forgotten_after(monkey
     assert backend.notification_calls == 1
     assert controller.notifications[0]["app"] == "com.example.chat"
     assert controller.notifications[0]["body"] == ""
-    assert controller.notificationsInfo == {"enabled": True, "content": False, "error": ""}
+    assert controller.notificationsInfo == {
+        "enabled": True, "content": False, "error": "",
+        # An older daemon reports no pin limit.
+        "pinLimitReached": False, "pinLimitText": "", "pinError": "",
+    }
 
     controller.watchNotifications(False)
     assert controller.notifications == []
@@ -2263,6 +2311,7 @@ def test_photos_load_only_while_watched_and_open_the_original(monkeypatch, tmp_p
     from blueferry import photos_view
     from blueferry.plugin_api.client import Photo
     from blueferry.plugin_api.testing import manifest
+    from blueferry.qt.thumbnails import thumbnail_url
 
     from .photo_fixtures import png
     from .test_photo_thumbnails import png_bomb
@@ -2293,7 +2342,9 @@ def test_photos_load_only_while_watched_and_open_the_original(monkeypatch, tmp_p
     assert controller.photos["loaded"] is False  # not watched: nothing loaded
     controller.watchPhotos(True)
     item = controller.photos["items"][0]
-    assert item["video"] is True and item["thumbnail"].endswith("/t.webp")
+    # Through the image provider: QML never opens the thumbnail path itself.
+    assert item["video"] is True and item["thumbnail"] == thumbnail_url(thumb)
+    assert item["thumbnail"].startswith("image://blueferry-thumbnail/")
     assert item["original"] == "" and controller.photos["ready"] is True
     assert not controller.busy
     # A thumbnail declaring 10 gigapixels never reaches QML's image loader.
@@ -2515,3 +2566,633 @@ def test_tether_read_completion_cannot_release_pending_command(read_outcome):
     assert controller.tether["enabled"] is True
     assert controller.tether["autoconnect"] is True
     assert controller.tether["pending"] is False
+
+
+def _run_inline_any(controller, monkeypatch):
+    """Run tasks inline, recording whether each one asked for busy state."""
+    busy_flags = []
+
+    def run_inline(operation, on_done=None, on_failed=None, *, busy=True):
+        busy_flags.append(busy)
+        try:
+            value = operation()
+        except Exception as error:
+            (on_failed or controller._operation_failed)(str(error))
+        else:
+            if on_done is not None:
+                on_done(value)
+
+    monkeypatch.setattr(controller, "_run", run_inline)
+    return busy_flags
+
+
+def test_media_volume_follows_now_playing_and_steps_through_media_commands():
+    backend = _MediaBackend()
+    controller = BridgeController(backend=backend, setup=object(), subscribe=False, autostart=False)
+    assert controller.mediaVolume["visible"] is False
+
+    changes = []
+    controller.nowPlayingChanged.connect(lambda: changes.append(True))
+    controller._set_now_playing({
+        "available": True, "supported_commands_known": True,
+        "supported_commands": ["volume-up"], "player": {"volume": 0.4},
+    })
+    volume = controller.mediaVolume
+    assert changes == [True]
+    assert volume["visible"] is True
+    assert volume["level_text"] == "Volume 40%"
+    assert (volume["up_enabled"], volume["down_enabled"]) == (True, False)
+    assert "does not offer" in volume["down_tooltip"]
+
+    controller.sendMediaCommand(volume["up_command"])
+    controller._pool.waitForDone(1000)
+    assert backend.media_commands == ["volume-up"]
+    assert controller.busy is False
+
+
+class _PinBackend(_PhoneLinkBackend):
+    def __init__(self, *, muted=()):
+        super().__init__()
+        self.pin_calls = []
+        self.apps_calls = 0
+        self.muted = set(muted)
+        self.pin_error = None
+
+    def notifications(self, limit=50):
+        self.notification_calls += 1
+        return {"enabled": True, "content": True, "pins_max": 2, "notifications": [
+            {"key": "k1", "id": 1, "app_id": "com.example.chat", "app_name": "Chat",
+             "time": "2026-10-06T10:00:00+00:00", "pinned": True, "removed": True,
+             "actionable": False, "title": "Hi"},
+            {"key": "k2", "id": 2, "app_id": "com.example.mail", "app_name": "Mail",
+             "time": "2026-10-06T09:00:00+00:00", "pinned": False, "removed": False,
+             "actionable": True},
+        ]}
+
+    def notification_apps(self):
+        self.apps_calls += 1
+        return {"apps": [
+            {"app_id": app, "app_name": app.rsplit(".", 1)[-1].title(),
+             "muted": app in self.muted, "seen": True}
+            for app in ("com.example.chat", "com.example.mail")
+        ], "max_muted": 100, "mute_available": True, "all_notifications": True}
+
+    def set_notification_pinned(self, key, pinned):
+        self.pin_calls.append((key, pinned))
+        if self.pin_error is not None:
+            raise self.pin_error
+        return pinned
+
+    def set_notification_app_muted(self, app_id, muted):
+        if app_id == "fail":
+            raise BackendError("local data is locked")
+        (self.muted.add if muted else self.muted.discard)(app_id)
+        return muted
+
+
+def _allow_notifications(controller) -> None:
+    """A status under which the shared model may read and show the list."""
+    controller._notification_history.sync_status({
+        "daemon": True, "notification_history_enabled": True,
+        "storage_state": "ready", "notification_content_shown": True,
+    })
+
+
+def test_notification_rows_carry_pin_state_and_muted_apps(monkeypatch):
+    backend = _PinBackend(muted={"com.example.mail"})
+    controller = _inline_controller(monkeypatch, backend)
+    _allow_notifications(controller)
+    controller._status = {"notification_muted_app_count": 1}
+    controller.watchNotifications(True)
+
+    first, second = controller.notifications
+    assert first["key"] == "k1" and first["pinned"] is True and first["can_pin"] is True
+    assert first["removed_text"] == "Removed on iPhone"
+    assert first["pin_label"] == "Unpin" and first["muted"] is False
+    assert second["pin_label"] == "Pin" and second["muted"] is True
+    info = controller.notificationsInfo
+    # One of at most two pinned: pinning stays possible.
+    assert info["pinLimitReached"] is False
+    assert info["pinLimitText"].startswith("At most 2 notifications")
+    assert info["pinError"] == ""
+    assert backend.apps_calls == 1
+
+    # A daemon without muting is not asked which apps are muted.
+    controller._status = {}
+    controller.refreshNotifications()
+    assert backend.apps_calls == 1
+    assert controller.notifications[1]["muted"] is False
+
+
+def test_a_dropped_notification_reply_never_pairs_rows_with_other_keys(monkeypatch):
+    from blueferry.qt.controller import _NotificationRunner
+
+    backend = _PinBackend()
+    controller = BridgeController(backend=backend, setup=object(), subscribe=False, autostart=False)
+    _allow_notifications(controller)
+    pending = []
+    monkeypatch.setattr(
+        controller, "_run",
+        lambda operation, done=None, failed=None, *, busy=True: pending.append(
+            (operation, done, failed)),
+    )
+    controller.watchNotifications(True)
+    operation, done, _failed = pending.pop()
+    done(operation())
+    accepted = controller._notification_reply
+    assert [row["key"] for row in controller.notifications] == ["k1", "k2"]
+
+    # A reply the model drops (superseded, or the tab hid meanwhile) must not
+    # replace the answer the shown rows came from.
+    runner = _NotificationRunner(controller)
+    runner.submit(lambda: {"notifications": [{"key": "k9"}]}, lambda _value: None)
+    operation, done, _failed = pending.pop()
+    done(operation())
+    assert controller._notification_reply is accepted
+    runner.submit(lambda: {}, None, lambda _message: None)
+    operation, _done, failed = pending.pop()
+    failed("NoReply")
+    assert controller._notification_reply is accepted
+
+    controller.refreshNotifications()
+    controller.watchNotifications(False)
+    operation, done, _failed = pending.pop()
+    done(operation())  # answered after the tab was hidden
+    assert controller._notification_reply == {}
+    assert controller.notifications == []
+
+
+def test_hiding_notifications_forgets_the_raw_answer_with_one_change(monkeypatch):
+    backend = _PinBackend()
+    controller = _inline_controller(monkeypatch, backend)
+    _allow_notifications(controller)
+    assert {"pinLimitReached", "pinLimitText", "pinError"} <= set(
+        controller.notificationsInfo)
+    controller.watchNotifications(True)
+    assert controller._notification_reply["notifications"]
+    changes = []
+    controller.notificationsChanged.connect(lambda: changes.append(1))
+    controller.watchNotifications(False)
+    assert controller._notification_reply == {}
+    assert controller.notifications == [] and len(changes) == 1
+
+
+def test_muted_apps_are_chosen_on_the_gui_thread_before_the_read(monkeypatch):
+    backend = _PinBackend(muted={"com.example.mail"})
+    controller = BridgeController(backend=backend, setup=object(), subscribe=False, autostart=False)
+    _allow_notifications(controller)
+    pending = []
+    monkeypatch.setattr(
+        controller, "_run",
+        lambda operation, done=None, failed=None, *, busy=True: pending.append(
+            (operation, done, failed)),
+    )
+    controller._status = {"notification_muted_app_count": 1}
+    controller.watchNotifications(True)
+    controller._status = {}  # changed after the read was queued
+    operation, done, _failed = pending.pop()
+    done(operation())
+    assert backend.apps_calls == 1
+    assert controller.notifications[1]["muted"] is True
+
+
+def test_pinning_refreshes_the_list_and_explains_a_failure(monkeypatch):
+    class DBusFailure(Exception):
+        def get_dbus_name(self):
+            return "io.weirdware.BlueFerry.Error.InvalidArgs"
+
+        def get_dbus_message(self):
+            return "at most 20 notifications can be pinned"
+
+    backend = _PinBackend()
+    controller = _inline_controller(monkeypatch, backend)
+    _allow_notifications(controller)
+    controller.watchNotifications(True)
+    calls = backend.notification_calls
+
+    controller.setNotificationPinned("k2", True)
+    controller.setNotificationPinned("", True)
+    assert backend.pin_calls == [("k2", True)]
+    assert backend.notification_calls == calls + 1
+
+    try:
+        raise BackendError("at most 20 notifications can be pinned") from DBusFailure()
+    except BackendError as error:
+        backend.pin_error = error
+    controller.setNotificationPinned("k2", True)
+    assert controller.notificationsInfo["pinError"] == (
+        "The pinned list is full; unpin a notification first."
+    )
+    # The global error banner stays clean; leaving the tab forgets the error.
+    assert controller.errorText == ""
+    controller.watchNotifications(False)
+    backend.pin_error = None
+    controller.watchNotifications(True)
+    assert controller.notificationsInfo["pinError"] == ""
+
+
+def test_muted_apps_are_read_only_while_shown_and_only_from_capable_daemons(monkeypatch):
+    from PySide6.QtCore import QCoreApplication
+    from PySide6.QtGui import QGuiApplication
+
+    from blueferry.qt import controller as controller_module
+    from tests.client_fakes import ManualRunner
+
+    # The QTimer below only runs inside an application, also when this test
+    # runs on its own.
+    _application = QCoreApplication.instance() or QGuiApplication([])
+
+    timers = ManualRunner()
+    monkeypatch.setattr(controller_module, "qt_timers", lambda _parent: timers.timer)
+    backend = _PinBackend(muted={"com.example.chat"})
+    controller = BridgeController(backend=backend, setup=object(), subscribe=False, autostart=False)
+    _allow_notifications(controller)
+    _run_inline_any(controller, monkeypatch)
+    # The first qt_timers timer is the notification list's (contacts and
+    # search follow).
+    notifications_timer = timers.timers[0]
+
+    assert controller.notificationAppsSupported is False
+    controller.watchNotificationApps(True)
+    assert backend.apps_calls == 0
+
+    controller._status = {"notification_muted_app_count": 1}
+    assert controller.notificationAppsSupported is True
+    controller.watchNotificationApps(True)
+    apps = controller.notificationApps
+    assert apps["loaded"] is True and apps["label"] == "Muted apps"
+    assert [row["name"] for row in apps["rows"]] == ["Chat", "Mail"]
+    assert apps["rows"][0]["muted"] is True
+
+    controller.watchNotificationApps(False)
+    assert controller.notificationApps["rows"] == []
+    assert controller.notificationApps["loaded"] is False
+    # The content-free signal refetches only what is on screen.
+    controller._notificationAppsInvalidated()
+    assert not controller._notification_apps_timer.isActive()
+    controller.watchNotificationApps(True)
+    controller._notificationAppsInvalidated()
+    assert controller._notification_apps_timer.isActive()
+    assert not notifications_timer.active  # the Notifications tab is hidden
+    # A shown Notifications tab reloads too, to dim the newly muted rows.
+    controller.watchNotifications(True)
+    controller._notificationAppsInvalidated()
+    assert notifications_timer.active
+
+
+def test_muting_an_app_refreshes_the_list_and_reports_failures_in_the_section(monkeypatch):
+    backend = _PinBackend()
+    controller = BridgeController(backend=backend, setup=object(), subscribe=False, autostart=False)
+    busy = _run_inline_any(controller, monkeypatch)
+    controller._status = {"notification_muted_app_count": 0}
+    controller.watchNotificationApps(True)
+    busy.clear()
+
+    controller.setNotificationAppMuted("com.example.mail", True)
+    # The setter is busy like the other settings; the reread is not.
+    assert busy == [True, False]
+    assert backend.muted == {"com.example.mail"}
+    assert controller.notificationApps["rows"][1]["muted"] is True
+
+    changes = []
+    controller.notificationAppsChanged.connect(lambda: changes.append(True))
+    controller.setNotificationAppMuted("fail", True)
+    assert controller.notificationApps["error"] == "local data is locked"
+    # The error shows at once; the reread for the switches keeps it.
+    assert changes == [True, True]
+    assert controller.errorText == ""
+    controller.setNotificationAppMuted("com.example.mail", False)
+    assert controller.notificationApps["error"] == ""
+    assert backend.muted == set()
+
+
+class _ConfigurationFailure(Exception):
+    """The D-Bus error behind a refusal while settings.json can't be read."""
+
+    MESSAGE = ("settings.json could not be read, so the change was not saved; "
+               "repair or remove the file and try again")
+
+    def get_dbus_name(self):
+        return "io.weirdware.BlueFerry.Error.Configuration"
+
+    def get_dbus_message(self):
+        return self.MESSAGE
+
+
+def _configuration_error() -> BackendError:
+    try:
+        raise BackendError(_ConfigurationFailure.MESSAGE) from _ConfigurationFailure()
+    except BackendError as error:
+        return error
+
+
+def test_a_pin_refused_for_an_unreadable_settings_file_says_so(monkeypatch):
+    backend = _PinBackend()
+    controller = _inline_controller(monkeypatch, backend)
+    _allow_notifications(controller)
+    controller.watchNotifications(True)
+    backend.pin_error = _configuration_error()
+    controller.setNotificationPinned("k2", True)
+    text = controller.notificationsInfo["pinError"]
+    assert text == notification_pin_view.UNREADABLE_SETTINGS_TEXT
+    assert controller.errorText == ""
+    # The rows stay usable for the next try once the file is repaired.
+    assert [row["key"] for row in controller.notifications] == ["k1", "k2"]
+
+
+def test_a_mute_refused_for_an_unreadable_settings_file_shows_the_list_unavailable(
+    monkeypatch,
+):
+    backend = _PinBackend()
+    controller = BridgeController(backend=backend, setup=object(), subscribe=False, autostart=False)
+    _run_inline_any(controller, monkeypatch)
+    controller._status = {"notification_muted_app_count": 0}
+    controller.watchNotificationApps(True)
+    assert all(row["enabled"] for row in controller.notificationApps["rows"])
+
+    # settings.json broke after the list was read.
+    listed = backend.notification_apps
+
+    def unreadable():
+        return {**listed(), "mute_available": False}
+
+    def refuse(_app_id, _muted):
+        raise _configuration_error()
+
+    backend.notification_apps = unreadable
+    backend.set_notification_app_muted = refuse
+    controller.setNotificationAppMuted("com.example.mail", True)
+    apps = controller.notificationApps
+    assert apps["error"] == _ConfigurationFailure.MESSAGE
+    assert apps["available"] is False
+    assert not any(row["enabled"] for row in apps["rows"])
+    assert "settings.json can't be read" in apps["hint"]
+    assert controller.errorText == ""
+
+
+@pytest.mark.parametrize("change", [
+    {"storage_state": "locked"},
+    {"notification_content_shown": False},
+], ids=["locked", "content-hidden"])
+def test_the_raw_notification_answer_keeps_no_titles_or_bodies(monkeypatch, change):
+    backend = _PinBackend()
+    controller = _inline_controller(monkeypatch, backend)
+    _allow_notifications(controller)
+    controller.watchNotifications(True)
+    assert controller.notifications[0]["key"] == "k1"
+    assert "Hi" not in repr(controller._notification_reply)
+
+    controller._notification_history.sync_status({
+        "daemon": True, "notification_history_enabled": True,
+        "storage_state": "ready", "notification_content_shown": True, **change,
+    })
+    assert "Hi" not in repr(controller._notification_reply)
+    assert all(row["title"] == "" for row in controller.notifications)
+    if not controller.notifications:
+        assert controller._notification_reply == {}
+
+
+def test_notification_rows_without_pin_keys_hide_the_pin_control(monkeypatch):
+    backend = _PinBackend(muted={"com.example.chat"})
+    backend.notifications = lambda limit=50: {
+        "enabled": True, "notifications": [{"app_id": "com.example.chat", "time": ""}, "junk"],
+    }
+    controller = _inline_controller(monkeypatch, backend)
+    _allow_notifications(controller)
+    controller._status = {"notification_muted_app_count": 1}
+    controller.watchNotifications(True)
+
+    rows = controller.notifications
+    assert len(rows) == 1
+    assert rows[0]["can_pin"] is False and rows[0]["key"] == ""
+    assert rows[0]["muted"] is True and rows[0]["app"] == "com.example.chat"
+
+    controller.watchNotifications(False)
+    assert controller.notifications == []
+
+
+class _CardBackend:
+    """ListContactCards, GetContact and Search answered from memory."""
+
+    def __init__(self):
+        self.pages = []
+        self.searches = []
+
+    def contact_cards(self, offset=0, limit=150, query=""):
+        self.pages.append((offset, limit, query))
+        return {"contacts": [{"id": "c1", "name": "Ada Lovelace", "organization": "",
+                              "primary": "+15550001", "has_photo": True}],
+                "total": 1, "offset": offset, "query": query}
+
+    def contact(self, contact_id):
+        if contact_id == "gone":
+            from blueferry.client import ContactNotFoundError
+
+            raise ContactNotFoundError("unknown contact")
+        return ({"id": contact_id, "name": "Ada Lovelace", "has_photo": True,
+                 "phones": [{"kind": "mobile", "label": "", "value": "+1 555 0001",
+                             "number": "+15550001"}]}, b"\x89PNG photo")
+
+    def search(self, query, limit):
+        self.searches.append((query, limit))
+        return {"query": query, "limit": limit, "messages": {"total": 1, "results": [
+            {"thread_key": "t1", "handle": "h1", "thread_name": "Ada",
+             "snippet": "at noon", "match_start": 3, "match_length": 4}]}}
+
+
+def _card_status(epoch=1, photos=True):
+    return {"contact_card_count": 1, "contact_card_epoch": epoch, "search_result_limit": 50,
+            "contact_photos": photos}
+
+
+def test_contacts_are_read_while_watched_and_the_card_photo_is_served(monkeypatch):
+    backend = _CardBackend()
+    controller = _inline_controller(monkeypatch, backend)
+    controller._status = _card_status()
+    controller.statusChanged.emit()
+    assert controller.contactsSupported is True and backend.pages == []
+    controller.watchContacts(True)
+    assert backend.pages == [(0, 100, "")]
+    assert controller.contacts["rows"][0]["title"] == "Ada Lovelace"
+    assert controller.contacts["count_text"] == "1 contact"
+
+    controller.openContact("c1")
+    card = controller.contactCard
+    assert card["open"] is True and card["sections"][0]["id"] == "phones"
+    assert card["photo"].startswith("image://blueferry-avatar/")
+    from blueferry.qt.avatars import address_from_id
+
+    key = address_from_id(card["photo"].split("image://blueferry-avatar/", 1)[1])
+    assert controller.avatar_bytes(key) == b"\x89PNG photo"
+    assert controller.avatar_bytes("contact-card:999") is None
+
+    # A new epoch reloads the list and reads the open card again.
+    controller._status = _card_status(epoch=2)
+    controller.statusChanged.emit()
+    assert len(backend.pages) == 2
+
+    controller.openContact("gone")
+    assert controller.contactCard["stale"] is True
+    assert controller.contactCard["photo"] == ""
+    assert controller.avatar_bytes(key) is None
+
+    controller.watchContacts(False)
+    assert controller.contacts["rows"] == [] and controller.contactCard["open"] is False
+
+
+@pytest.mark.parametrize("status", [
+    {"contact_photos": False},
+    {"contact_photos": True, "contact_photos_state": "unknown"},
+], ids=["off", "unknown"])
+def test_the_card_photo_goes_once_contact_photos_are_off_or_unknown(monkeypatch, status):
+    backend = _CardBackend()
+    controller = _inline_controller(monkeypatch, backend)
+    controller._status = _card_status()
+    controller.statusChanged.emit()
+    controller.watchContacts(True)
+    controller.openContact("c1")
+    photo = controller.contactCard["photo"]
+    assert photo.startswith("image://blueferry-avatar/")
+    from blueferry.qt.avatars import address_from_id
+
+    key = address_from_id(photo.split("image://blueferry-avatar/", 1)[1])
+    assert controller.avatar_bytes(key) == b"\x89PNG photo"
+
+    controller._status = {**_card_status(), **status}
+    controller.statusChanged.emit()
+    assert controller.contactCard["open"] is True
+    assert controller.contactCard["photo"] == ""
+    assert controller.avatar_bytes(key) is None
+    assert all(not row.get("has_photo") for row in controller.contacts["rows"])
+
+
+def test_a_new_card_epoch_drops_the_shown_cards_at_once(monkeypatch):
+    backend = _CardBackend()
+    controller = _inline_controller(monkeypatch, backend)
+    queued: list = []
+    run_inline = controller._run
+    monkeypatch.setattr(controller, "_run", lambda *args, **kwargs: queued.append(
+        lambda: run_inline(*args, **kwargs)))
+
+    def drain():
+        while queued:
+            queued.pop(0)()
+
+    controller._status = _card_status()
+    controller.statusChanged.emit()
+    controller.watchContacts(True)
+    drain()
+    controller.openContact("c1")
+    drain()
+    assert controller.contacts["rows"] and controller.contactCard["photo"]
+
+    controller._status = _card_status(epoch=2)
+    controller.statusChanged.emit()
+    # Before the new page arrives: nothing of the old epoch is shown.
+    assert queued
+    assert controller.contacts["rows"] == []
+    assert controller.contactCard["photo"] == ""
+    drain()
+    assert controller.contacts["rows"]
+
+
+@pytest.mark.parametrize("signal", ["history", "call-history"])
+def test_history_signals_drop_the_search_answer_and_search_again(monkeypatch, signal):
+    backend = _CardBackend()
+    controller = _inline_controller(monkeypatch, backend)
+    controller._status = _card_status()
+    controller.statusChanged.emit()
+    controller.setSearchQuery("noon")
+    controller._search._timer._timer.timeout.emit()
+    assert backend.searches == [("noon", 20)]
+    assert controller.searchResults["sections"]
+
+    if signal == "history":
+        controller._historyChanged({})
+    else:
+        controller._callHistoryInvalidated()
+    assert controller.searchResults["sections"] == []
+    assert controller.searchResults["loading"] is True
+    controller._search._timer._timer.timeout.emit()
+    assert backend.searches == [("noon", 20), ("noon", 20)]
+    assert controller.searchResults["sections"]
+
+
+def test_a_status_with_locked_storage_drops_the_search_answer(monkeypatch):
+    backend = _CardBackend()
+    controller = _inline_controller(monkeypatch, backend)
+    controller._status = {**_card_status(), "storage_state": "unlocked"}
+    controller.statusChanged.emit()
+    controller.setSearchQuery("noon")
+    controller._search._timer._timer.timeout.emit()
+    assert controller.searchResults["sections"]
+
+    controller._status = {**_card_status(), "storage_state": "locked"}
+    controller.statusChanged.emit()
+    assert controller.searchResults["sections"] == []
+
+
+def test_a_searched_call_beyond_the_first_page_is_read(monkeypatch):
+    from blueferry.limits import MAX_CALL_HISTORY_QUERY_LIMIT
+    from blueferry.models import CallHistoryEntry
+    from blueferry.qt.controller import CALL_HISTORY_PAGE
+
+    limits: list[int] = []
+    retained = [CallHistoryEntry.from_dict({
+        "direction": "incoming", "timestamp": f"2026-10-{1 + n // 100:02d}T10:00:00+00:00",
+        "address": f"+1555{n:04d}", "id": f"call-{n}",
+    }) for n in range(CALL_HISTORY_PAGE + 1)]
+
+    class Backend:
+        def call_history(self, limit=200):
+            limits.append(limit)
+            return retained[:limit]
+
+    controller = _inline_controller(monkeypatch, Backend())
+    controller._status = {"call_history_enabled": True}
+    controller.watchCallHistory(True)
+    assert limits == [CALL_HISTORY_PAGE]
+    # A hit inside the shown page reads nothing more.
+    controller.revealCall("call-0")
+    assert limits == [CALL_HISTORY_PAGE]
+
+    oldest = f"call-{CALL_HISTORY_PAGE}"
+    controller.revealCall(oldest)
+    assert limits == [CALL_HISTORY_PAGE, MAX_CALL_HISTORY_QUERY_LIMIT]
+    ids = [i for row in controller.callHistoryRows["all"] for i in row["ids"]]
+    assert oldest in ids
+
+    # Leaving the page goes back to the first page next time.
+    controller.watchCallHistory(False)
+    controller.watchCallHistory(True)
+    assert limits[-1] == CALL_HISTORY_PAGE
+
+
+def test_contact_query_waits_for_a_pause(monkeypatch):
+    backend = _CardBackend()
+    controller = _inline_controller(monkeypatch, backend)
+    controller._status = _card_status()
+    controller.statusChanged.emit()
+    controller.watchContacts(True)
+    controller.setContactQuery("ad")
+    assert backend.pages == [(0, 100, "")]
+    controller._contact_book._timer._timer.timeout.emit()
+    assert backend.pages[-1] == (0, 100, "ad")
+
+
+def test_global_search_waits_for_a_pause_and_exposes_highlights_as_lists(monkeypatch):
+    backend = _CardBackend()
+    controller = _inline_controller(monkeypatch, backend)
+    controller._status = _card_status()
+    controller.statusChanged.emit()
+    assert controller.searchSupported is True
+    controller.setSearchQuery("noon")
+    assert backend.searches == [] and controller.searchResults["loading"] is True
+    controller._search._timer._timer.timeout.emit()
+    assert backend.searches == [("noon", 20)]
+    [section] = controller.searchResults["sections"]
+    assert section["rows"][0]["highlight"] == [3, 4]
+    assert section["rows"][0]["target"] == {"kind": "message", "thread_key": "t1",
+                                            "handle": "h1"}
+    controller.clearSearch()
+    assert controller.searchResults["sections"] == []

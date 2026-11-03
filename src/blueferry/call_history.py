@@ -14,7 +14,9 @@ nothing here performs I/O.
 """
 from __future__ import annotations
 
+import hashlib
 import re
+import secrets
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone, tzinfo
@@ -524,3 +526,18 @@ def resolve_contact_name(
         if name:
             return name
     return None
+
+
+# Entry ids are keyed hashes of CallRecord.key under a key that lives only in
+# this daemon run: stable across syncs, yet no number (the key carries one in
+# plain text) can be read or guessed back from an id a client holds.
+_ENTRY_ID_KEY = secrets.token_bytes(16)
+CALL_ENTRY_ID_HEX_CHARS = 24
+
+
+def call_entry_id(record: CallRecord) -> str:
+    """The opaque id ``ListCallHistory`` and ``Search`` report for one call."""
+    return hashlib.blake2b(
+        record.key.encode("utf-8"), key=_ENTRY_ID_KEY,
+        digest_size=CALL_ENTRY_ID_HEX_CHARS // 2,
+    ).hexdigest()

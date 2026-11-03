@@ -172,7 +172,7 @@ def test_phonebook_pull_selects_pb_with_pbap_filters_and_private_name(
     monkeypatch.setattr(contacts, "wait_for_transfer", lambda *_a, **_k: "complete")
     monkeypatch.setattr(
         contacts, "ContactRepository",
-        lambda _storage: SimpleNamespace(replace=lambda records: stored.extend(records) or 1),
+        lambda _storage: SimpleNamespace(replace=lambda records, **_kwargs: stored.extend(records) or 1),
     )
 
     assert contacts.pull_phonebook(SimpleNamespace(pbap_path="/pbap"), max_contacts=10) == 1
@@ -746,7 +746,7 @@ def test_phonebook_is_streamed_from_the_transfer_file(tmp_path, monkeypatch) -> 
     monkeypatch.setattr(Path, "read_text", no_whole_file_read)
     monkeypatch.setattr(
         contact_repository.ContactRepository, "replace",
-        lambda _self, records: replaced.append(records) or len(records),
+        lambda _self, records, **_kwargs: replaced.append(records) or len(records),
     )
 
     assert contacts.pull_phonebook(SimpleNamespace(pbap_path="/pbap")) == 1
@@ -824,10 +824,12 @@ def test_records_tolerate_a_malformed_stored_row(tmp_path, monkeypatch):
 
     resolver = ContactsResolver.__new__(ContactsResolver)
     resolver.storage = None
-    resolver._repository = SimpleNamespace(load=lambda **_kwargs: [
-        ("Alice Example", None, ["alice@example.com"]),
-        ("Bob Other", "5551234567", None),
-        (None, ["15551112222"], []),
+    resolver._repository = SimpleNamespace(load_cards=lambda **_kwargs: [
+        (record, None, None) for record in (
+            ("Alice Example", None, ["alice@example.com"]),
+            ("Bob Other", "5551234567", None),
+            (None, ["15551112222"], []),
+        )
     ])
     resolver._mem = {}
     resolver._records = []
