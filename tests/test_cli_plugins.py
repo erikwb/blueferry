@@ -204,6 +204,36 @@ def test_config_reads_and_writes_through_the_plugin(hooks, managed, monkeypatch)
     assert result.exit_code == 2
 
 
+def test_config_saves_nothing_for_a_plugin_disabled_during_a_prompt(hooks, managed,
+                                                                    monkeypatch) -> None:
+    state, _executed = hooks
+    manager, _runner, _answers = managed
+    plugin = manifest(extra="[Config api_key]\nLabel=API key\nType=secret\n")
+    state["discovery"] = Discovery((plugin,))
+    calls: list[str] = []
+
+    class Client:
+        def __init__(self, _manifest) -> None:
+            pass
+
+        def set_config(self, values):
+            calls.append("set")
+
+        def get_config(self):
+            calls.append("get")
+            return {}
+
+    def secret(_prompt: str) -> str:
+        manager.set_enabled(plugin.id, False)  # in another terminal, meanwhile
+        return "k3y"
+
+    monkeypatch.setitem(cli_plugins._hooks, "client", Client)
+    monkeypatch.setitem(cli_plugins._hooks, "secret", secret)
+    result = CliRunner().invoke(app, ["plugins", "config", plugin.id, "--secret", "api_key"])
+    assert result.exit_code == 2 and "enable it first" in result.output
+    assert calls == []
+
+
 def test_config_test_and_browser_sign_in(hooks, monkeypatch) -> None:
     from blueferry.plugin_api.config_flow import ConfigTestResult, LoginStep
 
@@ -264,6 +294,45 @@ def test_config_test_and_browser_sign_in(hooks, monkeypatch) -> None:
     assert "Connected as anna" in result.output and "token = (stored)" in result.output
     assert ("login", {"url": "https://good.example"}) in calls
     assert not any(call[0] == "set" for call in calls)
+
+
+def test_sign_in_stops_polling_a_plugin_disabled_meanwhile(hooks, managed,
+                                                            monkeypatch) -> None:
+    from blueferry.plugin_api.config_flow import LoginStep
+
+    state, _executed = hooks
+    manager, _runner, _answers = managed
+    plugin = manifest(api_version="1.3", extra=(
+        "ConfigLogin=nextcloud\n[Config url]\nLabel=Server URL\nType=url\n"))
+    state["discovery"] = Discovery((plugin,))
+    calls: list[str] = []
+
+    class Client:
+        def __init__(self, _manifest) -> None:
+            pass
+
+        def config_login(self, values):
+            calls.append("login")
+            return LoginStep("open", login_id="f1", open_uri="https://good.example/login/v2/f")
+
+        def config_login_status(self, login_id):
+            calls.append("status")
+            manager.set_enabled(plugin.id, False)  # in another terminal, meanwhile
+            return LoginStep("done" if calls.count("status") > 1 else "pending")
+
+        def config_login_cancel(self, login_id):
+            calls.append("cancel")
+
+        def get_config(self):
+            calls.append("get")
+            return {}
+
+    monkeypatch.setitem(cli_plugins._hooks, "client", Client)
+    monkeypatch.setitem(cli_plugins._hooks, "open_uri", lambda _uri: None)
+    monkeypatch.setitem(cli_plugins._hooks, "sleep", lambda _seconds: None)
+    result = CliRunner().invoke(app, ["plugins", "config", plugin.id, "--login"])
+    assert result.exit_code == 2 and "enable it first" in result.output
+    assert calls == ["login", "status"]
 
 
 def test_config_action_runs_a_settings_button(hooks, monkeypatch) -> None:

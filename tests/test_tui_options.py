@@ -60,6 +60,7 @@ class _OptionsBackend(_Backend):
     ) -> None:
         super().__init__()
         self.photos = photos
+        self.photos_state: str | None = None
         self.otp = otp
         self.fail = fail
         self.saved_opt_ins = saved_opt_ins
@@ -74,7 +75,8 @@ class _OptionsBackend(_Backend):
     def status(self) -> BackendStatus:  # type: ignore[override]
         return BackendStatus(
             daemon=True, map=True, pbap=True, ancs=True,
-            contact_photos=self.photos, otp_autocopy=self.otp,
+            contact_photos=self.photos, contact_photos_state=self.photos_state,
+            otp_autocopy=self.otp,
             saved_opt_ins=self.saved_opt_ins, notification_policy=self.policy,
             phone_battery_warning=self.battery, storage_policy="encrypted",
             storage_state="ready", extra=dict(self.extra),
@@ -222,6 +224,56 @@ def test_options_screen_saves_the_contact_photo_opt_in() -> None:
 
             await pilot.press("o")
             await _until(pilot, lambda: not isinstance(app.screen, OptionsScreen))
+
+    asyncio.run(scenario())
+
+
+def test_an_unknown_contact_photo_choice_is_unavailable_until_it_reads() -> None:
+    async def scenario() -> None:
+        backend = _OptionsBackend()
+        backend.photos_state = "unknown"
+        app = _app(backend)
+        async with app.run_test(size=(120, 40)) as pilot:
+            screen = await _open(app, pilot)
+            checkbox = screen.query_one("#opt-contact_photos", Checkbox)
+            assert checkbox.display is True and checkbox.disabled is True
+            caption = _plain(screen, "#opt-contact_photos-caption")
+            assert "settings.json cannot be read" in caption
+            checkbox.focus()
+            await pilot.press("space")
+            await pilot.pause()
+            assert backend.saved == [] and checkbox.value is False
+
+            backend.photos, backend.photos_state = True, "on"
+            screen.status_changed(backend.status())
+            await pilot.pause()
+            assert checkbox.disabled is False and checkbox.value is True
+            assert "next contact sync" in _plain(screen, "#opt-contact_photos-caption")
+
+    asyncio.run(scenario())
+
+
+def test_a_photo_toggle_is_not_sent_once_the_choice_turns_unknown() -> None:
+    async def scenario() -> None:
+        backend = _OptionsBackend()
+        backend.photos_state = "off"
+        app = _app(backend)
+        notices: list[str] = []
+        app.notify = lambda message, **_kwargs: notices.append(message)  # type: ignore[method-assign]
+        async with app.run_test(size=(120, 40)) as pilot:
+            screen = await _open(app, pilot)
+            photos = screen.query_one("#opt-contact_photos", Checkbox)
+            otp = screen.query_one("#opt-otp_autocopy", Checkbox)
+            photos.toggle()
+            otp.toggle()
+            # settings.json stops reading before the Changed messages are handled.
+            backend.photos_state = "unknown"
+            screen.status_changed(backend.status())
+            await _until(pilot, lambda: ("otp_autocopy", True) in backend.calls)
+            await _until(pilot, lambda: not screen.pending)
+            assert not any(call[0] == "contact_photos" for call in backend.calls)
+            assert notices == ["Unavailable while settings.json cannot be read"]
+            assert photos.value is False and otp.value is True
 
     asyncio.run(scenario())
 
@@ -829,6 +881,26 @@ def test_a_status_forwarded_while_options_is_being_pushed_does_not_crash() -> No
             await _until(pilot, lambda: screen.values is not None)
             await pilot.pause(0.1)
             assert app.is_running
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("state", ["locked", "ready"])
+def test_storage_caption_says_why_local_data_is_unavailable(state) -> None:
+    detail = "Local data is not retained while settings.json cannot be read"
+
+    async def scenario() -> None:
+        backend = _OptionsBackend()
+        backend.status = lambda: BackendStatus(
+            daemon=True, storage_policy="encrypted", storage_state=state,
+            storage_detail=detail, extra=dict(_FULL_EXTRA),
+        )
+        app = _app(backend)
+        async with app.run_test(size=(160, 40)) as pilot:
+            screen = await _open(app, pilot, "security")
+            caption = _plain(screen, "#options-storage")
+            assert ("settings.json cannot be read" in caption) is (state == "locked")
+            assert "blueferry storage-reset" not in caption
 
     asyncio.run(scenario())
 

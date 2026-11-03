@@ -67,7 +67,7 @@ def test_phone_audio_pending_and_unavailable_hints_win_over_playing() -> None:
     ({"phone_audio_delay_reporting": None, "phone_audio_delay_ms": None}, ""),
     (
         {"phone_audio_delay_reporting": True, "phone_audio_delay_ms": 110},
-        "A/V sync: 110 ms delay reported to the iPhone.",
+        "A/V sync: this computer reports 110 ms.",
     ),
     ({"phone_audio_delay_reporting": True, "phone_audio_delay_ms": None},
      "A/V sync: delay reporting active."),

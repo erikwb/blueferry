@@ -132,3 +132,23 @@ def test_with_safe_thumbnails_blanks_only_the_rejected_ones(tmp_path) -> None:
     assert checked.photos[1].original == original and checked.hint == snapshot.hint
     empty = photos_view.PhotosSnapshot(False, False, "none")
     assert photos_view.with_safe_thumbnails(empty) is empty
+
+
+def test_read_thumbnail_returns_the_bytes_of_a_regular_file_only(tmp_path) -> None:
+    data = png(4, 4)
+    path = _write(tmp_path, "t.png", data)
+    assert photos_view.read_thumbnail(path) == data
+    assert photos_view.read_thumbnail(str(path)) == data
+    assert photos_view.read_thumbnail(path, 8) == data[:8]
+    assert photos_view.read_thumbnail(None) is None
+    assert photos_view.read_thumbnail(tmp_path / "missing.png") is None
+    assert photos_view.read_thumbnail(tmp_path) is None
+    assert photos_view.read_thumbnail(_write(tmp_path, "empty.png", b"")) is None
+    big = _write(tmp_path, "big.png", data + bytes(photos_view.MAX_THUMBNAIL_BYTES))
+    assert photos_view.read_thumbnail(big) is None
+    fifo = tmp_path / "fifo.png"
+    os.mkfifo(fifo)
+    assert photos_view.read_thumbnail(fifo) is None  # never blocks
+    link = tmp_path / "link.png"
+    link.symlink_to(path)
+    assert photos_view.read_thumbnail(link) is None

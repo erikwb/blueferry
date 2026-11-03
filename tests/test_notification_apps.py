@@ -16,7 +16,7 @@ from blueferry.ancs.constants import MESSAGES_APP_ID, CategoryID
 from blueferry.ancs.events import AncsEvent
 from blueferry.backend_operations import BackendDependencies, BackendOperations
 from blueferry.dbus_service import MessagesService
-from blueferry.errors import InvalidArgumentsError, NotReadyError
+from blueferry.errors import ConfigurationError, InvalidArgumentsError, NotReadyError
 from blueferry.event_dispatcher import EventDispatcher
 from blueferry.notification_apps import (
     SETTINGS_KEY,
@@ -185,9 +185,9 @@ def test_store_reads_settings_once_until_written_or_storage_changes(
     store = MutedAppsStore(config.SETTINGS_JSON, storage=storage)
     store.set_muted("com.example.A", True, "A")
     reads: list[bool] = []
-    original = store._preference.read
+    original = store._preference.load
     monkeypatch.setattr(
-        store._preference, "read", lambda: reads.append(True) or original(),
+        store._preference, "load", lambda: reads.append(True) or original(),
     )
     for _ in range(3):  # one popup each, plus a GetStatus count
         assert store.is_muted("com.example.A") is True
@@ -202,6 +202,41 @@ def test_store_reads_settings_once_until_written_or_storage_changes(
     store.invalidate()
     store.entries()
     assert len(reads) == 4
+
+
+def test_mutes_survive_a_settings_file_that_could_not_be_read(storage) -> None:
+    MutedAppsStore(config.SETTINGS_JSON, storage=storage).set_muted("com.example.A", True)
+    MutedAppsStore(config.SETTINGS_JSON, storage=storage).set_muted("com.example.B", True)
+    saved = config.SETTINGS_JSON.read_bytes()
+    config.SETTINGS_JSON.write_text("{damaged")
+    apps = _apps(config.SETTINGS_JSON, storage=storage)  # the daemon starts now
+
+    assert apps.is_muted("com.example.A") is False
+    assert apps.payload()["mute_available"] is False
+
+    config.SETTINGS_JSON.write_bytes(saved)  # the user repairs the file
+    assert apps.is_muted("com.example.A") is True
+    assert apps.payload()["mute_available"] is True
+    apps.set_muted("com.example.C", True)
+    assert set(MutedAppsStore(config.SETTINGS_JSON, storage=storage).entries()) == {
+        "com.example.A", "com.example.B", "com.example.C",
+    }
+
+
+def test_no_mute_is_saved_while_the_settings_file_cannot_be_read(storage) -> None:
+    apps = _apps(config.SETTINGS_JSON, storage=storage)
+    apps.set_muted("com.example.A", True)
+    assert apps.is_muted("com.example.A") is True  # the list was read before
+    operations = BackendOperations(_Sessions(), BackendDependencies(notification_apps=apps))
+    config.SETTINGS_JSON.write_text("{damaged")
+    assert apps.is_muted("com.example.A") is True
+    assert operations.list_notification_apps()["mute_available"] is False
+    for app_id, muted in (
+        ("com.example.B", True), ("com.example.A", False), ("com.example.A", True),
+    ):
+        with pytest.raises(ConfigurationError, match="could not be read"):
+            operations.set_notification_app_muted(app_id, muted)
+    assert config.SETTINGS_JSON.read_text() == "{damaged"
 
 
 def test_migrate_seals_legacy_plaintext(storage) -> None:

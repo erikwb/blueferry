@@ -55,6 +55,10 @@ the list says so, so you know why some apps never show up.
 - While the wallet is locked, or with **Do not retain local data**, no app
   is muted and muting is unavailable. BlueFerry never overwrites the saved
   list while it cannot read it.
+- While `settings.json` itself can't be read, muting and unmuting are
+  refused; repair or remove the file and try again. Apps muted before the
+  file broke stay muted. If the service started while the file was broken,
+  their popups show until the file reads again.
 - The D-Bus signal `NotificationAppsChanged` carries no content; clients
   fetch the list with `ListNotificationApps`. `GetStatus` reports only the
   number of muted apps (`notification_muted_app_count`).

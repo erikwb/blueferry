@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import stat
+import threading
 
 import pytest
 
@@ -78,6 +79,26 @@ def test_local_env_does_not_follow_a_symlink(tmp_path) -> None:
     path.symlink_to(target)
 
     assert config.read_local_env(path) == {}
+
+
+def test_local_env_fifo_is_ignored_without_waiting_for_a_writer(tmp_path) -> None:
+    directory = tmp_path / "blueferry"
+    directory.mkdir(mode=0o700)
+    path = directory / "local.env"
+    os.mkfifo(path, 0o600)
+    result: list[dict[str, str]] = []
+    reader = threading.Thread(
+        target=lambda: result.append(config.read_local_env(path)), daemon=True,
+    )
+    reader.start()
+    reader.join(timeout=5)
+    if reader.is_alive():
+        # Release the blocked open so the hang fails this test only.
+        os.close(os.open(path, os.O_WRONLY | os.O_NONBLOCK))
+        reader.join(timeout=5)
+        pytest.fail("reading a FIFO blocked until a writer appeared")
+
+    assert result == [{}]
 
 
 def test_oversized_local_env_is_ignored(tmp_path, monkeypatch) -> None:

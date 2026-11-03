@@ -31,6 +31,7 @@ from blueferry.call_history import (
     wall_clock,
 )
 from blueferry.limits import MAX_CALL_HISTORY_RECORDS, MAX_CALL_HISTORY_SEEN_KEYS
+from blueferry.sqlite_files import is_damaged, remove_database
 from blueferry.storage_security import CorruptStorageError, StorageSecurity
 
 log = logging.getLogger(__name__)
@@ -255,12 +256,7 @@ class CallHistoryRepository:
             )
             for record in missed:
                 known[record.key] = record.occurred_at.timestamp()
-            floor = cutoff.timestamp()
-            retained_seen: dict[str, float] | None = dict(sorted(
-                ((key, stamp) for key, stamp in known.items() if stamp >= floor),
-                key=lambda item: item[1],
-                reverse=True,
-            )[:MAX_CALL_HISTORY_SEEN_KEYS])
+            retained_seen: dict[str, float] | None = _retained_seen(known, cutoff)
             if seeded and not kept:
                 # Nothing to seed from yet; stay armed (see docstring).
                 retained_seen = None
@@ -329,7 +325,12 @@ class CallHistoryRepository:
     def prune(
         self, *, now: datetime | None = None, retention_days: int | None = None,
     ) -> int:
-        """Delete rows older than the retention window; return the count."""
+        """Delete rows older than the retention window; return the count.
+
+        Announced missed calls older than the window leave the announcement
+        state too, so an expired caller is not kept on disk until the next
+        successful sync.
+        """
         if self.storage is None or not self.storage.status.can_write:
             return 0
         if not self.path.exists():
@@ -349,26 +350,55 @@ class CallHistoryRepository:
                     record = None
                 if record is None or record.occurred_at < cutoff:
                     expired.append(int(row_id))
-            if expired:
+            try:
+                seen = self._read_seen(connection)
+            except CorruptStorageError:
+                self._fail_closed()
+                return 0
+            # Before the first sync there is nothing to expire, and silent
+            # seeding must stay armed.
+            retained_seen = None if seen is None else _retained_seen(seen, cutoff)
+            if expired or retained_seen != seen:
                 with connection:
                     connection.executemany(
                         "DELETE FROM calls WHERE id = ?",
                         ((row_id,) for row_id in expired),
                     )
+                    if retained_seen != seen:
+                        self._write_state(connection, "seen", retained_seen)
         return len(expired)
 
-    def clear(self) -> None:
+    def clear(self, *, discard_damaged: bool = False) -> None:
         """Erase every retained call and the announcement state.
 
         Clearing the state means the next sync seeds silently again.
+        ``discard_damaged`` deletes a file SQLite cannot read.
         """
         if not self.path.exists():
             return
-        with closing(self._open()) as connection:
-            with connection:
-                connection.execute("DELETE FROM calls")
-                connection.execute("DELETE FROM state")
-            connection.execute("VACUUM")
+        try:
+            with closing(self._open()) as connection:
+                with connection:
+                    connection.execute("DELETE FROM calls")
+                    connection.execute("DELETE FROM state")
+                connection.execute("VACUUM")
+        except sqlite3.DatabaseError as error:
+            if not discard_damaged or not is_damaged(error):
+                raise
+            remove_database(self.path)
+
+
+def _retained_seen(known: dict[str, float], cutoff: datetime) -> dict[str, float]:
+    """Announced keys inside the retention window, newest first and capped.
+
+    An empty result is still state: it keeps silent seeding disarmed.
+    """
+    floor = cutoff.timestamp()
+    return dict(sorted(
+        ((key, stamp) for key, stamp in known.items() if stamp >= floor),
+        key=lambda item: item[1],
+        reverse=True,
+    )[:MAX_CALL_HISTORY_SEEN_KEYS])
 
 
 def _normalize_phone_id(value: str | None) -> str | None:
@@ -468,6 +498,6 @@ def _unseen(
     return unseen
 
 
-def clear_call_history(path: Path | None = None) -> None:
+def clear_call_history(path: Path | None = None, *, discard_damaged: bool = False) -> None:
     """Erase the call-history mirror without needing a storage key."""
-    CallHistoryRepository(None, path=path).clear()
+    CallHistoryRepository(None, path=path).clear(discard_damaged=discard_damaged)
