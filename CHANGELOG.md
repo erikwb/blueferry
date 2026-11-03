@@ -4,6 +4,11 @@
 
 ### Added
 
+- Decline a ringing call with a text to the caller: saved replies (up to 5,
+  translated defaults) or your own text, through
+  `Calls1.DeclineWithMessage`, `SetCallQuickReplies`,
+  `blueferry calls decline-with-message` and `blueferry calls replies`.
+  A text that cannot be sent is reported; the call stays declined.
 - Contact cards: the contact cache now keeps each number with its iPhone
   label, labelled email addresses, postal addresses, company and job title,
   inside the encrypted contact records only. `Messages1.ListContactCards`

@@ -146,6 +146,40 @@ eingeklammerte Null gewählt wird, hängt vom Nummerierungsplan ab. Verwende
 stattdessen eine eindeutige internationale Nummer, etwa `+4179…` für die
 Schweiz oder `+3906…` für Rom.
 
+## Ablehnen mit Nachricht
+
+Einen klingelnden Anruf kannst du mit einer Nachricht an den Anrufer
+ablehnen, etwa „Can't talk now. I'll call you back.“: Zuerst wird der Anruf
+am iPhone abgelehnt, dann geht der Text über die Nachrichten-Verbindung des
+iPhones (MAP) hinaus, genau wie eine in BlueFerry geschriebene Nachricht,
+und erscheint in der Unterhaltung.
+
+- Der Qt-, GTK- und Terminal-Client bieten in der Anrufansicht beim Klingeln
+  **Decline with message** an: eine gespeicherte Antwort wählen oder einen
+  eigenen Text schreiben.
+- Nur Anrufe mit Nummer bekommen diese Wahl; unterdrückte oder unbekannte
+  Anrufer lassen sich nur ablehnen.
+- Ohne Nachrichten-Verbindung wird der Anruf nicht abgelehnt, und BlueFerry
+  sagt warum. Scheitert das Senden erst nach dem Ablehnen, meldet BlueFerry
+  das; der Anruf bleibt abgelehnt. Ein eigener Text darf bis zu 1000 Zeichen
+  haben.
+- Die gespeicherten Antworten bearbeitest du in den Einstellungen unter
+  **Calls & Audio**: bis zu 5 Zeilen mit je höchstens 160 Zeichen. Bis du sie
+  änderst, stehen drei englische Antworten bereit (übersetzt, wo es eine
+  Übersetzung gibt); mit einer leeren Liste bleibt nur der eigene Text.
+
+```bash
+blueferry calls decline-with-message            # die erste gespeicherte Antwort
+blueferry calls decline-with-message --reply 2  # eine andere gespeicherte Antwort
+blueferry calls decline-with-message --text "Bin in einer Sitzung, rufe um 15 Uhr an"
+blueferry calls replies                         # gespeicherte Antworten zeigen
+blueferry calls replies set "Bin unterwegs" "Rufe später zurück"
+blueferry calls replies clear                   # nur eigener Text
+```
+
+Die Funktion gibt es nur, solange Anrufe eingeschaltet sind; einen eigenen
+Schalter braucht sie nicht.
+
 ## Grenzen
 
 - Experimentell. Getestet mit einem iPhone (iOS 27) auf einem
