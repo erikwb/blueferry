@@ -13,6 +13,7 @@ import time
 from dataclasses import replace
 
 import dbus
+import dbus.lowlevel
 import dbus.mainloop
 import dbus.service
 import pytest
@@ -198,6 +199,34 @@ def _call(name, interface_name, method, *args):
             outcome["value"] = getattr(interface, method)(*args, timeout=5)
         except Exception as error:
             outcome["error"] = error
+        finally:
+            connection.close()
+
+    thread = threading.Thread(target=request)
+    thread.start()
+    _dispatch_until(lambda: not thread.is_alive())
+    thread.join()
+    return outcome
+
+
+def _raw_call(name, interface_name, method, args, signature):
+    """Send ``args`` with exactly ``signature``, which dbus-python never checks.
+
+    A proxy call would convert the arguments to the introspected types; a raw
+    message shows what the service does with the wrong ones.
+    """
+    outcome = {}
+
+    def request():
+        connection = dbus.SessionBus(private=True, mainloop=dbus.mainloop.NULL_MAIN_LOOP)
+        try:
+            message = dbus.lowlevel.MethodCallMessage(name, OBJECT_PATH, interface_name, method)
+            if signature:
+                message.append(*args, signature=signature)
+            reply = connection.send_message_with_reply_and_block(message, 5)
+            outcome["value"] = reply.get_args_list()
+        except dbus.exceptions.DBusException as error:
+            outcome["error"] = error.get_dbus_name()
         finally:
             connection.close()
 
@@ -509,6 +538,27 @@ def test_call_audio_devices_round_trip(calls_service) -> None:
     assert status["calls_audio_input"] == "alsa_input.a50"
     listed_calls = json.loads(_call(name, CALLS_IFACE, "ListCalls")["value"])
     assert listed_calls["audio"] == {"state": "idle"}
+
+
+def test_call_audio_methods_reject_wrongly_typed_arguments(calls_service) -> None:
+    name, _calls, service = calls_service
+    audio = FakeCallAudio()
+    service.operations.dependencies = replace(service.operations.dependencies, call_audio=audio)
+
+    for method, args, signature in (
+        ("SetCallAudioDevice", ("output", 5), "si"),
+        ("SetCallAudioDevice", ("output",), "s"),
+        ("SetCallAudioDeviceForCall", (True, "x"), "bs"),
+        ("SetCallAudioDeviceForCall", ("input", ["x"]), "sas"),
+        ("ListCallAudioDevices", ("output",), "s"),
+    ):
+        outcome = _raw_call(name, CALLS_IFACE, method, args, signature)
+        assert outcome == {"error": "org.freedesktop.DBus.Error.InvalidArgs"}, (method, signature)
+    assert audio.requests == []
+
+    typed = _raw_call(name, CALLS_IFACE, "SetCallAudioDeviceForCall", ("input", "x"), "ss")
+    assert typed == {"value": []}
+    assert audio.requests == [("call", "input", "x")]
 
 
 def test_call_audio_methods_fail_while_calls_are_off(disabled_service) -> None:
