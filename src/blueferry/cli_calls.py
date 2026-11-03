@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 from collections.abc import Callable
 from typing import Optional, TypeVar
 
@@ -11,6 +12,7 @@ import typer
 from blueferry.calls.phone_status import PHONE_STATUS_KEYS
 from blueferry.client import BackendClient, BackendError
 from blueferry.models import CALLS_STATE_TEXT, CallInfo, CallsSnapshot, phone_status_fields
+from blueferry.phone_link_view import call_duration
 from blueferry.text_safety import terminal_text
 
 T = TypeVar("T")
@@ -38,11 +40,15 @@ def _run(action: Callable[[], T], failure: str = "Call failed") -> T:
         raise typer.Exit(code=3) from None
 
 
-def _describe(call: CallInfo) -> str:
+def _describe(call: CallInfo, now: float | None = None) -> str:
     peer = terminal_text(call.display_peer).replace("\n", " ")
     number = terminal_text(call.number)
     suffix = f" ({number})" if number and number != peer else ""
     flags = " [conference]" if call.multiparty else ""
+    # How long an answered call has run; daemons without active_since: none.
+    duration = call_duration(call.active_since, time.time() if now is None else now)
+    if duration and call.state in {"active", "held"}:
+        flags += f" {duration}"
     return f"{call.call_id:<14} {call.state:<10} {call.direction:<9} {peer}{suffix}{flags}"
 
 
@@ -159,6 +165,94 @@ def calls_hangup(
     typer.echo("Hung up.")
 
 
+@calls_app.command("decline-with-message")
+def calls_decline_with_message(
+    call_id: str = typer.Argument("", help="Call ID; defaults to the ringing call"),
+    text: str = typer.Option("", "--text", "-t", help="Your own message"),
+    reply: int = typer.Option(
+        0, "--reply", "-r", min=0, help="Number of a saved reply ('blueferry calls replies')",
+    ),
+) -> None:
+    """Decline the ringing call and text the caller (needs the caller's number).
+
+    Without --text or --reply the first saved reply is sent.
+    """
+    if text and reply:
+        typer.echo(
+            typer.style("Pass either --text or --reply, not both.", fg=typer.colors.RED),
+            err=True,
+        )
+        raise typer.Exit(code=2)
+    body = text
+    if not body:
+        saved = _saved_replies()
+        index = (reply or 1) - 1
+        if not 0 <= index < len(saved):
+            typer.echo(typer.style(
+                "No such saved reply; pass --text or see 'blueferry calls replies'.",
+                fg=typer.colors.RED,
+            ), err=True)
+            raise typer.Exit(code=2)
+        body = saved[index]
+    selected = call_id or _only(_snapshot(), {"incoming", "waiting"}, "ringing")
+    _run(lambda: _client().decline_call_with_message(selected, body),
+         "Could not decline with a message")
+    typer.echo(typer.style("Declined and sent the message.", fg=typer.colors.GREEN))
+
+
+def _saved_replies() -> list[str]:
+    status = _run(lambda: _client().status(), "Could not read the status")
+    value = status.extra.get("calls_quick_replies")
+    if not isinstance(value, list):
+        typer.echo(typer.style(
+            "Declining with a message needs calls on and an updated daemon.",
+            fg=typer.colors.RED,
+        ), err=True)
+        raise typer.Exit(code=3)
+    return [str(item) for item in value]
+
+
+replies_app = typer.Typer(
+    help="Saved replies for declining a call with a message (at most 5).",
+    invoke_without_command=True,
+    no_args_is_help=False,
+)
+calls_app.add_typer(replies_app, name="replies")
+
+
+@replies_app.callback()
+def calls_replies(ctx: typer.Context) -> None:
+    """List the saved replies."""
+    if ctx.invoked_subcommand is not None:
+        return
+    saved = _saved_replies()
+    if not saved:
+        typer.echo("No saved replies; 'decline-with-message --text' still works.")
+        return
+    for number, item in enumerate(saved, start=1):
+        typer.echo(f"{number}. {terminal_text(item)}")
+
+
+@replies_app.command("set")
+def calls_replies_set(
+    replies: list[str] = typer.Argument(  # noqa: B008 - Typer's declaration style
+        ..., help="Up to 5 one-line replies",
+    ),
+) -> None:
+    """Replace the saved replies."""
+    status = _run(lambda: _client().set_call_quick_replies(list(replies)),
+                  "Could not save the replies")
+    count = len(status.get("calls_quick_replies") or [])
+    typer.echo(typer.style(f"Saved {count} replies.", fg=typer.colors.GREEN))
+
+
+@replies_app.command("clear")
+def calls_replies_clear() -> None:
+    """Remove every saved reply (declining then needs --text)."""
+    _run(lambda: _client().set_call_quick_replies([]), "Could not save the replies")
+    typer.echo(typer.style("Removed the saved replies.", fg=typer.colors.GREEN))
+
+
 @calls_app.command("dtmf")
 def calls_dtmf(
     digits: str = typer.Argument(..., help="Tones: 0-9, * and #"),
@@ -182,6 +276,113 @@ def calls_hold_answer() -> None:
     """Hold the active call and answer the waiting one."""
     _run(lambda: _client().hold_and_answer_call())
     typer.echo("Answered the waiting call.")
+
+
+_MUTE_WORDS = {"on": True, "off": False}
+
+
+@calls_app.command("mute")
+def calls_mute(
+    state: str = typer.Argument(..., help="'on' mutes, 'off' unmutes", metavar="on|off"),
+) -> None:
+    """Mute this computer's microphone for the running call only.
+
+    Other applications keep the microphone; the mute ends with the call.
+    """
+    muted = _MUTE_WORDS.get(state.strip().lower())
+    if muted is None:
+        typer.echo(typer.style("Pass 'on' or 'off'.", fg=typer.colors.RED), err=True)
+        raise typer.Exit(code=2)
+    _run(lambda: _client().set_call_muted(muted), "Could not change the call microphone")
+    typer.echo(typer.style(
+        "Microphone muted for this call." if muted else "Microphone unmuted.",
+        fg=typer.colors.GREEN,
+    ))
+
+
+audio_app = typer.Typer(
+    help="Speaker and microphone for calls (the rest of the system is not changed).",
+    invoke_without_command=True,
+    no_args_is_help=False,
+)
+calls_app.add_typer(audio_app, name="audio")
+
+_SYSTEM_WORDS = {"system", "default", ""}
+
+
+def _device_line(choice: str, devices: list, direction_word: str) -> str:
+    if not choice:
+        return f"{direction_word}: same as system"
+    known = {str(item.get("name")): str(item.get("description") or "") for item in devices
+             if isinstance(item, dict)}
+    shown = terminal_text(known.get(choice) or choice)
+    suffix = "" if choice in known else " (not connected)"
+    return f"{direction_word}: {shown}{suffix}"
+
+
+@audio_app.callback()
+def calls_audio(ctx: typer.Context) -> None:
+    """Show the saved call speaker and microphone, the devices, and the running call."""
+    if ctx.invoked_subcommand is not None:
+        return
+    devices = _run(lambda: _client().call_audio_devices(), "Could not read audio devices")
+    outputs = [item for item in devices.get("outputs") or [] if isinstance(item, dict)]
+    inputs = [item for item in devices.get("inputs") or [] if isinstance(item, dict)]
+    typer.echo(_device_line(str(devices.get("output") or ""), outputs, "Speaker"))
+    typer.echo(_device_line(str(devices.get("input") or ""), inputs, "Microphone"))
+    audio = _snapshot().audio
+    if audio is not None and audio.state != "idle":
+        typer.echo(f"Running call ({audio.state}):")
+        for word, route in (("Speaker", audio.output), ("Microphone", audio.input)):
+            used = terminal_text(route.description or route.device or "not connected yet")
+            note = " — chosen device missing, using the system default" if route.missing else ""
+            if word == "Microphone" and audio.muted:
+                note += " (muted for this call)"
+            typer.echo(f"  {word}: {used}{note}")
+    for title, items in (("Speakers", outputs), ("Microphones", inputs)):
+        typer.echo(f"{title}:")
+        for item in items:
+            mark = " (system default)" if item.get("default") else ""
+            typer.echo(
+                f"  {terminal_text(str(item.get('name') or ''))}  "
+                f"{terminal_text(str(item.get('description') or ''))}{mark}"
+            )
+
+
+def _choose(direction: str, name: str, this_call: bool) -> None:
+    selected = "" if name.strip().lower() in _SYSTEM_WORDS else name.strip()
+    word = "Speaker" if direction == "output" else "Microphone"
+    shown = terminal_text(selected) if selected else "same as system"
+    if this_call:
+        _run(lambda: _client().set_call_audio_device_for_call(direction, selected),
+             "Could not change the call audio")
+        typer.echo(typer.style(f"{word} for this call: {shown}.", fg=typer.colors.GREEN))
+        return
+    _run(lambda: _client().set_call_audio_device(direction, selected),
+         "Could not save the setting")
+    typer.echo(typer.style(f"{word} for calls: {shown}.", fg=typer.colors.GREEN))
+
+
+_DEVICE_HELP = "PipeWire node name from 'blueferry calls audio', or 'system'"
+_THIS_CALL_HELP = "Only for the running call instead of saving it"
+
+
+@audio_app.command("output")
+def calls_audio_output(
+    name: str = typer.Argument(..., help=_DEVICE_HELP),
+    this_call: bool = typer.Option(False, "--this-call", help=_THIS_CALL_HELP),
+) -> None:
+    """Choose the speaker for calls."""
+    _choose("output", name, this_call)
+
+
+@audio_app.command("input")
+def calls_audio_input(
+    name: str = typer.Argument(..., help=_DEVICE_HELP),
+    this_call: bool = typer.Option(False, "--this-call", help=_THIS_CALL_HELP),
+) -> None:
+    """Choose the microphone for calls."""
+    _choose("input", name, this_call)
 
 
 def phone_status(

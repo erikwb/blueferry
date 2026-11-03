@@ -35,6 +35,8 @@ CALL_STATES = frozenset({
     "disconnected",
 })
 RINGING_STATES = frozenset({"incoming", "waiting"})
+# States of a call that has been answered (the duration runs while held).
+ACTIVE_STATES = frozenset({"active", "held"})
 UNKNOWN_STATE = "unknown"
 
 Direction = Literal["incoming", "outgoing", "unknown"]
@@ -331,6 +333,19 @@ def parse_call_state(value: object) -> str:
     return state if state in CALL_STATES else UNKNOWN_STATE
 
 
+def parse_start_time(value: object) -> float | None:
+    """Epoch seconds from oFono's optional VoiceCall ``StartTime``.
+
+    oFono formats it as ISO 8601 with a numeric offset once the call is
+    active. Anything else, including a time without an offset, is ignored.
+    """
+    text = remote_text(value, limit=40)
+    try:
+        return datetime.strptime(text, "%Y-%m-%dT%H:%M:%S%z").timestamp()
+    except (ValueError, OverflowError):
+        return None
+
+
 def parse_line_identification(value: object) -> str:
     """Keep a number only when it is phone-shaped; withheld IDs become ``""``."""
     text = remote_text(value, limit=64)
@@ -352,6 +367,10 @@ class CallRecord:
     multiparty: bool = False
     emergency: bool = False
     first_seen: str = field(default_factory=_now_iso)
+    # When the call became active (epoch seconds): oFono's StartTime, or the
+    # moment the backend first saw it active when oFono did not report one.
+    # On the wire as ``active_since``; the notification shows it as "since".
+    start_time: float | None = None
 
     @property
     def ringing(self) -> bool:
@@ -374,7 +393,32 @@ class CallRecord:
             return replace(self, multiparty=_bool(value))
         if key == "Emergency":
             return replace(self, emergency=_bool(value))
+        if key == "StartTime":
+            start = parse_start_time(value)
+            # A malformed StartTime keeps the start already known.
+            return self if start is None else replace(self, start_time=start)
         return self
+
+    def with_active_start(self, now: float) -> CallRecord:
+        """Remember ``now`` as the start of an active (or held) call.
+
+        oFono sends ``StartTime`` right after the ``State`` change, and then
+        it overrides this. A call never active (ringing, dialing) keeps none.
+        """
+        if self.start_time is not None or self.state not in ACTIVE_STATES:
+            return self
+        return replace(self, start_time=now)
+
+    @property
+    def active_since(self) -> str:
+        """ISO 8601 (UTC) start of the active call, ``""`` before it is active."""
+        if self.start_time is None:
+            return ""
+        try:
+            moment = datetime.fromtimestamp(self.start_time, timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            return ""
+        return moment.isoformat(timespec="seconds")
 
     def to_wire(self) -> dict[str, object]:
         return {
@@ -387,6 +431,7 @@ class CallRecord:
             "multiparty": self.multiparty,
             "emergency": self.emergency,
             "first_seen": self.first_seen,
+            "active_since": self.active_since,
         }
 
 
@@ -407,7 +452,7 @@ def parse_call(
         state=state,
         direction=direction or direction_for_state(state),
     )
-    for key in ("LineIdentification", "Name", "Multiparty", "Emergency"):
+    for key in ("LineIdentification", "Name", "Multiparty", "Emergency", "StartTime"):
         if key in properties:
             record = record.with_property(key, properties[key])
     return record

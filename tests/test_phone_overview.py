@@ -125,6 +125,28 @@ def test_call_card_words_each_state_and_ticks_the_duration() -> None:
     assert phone_link_view.call_duration(start, now - 300) == "0:00"
 
 
+def test_call_duration_counts_from_the_answer_and_shows_hours() -> None:
+    from datetime import datetime
+
+    rang = "2026-10-26T10:00:00+00:00"
+    answered = "2026-10-26T10:00:20+00:00"
+    base = datetime.fromisoformat(answered).timestamp()
+    card = phone_link_view.call_card
+    call = {"state": "active", "first_seen": rang, "active_since": answered}
+    # The ringing time does not count.
+    assert card(call, base + 5)["subtitle"] == "0:05"
+    assert card(call, base + 59 * 60 + 59)["subtitle"] == "59:59"
+    assert card(call, base + 3600)["subtitle"] == "1:00:00"
+    assert card(call, base + 2 * 3600 + 3 * 60 + 4)["subtitle"] == "2:03:04"
+    # An older daemon sends no active_since: count from first_seen.
+    older = {"state": "active", "first_seen": rang}
+    assert card(older, base)["subtitle"] == "0:20"
+    assert card({**older, "active_since": ""}, base)["subtitle"] == "0:20"
+    assert phone_link_view.format_duration(-5) == "0:00"
+    assert phone_link_view.format_duration(36_000) == "10:00:00"
+    assert phone_link_view.call_duration(None, base) == ""
+
+
 def test_dial_tones_keeps_the_keypad_symbols_up_to_the_daemon_limit() -> None:
     from blueferry.calls.model import MAX_DTMF_TONES
 

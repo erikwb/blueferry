@@ -6,6 +6,8 @@ import os
 from pathlib import Path
 
 from blueferry import config
+from blueferry.calls.audio_devices import valid_node_name
+from blueferry.errors import InvalidArgumentsError
 from blueferry.settings_store import SettingsStore
 
 log = logging.getLogger(__name__)
@@ -51,3 +53,40 @@ class CallsSettings:
 def calls_enabled() -> bool:
     """The effective opt-in, for code outside the daemon (pairing)."""
     return CallsSettings().enabled
+
+
+AUDIO_KEYS = {"output": "calls_audio_output", "input": "calls_audio_input"}
+
+
+class CallAudioSettings:
+    """The saved speaker and microphone for calls (``settings.json``).
+
+    Each is a PipeWire ``node.name``, which stays the same across reboots
+    and replugging; "" means "same as the system". Only read while calls
+    are on.
+    """
+
+    def __init__(self, path: Path | None = None) -> None:
+        self._settings = SettingsStore(path or config.SETTINGS_JSON)
+        stored = self._settings.read()  # never raises
+        self._values = {
+            direction: _saved_name(stored.get(key)) for direction, key in AUDIO_KEYS.items()
+        }
+
+    def get(self, direction: str) -> str:
+        return self._values[direction]
+
+    def set(self, direction: str, name: str) -> str:
+        if direction not in AUDIO_KEYS or not isinstance(name, str):
+            raise ValueError("unknown audio direction or device")
+        self._settings.update(**{AUDIO_KEYS[direction]: name})
+        self._values[direction] = name
+        return name
+
+
+def _saved_name(value: object) -> str:
+    """A hand-edited or corrupt value reads as "same as the system"."""
+    try:
+        return valid_node_name(value)
+    except InvalidArgumentsError:
+        return ""

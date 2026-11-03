@@ -43,6 +43,11 @@ def _optional_str(value: Any) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
+def _present_str(value: Any) -> str | None:
+    """A string key where "" is a value of its own; None when absent."""
+    return value if isinstance(value, str) else None
+
+
 def _profile_id(value: Any) -> str | None:
     """Accept only BlueFerry's canonical, opaque UUIDv4 profile ID."""
     if not isinstance(value, str):
@@ -104,6 +109,10 @@ class BackendStatus:
     calls_enabled: bool | None = None
     calls_state: str = "disabled"
     calls_available: bool = False
+    # The saved call speaker/microphone (PipeWire node.name, "" = system);
+    # None while calls are off or the daemon predates the setting.
+    calls_audio_output: str | None = None
+    calls_audio_input: str | None = None
     # None means unknown. The battery comes over LE ("bluez"/"gatt", exact)
     # or from HFP ("hfp", 20 % steps); signal and network only from HFP.
     phone_battery_level: int | None = None
@@ -163,6 +172,8 @@ class BackendStatus:
             "calls_enabled",
             "calls_state",
             "calls_available",
+            "calls_audio_output",
+            "calls_audio_input",
             "phone_battery_level",
             "phone_battery_source",
             "phone_battery_warning",
@@ -208,6 +219,8 @@ class BackendStatus:
             calls_enabled=_bool(value["calls_enabled"]) if "calls_enabled" in value else None,
             calls_state=_str(value.get("calls_state"), "disabled"),
             calls_available=_bool(value.get("calls_available")),
+            calls_audio_output=_present_str(value.get("calls_audio_output")),
+            calls_audio_input=_present_str(value.get("calls_audio_input")),
             phone_battery_level=_percent(value.get("phone_battery_level")),
             phone_battery_source=_optional_str(value.get("phone_battery_source")),
             phone_battery_warning=_bool(value.get("phone_battery_warning")),
@@ -243,6 +256,11 @@ class BackendStatus:
             reported["phone_audio_playing"] = self.phone_audio_playing
         if self.phone_profile_id is not None:
             reported["phone_profile_id"] = self.phone_profile_id
+        # Present only while calls are on and the daemon offers the choice.
+        if self.calls_audio_output is not None:
+            reported["calls_audio_output"] = self.calls_audio_output
+        if self.calls_audio_input is not None:
+            reported["calls_audio_input"] = self.calls_audio_input
         return {
             **self.extra,
             **reported,
@@ -339,6 +357,9 @@ class CallInfo:
     multiparty: bool = False
     emergency: bool = False
     first_seen: str = ""
+    # ISO 8601 start of the answered call; "" before that or from an older
+    # daemon (clients then count from ``first_seen``).
+    active_since: str = ""
     extra: Mapping[str, Any] = field(default_factory=dict, repr=False)
 
     @property
@@ -353,7 +374,7 @@ class CallInfo:
     def from_dict(cls, value: Mapping[str, Any]) -> CallInfo:
         known = {
             "call_id", "state", "direction", "number", "network_name",
-            "contact_name", "multiparty", "emergency", "first_seen",
+            "contact_name", "multiparty", "emergency", "first_seen", "active_since",
         }
         return cls(
             call_id=_str(value.get("call_id")),
@@ -365,6 +386,7 @@ class CallInfo:
             multiparty=_bool(value.get("multiparty")),
             emergency=_bool(value.get("emergency")),
             first_seen=_str(value.get("first_seen")),
+            active_since=_str(value.get("active_since")),
             extra={key: item for key, item in value.items() if key not in known},
         )
 
@@ -380,15 +402,90 @@ class CallInfo:
             "multiparty": self.multiparty,
             "emergency": self.emergency,
             "first_seen": self.first_seen,
+            "active_since": self.active_since,
             "display_peer": self.display_peer,
             "ringing": self.ringing,
         }
 
 
 @dataclass(frozen=True, slots=True)
+class CallAudioRoute:
+    """One direction of a call's audio (ListCalls ``audio.output``/``input``).
+
+    ``selected`` is the chosen PipeWire ``node.name`` ("" for the system
+    default) and ``origin`` where that choice came from (``call``,
+    ``settings`` or ``system``). ``device``/``description`` name the device
+    the call actually uses, empty until the call audio exists (``stream``).
+    ``missing`` means the chosen device is not connected, so the system
+    default is used.
+    """
+
+    selected: str = ""
+    origin: str = "system"
+    device: str = ""
+    description: str = ""
+    missing: bool = False
+    stream: bool = False
+
+    @classmethod
+    def from_dict(cls, value: object) -> CallAudioRoute:
+        if not isinstance(value, Mapping):
+            return cls()
+        return cls(
+            selected=_str(value.get("selected")),
+            origin=_str(value.get("origin"), "system"),
+            device=_str(value.get("device")),
+            description=_str(value.get("description")),
+            missing=_bool(value.get("missing")),
+            stream=_bool(value.get("stream")),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "selected": self.selected, "origin": self.origin, "device": self.device,
+            "description": self.description, "missing": self.missing, "stream": self.stream,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class CallAudio:
+    """ListCalls ``audio``: ``state`` is idle, waiting, ready or unavailable.
+
+    ``muted`` is True while this computer's microphone is muted for the
+    running call; None for daemons that cannot mute a call.
+    """
+
+    state: str = "idle"
+    output: CallAudioRoute = field(default_factory=CallAudioRoute)
+    input: CallAudioRoute = field(default_factory=CallAudioRoute)
+    muted: bool | None = None
+
+    @classmethod
+    def from_dict(cls, value: object) -> CallAudio | None:
+        if not isinstance(value, Mapping):
+            return None
+        return cls(
+            state=_str(value.get("state"), "idle"),
+            output=CallAudioRoute.from_dict(value.get("output")),
+            input=CallAudioRoute.from_dict(value.get("input")),
+            muted=_bool(value["muted"]) if "muted" in value else None,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "state": self.state, "output": self.output.to_dict(), "input": self.input.to_dict(),
+        }
+        if self.muted is not None:
+            result["muted"] = self.muted
+        return result
+
+
+@dataclass(frozen=True, slots=True)
 class CallsSnapshot:
     state: str = "disabled"
     calls: tuple[CallInfo, ...] = ()
+    # None when the daemon cannot choose call audio devices.
+    audio: CallAudio | None = None
 
     @property
     def available(self) -> bool:
@@ -404,6 +501,7 @@ class CallsSnapshot:
                 for item in (items if isinstance(items, list) else [])
                 if isinstance(item, Mapping) and isinstance(item.get("call_id"), str)
             ),
+            audio=CallAudio.from_dict(value.get("audio")),
         )
 
 

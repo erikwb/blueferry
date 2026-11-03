@@ -28,6 +28,10 @@ ShellRoot {
   property var backendStatus: ({})
   // Opt-in iPhone now playing as reduced by the bridge; empty while off.
   property var nowPlaying: ({})
+  // Running calls as reduced by the bridge (call card wording, duration
+  // included); empty while calls are off.
+  property var callsView: ({})
+  property bool callsWatched: false
   // Host fact from the bridge; kept when backendStatus is reset because the
   // daemon is unavailable. undefined means an older bridge did not send it.
   property var bluetoothRestartCommand: undefined
@@ -73,6 +77,29 @@ ShellRoot {
   property bool syncContactsBusy: false
   property string contactsSyncNotice: ""
   property var doctor: ({})
+  // Speaker and microphone for calls: the bridge's settings rows, read
+  // when Settings opens while the daemon offers the choice.
+  property var callAudio: ({})
+  property bool callAudioBusy: false
+  readonly property bool callAudioWanted: root.featuresWanted
+    && root.backendStatus.calls_audio_output !== undefined
+  onCallAudioWantedChanged: if (root.callAudioWanted) root.loadCallAudio()
+
+  function loadCallAudio() {
+    if (root.callAudioWanted) backendBridge.requestLatest("call_audio_settings", {})
+  }
+  // Replies offered when declining a call: the bridge's list with its
+  // wording, read when Settings opens while the daemon offers them and
+  // again when the saved list changes (e.g. from the command line).
+  property var quickReplies: ({})
+  property bool quickRepliesBusy: false
+  readonly property bool quickRepliesWanted: root.featuresWanted
+    && root.backendStatus.calls_quick_replies !== undefined
+  onQuickRepliesWantedChanged: if (root.quickRepliesWanted) root.loadQuickReplies()
+
+  function loadQuickReplies() {
+    if (root.quickRepliesWanted) backendBridge.requestLatest("quick_replies", {})
+  }
   // Recent iPhone notifications: private, read only while the settings
   // page shows the list in a visible window, forgotten otherwise.
   property var notificationList: ({})
@@ -154,6 +181,23 @@ ShellRoot {
       backendBridge.cancelLatest("now_playing")
       root.nowPlaying = ({})
     }
+  }
+
+  // ListCalls only when calls are on: on a calls change, when they are
+  // switched on and after each action. The duration ticks via call_cards.
+  function refreshCalls() {
+    if (root.callsWatched) {
+      backendBridge.requestLatest("calls", {})
+    } else {
+      backendBridge.cancelLatest("calls")
+      backendBridge.cancelLatest("call_cards")
+      root.callsView = ({})
+    }
+  }
+
+  function applyCalls(result) {
+    root.callsView = root.callsWatched && typeof result === "object" && result !== null
+      ? result : ({})
   }
 
   function applyNowPlaying(result) {
@@ -376,6 +420,11 @@ ShellRoot {
     backendStatus = ({})
     backendBridge.cancelLatest("now_playing")
     nowPlaying = ({})
+    // Likewise the call card: a late calls reply cannot bring it back.
+    callsWatched = false
+    backendBridge.cancelLatest("calls")
+    backendBridge.cancelLatest("call_cards")
+    callsView = ({})
     statusErrorText = message
   }
 
@@ -501,7 +550,12 @@ ShellRoot {
         // The service came back: the switches read while it was away are
         // only the local.env fallback.
         const daemonReturned = result.daemon === true && root.backendStatus.daemon !== true
+        // A changed saved list rereads the replies; when they only now
+        // become wanted, onQuickRepliesWantedChanged reads them.
+        const repliesChanged = root.quickRepliesWanted && JSON.stringify(result.calls_quick_replies)
+          !== JSON.stringify(root.backendStatus.calls_quick_replies)
         root.backendStatus = result
+        if (repliesChanged && !root.quickRepliesBusy) root.loadQuickReplies()
         if (daemonReturned && root.featuresWanted) root.loadFeatures()
         let searchedAgain = false
         if (result.contact_card_epoch !== root.contactCardEpoch) {
@@ -555,6 +609,11 @@ ShellRoot {
         root.statusErrorText = ""
         root.maybeUnlockStorage()
         root.refreshNowPlaying()
+        const callsWanted = result.calls_enabled === true
+        if (callsWanted !== root.callsWatched || (daemonReturned && callsWanted)) {
+          root.callsWatched = callsWanted
+          root.refreshCalls()
+        }
       } else if (method === "threads") {
         if (!root.threadsBusy || requestId !== root.threadsRequestId) return
         root.threadsRequestId = 0
@@ -606,6 +665,9 @@ ShellRoot {
         // HistoryChanged reloads the thread list.
       } else if (method === "now_playing") {
         root.applyNowPlaying(result)
+      } else if (method === "calls" || method === "call_cards"
+                 || method === "answer_call" || method === "hangup_call") {
+        root.applyCalls(result)
       } else if (method === "media_command") {
         // NowPlayingChanged refreshes the strip.
       } else if (method === "delete_threads") {
@@ -722,6 +784,24 @@ ShellRoot {
         root.contactsSyncNotice = typeof result === "object" && result !== null
           ? String(result.text || "") : ""
         root.reload()
+      } else if (method === "call_audio_settings") {
+        root.callAudio = typeof result === "object" && result !== null ? result : ({})
+      } else if (method === "set_call_audio_device") {
+        root.callAudioBusy = false
+        root.loadCallAudio()
+        root.reload()
+      } else if (method === "quick_replies") {
+        root.quickReplies = typeof result === "object" && result !== null ? result : ({})
+      } else if (method === "save_quick_reply" || method === "remove_quick_reply") {
+        // The reply is the new list, or the unchanged one with the reason.
+        // A saved list goes into the status too, so the next status round
+        // does not read the replies a second time.
+        root.quickRepliesBusy = false
+        root.quickReplies = typeof result === "object" && result !== null ? result : ({})
+        if (root.quickReplies.saved === true && Array.isArray(root.quickReplies.replies))
+          root.backendStatus = Object.assign({}, root.backendStatus, {
+            calls_quick_replies: root.quickReplies.replies
+          })
       } else if (method === "features") {
         root.applyFeatures(result)
       } else if (method === "set_feature") {
@@ -805,6 +885,11 @@ ShellRoot {
         // Keep the conversation open even if MAP write-back fails.
       } else if (method === "now_playing") {
         root.nowPlaying = ({})
+      } else if (method === "calls" || method === "call_cards") {
+        root.callsView = ({})
+      } else if (method === "answer_call" || method === "hangup_call") {
+        root.errorText = message || "Could not control the call"
+        root.refreshCalls()
       } else if (method === "media_command") {
         root.errorText = message || "Could not control iPhone playback"
         root.refreshNowPlaying()
@@ -896,6 +981,18 @@ ShellRoot {
         root.syncContactsBusy = false
         root.contactsSyncNotice = ""
         root.errorText = "Contact sync failed: " + (message || "BlueFerry is unavailable")
+      } else if (method === "call_audio_settings") {
+        root.callAudio = ({})
+      } else if (method === "set_call_audio_device") {
+        root.callAudioBusy = false
+        root.errorText = message || "Could not save the call audio device"
+        root.loadCallAudio()
+      } else if (method === "quick_replies") {
+        root.quickReplies = ({})
+      } else if (method === "save_quick_reply" || method === "remove_quick_reply") {
+        root.quickRepliesBusy = false
+        root.errorText = message || "Could not save the replies"
+        root.loadQuickReplies()
       } else if (method === "features") {
         root.features = ({})
       } else if (method === "set_feature") {
@@ -991,6 +1088,7 @@ ShellRoot {
       }
       else if (name === "call-history-changed") root.invalidateSearch()
       else if (name === "now-playing-changed") root.refreshNowPlaying()
+      else if (name === "calls-changed") root.refreshCalls()
       else if (name === "notifications-changed" && root.notificationListWatched)
         root.refreshNotificationList()
       else if (name === "notification-apps-changed") {
@@ -1013,6 +1111,16 @@ ShellRoot {
       root.reload()
       setupController.refreshConfiguration()
     }
+  }
+
+  // The call duration: the bridge formats it from its cached ListCalls, so
+  // this asks no D-Bus question; only while an answered call is shown.
+  Timer {
+    objectName: "callTicker"
+    interval: 1000
+    repeat: true
+    running: root.callsWatched && root.callsView.ticking === true && window.visible
+    onTriggered: backendBridge.requestLatest("call_cards", {})
   }
 
   Component.onCompleted: {
@@ -1091,6 +1199,15 @@ ShellRoot {
             color: theme.muted
             font.pixelSize: theme.captionSize
           }
+        }
+
+        QuickshellCalls {
+          objectName: "calls"
+          ferryTheme: theme
+          Layout.fillWidth: true
+          view: root.callsView
+          onAnswerRequested: callId => backendBridge.request("answer_call", {call_id: callId})
+          onHangupRequested: callId => backendBridge.request("hangup_call", {call_id: callId})
         }
 
         QuickshellNowPlaying {
@@ -1667,6 +1784,8 @@ ShellRoot {
           features: root.features
           featurePending: root.featurePending
           doctor: root.doctor
+          callAudio: root.callAudio
+          quickReplies: root.quickReplies
           notificationList: root.notificationList
           notificationPinError: root.notificationPinError
           notificationApps: root.notificationApps
@@ -1681,6 +1800,8 @@ ShellRoot {
                   autoProfileReset: root.autoProfileReset.busy,
                   proximityLock: root.proximityLock.busy,
                   calls: root.callsChoice.busy,
+                  callAudio: root.callAudioBusy,
+                  quickReplies: root.quickRepliesBusy,
                   callHistory: root.callHistory.busy || root.missedCallPopups.busy,
                   tether: root.tetherBusy,
                   photos: root.contactPhotos.busy,
@@ -1744,6 +1865,9 @@ ShellRoot {
             if (method === "set_auto_profile_reset") root.autoProfileReset.request(args.enabled)
             if (method === "set_proximity_lock") root.proximityLock.request(args.enabled)
             if (method === "set_calls_enabled") root.callsChoice.request(args.enabled)
+            if (method === "set_call_audio_device") root.callAudioBusy = true
+            if (method === "save_quick_reply" || method === "remove_quick_reply")
+              root.quickRepliesBusy = true
             if (method === "set_call_history") {
               root.callHistory.request(args.enabled)
               root.missedCallPopups.request(args.missed_call_notifications)
