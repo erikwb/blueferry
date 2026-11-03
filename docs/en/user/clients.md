@@ -236,6 +236,14 @@ app does not offer volume control.
 | Pin / unpin notifications | ✓ Notifications tab | ✓ Notifications tab | ✓ iPhone Notifications, `P` | ✓ Show Recent Notifications | ✓ `blueferry notifications pin\|unpin KEY` |
 | Mute apps | ✓ Settings › Notifications | ✓ Settings › Notifications | ✓ Settings › Notifications › Muted apps | ✓ iPhone settings › Notifications | ✓ `blueferry notifications apps\|mute\|unmute` |
 
+**From Plugins** under the now-playing strip shows what your
+[plugins](plugins.md) offer while the conversations are shown, for example
+AirPods or the next calendar entry, with their buttons; ↻ reads them again.
+A plugin that fails shows a dimmed line. Buttons that send files (such as
+**Send files…** on a LocalSend device) are left out, since the panel has
+no file picker; a note under the section says where to find them. The
+cards are not read while the panel is hidden.
+
 The panel's notification list has no other row actions (it does not open or
 answer notifications), so a notification the iPhone can no longer act on
 looks the same there apart from **Removed on iPhone**.
@@ -263,8 +271,8 @@ Quickshell is a compact panel, so some parts stay with the other clients:
 
 | Left out | Why | Use instead |
 |---|---|---|
-| Plugin management and plugin settings | Each plugin brings its own settings form, secrets, buttons and log, and the store lists plugins to install; that is too much, and too varied, for a compact panel | Qt or GTK settings, `blueferry plugins` |
-| **Send to…** and the **Photos** tab (plugin features) | Send to needs a file picker or file drop, which the panel does not have; both come from plugins, which the panel does not manage | Qt client (Photos), Qt or GTK client (Send to), `blueferry send`, `blueferry photos` |
+| Plugin management and plugin settings | Each plugin brings its own settings form, secrets, buttons and log, and the store lists plugins to install; that is too much, and too varied, for a compact panel | Qt, GTK or terminal settings, `blueferry plugins` |
+| **Send to…**, card buttons that send files, and the **Photos** tab (plugin features) | Sending needs a file picker or file drop, which the panel does not have; photos need a grid of thumbnails, too large for the panel | Qt or GTK client (Photos with thumbnails, Send to), terminal client, `blueferry send`, `blueferry photos` |
 | Companion tools | Setting up desktop helpers is a one-time job, not a panel task | Qt or GTK settings, `blueferry tools` |
 | Clearing the message history | Not offered by the terminal client either | `blueferry history-clear` |
 | Click Rules, recent calls, the calls panel | Not in the Quickshell client yet | Qt, GTK or terminal client |

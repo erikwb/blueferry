@@ -4,6 +4,16 @@
 
 ### Added
 
+- `plugin_card_watch` (dbus-python) hears `CardChanged` from enabled card
+  plugins only, one match per plugin bus name checked against its owner, for
+  the clients without the GTK or Qt D-Bus stack.
+- Quickshell panel: **From Plugins** under the now-playing strip shows the
+  enabled card plugins' items (for example AirPods or the calendar) with
+  their buttons while the conversations are shown. The bridge serves
+  `plugin_cards` and `plugin_action` on the shared `PluginSurfacesModel` and
+  forwards `CardChanged` (through `plugin_card_watch`) as
+  `plugin-cards-changed`. Buttons that send files are left out: the panel
+  has no file picker.
 - Contact cards: the contact cache now keeps each number with its iPhone
   label, labelled email addresses, postal addresses, company and job title,
   inside the encrypted contact records only. `Messages1.ListContactCards`

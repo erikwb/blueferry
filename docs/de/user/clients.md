@@ -246,6 +246,15 @@ anbietet.
 | Mitteilungen anheften/lösen | ✓ Reiter Notifications | ✓ Reiter Notifications | ✓ iPhone Notifications, `P` | ✓ Show Recent Notifications | ✓ `blueferry notifications pin\|unpin KEY` |
 | Apps stummschalten | ✓ Settings › Notifications | ✓ Settings › Notifications | ✓ Settings › Notifications › Muted apps | ✓ iPhone settings › Notifications | ✓ `blueferry notifications apps\|mute\|unmute` |
 
+**From Plugins** unter dem Wiedergabestreifen zeigt, solange die
+Unterhaltungen zu sehen sind, was deine [Plugins](plugins.md) anbieten, etwa
+AirPods oder den nächsten Kalendereintrag, mit ihren Knöpfen; ↻ liest sie
+neu. Ein Plugin, das versagt, erscheint als ausgegraute Zeile. Knöpfe, die
+Dateien senden (etwa **Send files…** bei einem LocalSend-Gerät), fehlen,
+weil das Panel keine Dateiauswahl hat; ein Hinweis unter dem Abschnitt sagt,
+wo es sie gibt. Solange das Panel verborgen ist, werden die Karten nicht
+gelesen.
+
 Die Mitteilungsliste des Panels hat keine weiteren Aktionen pro Eintrag (sie
 öffnet und beantwortet keine Mitteilungen), daher sieht eine Mitteilung, auf
 die das iPhone nicht mehr reagieren kann, dort bis auf **Removed on
@@ -276,8 +285,8 @@ anderen Clients:
 
 | Weggelassen | Warum | Stattdessen |
 |---|---|---|
-| Plugin-Verwaltung und Plugin-Einstellungen | Jedes Plugin bringt sein eigenes Einstellungsformular mit Geheimnissen, Knöpfen und Protokoll mit, dazu kommt der Store mit installierbaren Plugins; das ist zu viel und zu unterschiedlich für ein kompaktes Panel | Qt- oder GTK-Einstellungen, `blueferry plugins` |
-| **Send to…** und der Tab **Photos** (Plugin-Funktionen) | Send to braucht eine Dateiauswahl oder Drag & Drop, die das Panel nicht hat; beides kommt von Plugins, die das Panel nicht verwaltet | Qt-Client (Photos), Qt- oder GTK-Client (Send to), `blueferry send`, `blueferry photos` |
+| Plugin-Verwaltung und Plugin-Einstellungen | Jedes Plugin bringt sein eigenes Einstellungsformular mit Geheimnissen, Knöpfen und Protokoll mit, dazu kommt der Store mit installierbaren Plugins; das ist zu viel und zu unterschiedlich für ein kompaktes Panel | Qt-, GTK- oder Terminal-Einstellungen, `blueferry plugins` |
+| **Send to…**, Kartenknöpfe, die Dateien senden, und der Tab **Photos** (Plugin-Funktionen) | Senden braucht eine Dateiauswahl oder Drag & Drop, die das Panel nicht hat; Fotos brauchen ein Raster aus Vorschaubildern, zu groß für das Panel | Qt- oder GTK-Client (Photos mit Vorschaubildern, Send to), Terminal-Client, `blueferry send`, `blueferry photos` |
 | Begleitwerkzeuge | Desktop-Helfer richtet man einmal ein; das ist keine Aufgabe für ein Panel | Qt- oder GTK-Einstellungen, `blueferry tools` |
 | Nachrichtenverlauf löschen | Bietet auch der Terminal-Client nicht an | `blueferry history-clear` |
 | Click Rules, letzte Anrufe, das Anruf-Panel | Noch nicht im Quickshell-Client | Qt-, GTK- oder Terminal-Client |

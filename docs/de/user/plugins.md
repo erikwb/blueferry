@@ -84,6 +84,8 @@ blueferry plugins config ID --action ACTION  # einen davon drücken
 - **Send to…** am Ende dieses Abschnitts: gibt Dateien an ein Plugin-Ziel
   wie „iPhone (LocalSend)“; manche Einträge der Karte nehmen Dateien direkt
   an (darauf ziehen).
+- **Im Quickshell-Panel** sitzt derselbe Abschnitt **From Plugins** unter
+  dem Wiedergabestreifen, mit allen Knöpfen außer denen, die Dateien senden.
 - **Karteneinträge und Send to** auf der Kommandozeile: `blueferry cards`
   und `blueferry send`.
 - **Popups**, die deinen Mitteilungseinstellungen folgen.
