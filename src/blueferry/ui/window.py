@@ -21,6 +21,7 @@ from gi.repository import Adw, Gio, Gtk
 from blueferry.client_tasks import TaskRunner
 from blueferry.gio_dbus import GioBus
 from blueferry.i18n import _
+from blueferry.plugin_surfaces_model import SendGate
 from blueferry.setup_client import SetupClient
 from blueferry.tel_links import dial_request
 from blueferry.ui.calls import CallsPage
@@ -122,9 +123,11 @@ class MainWindow(Adw.ApplicationWindow):
 
         # "From Plugins" and "Tools": below the card strip, on demand.
         self._auto_extras = False
+        # One SendFiles at a time across "Send to…", card sends and drops.
+        self.send_gate = SendGate()
         self.plugin_cards = PluginCardSection(
             surfaces or default_surfaces(client), bus=card_bus, files=files, opener=opener,
-            on_new_items=self._new_plugin_items,
+            on_new_items=self._new_plugin_items, gate=self.send_gate,
         )
         self.tools = CompanionToolsSection(tools or default_tools(client), timer=timer)
         self.extras_box = Gtk.Box(
@@ -197,8 +200,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.file_drop = FileDropZone(
             self, file_drop or default_file_drop(client), toast=self.toast,
             open_plugin_settings=lambda: self.present_phone_settings("plugins"),
-            on_sent=self.plugin_cards.schedule_reload,
-            is_sending=lambda: self.plugin_cards.model.sending,
+            on_sent=self.plugin_cards.schedule_reload, gate=self.send_gate,
         )
         drop_overlay = Gtk.Overlay(child=content)
         self.file_drop.attach(drop_overlay)

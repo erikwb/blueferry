@@ -22,7 +22,7 @@ def test_gtk_file_drop(tmp_path, scenario):
     run_scenario(tmp_path, str(Path(__file__).resolve()), scenario)
 
 
-def _setup(choices, sending=None):
+def _setup(choices):
     from types import SimpleNamespace
 
     from blueferry import plugin_surfaces as surfaces
@@ -44,8 +44,6 @@ def _setup(choices, sending=None):
                         send=send, **callbacks)
 
     t = _window(file_drop=factory)
-    if sending is not None:
-        t.window.file_drop.model._is_sending = lambda: sending[0]
     toasts: list[str] = []
     longs: list[str] = []
 
@@ -61,7 +59,8 @@ def _setup(choices, sending=None):
     (tmp / "Pictures").mkdir()
     return SimpleNamespace(window=t.window, zone=t.window.file_drop, work=work, sent=sent,
                            toasts=toasts, longs=longs, tmp=tmp, settle=_settle,
-                           settings=FakeSettings)
+                           settings=FakeSettings, cards=t.window.plugin_cards.model,
+                           card_work=t.work, card_sent=t.sent)
 
 
 def _files(*paths):
@@ -194,29 +193,42 @@ def _exercise_long():
 
 
 def _exercise_sending():
-    # A drop and a pick wait while the card's "Send to…" is sending.
-    sending = [True]
-    t = _setup(_choices(PHONE, ABLAGE), sending)
+    # The window has one SendGate: a drop waits while the card's "Send to…"
+    # is sending, and "Send to…" waits while a drop is sending.
+    t = _setup(_choices(PHONE, ABLAGE))
+    busy = "Other files are still being sent; try again in a moment."
+    t.cards.load_targets()
+    t.card_work.run_tasks()
+    target = t.cards.state()["targets"][0]["key"]
+    t.cards.send(target, [str(t.tmp / "b.txt")])
+    assert t.card_work.pending  # "Send to…" is sending
     t.zone._drop(t.zone.target, _files(t.tmp / "a.txt"), 0, 0)
     assert t.work.pending == []
-    assert t.longs == ["Still busy with the last drop; try again in a moment."]
-    sending[0] = False
+    assert t.longs == [busy]
+    t.card_work.run_tasks()
+    assert [name for _key, name in t.card_sent] == [[str(t.tmp / "b.txt")]]
+    # A pick waits too, and the picker comes back with the same choice.
     t.zone._drop(t.zone.target, _files(t.tmp / "a.txt"), 0, 0)
     t.work.run_tasks()
     t.settle()
-    sending[0] = True
+    t.cards.send(target, [str(t.tmp / "b.txt")])
     t.zone.choice_buttons["io.example.ablage:drop"].set_active(True)
     t.zone.dialog.emit("response", "send")
     t.settle()
-    assert t.sent == []
-    # The picker comes back with the same choice.
+    assert t.sent == [] and t.longs == [busy, busy]
     assert t.zone.dialog is not None
     assert t.zone.choice_buttons["io.example.ablage:drop"].get_active()
-    sending[0] = False
+    t.card_work.run_tasks()
     t.zone.dialog.emit("response", "send")
+    # While the drop sends, "Send to…" on the card refuses.
+    t.cards.send(target, [str(t.tmp / "b.txt")])
+    assert t.card_work.pending == []
+    assert t.cards.state()["message"] == busy
     t.work.run_tasks()
     t.settle()
     assert t.sent == [("io.example.ablage:drop", ["a.txt"])]
+    assert len(t.card_sent) == 2
+    t.window.destroy()
 
 
 if __name__ == "__main__":

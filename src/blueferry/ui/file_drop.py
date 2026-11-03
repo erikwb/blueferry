@@ -8,8 +8,10 @@ the shared :class:`~blueferry.file_drop_view.FileDrop`, which picks the
 that item. Several targets open an ``AdwAlertDialog`` with one radio button
 each; none opens an explanation with a way to Settings > Plugins. Notices
 are toasts; a failure stays longer, like the Qt client's "long" notice.
-A drop waits while the plugin card's "Send to…" is sending
-(``is_sending``). Every text comes from the presenter as plain text.
+The window passes one :class:`~blueferry.plugin_surfaces_model.SendGate`
+to this zone and to the plugin card, so a drop never sends while "Send
+to…" or a card action sends, nor the other way round. Every text comes
+from the presenter as plain text.
 """
 
 from __future__ import annotations
@@ -22,8 +24,9 @@ from gi.repository import Adw, Gdk, Gtk
 from blueferry import file_drop_view as view
 from blueferry.file_drop_view import FileDrop
 from blueferry.i18n import _
+from blueferry.plugin_surfaces_model import SendGate
 
-# ``factory(notify=..., on_change=..., on_sent=..., is_sending=...)`` -> FileDrop
+# ``factory(notify=..., on_change=..., on_sent=..., gate=...)`` -> FileDrop
 FileDropFactory = Callable[..., FileDrop]
 
 
@@ -50,7 +53,7 @@ class FileDropZone:
         toast: Callable[[str, bool], None],
         open_plugin_settings: Callable[[], None],
         on_sent: Callable[[], None] = lambda: None,
-        is_sending: Callable[[], bool] = lambda: False,
+        gate: SendGate | None = None,
     ) -> None:
         self._window = window
         self._toast = toast
@@ -60,7 +63,7 @@ class FileDropZone:
         self._selected = ""
         self.choice_buttons: dict[str, Gtk.CheckButton] = {}
         self.model = factory(notify=self._notify, on_change=self._render, on_sent=on_sent,
-                             is_sending=is_sending)
+                             gate=gate if gate is not None else SendGate())
 
         status = Adw.StatusPage(
             icon_name="document-send-symbolic", title=view.overlay_title(),
