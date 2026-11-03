@@ -1,5 +1,7 @@
 """Running phone calls on the Calls tab: answer, hold or resume, hang up,
-and keypad tones (DTMF) for the active call.
+keypad tones (DTMF) for the active call, the call's speaker and
+microphone with a switch for this call only, a mute button for this
+computer's microphone and, on a ringing call, declining with a message.
 
 GTK counterpart of the call cards in the Qt client's ``CallsTab.qml``. The
 calls come from ``Calls1.ListCalls``, read again on ``CallsChanged``, when
@@ -10,7 +12,14 @@ visibility, the GTK client deliberately reads only while the window is
 shown. The duration ticks only while the tab is visible. The wording is
 ``phone_link_view.call_card``; a failed ``ListCalls`` reports the calls as
 unavailable. The rows are rebuilt on each read, so the keypad-tone text
-is kept here and put back into the new row.
+is kept here and put back into the new row. The device rows follow
+``call_audio_view.call_view``; the device lists are read again whenever the
+call's audio report changes: when a call starts, a choice is applied, or a
+plugged or unplugged device is the chosen or the used one. Other hot-plugs
+show up the next time the lists are read. The mute button follows
+``call_audio_view.mute`` (ListCalls ``audio.muted``; absent on older
+daemons); declining with a message follows ``quick_reply_view`` and the
+status key ``calls_quick_replies``.
 """
 
 from __future__ import annotations
@@ -20,10 +29,12 @@ from collections.abc import Callable
 
 from gi.repository import Adw, Gtk
 
-from blueferry import phone_link_view
+from blueferry import call_audio_view, phone_link_view, quick_reply_view
 from blueferry.client_tasks import TimerFactory
-from blueferry.models import CallsSnapshot
+from blueferry.models import CallAudio, CallsSnapshot
 from blueferry.ui.avatars import AvatarCache
+from blueferry.ui.call_audio import DeviceRow
+from blueferry.ui.quick_replies import DeclineMessageMenu
 from blueferry.ui.quick_switches import PhoneAudioSwitch, sound_row
 from blueferry.ui.reads import CoalescedRead
 from blueferry.ui.util import glib_timer
@@ -80,6 +91,25 @@ class RunningCalls(Gtk.ListBox):
         self._avatars = AvatarCache(client.contact_photo_async, self._refresh_avatars)
         # Where the sound plays right now, as on the phone card.
         self.sound = PhoneAudioSwitch(sound_row(), client, toast)
+        # The call's speaker and microphone (ListCalls "audio").
+        self.audio: dict | None = None
+        self.devices: dict = {}
+        self.audio_rows = {
+            direction: DeviceRow(self.choose_device) for direction in call_audio_view.DIRECTIONS
+        }
+        self.audio_hint = Adw.ActionRow(use_markup=False, css_classes=["dim-label"])
+        # Mute this computer's microphone for the running call.
+        self.mute_button = Gtk.ToggleButton(valign=Gtk.Align.CENTER, css_classes=["flat"])
+        self.mute_button.connect("toggled", self._mute_toggled)
+        self.mute_row = Adw.ActionRow(use_markup=False, activatable_widget=self.mute_button)
+        self.mute_row.add_suffix(self.mute_button)
+        self._applying_mute = False
+        # A pressed mute shows until the next ListCalls read reports the state.
+        self._mute_pending: bool | None = None
+        # Decline with message: the menu of each ringing call and, per call,
+        # the own text typed so far (kept across re-renders, like the tones).
+        self.decline_menus: dict[str, DeclineMessageMenu] = {}
+        self._reply_drafts: dict[str, str] = {}
         client.connect("calls-changed", lambda _c: self._read.refresh())
 
     # ---- the page's side -----------------------------------------------
@@ -140,6 +170,11 @@ class RunningCalls(Gtk.ListBox):
         if not isinstance(snapshot, CallsSnapshot):
             return
         self._state = snapshot.state
+        self._mute_pending = None  # the read reports the real state
+        audio = snapshot.audio.to_dict() if snapshot.audio is not None else None
+        if audio is not None and snapshot.calls and audio != self.audio:
+            self._load_devices()  # a call started or its chosen/used device changed
+        self.audio = audio if snapshot.calls else None
         self._set_calls([call.to_dict() for call in snapshot.calls])
 
     def _failed(self, _message: str) -> None:
@@ -148,8 +183,18 @@ class RunningCalls(Gtk.ListBox):
         self._state = "unavailable" if state == "ready" else state
         self._set_calls([])
 
+    def _load_devices(self) -> None:
+        def loaded(devices: object) -> None:
+            if isinstance(devices, dict) and devices != self.devices:
+                self.devices = devices
+                self._render_audio()
+
+        self._client.call_audio_devices_async(loaded, lambda _message: None)
+
     def _set_calls(self, calls: list[dict]) -> None:
         self._rows_generation += 1
+        if not calls:
+            self.audio = None
         self.calls = calls
         self._render()
         self._on_state()
@@ -164,6 +209,46 @@ class RunningCalls(Gtk.ListBox):
 
     def hangup(self, call_id: str) -> None:
         self._act(lambda done, failed: self._client.hangup_call_async(call_id, done, failed))
+
+    def choose_device(self, direction: str, name: str) -> None:
+        """Switch the running call to another speaker or microphone."""
+        self._act(lambda done, failed: self._client.set_call_audio_device_for_call_async(
+            direction, name, done, failed))
+
+    def set_muted(self, muted: bool) -> None:
+        """Mute or unmute this computer's microphone for the running call.
+
+        The button shows the request until the next ListCalls read; a refusal
+        (NotReady before the call audio exists, for example) puts back the
+        reported state and shows the error.
+        """
+        def request(done, failed) -> None:
+            def refused(message: str) -> None:
+                self._mute_pending = None
+                self._render_mute()
+                failed(message)
+
+            self._mute_pending = muted
+            self._render_mute()
+
+            self._client.set_call_muted_async(muted, done, refused)
+
+        self._act(request)
+
+    def decline_with_message(self, call_id: str, text: str) -> None:
+        """Decline a ringing call and send ``text`` to the caller."""
+        def request(done, failed) -> None:
+            def sent(value: object) -> None:
+                self._reply_drafts.pop(call_id, None)
+                self._toast(quick_reply_view.sent_text())
+                done(value)
+
+            self._client.decline_call_with_message_async(
+                call_id, text, sent,
+                lambda message: failed(quick_reply_view.failure_text(message)),
+            )
+
+        self._act(request)
 
     @property
     def active_call_id(self) -> str:
@@ -220,6 +305,7 @@ class RunningCalls(Gtk.ListBox):
         cursor = self.tones.get_position() if typing and self.tones is not None else -1
         self.remove_all()
         self.rows = []
+        self.decline_menus = {}
         self.tones = self.tones_button = None
         self._tones_call = ""
         now = self._clock()
@@ -239,6 +325,17 @@ class RunningCalls(Gtk.ListBox):
             self.tones.set_position(cursor if 0 <= cursor <= len(self._tones_draft) else -1)
         if self.calls:
             self.append(self.sound.row)
+            if self.audio is not None:
+                for row in self.audio_rows.values():
+                    self.append(row.row)
+                self.append(self.mute_row)
+                self.append(self.audio_hint)
+        # Drafts of calls that stopped ringing go.
+        self._reply_drafts = {
+            call_id: text for call_id, text in self._reply_drafts.items()
+            if call_id in self.decline_menus
+        }
+        self._render_audio()
         self.set_visible(bool(self.calls))
         self._refresh_avatars()
         self._render_sensitivity()
@@ -255,6 +352,8 @@ class RunningCalls(Gtk.ListBox):
                 "call-start-symbolic", card["answer"], "suggested-action",
                 lambda: self.answer(call_id),
             ))
+            if quick_reply_view.can_decline_with_message(self._status, call):
+                buttons.append(self._decline_menu(call_id))
         else:
             buttons.append(self._button(
                 "media-playback-start-symbolic" if card["held"]
@@ -269,6 +368,18 @@ class RunningCalls(Gtk.ListBox):
             row.add_suffix(button)
         self.rows.append((row, call, avatar, buttons))
         return row
+
+    def _decline_menu(self, call_id: str) -> Gtk.MenuButton:
+        def typed(text: str) -> None:
+            self._reply_drafts[call_id] = text
+
+        menu = DeclineMessageMenu(
+            quick_reply_view.dialog_view(self._status),
+            lambda text: self.decline_with_message(call_id, text),
+            draft=self._reply_drafts.get(call_id, ""), on_draft=typed,
+        )
+        self.decline_menus[call_id] = menu
+        return menu.button
 
     def _tones_row(self, card: dict) -> Adw.EntryRow:
         # Adw.EntryRow:max-length is libadwaita 1.6; dial_tones caps the text.
@@ -315,7 +426,51 @@ class RunningCalls(Gtk.ListBox):
         button.connect("clicked", clicked)
         return button
 
+    def _render_audio(self) -> None:
+        view = call_audio_view.call_view(self.audio, self.devices)
+        for item in view["rows"]:
+            self.audio_rows[item["direction"]].show(item, subtitle=item["using"])
+        for row in self.audio_rows.values():
+            row.row.set_tooltip_text(view.get("call_hint") or None)
+        self.audio_hint.set_title(view["hint"])
+        self.audio_hint.set_visible(bool(view["hint"]))
+        self._render_mute()
+
+    def _render_mute(self) -> None:
+        view = call_audio_view.mute(self.audio)
+        audio = CallAudio.from_dict(self.audio)
+        # Only once the call microphone stream exists; before, the daemon
+        # refuses with NotReady.
+        self.mute_row.set_visible(
+            audio is not None and audio.input.stream and view["supported"]
+        )
+        muted = view["muted"] if self._mute_pending is None else self._mute_pending
+        self.mute_row.set_title(call_audio_view.mute_hint(muted))
+        self.mute_button.set_icon_name(
+            "microphone-sensitivity-muted-symbolic" if muted
+            else "audio-input-microphone-symbolic"
+        )
+        label = call_audio_view.mute_label(muted)
+        self.mute_button.set_tooltip_text(label)
+        self.mute_button.update_property([Gtk.AccessibleProperty.LABEL], [label])
+        self._applying_mute = True
+        try:
+            self.mute_button.set_active(muted)
+        finally:
+            self._applying_mute = False
+
+    def _mute_toggled(self, button: Gtk.ToggleButton) -> None:
+        if self._applying_mute:
+            return
+        if self._busy:
+            self._render_mute()
+            return
+        self.set_muted(button.get_active())
+
     def _render_sensitivity(self) -> None:
+        for row in self.audio_rows.values():
+            row.row.set_sensitive(not self._busy)
+        self.mute_row.set_sensitive(not self._busy)
         for _row, _call, _avatar, buttons in self.rows:
             for button in buttons:
                 button.set_sensitive(not self._busy and self._available() and self.state == "ready")

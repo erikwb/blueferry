@@ -13,7 +13,8 @@ from tests.gtk_broadway import run_scenario
 @pytest.mark.parametrize(
     "scenario", [
         "categories", "features", "old-daemon", "doctor", "mirror-removals",
-        "battery-warning", "reconnect", "notification-rules", "muted-apps",
+        "battery-warning", "reconnect", "notification-rules", "call-audio", "muted-apps",
+        "quick-replies",
         "feature-races", "status-save-races", "rule-races", "storage-reset",
     ],
 )
@@ -92,8 +93,18 @@ class FakeClient:
     def remove_notification_open_target_async(self, bundle, on_ok, on_err):
         self.calls.append((("remove_rule", bundle), on_ok, on_err))
 
+    def call_audio_devices_async(self, on_ok, on_err=None):
+        self.calls.append(("audio_devices", on_ok, on_err))
+
+    def set_call_audio_device_async(self, direction, name, on_ok, on_err):
+        self.calls.append((("set_audio", direction, name), on_ok, on_err))
+
     def reset_storage_async(self, on_ok, on_err):
         self.calls.append(("reset_storage", on_ok, on_err))
+
+    def set_call_quick_replies_async(self, replies, on_ok, on_err):
+        self.calls.append((("set_replies", tuple(replies)), on_ok, on_err))
+
     def notification_apps_async(self, on_ok, on_err=None):
         self.calls.append(("apps", on_ok, on_err))
 
@@ -532,6 +543,58 @@ def _exercise_notification_rules():
     window.destroy()
 
 
+def _exercise_call_audio():
+    from blueferry.models import BackendStatus
+
+    dialog, window, client = _settings()
+    group = dialog._call_audio_group
+    speaker, microphone = dialog.call_audio_rows["output"], dialog.call_audio_rows["input"]
+    assert group.get_ancestor(type(dialog.pages["calls"])) is dialog.pages["calls"]
+    dialog._apply_status(BackendStatus.from_dict({"daemon": True, "calls_enabled": True}))
+    assert not group.get_visible()  # an older daemon
+    assert "audio_devices" not in [call[0] for call in client.calls]
+
+    saved = BackendStatus.from_dict({
+        "daemon": True, "calls_enabled": True,
+        "calls_audio_output": "alsa_output.gone", "calls_audio_input": "",
+    })
+    dialog._apply_status(saved)
+    assert group.get_visible()
+    assert group.get_description().startswith("Used only for phone calls")
+    client.take("audio_devices")[1]({
+        "outputs": [{"name": "alsa_output.a50", "description": "<b>A50</b>", "default": True}],
+        "inputs": [{"name": "alsa_input.cam", "description": "Webcam", "default": False}],
+    })
+    assert speaker.row.get_title() == "Speaker for calls"
+    model = speaker.row.get_model()
+    labels = [model.get_string(i) for i in range(model.get_n_items())]
+    assert labels == ["Same as system (<b>A50</b>)", "<b>A50</b>", "alsa_output.gone (not connected)"]
+    assert speaker.row.get_selected() == 2 and microphone.row.get_selected() == 0
+    assert speaker.row.get_use_markup() is False
+
+    toasts = []
+    dialog._toast = toasts.append
+    microphone.row.set_selected(1)
+    assert not microphone.row.get_sensitive()
+    client.take(("set_audio", "input", "alsa_input.cam"))[2]("busy")
+    assert toasts == ["Could not save the call audio device: busy"]
+    assert microphone.row.get_selected() == 0 and microphone.row.get_sensitive()
+
+    client.status = BackendStatus.from_dict({
+        "daemon": True, "calls_enabled": True,
+        "calls_audio_output": "", "calls_audio_input": "",
+    })
+    speaker.row.set_selected(0)
+    client.take(("set_audio", "output", ""))[1]({"calls_audio_output": ""})
+    assert speaker.row.get_selected() == 0 and speaker.row.get_sensitive()
+    # Opening the dialog reads the devices again.
+    dialog.open(window, "calls")
+    _settle()
+    client.take("audio_devices")
+    dialog._apply_status(BackendStatus.from_dict({"daemon": True, "calls_enabled": False}))
+    assert not group.get_visible()
+
+
 APPS = {
     "apps": [
         {"app_id": "com.example.Chat", "app_name": "<b>Chat</b>", "muted": False,
@@ -783,12 +846,106 @@ def _exercise_storage_reset():
     assert not button.get_sensitive()
     client.take("reset_storage")[1]({"storage_state": "ready"})
     assert toasts == ["Local storage reset"]
+def _exercise_quick_replies():
+    from blueferry.models import BackendStatus
+
+    dialog, window, client = _settings()
+    editor = dialog.quick_replies
+    group = editor.group
+    toasts = []
+    editor._toast = toasts.append
+    assert group.get_ancestor(type(dialog.pages["calls"])) is dialog.pages["calls"]
+    dialog._apply_status(BackendStatus.from_dict({"daemon": True, "calls_enabled": True}))
+    assert not group.get_visible()  # an older daemon
+
+    def status(replies):
+        return BackendStatus.from_dict({
+            "daemon": True, "calls_enabled": True, "calls_quick_replies": replies,
+        })
+
+    dialog._apply_status(status([]))
+    assert group.get_visible() and group.get_title() == "Replies when declining a call"
+    assert editor.rows == [] and editor.empty_row.get_visible()
+    assert editor.empty_row.get_title().startswith("No saved replies")
+
+    # Add: validated as typed, saved, and the field cleared once accepted.
+    editor.add_row.set_text("   ")
+    assert not editor.add_button.get_sensitive()
+    # The presenter's limit caps what can be typed.
+    editor.add_row.set_text("x" * 161)
+    assert editor.add_row.get_text() == "x" * 160
+    editor.add_row.set_text("bad\tline")
+    assert editor.add_row.has_css_class("error")
+    assert editor.add_row.get_tooltip_text() == "A reply must be a single line."
+    assert not editor.add_button.get_sensitive()
+    editor.add_row.set_text("<b>Busy</b>")
+    assert not editor.add_row.has_css_class("error") and editor.add_button.get_sensitive()
+    client.status = status(["<b>Busy</b>"])
+    editor.add_button.emit("clicked")
+    assert not editor.add_row.get_sensitive(), "no second edit while one saves"
+    client.take(("set_replies", ("<b>Busy</b>",)))[1]({"calls_quick_replies": ["<b>Busy</b>"]})
+    assert editor.replies == ["<b>Busy</b>"] and editor.add_row.get_text() == ""
+    assert [row.get_text() for row in editor.rows] == ["<b>Busy</b>"]
+    assert editor.rows[0].get_use_markup() is False and not editor.empty_row.get_visible()
+    editor.rows[0].set_text("y" * 200)
+    assert editor.rows[0].get_text() == "y" * 160
+    editor.rows[0].set_text("<b>Busy</b>")
+
+    # A duplicate is refused before it is sent.
+    editor.add_row.set_text("<b>Busy</b>")
+    editor.add()
+    assert toasts == ["This reply already exists."]
+    assert not any(isinstance(call[0], tuple) and call[0][0] == "set_replies"
+                   for call in client.calls)
+    editor.add_row.set_text("Later")
+    editor.add_row.emit("entry-activated")
+    client.status = status(["<b>Busy</b>", "Later"])
+    client.take(("set_replies", ("<b>Busy</b>", "Later")))[1](
+        {"calls_quick_replies": ["<b>Busy</b>", "Later"]})
+
+    # A status refresh keeps what is being typed in a row.
+    editor.rows[1].set_text("Later today")
+    dialog._apply_status(status(["<b>Busy</b>", "Later"]))
+    assert editor.rows[1].get_text() == "Later today"
+    editor.rows[1].emit("apply")
+    client.status = status(["<b>Busy</b>", "Later today"])
+    client.take(("set_replies", ("<b>Busy</b>", "Later today")))[1](
+        {"calls_quick_replies": ["<b>Busy</b>", "Later today"]})
+    assert editor.replies == ["<b>Busy</b>", "Later today"]
+    # Editing into a duplicate of another reply is refused.
+    editor.rows[1].set_text("<b>Busy</b>")
+    assert editor.rows[1].has_css_class("error")
+    editor.rows[1].emit("apply")
+    assert toasts[-1] == "This reply already exists."
+
+    # A refused save: the toast, and the rows show what is saved.
+    editor.remove(0)
+    client.take(("set_replies", ("Later today",)))[2]("disk full")
+    assert toasts[-1] == "Could not save the replies: disk full"
+    assert [row.get_text() for row in editor.rows] == ["<b>Busy</b>", "Later today"]
+
+    # Five replies: no add row any more.
+    five = ["a", "b", "c", "d", "e"]
+    dialog._apply_status(status(five))
+    assert len(editor.rows) == 5 and not editor.add_row.get_visible()
+    editor.remove(4)
+    client.status = status(five[:4])
+    client.take(("set_replies", tuple(five[:4])))[1]({"calls_quick_replies": five[:4]})
+    assert editor.add_row.get_visible() and len(editor.rows) == 4
+
+    # Calls off or the daemon gone: hidden or read-only.
+    dialog._apply_status(BackendStatus.from_dict({"daemon": False}))
+    assert not group.get_visible()
+    dialog._apply_status(status(five[:4]))
+    assert editor.rows[0].get_sensitive()
     window.destroy()
 
 
 if __name__ == "__main__":
     {
+        "call-audio": _exercise_call_audio,
         "storage-reset": _exercise_storage_reset,
+        "quick-replies": _exercise_quick_replies,
         "muted-apps": _exercise_muted_apps,
         "notification-rules": _exercise_notification_rules,
         "feature-races": _exercise_feature_races,

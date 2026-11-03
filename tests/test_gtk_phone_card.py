@@ -14,7 +14,7 @@ from tests.gtk_broadway import run_scenario
 @pytest.mark.parametrize(
     "scenario", [
         "layout", "card", "quick-settings", "dial-pad", "running-calls", "call-tones",
-        "keypad-tones", "recent-calls",
+        "call-audio", "call-mute", "decline-message", "keypad-tones", "recent-calls",
         "notifications", "close", "volume", "pins", "contacts", "contact-photo", "search",
     ],
 )
@@ -107,6 +107,18 @@ class FakeClient:
 
     def send_call_tones_async(self, call_id, tones, on_ok, on_err):
         self.calls.append((("tones", call_id, tones), on_ok, on_err))
+
+    def call_audio_devices_async(self, on_ok, on_err=None):
+        self.calls.append(("audio-devices", on_ok, on_err))
+
+    def set_call_audio_device_for_call_async(self, direction, name, on_ok, on_err):
+        self.calls.append((("call-audio", direction, name), on_ok, on_err))
+
+    def set_call_muted_async(self, muted, on_ok, on_err):
+        self.calls.append((("mute", muted), on_ok, on_err))
+
+    def decline_call_with_message_async(self, call_id, text, on_ok, on_err):
+        self.calls.append((("decline-message", call_id, text), on_ok, on_err))
 
     def set_phone_audio_route_async(self, route, on_ok, on_err):
         self.calls.append((("route", route), on_ok, on_err))
@@ -597,6 +609,64 @@ def _exercise_call_tones():
     window.destroy()
 
 
+def _exercise_call_audio():
+    from blueferry.models import CallsSnapshot
+
+    window, client = _window()
+    running = window.calls.running
+    client.answer_status(CALLS_READY)
+    active = {"call_id": "voicecall01", "state": "active", "number": "+41790000001"}
+    # An older daemon: no device rows.
+    client.take("list-calls")[1](CallsSnapshot.from_dict({"state": "ready", "calls": [active]}))
+    speaker = running.audio_rows["output"]
+    assert speaker.row.get_parent() is None and "audio-devices" not in client.names()
+
+    audio = {"state": "waiting"}
+    client.emit("calls-changed")
+    client.take("list-calls")[1](CallsSnapshot.from_dict({
+        "state": "ready", "calls": [active], "audio": audio,
+    }))
+    assert speaker.row.get_parent() is running
+    assert running.audio_hint.get_visible()
+    assert running.audio_hint.get_title() == "Waiting for the call audio…"
+    assert speaker.row.get_subtitle() == "In use: Not connected yet"
+    client.take("audio-devices")[1]({
+        "outputs": [{"name": "alsa_output.a50", "description": "A50 Chat", "default": False}],
+        "inputs": [],
+    })
+    assert speaker.values == ["", "alsa_output.a50"]
+
+    ready = {"state": "ready", "output": {"stream": True, "description": "Built-in Audio"},
+             "input": {"stream": True, "description": "Webcam"}}
+    client.emit("calls-changed")
+    client.take("list-calls")[1](CallsSnapshot.from_dict({
+        "state": "ready", "calls": [active], "audio": ready,
+    }))
+    client.take("audio-devices")  # the call's audio changed: lists read again
+    assert speaker.row.get_subtitle() == "In use: Built-in Audio"
+    assert not running.audio_hint.get_visible()
+    assert speaker.row.get_tooltip_text() == "Applies to this call only."
+
+    speaker.row.set_selected(1)
+    assert not speaker.row.get_sensitive(), "busy while the call switches"
+    client.take(("call-audio", "output", "alsa_output.a50"))[1](None)
+    assert speaker.row.get_sensitive()
+    moved = {**ready, "output": {"stream": True, "description": "A50 Chat",
+                                 "selected": "alsa_output.a50", "origin": "call"}}
+    client.take("list-calls")[1](CallsSnapshot.from_dict({
+        "state": "ready", "calls": [active], "audio": moved,
+    }))
+    assert speaker.row.get_selected() == 1
+    assert speaker.row.get_subtitle() == "In use: A50 Chat"
+    # The call ends: the rows go with it.
+    client.take("audio-devices")
+    client.emit("calls-changed")
+    client.take("list-calls")[1](CallsSnapshot.from_dict({
+        "state": "ready", "calls": [], "audio": {"state": "idle"},
+    }))
+    assert speaker.row.get_parent() is None and running.audio is None
+
+
 def _exercise_keypad_tones():
     from gi.repository import Gdk
 
@@ -643,6 +713,172 @@ def _exercise_keypad_tones():
     running.tones.grab_focus()
     assert not calls.tone_key(Gdk.KEY_7), "the tone field keeps its keys"
     assert ("tones", "voicecall01", "7") not in client.names()
+    window.destroy()
+
+
+def _exercise_call_mute():
+    from blueferry.models import CallsSnapshot
+
+    window, client = _window()
+    running = window.calls.running
+    toasts = []
+    running._toast = toasts.append
+    client.answer_status(CALLS_READY)
+    active = {"call_id": "voicecall01", "state": "active", "number": "+41790000001"}
+    ready = {"state": "ready", "output": {"stream": True, "description": "Speaker"},
+             "input": {"stream": True, "description": "Webcam"}}
+    # A daemon without call mute: no button.
+    client.take("list-calls")[1](CallsSnapshot.from_dict({
+        "state": "ready", "calls": [active], "audio": ready,
+    }))
+    client.take("audio-devices")
+    button = running.mute_button
+    assert running.mute_row.get_parent() is running and not running.mute_row.get_visible()
+
+    # Mute is offered only once the call microphone stream exists.
+    waiting = {"state": "waiting", "muted": False}
+    client.emit("calls-changed")
+    client.take("list-calls")[1](CallsSnapshot.from_dict({
+        "state": "ready", "calls": [active], "audio": waiting,
+    }))
+    client.take("audio-devices")
+    assert not running.mute_row.get_visible()
+
+    client.emit("calls-changed")
+    client.take("list-calls")[1](CallsSnapshot.from_dict({
+        "state": "ready", "calls": [active], "audio": {**ready, "muted": False},
+    }))
+    client.take("audio-devices")
+    assert running.mute_row.get_visible()
+    assert button.get_tooltip_text() == "Mute" and not button.get_active()
+    assert running.mute_row.get_title() == "Mutes this computer's microphone for this call only."
+    # The call audio went away meanwhile: NotReady, a toast, the state back.
+    button.set_active(True)
+    client.take(("mute", True))[2]("No call is in progress")
+    assert toasts == ["No call is in progress"] and not button.get_active()
+    client.take("list-calls")[1](CallsSnapshot.from_dict({
+        "state": "ready", "calls": [active], "audio": {**ready, "muted": False},
+    }))
+    toasts.clear()
+
+    button.set_active(True)
+    assert not running.mute_row.get_sensitive(), "busy while the mute is applied"
+    assert button.get_tooltip_text() == "Unmute", "the press shows at once"
+    client.take(("mute", True))[1](None)
+    assert running.mute_row.get_sensitive()
+    running._render_audio()  # e.g. the device lists arrive before ListCalls
+    assert button.get_active(), "optimistic until the next ListCalls read"
+    client.take("list-calls")[1](CallsSnapshot.from_dict({
+        "state": "ready", "calls": [active], "audio": {**ready, "muted": True},
+    }))
+    client.take("audio-devices")
+    assert button.get_active() and button.get_tooltip_text() == "Unmute"
+    assert running.mute_row.get_title() == "Your microphone is muted for this call."
+    assert ("mute", True) not in client.names(), "showing the state sends nothing"
+
+    # A refused unmute: the toast, and the button shows the reported state again.
+    button.set_active(False)
+    client.take(("mute", False))[2]("No call microphone")
+    assert toasts == ["No call microphone"]
+    assert button.get_active() and running.mute_row.get_sensitive()
+    assert ("mute", True) not in client.names()
+    client.take("list-calls")[1](CallsSnapshot.from_dict({
+        "state": "ready", "calls": [active], "audio": {**ready, "muted": True},
+    }))
+    # The call ends: the row goes with it.
+    client.emit("calls-changed")
+    client.take("list-calls")[1](CallsSnapshot.from_dict({"state": "ready", "calls": []}))
+    assert running.mute_row.get_parent() is None
+    window.destroy()
+
+
+def _exercise_decline_message():
+    from blueferry.models import CallsSnapshot
+
+    window, client = _window()
+    running = window.calls.running
+    toasts = []
+    running._toast = toasts.append
+    ringing = {"call_id": "voicecall01", "state": "incoming", "number": "+41790000001"}
+    # Calls on, but a daemon without DeclineWithMessage: Answer and Decline only.
+    client.answer_status(CALLS_READY)
+    client.take("list-calls")[1](CallsSnapshot.from_dict({"state": "ready", "calls": [ringing]}))
+    assert [b.get_tooltip_text() for b in running.rows[0][3]] == ["Answer", "Decline"]
+    assert running.decline_menus == {}
+
+    client.answer_status({**CALLS_READY, "calls_quick_replies": ["<b>Busy</b>", "Later"]})
+    client.emit("calls-changed")
+    client.take("list-calls")[1](CallsSnapshot.from_dict({"state": "ready", "calls": [ringing]}))
+    buttons = running.rows[0][3]
+    assert [b.get_tooltip_text() for b in buttons] == [
+        "Answer", "Decline with message", "Decline",
+    ]
+    menu = running.decline_menus["voicecall01"]
+    assert [row.get_title() for row in menu.reply_rows] == ["<b>Busy</b>", "Later"]
+    assert all(row.get_use_markup() is False for row in menu.reply_rows)
+    assert menu.custom.get_title() == "Message to the caller"
+    menu.custom.set_text("z" * 1001)
+    assert menu.custom.get_text() == "z" * 1000
+    menu.custom.set_text("")
+    # A saved reply declines and sends it.
+    menu.reply_rows[0].emit("activated")
+    assert not buttons[0].get_sensitive() and not buttons[1].get_sensitive()
+    client.take(("decline-message", "voicecall01", "<b>Busy</b>"))[1](None)
+    assert toasts == ["Call declined and message sent."]
+    client.take("list-calls")[1](CallsSnapshot.from_dict({"state": "ready", "calls": [ringing]}))
+
+    # An own text: empty is refused, typing survives a re-render.
+    menu = running.decline_menus["voicecall01"]
+    assert not menu.send_button.get_sensitive()
+    menu.send_custom()
+    assert menu.error.get_visible() and menu.error.get_label() == "Type a message first."
+    assert not any(isinstance(n, tuple) and n[0] == "decline-message" for n in client.names())
+    menu.custom.set_text("On a train ")
+    assert menu.send_button.get_sensitive() and not menu.error.get_visible()
+    client.emit("calls-changed")
+    client.take("list-calls")[1](CallsSnapshot.from_dict({"state": "ready", "calls": [ringing]}))
+    menu = running.decline_menus["voicecall01"]
+    assert menu.custom.get_text() == "On a train "
+    menu.custom.emit("entry-activated")
+    # Declined, but the message failed: the daemon's text is shown.
+    client.take(("decline-message", "voicecall01", "On a train"))[2](
+        "The call was declined, but the message could not be sent")
+    assert toasts[-1] == "The call was declined, but the message could not be sent"
+    client.take("list-calls")[1](CallsSnapshot.from_dict({"state": "ready", "calls": [
+        {**ringing, "state": "active"}]}))
+    assert running.decline_menus == {} and running._reply_drafts == {}
+    # Two ringing calls: each menu keeps its own draft.
+    second = {**ringing, "call_id": "voicecall02", "state": "waiting",
+              "number": "+41790000002"}
+    client.emit("calls-changed")
+    client.take("list-calls")[1](CallsSnapshot.from_dict({"state": "ready", "calls": [
+        ringing, second]}))
+    running.decline_menus["voicecall02"].custom.set_text("Second")
+    running.decline_menus["voicecall01"].custom.set_text("First")
+    client.emit("calls-changed")
+    client.take("list-calls")[1](CallsSnapshot.from_dict({"state": "ready", "calls": [
+        ringing, second]}))
+    assert running.decline_menus["voicecall01"].custom.get_text() == "First"
+    assert running.decline_menus["voicecall02"].custom.get_text() == "Second"
+    assert running._reply_drafts == {"voicecall01": "First", "voicecall02": "Second"}
+    client.emit("calls-changed")
+    client.take("list-calls")[1](CallsSnapshot.from_dict({"state": "ready", "calls": [second]}))
+    assert running._reply_drafts == {"voicecall02": "Second"}
+    client.emit("calls-changed")
+    client.take("list-calls")[1](CallsSnapshot.from_dict({"state": "ready", "calls": []}))
+    assert running._reply_drafts == {}
+    # No saved replies: only the own text.
+    client.answer_status({**CALLS_READY, "calls_quick_replies": []})
+    client.emit("calls-changed")
+    client.take("list-calls")[1](CallsSnapshot.from_dict({"state": "ready", "calls": [
+        {**ringing, "call_id": "voicecall02"}]}))
+    menu = running.decline_menus["voicecall02"]
+    assert menu.reply_rows == [] and menu.custom.get_text() == ""
+    # A caller without a number cannot get a message.
+    client.emit("calls-changed")
+    client.take("list-calls")[1](CallsSnapshot.from_dict({"state": "ready", "calls": [
+        {**ringing, "number": ""}]}))
+    assert running.decline_menus == {}
     window.destroy()
 
 
@@ -1427,6 +1663,11 @@ if __name__ == "__main__":
         "dial-pad": _exercise_dial_pad,
         "running-calls": _exercise_running_calls,
         "call-tones": _exercise_call_tones,
+        "call-audio": _exercise_call_audio,
+        "call-mute": _exercise_call_mute,
+        "decline-message": _exercise_decline_message,
+
+
         "keypad-tones": _exercise_keypad_tones,
         "quick-settings": _exercise_quick_settings,
         "recent-calls": _exercise_recent_calls,

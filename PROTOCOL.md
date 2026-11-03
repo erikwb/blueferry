@@ -304,6 +304,14 @@ validated before interpolation so CR/LF or vCard delimiters cannot inject an
 additional recipient. Message lines beginning with bMessage structural tokens
 also require MAP byte-stuffing.
 
+Declining a call with a message (`Calls1.DeclineWithMessage`) is HFP
+`Hangup` (oFono `VoiceCall.Hangup`, which declines a ringing call) followed by
+this same one-recipient `PushMessage` to the caller's `LineIdentification`.
+The two are not atomic: the phone has no "decline with message" command over
+HFP or MAP, so a failed send leaves the call declined. Callers without a
+number (withheld, unknown) cannot be texted and are refused before declining.
+Not tested on hardware yet.
+
 ## Group metadata side channel
 
 MAP delivers an incoming group message with only one sender and no participant
@@ -1132,6 +1140,62 @@ starts with a fresh read. BlueZ answers `StartNotify` with `InProgress` when
 the same D-Bus client already has a session that is not yet registered (after
 a reconnect, BlueFerry's session from before); it is kept, or stopped if
 `Battery1` took over meanwhile.
+
+## Call audio devices
+
+With `bluez5.hfphsp-backend = "ofono"`, PipeWire does not show a running call
+as a device but as two streams. Observed during a real call (iPhone,
+PipeWire 1.6.9, WirePlumber 0.5.18, 2026-10-27), card
+`bluez_card.78_A7_C7_A7_CD_02` in profile `audio-gateway`:
+
+- `bluez_input.78_A7_C7_A7_CD_02.0`, media class `Stream/Output/Audio`,
+  `api.bluez5.profile` `headset-audio-gateway`: the caller's voice.
+  WirePlumber linked it to the default sink (the onboard speakers).
+- `bluez_output.78_A7_C7_A7_CD_02.1`, media class `Stream/Input/Audio`:
+  this computer's voice, linked from the default source (a USB headset
+  microphone).
+- The node IDs changed from one call to the next (95 → 103); the
+  `node.name` (the MAC with `_`) stayed. Both streams exist only while the
+  SCO link is up, a few seconds after answering or dialing.
+
+Because they are streams, a call is moved like any application stream: write
+`target.object` (the target's `object.serial`) for the stream's node ID into
+the `default` metadata (`pw-metadata -n default <id> target.object <serial>
+Spa:Id`), which WirePlumber's `linking/find-defined-target.lua` honours, and
+delete the key for "same as system". The system defaults stay untouched.
+WirePlumber's `node/state-stream.lua` (`node.stream.restore-target`, on by
+default) remembers such a metadata target under a key built from the
+stream's own properties and restores it on that phone's next call stream;
+BlueFerry therefore checks the key on every call and deletes a restored
+target when the choice is the system's, which also clears what WirePlumber
+saved. Other streams use other keys and are not affected. The saved
+target lands in `~/.local/state/wireplumber/stream-properties` under a key
+such as `Output/Audio:node.name:bluez_input.<MAC>.0`; it can be removed by
+hand while WirePlumber is stopped. When calls are switched off, BlueFerry
+deletes the streams' targets once more if the streams still exist.
+
+BlueFerry owns the call streams' target while a call runs: with "same as
+system" it deletes any `target.object`, also one set by hand in a mixer
+(pavucontrol, Helvum). Before each write it reads the stream's node again
+(`pw-dump <id>`) and writes only if `object.serial` and `node.name` still
+match, because PipeWire reuses node IDs.
+
+The streams are matched by `api.bluez5.address` (or the MAC in the node
+name) of the selected phone, not by profile name alone. The device lists
+leave out only that phone's nodes; other Bluetooth headsets can be chosen. The device actually
+used is the stream's link peer in `pw-dump`. Moving the streams with
+BlueFerry's router has not been tested on hardware yet.
+
+Muting this computer for a call writes `mute` into the `Props` of the
+`bluez_output.<MAC>` stream (`pw-cli set-param <id> Props '{ mute: true }'`,
+after the same `pw-dump <id>` check), so the microphone device and other
+recording applications are not affected. `pw-dump` shows the state in the
+stream's `info.params.Props` entry that has `mute`. WirePlumber's
+`node.stream.restore-props` (on by default) saves a stream's mute like its
+target, under the same kind of key, so a call that ended muted would start
+muted; BlueFerry therefore unmutes the stream when a muted call ends (if it
+still exists) and checks every new call stream once. Muting has not been
+tested on hardware yet.
 
 ## Pairing diagnostics
 
