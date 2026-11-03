@@ -1080,22 +1080,29 @@ battery does not need HFP, though: iOS exposes the standard GATT Battery
 Service (0x180F, Battery Level 0x2A19, read and notify) to its LE peer.
 BlueZ's battery plugin reads and subscribes to that characteristic itself and
 publishes the level as `Battery1.Percentage` with `Source` "GATT Battery
-Service". A second client on the same characteristic competes with it:
-BlueFerry's own `ReadValue` then failed with `org.bluez.Error.Failed`,
-`StartNotify` with `org.bluez.Error.InProgress`, and its reading could stay at
-the first value. So when that `Battery1` is present, BlueFerry follows only
-its `PropertiesChanged` and neither reads nor subscribes to 0x2A19 (an own
+Service". With that `Battery1` present (BlueZ 5.87), BlueFerry's own
+`ReadValue` was seen to fail with `org.bluez.Error.Failed` and `StartNotify`
+with `org.bluez.Error.InProgress`, and its reading could stay at the first
+value; that the plugin's own session causes the read failures is an inference.
+So when that `Battery1` is present, BlueFerry follows only its
+`PropertiesChanged` and neither reads nor subscribes to 0x2A19 (an own
 notification session is stopped when it appears). Without it (no battery
 plugin, or a `Battery1` from another source such as hands-free) BlueFerry
 reads the characteristic once and follows its notifications, with any other
-`Battery1` as the fallback. bluetoothd 5.87 was seen to keep an old level in
-`Battery1` after an LE reconnect (`error registering battery: path exists`);
-BlueZ normally removes its `Battery1` with the LE link, so one that survives
+`Battery1` as the fallback. A `Battery1` without `Source` was seen on one
+BlueZ 5.82 laptop (#280): BlueZ omits `Source` for a battery provider that
+names none, such as PipeWire's hands-free battery, and its battery plugin then
+fails to register at the same path (`path exists`) and drops its session
+(read from the BlueZ and PipeWire sources). bluetoothd 5.87 was seen to keep
+an old level in `Battery1` after an LE reconnect (`error registering battery:
+path exists`); BlueZ normally removes its `Battery1` with the LE link, so one that survives
 the disconnect is not trusted afterwards: BlueFerry reads the characteristic
 itself until that `Battery1` is replaced or its level changes. A switch
 between the two sources never shows a cached value: the characteristic path
-starts with a fresh read. `InProgress` from `StartNotify` after a reconnect
-means BlueFerry's session from before is still registered and is kept.
+starts with a fresh read. BlueZ answers `StartNotify` with `InProgress` when
+the same D-Bus client already has a session that is not yet registered (after
+a reconnect, BlueFerry's session from before); it is kept, or stopped if
+`Battery1` took over meanwhile.
 
 ## Pairing diagnostics
 
