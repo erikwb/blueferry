@@ -298,6 +298,22 @@ class TetherControl(Protocol):
     def disconnect(self) -> dict[str, object]: ...
 
 
+class CallAudioControl(Protocol):
+    """Speaker and microphone for calls (see ``blueferry.calls.audio_devices``)."""
+
+    def snapshot(self) -> dict[str, str]: ...
+
+    def call_audio(self) -> dict[str, Any]: ...
+
+    def list_devices(
+        self, success: Callable[[dict[str, Any]], None], failure: Failure,
+    ) -> None: ...
+
+    def set_preferred(self, direction: object, name: object) -> dict[str, str]: ...
+
+    def set_for_call(self, direction: object, name: object) -> None: ...
+
+
 class PhoneAudioControl(Protocol):
     def snapshot(self) -> dict[str, object]: ...
 
@@ -350,6 +366,7 @@ class BackendDependencies:
     set_media_control: Callable[[bool], dict[str, Any]] | None = None
     calls: CallControl | None = None
     set_calls_enabled: Callable[[bool], dict[str, Any]] | None = None
+    call_audio: CallAudioControl | None = None
     set_phone_battery_warning: Callable[[bool], dict[str, Any]] | None = None
     set_auto_profile_reset: Callable[[bool], dict[str, Any]] | None = None
     set_media_mpris: Callable[[bool], dict[str, Any]] | None = None
@@ -1282,6 +1299,8 @@ class BackendOperations:
         if calls is not None:
             # A backend without the calls feature reports no calls keys at all.
             status.update(calls.snapshot())
+            if calls.enabled and self.dependencies.call_audio is not None:
+                status.update(self.dependencies.call_audio.snapshot())
         if self.dependencies.status_provider is not None:
             status.update(self.dependencies.status_provider())
         status["api_version"] = MESSAGES_API_VERSION
@@ -2344,7 +2363,39 @@ class BackendOperations:
             raise NotReadyError("could not save the one-time code preference") from error
 
     def list_calls(self) -> dict[str, object]:
-        return self._call_control().list_calls()
+        payload = self._call_control().list_calls()
+        if self.dependencies.call_audio is not None:
+            payload = {**payload, "audio": self.dependencies.call_audio.call_audio()}
+        return payload
+
+    def _call_audio(self) -> CallAudioControl:
+        self._call_control()
+        audio = self.dependencies.call_audio
+        if audio is None:
+            raise NotReadyError("choosing call audio devices is unavailable in this backend")
+        return audio
+
+    def list_call_audio_devices(
+        self, success: Callable[[dict[str, Any]], None], failure: Failure,
+    ) -> None:
+        self._call_audio().list_devices(success, failure)
+
+    def set_call_audio_device(self, direction: str, name: str) -> dict[str, Any]:
+        """Save the speaker or microphone for every call ("" = system)."""
+        audio = self._call_audio()
+        try:
+            return dict(audio.set_preferred(direction, name))
+        except UnreadableSettingsError:
+            raise
+        except ValueError as error:
+            raise InvalidArgumentsError(str(error)) from error
+        except OSError as error:
+            log.error("could not save the call audio device: %s", error)
+            raise NotReadyError("could not save the call audio device") from error
+
+    def set_call_audio_device_for_call(self, direction: str, name: str) -> None:
+        """Use another speaker or microphone for the running call only."""
+        self._call_audio().set_for_call(direction, name)
 
     def dial(self, number: str, success: Success, failure: Failure) -> None:
         self._call_control().dial(number, success, failure)

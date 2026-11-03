@@ -1,5 +1,6 @@
 """Running phone calls on the Calls tab: answer, hold or resume, hang up,
-and keypad tones (DTMF) for the active call.
+keypad tones (DTMF) for the active call, and the call's speaker and
+microphone with a switch for this call only.
 
 GTK counterpart of the call cards in the Qt client's ``CallsTab.qml``. The
 calls come from ``Calls1.ListCalls``, read again on ``CallsChanged``, when
@@ -10,7 +11,11 @@ visibility, the GTK client deliberately reads only while the window is
 shown. The duration ticks only while the tab is visible. The wording is
 ``phone_link_view.call_card``; a failed ``ListCalls`` reports the calls as
 unavailable. The rows are rebuilt on each read, so the keypad-tone text
-is kept here and put back into the new row.
+is kept here and put back into the new row. The device rows follow
+``call_audio_view.call_view``; the device lists are read again whenever the
+call's audio report changes: when a call starts, a choice is applied, or a
+plugged or unplugged device is the chosen or the used one. Other hot-plugs
+show up the next time the lists are read.
 """
 
 from __future__ import annotations
@@ -20,10 +25,11 @@ from collections.abc import Callable
 
 from gi.repository import Adw, Gtk
 
-from blueferry import phone_link_view
+from blueferry import call_audio_view, phone_link_view
 from blueferry.client_tasks import TimerFactory
 from blueferry.models import CallsSnapshot
 from blueferry.ui.avatars import AvatarCache
+from blueferry.ui.call_audio import DeviceRow
 from blueferry.ui.quick_switches import PhoneAudioSwitch, sound_row
 from blueferry.ui.reads import CoalescedRead
 from blueferry.ui.util import glib_timer
@@ -80,6 +86,13 @@ class RunningCalls(Gtk.ListBox):
         self._avatars = AvatarCache(client.contact_photo_async, self._refresh_avatars)
         # Where the sound plays right now, as on the phone card.
         self.sound = PhoneAudioSwitch(sound_row(), client, toast)
+        # The call's speaker and microphone (ListCalls "audio").
+        self.audio: dict | None = None
+        self.devices: dict = {}
+        self.audio_rows = {
+            direction: DeviceRow(self.choose_device) for direction in call_audio_view.DIRECTIONS
+        }
+        self.audio_hint = Adw.ActionRow(use_markup=False, css_classes=["dim-label"])
         client.connect("calls-changed", lambda _c: self._read.refresh())
 
     # ---- the page's side -----------------------------------------------
@@ -140,6 +153,10 @@ class RunningCalls(Gtk.ListBox):
         if not isinstance(snapshot, CallsSnapshot):
             return
         self._state = snapshot.state
+        audio = snapshot.audio.to_dict() if snapshot.audio is not None else None
+        if audio is not None and snapshot.calls and audio != self.audio:
+            self._load_devices()  # a call started or its chosen/used device changed
+        self.audio = audio if snapshot.calls else None
         self._set_calls([call.to_dict() for call in snapshot.calls])
 
     def _failed(self, _message: str) -> None:
@@ -148,8 +165,18 @@ class RunningCalls(Gtk.ListBox):
         self._state = "unavailable" if state == "ready" else state
         self._set_calls([])
 
+    def _load_devices(self) -> None:
+        def loaded(devices: object) -> None:
+            if isinstance(devices, dict) and devices != self.devices:
+                self.devices = devices
+                self._render_audio()
+
+        self._client.call_audio_devices_async(loaded, lambda _message: None)
+
     def _set_calls(self, calls: list[dict]) -> None:
         self._rows_generation += 1
+        if not calls:
+            self.audio = None
         self.calls = calls
         self._render()
         self._on_state()
@@ -164,6 +191,11 @@ class RunningCalls(Gtk.ListBox):
 
     def hangup(self, call_id: str) -> None:
         self._act(lambda done, failed: self._client.hangup_call_async(call_id, done, failed))
+
+    def choose_device(self, direction: str, name: str) -> None:
+        """Switch the running call to another speaker or microphone."""
+        self._act(lambda done, failed: self._client.set_call_audio_device_for_call_async(
+            direction, name, done, failed))
 
     @property
     def active_call_id(self) -> str:
@@ -239,6 +271,11 @@ class RunningCalls(Gtk.ListBox):
             self.tones.set_position(cursor if 0 <= cursor <= len(self._tones_draft) else -1)
         if self.calls:
             self.append(self.sound.row)
+            if self.audio is not None:
+                for row in self.audio_rows.values():
+                    self.append(row.row)
+                self.append(self.audio_hint)
+        self._render_audio()
         self.set_visible(bool(self.calls))
         self._refresh_avatars()
         self._render_sensitivity()
@@ -315,7 +352,18 @@ class RunningCalls(Gtk.ListBox):
         button.connect("clicked", clicked)
         return button
 
+    def _render_audio(self) -> None:
+        view = call_audio_view.call_view(self.audio, self.devices)
+        for item in view["rows"]:
+            self.audio_rows[item["direction"]].show(item, subtitle=item["using"])
+        for row in self.audio_rows.values():
+            row.row.set_tooltip_text(view.get("call_hint") or None)
+        self.audio_hint.set_title(view["hint"])
+        self.audio_hint.set_visible(bool(view["hint"]))
+
     def _render_sensitivity(self) -> None:
+        for row in self.audio_rows.values():
+            row.row.set_sensitive(not self._busy)
         for _row, _call, _avatar, buttons in self.rows:
             for button in buttons:
                 button.set_sensitive(not self._busy and self._available() and self.state == "ready")

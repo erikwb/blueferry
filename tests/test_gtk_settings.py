@@ -13,7 +13,7 @@ from tests.gtk_broadway import run_scenario
 @pytest.mark.parametrize(
     "scenario", [
         "categories", "features", "old-daemon", "doctor", "mirror-removals",
-        "battery-warning", "reconnect", "notification-rules", "muted-apps",
+        "battery-warning", "reconnect", "notification-rules", "call-audio", "muted-apps",
         "feature-races", "status-save-races", "rule-races", "storage-reset",
     ],
 )
@@ -92,8 +92,15 @@ class FakeClient:
     def remove_notification_open_target_async(self, bundle, on_ok, on_err):
         self.calls.append((("remove_rule", bundle), on_ok, on_err))
 
+    def call_audio_devices_async(self, on_ok, on_err=None):
+        self.calls.append(("audio_devices", on_ok, on_err))
+
+    def set_call_audio_device_async(self, direction, name, on_ok, on_err):
+        self.calls.append((("set_audio", direction, name), on_ok, on_err))
+
     def reset_storage_async(self, on_ok, on_err):
         self.calls.append(("reset_storage", on_ok, on_err))
+
     def notification_apps_async(self, on_ok, on_err=None):
         self.calls.append(("apps", on_ok, on_err))
 
@@ -532,6 +539,58 @@ def _exercise_notification_rules():
     window.destroy()
 
 
+def _exercise_call_audio():
+    from blueferry.models import BackendStatus
+
+    dialog, window, client = _settings()
+    group = dialog._call_audio_group
+    speaker, microphone = dialog.call_audio_rows["output"], dialog.call_audio_rows["input"]
+    assert group.get_ancestor(type(dialog.pages["calls"])) is dialog.pages["calls"]
+    dialog._apply_status(BackendStatus.from_dict({"daemon": True, "calls_enabled": True}))
+    assert not group.get_visible()  # an older daemon
+    assert "audio_devices" not in [call[0] for call in client.calls]
+
+    saved = BackendStatus.from_dict({
+        "daemon": True, "calls_enabled": True,
+        "calls_audio_output": "alsa_output.gone", "calls_audio_input": "",
+    })
+    dialog._apply_status(saved)
+    assert group.get_visible()
+    assert group.get_description().startswith("Used only for phone calls")
+    client.take("audio_devices")[1]({
+        "outputs": [{"name": "alsa_output.a50", "description": "<b>A50</b>", "default": True}],
+        "inputs": [{"name": "alsa_input.cam", "description": "Webcam", "default": False}],
+    })
+    assert speaker.row.get_title() == "Speaker for calls"
+    model = speaker.row.get_model()
+    labels = [model.get_string(i) for i in range(model.get_n_items())]
+    assert labels == ["Same as system (<b>A50</b>)", "<b>A50</b>", "alsa_output.gone (not connected)"]
+    assert speaker.row.get_selected() == 2 and microphone.row.get_selected() == 0
+    assert speaker.row.get_use_markup() is False
+
+    toasts = []
+    dialog._toast = toasts.append
+    microphone.row.set_selected(1)
+    assert not microphone.row.get_sensitive()
+    client.take(("set_audio", "input", "alsa_input.cam"))[2]("busy")
+    assert toasts == ["Could not save the call audio device: busy"]
+    assert microphone.row.get_selected() == 0 and microphone.row.get_sensitive()
+
+    client.status = BackendStatus.from_dict({
+        "daemon": True, "calls_enabled": True,
+        "calls_audio_output": "", "calls_audio_input": "",
+    })
+    speaker.row.set_selected(0)
+    client.take(("set_audio", "output", ""))[1]({"calls_audio_output": ""})
+    assert speaker.row.get_selected() == 0 and speaker.row.get_sensitive()
+    # Opening the dialog reads the devices again.
+    dialog.open(window, "calls")
+    _settle()
+    client.take("audio_devices")
+    dialog._apply_status(BackendStatus.from_dict({"daemon": True, "calls_enabled": False}))
+    assert not group.get_visible()
+
+
 APPS = {
     "apps": [
         {"app_id": "com.example.Chat", "app_name": "<b>Chat</b>", "muted": False,
@@ -788,6 +847,7 @@ def _exercise_storage_reset():
 
 if __name__ == "__main__":
     {
+        "call-audio": _exercise_call_audio,
         "storage-reset": _exercise_storage_reset,
         "muted-apps": _exercise_muted_apps,
         "notification-rules": _exercise_notification_rules,

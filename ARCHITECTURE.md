@@ -408,6 +408,8 @@ dbus-python; the guard tolerates that.
   `CallsUnavailable`.
   Its `CallsChanged` invalidation on `Events1` has no arguments; caller
   numbers and names are only returned by the rate-limited `ListCalls`.
+  `ListCallAudioDevices`, `SetCallAudioDevice` and
+  `SetCallAudioDeviceForCall` choose the call speaker and microphone.
   Dialing has its own strict quota. Adding it did not change the API
   generation.
 
@@ -773,6 +775,23 @@ A change to these rules has to be made in both places.
   own experimental HFP plugin is active (`-E` without `-P hfp`, read from
   bluetoothd's argv by process name), the state becomes `bluez_conflict`
   and paging stops until the Classic link returns or oFono makes progress.
+- `calls.audio_devices` picks the call speaker and microphone. With the oFono
+  backend PipeWire shows a running call as two streams of the selected phone
+  (`bluez_input.<MAC>` playing to a sink, `bluez_output.<MAC>` recording from
+  a source), matched by `api.bluez5.address`/node name. While the controller
+  reports a call, the router reads `pw-dump` on its own worker (every second
+  for up to 20 s, re-armed on every call change, then every 5 s for
+  hot-plugged devices) and writes or deletes only those streams'
+  `target.object` in the `default` metadata with `pw-metadata`, after
+  checking that the node ID still has the stream's `object.serial`; system
+  defaults and other streams are never written. One failed read keeps the
+  last report and retries after a second; a second one (or a missing
+  `pw-dump`) reports `unavailable`. Switching calls off deletes the streams'
+  targets once more.
+  The saved choice (`calls_audio_output`/`_input`, a `node.name`) lives in
+  `settings.json`; a per-call choice is kept in memory and dropped when no
+  call is left. Results carry a generation, so a finished call's check is
+  ignored. Clients share `call_audio_view.py` for the wording.
 - `stop()` (daemon exit or switching calls off) sends `Powered=false`,
   flushed and without awaiting a reply, for the modem BlueFerry powered
   itself; a modem another oFono client powered is left alone.

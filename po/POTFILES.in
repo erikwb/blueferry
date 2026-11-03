@@ -98,3 +98,4 @@ src/blueferry/notification_apps_view.py
 src/blueferry/media_volume_view.py
 src/blueferry/tui_contacts.py
 src/blueferry/tui_search.py
+src/blueferry/call_audio_view.py
