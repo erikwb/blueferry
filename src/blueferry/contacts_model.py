@@ -10,7 +10,9 @@ is hidden. Typing in the search field reloads the first page after
 demand (:meth:`ContactBook.load_more`). Card ids are only valid within one
 ``contact_card_epoch``: when :meth:`ContactBook.apply_status` sees the epoch
 change, a shown list is reloaded and an open card is read again, which
-answers "changed or removed" (``NotFound``) for a stale id. Photos follow
+answers "changed or removed" (``NotFound``) for a stale id. The rows and
+the card read under the old epoch are dropped at once, since a storage
+lock or reset also moves it. Photos follow
 ``contact_photos``: once it is off or unknown, the open card's photo and
 every photo hint are dropped at once, including from answers still on
 their way; turning it on reads the list and the open card again.
@@ -133,6 +135,8 @@ class ContactBook:
         epoch = status.get(contacts_view.EPOCH_KEY) if supported else None
         previous, self._epoch = self._epoch, epoch
         changed = previous is not None and epoch != previous
+        if changed:
+            self._drop_cards()
         photos = contacts_view.photos_shown(status)
         if photos != self._photos:
             self._photos = photos
@@ -264,6 +268,16 @@ class ContactBook:
         return {**item, "has_photo": False, "photo_retry": False} if (
             item.get("has_photo") or item.get("photo_retry")
         ) else item
+
+    def _drop_cards(self) -> None:
+        """The card epoch moved: nothing read under the old one stays shown."""
+        self._list_serial += 1
+        self._card_serial += 1
+        self._rows, self._page, self._loaded, self._loading = [], {}, False, False
+        if self._card["open"]:
+            self._card = {**_empty_card(), "open": True, "id": self._card["id"]}
+        self._photo = b""
+        self._on_change()
 
     def _drop_photos(self) -> None:
         """Photos were turned off or became unknown: drop them now."""

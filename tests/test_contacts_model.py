@@ -79,6 +79,8 @@ class Daemon:
 
     def card(self, card_id):
         self.opened.append(card_id)
+        if self.fail:
+            raise RuntimeError(self.fail)
         if card_id in self.stale:
             raise ContactNotFoundError("unknown contact")
         return json.dumps({
@@ -299,3 +301,14 @@ def test_no_page_loads_between_a_query_change_and_its_first_page():
     runner.run_all()
     assert daemon.pages[-1] == (PAGE_SIZE, PAGE_SIZE, "")
     assert len(book.rows) == PAGE_SIZE + 5
+
+
+def test_a_new_epoch_drops_what_was_read_before_its_answers_arrive():
+    book, daemon, runner, _timer = _with_open_card()
+    daemon.fail = "storage is locked"
+    book.apply_status({**STATUS, "contact_card_epoch": 8})
+    assert book.rows == [] and book.photo == b""
+    assert book.card["open"] and book.card["title"] == "" and book.card["sections"] == []
+    runner.run_all()
+    assert book.rows == [] and book.card["title"] == "" and book.photo == b""
+    assert book.card["error"] and book.view()["error"]
