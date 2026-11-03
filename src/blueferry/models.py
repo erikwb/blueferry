@@ -685,6 +685,12 @@ class CallHistoryEntry:
         return self.direction == "missed"
 
     @property
+    def call_id(self) -> str:
+        """The opaque entry id a Search call hit refers to; "" from older daemons."""
+        value = self.extra.get("id")
+        return value if isinstance(value, str) else ""
+
+    @property
     def display_caller(self) -> str:
         return self.name or self.address or "Unknown caller"
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import errno
 import os
+import re
 import stat
 import sys
 from pathlib import Path
@@ -10,9 +11,10 @@ from pathlib import Path
 import typer
 
 from blueferry.cli_common import setup_logging
-from blueferry.client import BackendClient, BackendError
+from blueferry.client import BackendClient, BackendError, ContactNotFoundError
 from blueferry.contact_photos import image_type
 from blueferry.events import canonical_address
+from blueferry.limits import CARD_ID_HEX_CHARS
 from blueferry.text_safety import terminal_text
 
 # While the daemon can't read its saved choice (contact_photos_state).
@@ -195,3 +197,129 @@ def contacts_photo(
         raise typer.Exit(code=2) from None
     kind = "PNG" if image_type(data) == "image/png" else "JPEG"
     typer.echo(f"Wrote {len(data)}-byte {kind} photo to {output}")
+
+
+# The shape of the ids ListContactCards reports (see contacts._card_id).
+_CARD_ID = re.compile(rf"[0-9a-f]{{{CARD_ID_HEX_CHARS}}}(?:-[0-9]+)?")
+
+contacts_app = typer.Typer(
+    help="Browse the contact cards cached from the iPhone.",
+    no_args_is_help=True,
+)
+
+
+def _backend_failed(prefix: str, error: BackendError) -> typer.Exit:
+    typer.echo(typer.style(f"{prefix}: {error}", fg=typer.colors.RED), err=True)
+    return typer.Exit(code=3)
+
+
+@contacts_app.command("list")
+def contacts_list(
+    query: str = typer.Option("", "--query", "-q", help="Filter by name, company, mail or number"),
+    offset: int = typer.Option(0, "--offset", min=0, help="Skip this many cards"),
+    limit: int = typer.Option(50, "--limit", min=1, help="Cards per page"),
+    show_all: bool = typer.Option(False, "--all", help="Fetch every page"),
+) -> None:
+    """List cached contact cards with the ids 'contacts show' takes."""
+    from blueferry import contacts_view
+
+    client = BackendClient()
+    while True:
+        try:
+            page = client.contact_cards(offset, limit, query)
+        except BackendError as error:
+            raise _backend_failed("Could not list contacts", error) from None
+        view = contacts_view.list_view(page)
+        if view["hint"]:
+            typer.echo(view["hint"])
+            return
+        for row in view["rows"]:
+            line = f"{row['id']}  {_one_line(row['title'])}"
+            if row["subtitle"]:
+                line += f"  ({_one_line(row['subtitle'])})"
+            typer.echo(line)
+        if not show_all or not view["has_more"] or not view["rows"]:
+            break
+        offset = view["next_offset"]
+    if view["has_more"]:
+        typer.echo(
+            f"{view['count_text']}; more with --offset {view['next_offset']} or --all",
+            err=True,
+        )
+    else:
+        typer.echo(view["count_text"], err=True)
+
+
+def _card_id(client: BackendClient, contact: str) -> str:
+    """Accept a card id, or a name/number query that matches exactly one card."""
+    from blueferry import contacts_view
+
+    if _CARD_ID.fullmatch(contact):
+        return contact
+    try:
+        page = contacts_view.normalize_page(client.contact_cards(0, 20, contact))
+    except BackendError as error:
+        raise _backend_failed("Could not look up the contact", error) from None
+    rows = page["contacts"]
+    if len(rows) == 1:
+        return rows[0]["id"]
+    if not rows:
+        typer.echo(typer.style(f"No contact matched {contact!r}.", fg=typer.colors.YELLOW),
+                   err=True)
+        raise typer.Exit(code=1)
+    typer.echo(f"{page['total']} contacts match; use an id:", err=True)
+    for row in contacts_view.list_rows(page):
+        typer.echo(f"  {row['id']}  {_one_line(row['title'])}", err=True)
+    raise typer.Exit(code=2)
+
+
+@contacts_app.command("show")
+def contacts_show(
+    contact: str = typer.Argument(..., help="Card id from 'contacts list', or a name or number"),
+    photo: str = typer.Option(
+        "", "--photo", help="Also write the card's photo (JPEG or PNG as stored) to this file",
+    ),
+    force: bool = typer.Option(False, "--force", help="Replace an existing photo file"),
+) -> None:
+    """Show every number, mail and postal address of one contact."""
+    from blueferry import contacts_view
+
+    client = BackendClient()
+    card_id = _card_id(client, contact)
+    try:
+        document, data = client.contact(card_id)
+    except BackendError as error:
+        if isinstance(error, ContactNotFoundError):
+            typer.echo(contacts_view.stale_text(), err=True)
+            raise typer.Exit(code=1) from None
+        raise _backend_failed("Could not load the contact", error) from None
+    view = contacts_view.card_view(document)
+    typer.echo(_one_line(view["title"]))
+    if view["subtitle"]:
+        typer.echo(_one_line(view["subtitle"]))
+    for section in view["sections"]:
+        typer.echo("")
+        typer.echo(f"{section['title']}:")
+        for row in section["rows"]:
+            lines = terminal_text(row["value"]).splitlines() or [""]
+            typer.echo(f"  {_one_line(row['label'])}: {lines[0]}")
+            for extra in lines[1:]:
+                typer.echo(f"    {extra}")
+    if view["photo_retry"]:
+        typer.echo("\nThe photo is being updated; try again shortly.")
+    if not photo:
+        if data:
+            typer.echo("\nHas a photo (save it with --photo FILE).")
+        return
+    if not data:
+        typer.echo("No photo is cached for that contact.", err=True)
+        raise typer.Exit(code=1)
+    try:
+        _write_private(Path(photo), data, force=force)
+    except FileExistsError:
+        typer.echo(f"{photo} exists; pass --force to replace it.", err=True)
+        raise typer.Exit(code=2) from None
+    except OSError as error:
+        typer.echo(f"Could not write {photo}: {error.strerror or error}", err=True)
+        raise typer.Exit(code=2) from None
+    typer.echo(f"\nWrote {len(data)}-byte photo to {photo}")

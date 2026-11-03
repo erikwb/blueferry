@@ -150,6 +150,22 @@ def test_call_errors_map_to_their_documented_names() -> None:
     assert "+4179" not in failed.get_dbus_message()
 
 
+def test_contact_card_methods_page_and_return_the_photo_as_bytes() -> None:
+    methods = _exported(MESSAGES_IFACE, "_dbus_is_method")
+    assert methods["ListContactCards"]._dbus_in_signature == "uus"
+    assert methods["ListContactCards"]._dbus_out_signature == "s"
+    assert methods["GetContact"]._dbus_in_signature == "s"
+    assert methods["GetContact"]._dbus_out_signature == "say"
+    # The older address-grouped enumeration keeps its signature.
+    assert methods["ListContacts"]._dbus_in_signature == "uu"
+
+
+def test_search_takes_a_query_and_a_limit() -> None:
+    methods = _exported(MESSAGES_IFACE, "_dbus_is_method")
+    assert methods["Search"]._dbus_in_signature == "su"
+    assert methods["Search"]._dbus_out_signature == "s"
+
+
 def test_notification_apps_signal_is_content_free() -> None:
     signals = _exported(EVENTS_IFACE, "_dbus_is_signal")
     assert signals["NotificationAppsChanged"]._dbus_signature == ""

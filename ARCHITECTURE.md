@@ -89,6 +89,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `contacts.py` | PBAP phonebook pull, vCard parsing, and address-to-name resolution. |
 | `contact_sync.py` | Schedules PBAP pulls (MAP grace period, daily refresh, joined manual requests) and discards pulls that span a storage key or policy change. |
 | `contact_repository.py` | Contact-cache SQLite schema, replacement transaction, encryption, legacy cleanup. |
+| `contact_details.py` | Contact-card details from vCards (labelled numbers and email, postal addresses, organization, title), their sealed storage form, and the `ListContactCards`/`GetContact` documents. |
 | `call_history.py` | Opt-in: pure parsing of PBAP call-history vCards (`ich`/`och`/`mch`) and their merge. |
 | `call_history_repository.py` | Encrypted call-history mirror, retention, and the already-announced missed-call set. |
 | `call_history_sync.py` | Schedules call-history pulls (ANCS-triggered, missed-calls-only fallback poll, one OBEX worker job per listing) and reports newly seen missed calls. |
@@ -146,6 +147,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `storage_preparation.py` | Worker-side storage validation before the daemon commits it. |
 | `sqlite_files.py` | Recognizes damaged SQLite files and deletes one with its journals for a storage reset. |
 | `text_safety.py` | Escaping for remote text at terminal presentation boundaries. |
+| `text_fold.py` | Search folding (case, accents, Unicode compatibility forms) with a mapping from folded matches back to the original text. |
 | `message_links.py` | Escaped markup with safe clickable web URLs, shared by GTK and QML. |
 
 ### Pairing and setup
@@ -186,7 +188,11 @@ All paths are relative to `src/blueferry/` unless noted.
 | --- | --- |
 | `cli.py`, `__main__.py` | Typer CLI (`run`, `doctor`, sync, setup, and hidden `pairing-*` JSON helpers). |
 | `cli_messages.py` | CLI message listing, recipient selection, and send. |
-| `cli_contacts.py` | `contact-photos enable`/`disable`/`status` and `contacts-photo` export of one cached contact photo. |
+| `cli_contacts.py` | `contact-photos enable`/`disable`/`status`, `contacts-photo` export of one cached contact photo, and `contacts list`/`show` for contact cards. |
+| `global_search.py` | `Messages1.Search` matching over the in-memory conversation projection, contact cards and call history; no index on disk. |
+| `search_view.py`, `cli_search.py` | Toolkit-free result sections, rows, highlights and jump targets for the global search; `blueferry search`. |
+| `contacts_view.py` | Toolkit-free list rows, card sections, labels and hints for the contact view (`Messages1.ListContactCards`, `GetContact`). |
+| `contacts_model.py`, `search_model.py` | Toolkit-neutral state of the contact list and the global search on the `client_tasks.py` seams, shared by the KDE, GTK and terminal clients: typing delay, paging without duplicates, only the newest answer shown, `contact_card_epoch` reloads, stale card ids (`NotFound`) and `NotReady` retries. Photos go as soon as `contact_photos` is off or unknown; `GlobalSearch.invalidate()` (on `HistoryChanged`, `CallHistoryChanged` and source changes in the status) drops the shown answer and searches again. |
 | `cli_call_history.py` | Opt-in `call-history` listing, enable, and disable. |
 | `cli_common.py` | Small CLI presentation helpers. |
 | `cli_proximity.py` | `proximity-lock` status, dry run, enable, and disable. |

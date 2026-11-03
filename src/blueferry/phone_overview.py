@@ -112,6 +112,8 @@ def call_groups(
             and (entry.address or entry.display_caller) == previous["key"]
         ):
             previous["count"] += 1
+            if entry.call_id:
+                previous["ids"].append(entry.call_id)
             continue
         rows.append({
             "key": entry.address or entry.display_caller,
@@ -123,6 +125,8 @@ def call_groups(
             "direction": entry.direction,
             "missed": entry.missed,
             "count": 1,
+            # Opaque ListCallHistory ids of the folded calls (Search hits).
+            "ids": [entry.call_id] if entry.call_id else [],
         })
     for row in rows:
         row["title"] = (

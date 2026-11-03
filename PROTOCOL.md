@@ -334,6 +334,16 @@ The iPhone phonebook is available through BlueZ's
   retain that signal as evidence for valid empty contacts and call histories.
 - vCards contain `FN`, multiple `TEL` values, and `EMAIL` values. Retaining
   emails is necessary for contacts that exist only as Apple-ID destinations.
+- For the contact view, the same pull also yields each `TEL`, `EMAIL` and
+  `ADR` with its `TYPE` parameters, plus `ORG` and `TITLE`. iOS writes custom
+  and some built-in labels as a grouped `itemN.X-ABLabel` (`_$!<Mobile>!$_`
+  for built-in ones, free text for the user's own); the label applies to the
+  property with the same group prefix and overrides its `TYPE`. Values are
+  vCard 3.0 text with `\;`, `\,`, `\n` escapes; `ADR` has seven `;`-separated
+  components. These details are kept only inside the sealed contact payload,
+  never in the plaintext tables. This layout follows RFC 2426 and Apple's
+  vCard export; it has not yet been compared against a real iPhone's PBAP
+  output.
 - BlueFerry sends no `Fields` filter, and BlueZ then omits the PBAP Filter
   application parameter. The PBAP specification treats a missing filter as
   "all attributes", so inline `PHOTO` values are already part of this single

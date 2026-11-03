@@ -1057,7 +1057,7 @@ def test_call_history_is_not_ready_until_opted_in(public_service) -> None:
 def test_call_history_round_trip_and_content_free_signal(public_service) -> None:
     from datetime import datetime, timezone
 
-    from blueferry.call_history import MISSED, CallRecord
+    from blueferry.call_history import MISSED, CallRecord, call_entry_id
 
     name, _pending, _policy, _policy_changes, service = public_service
     moment = datetime.now(timezone.utc).replace(microsecond=0)
@@ -1104,6 +1104,7 @@ def test_call_history_round_trip_and_content_free_signal(public_service) -> None
         connection.close()
 
     assert json.loads(str(listed["value"])) == [{
+        "id": call_entry_id(record),
         "direction": "missed",
         "timestamp": moment.isoformat(),
         "address": "+15551230001",
@@ -1111,6 +1112,13 @@ def test_call_history_round_trip_and_content_free_signal(public_service) -> None
         "contact_name": None,
     }]
     assert int(synced["value"]) == 1
+    assert record.phone not in json.loads(str(listed["value"]))[0]["id"]
+
+    # Search matches on its worker and replies through the main loop.
+    search_thread, searched = _request_in_thread(name, "Search", "551230", dbus.UInt32(5))
+    _dispatch_until(lambda: not search_thread.is_alive())
+    found = json.loads(str(searched["value"]))
+    assert found["calls"]["results"][0]["id"] == call_entry_id(record)
     assert received == [()]
 
 

@@ -14,8 +14,9 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Protocol
 
-from blueferry.call_history import CallRecord, resolve_contact_name
+from blueferry.call_history import CallRecord, call_entry_id, resolve_contact_name
 from blueferry.call_history_repository import clear_call_history
+from blueferry.contact_details import ContactDetails, card_document, card_summary
 from blueferry.contact_repository import PhotoStoreBusy
 from blueferry.contacts import clear_contact_cache
 from blueferry.errors import (
@@ -30,6 +31,7 @@ from blueferry.errors import (
 )
 from blueferry.events import canonical_address
 from blueferry.features import FeatureSettings
+from blueferry.global_search import ThreadSearchIndex, normalize_query, search_calls
 from blueferry.grouping import (
     CORRELATED_ANCS_ROW_IDS_FIELD,
     HISTORY_ROW_ID_FIELD,
@@ -46,6 +48,7 @@ from blueferry.history import (
 from blueferry.limits import (
     MAX_CALL_HISTORY_QUERY_LIMIT,
     MAX_CONTACT_ADDRESS_CHARS,
+    MAX_CONTACT_ID_CHARS,
     MAX_CONTACT_PAGE,
     MAX_CONTACT_QUERY_CHARS,
     MAX_CONTACT_RESULTS,
@@ -57,10 +60,12 @@ from blueferry.limits import (
     MAX_OUTGOING_BODY_BYTES,
     MAX_PINNED_NOTIFICATIONS,
     MAX_RECENT_QUERY_LIMIT,
+    MAX_SEARCH_RESULTS,
     MAX_THREAD_BODY_CHARS,
     MAX_THREAD_DELETE_COUNT,
     MAX_THREAD_KEY_CHARS,
     MAX_THREAD_QUERY_LIMIT,
+    MIN_SEARCH_QUERY_CHARS,
 )
 from blueferry.named_groups import is_unnamed_group_key, stored_named_group_key
 from blueferry.notification_log import PinLimitError
@@ -133,6 +138,35 @@ class ContactIndex(Protocol):
     def photo(self, address: str | None) -> bytes | None: ...
 
     def refresh(self) -> int: ...
+
+    def card_count(self) -> int: ...
+
+    def cards(
+        self, offset: int = 0, limit: int | None = None, query: str = "",
+    ) -> tuple[int, list[tuple[str, tuple[str | None, list[str], list[str]],
+                               ContactDetails, int | None]]]: ...
+
+    def card(
+        self, card_id: str,
+    ) -> tuple[str, tuple[str | None, list[str], list[str]],
+               ContactDetails, int | None] | None: ...
+
+    def load_photo(self, ref: int) -> bytes | None: ...
+
+    def adopt_card_haystacks(self, snapshot: object) -> None: ...
+
+
+@dataclass(frozen=True, slots=True)
+class _SearchOutcome:
+    """A finished search job: the reply and the caches it built off GLib."""
+
+    result: dict[str, Any]
+    index: ThreadSearchIndex | None = None
+    contacts: ContactIndex | None = None
+    # What the job read, so a reply can drop groups that went stale while
+    # it was queued (see BackendOperations._finish_search).
+    version: tuple[int, int, tuple[int, ...]] | None = None
+    records: list[CallRecord] | None = None
 
 
 class NotificationPolicy(Protocol):
@@ -358,6 +392,9 @@ class BackendOperations:
             self._build_conversations,
             revision=lambda: history_revision(storage=self.dependencies.storage),
         )
+        # Folded bodies of the current projection, kept in memory between
+        # searches; replaced once the projection changes.
+        self._search_index: ThreadSearchIndex | None = None
 
     def _build_conversations(self, events: list[dict]) -> list[dict]:
         return self._project_conversations(
@@ -849,6 +886,225 @@ class BackendOperations:
             )
         ]
 
+    def list_contact_cards(self, offset: int, limit: int, query: str) -> dict[str, Any]:
+        """One page of contact cards with stable per-run ids, optionally filtered.
+
+        Rows carry no photo bytes; ``has_photo`` says whether ``GetContact``
+        will return one.
+        """
+        selected = " ".join(str(query).split())
+        if len(selected) > MAX_CONTACT_QUERY_CHARS:
+            raise InvalidArgumentsError("contact query is too long")
+        contacts = self.dependencies.contacts
+        if contacts is None:
+            raise NotReadyError("contact cache is unavailable")
+        start = max(0, int(offset))
+        total, page = contacts.cards(start, max(1, min(int(limit), MAX_CONTACT_PAGE)), selected)
+        photos = self._contact_photos_enabled()
+        return {
+            "contacts": [
+                card_summary(
+                    card_id, name, phones, emails, details,
+                    has_photo=photos and photo is not None,
+                )
+                for card_id, (name, phones, emails), details, photo in page
+            ],
+            "total": total,
+            "offset": start,
+            "query": selected,
+        }
+
+    def contact_card(self, contact_id: str) -> tuple[dict[str, Any], bytes]:
+        """Every detail of one card and its photo (empty bytes without one).
+
+        Unknown ids, including ids from before a sync that changed the card,
+        raise NotFound so a client reloads its list.
+        """
+        selected = str(contact_id).strip()
+        if not selected or len(selected) > MAX_CONTACT_ID_CHARS:
+            raise InvalidArgumentsError("contact id is empty or too long")
+        contacts = self.dependencies.contacts
+        if contacts is None:
+            raise NotReadyError("contact cache is unavailable")
+        found = contacts.card(selected)
+        if found is None:
+            raise NotFoundError("contact is no longer in the contact cache")
+        card_id, (name, phones, emails), details, ref = found
+        has_photo = self._contact_photos_enabled() and ref is not None
+        photo, retry = b"", False
+        if has_photo and ref is not None:
+            try:
+                photo = contacts.load_photo(ref) or b""
+            except PhotoStoreBusy:
+                # A sync holds the database; the details are still current.
+                retry = True
+        return card_document(
+            card_id, name, phones, emails, details,
+            has_photo=has_photo and (bool(photo) or retry), photo_retry=retry,
+        ), photo
+
+    def search(self, query: str, limit: int) -> dict[str, Any]:
+        """Search conversations, messages, contacts and call history at once.
+
+        Synchronous form of :meth:`search_async` for tests and local use.
+        """
+        return self._finish_search(self._prepare_search(query, limit)())
+
+    def search_async(
+        self, query: str, limit: int, submit: Callable[..., object],
+        reply: Callable[[dict[str, Any]], None], failure: Failure,
+    ) -> None:
+        """Snapshot on GLib, match on ``submit``'s worker, reply on GLib.
+
+        Runs over what the daemon already holds decrypted in memory (see
+        ``global_search``); nothing is indexed on disk. Call
+        ``prepare_conversations`` first. Each group is cut to ``limit``
+        results and reports its full match count. A group whose source is
+        unavailable (no contact cache, call history off or locked storage)
+        is reported with ``available: false`` instead of failing the search.
+        """
+        job = self._prepare_search(query, limit)
+
+        def finished(outcome: _SearchOutcome) -> None:
+            try:
+                result = self._finish_search(outcome)
+            except Exception as error:
+                failure(error)
+                return
+            reply(result)
+
+        try:
+            submit(job, on_success=finished, on_error=failure)
+        except RuntimeError as error:
+            raise NotReadyError("search is busy; try again shortly") from error
+
+    def _prepare_search(self, query: str, limit: int) -> Callable[[], _SearchOutcome]:
+        """Validate and snapshot every source on GLib; the job only reads them."""
+        selected = normalize_query(query)
+        if len(selected) > MAX_CONTACT_QUERY_CHARS:
+            raise InvalidArgumentsError("search query is too long")
+        bounded = max(1, min(int(limit), MAX_SEARCH_RESULTS))
+        contacts = self.dependencies.contacts
+        history = self._current_call_history()
+        storage = self.dependencies.storage
+        if storage is not None and not storage.status.can_read:
+            history = None
+        result: dict[str, Any] = {
+            "query": selected,
+            "limit": bounded,
+            **{
+                group: {"total": 0, "results": [], "available": available}
+                for group, available in (
+                    ("conversations", True), ("messages", True),
+                    ("contacts", contacts is not None), ("calls", history is not None),
+                )
+            },
+        }
+        if len(selected) < MIN_SEARCH_QUERY_CHARS:
+            return lambda: _SearchOutcome(result)
+        version = self._search_version()
+        threads = self._conversations.threads()
+        index = self._search_index
+        if index is not None and not index.matches(threads):
+            index = None
+        resolver = contacts.snapshot() if contacts is not None else None
+        records = list(history.records()) if history is not None else None
+        photos = self._contact_photos_enabled()
+
+        def run() -> _SearchOutcome:
+            built = index if index is not None else ThreadSearchIndex(threads)
+            conversations, messages = built.search(selected, bounded)
+            result["conversations"].update(conversations)
+            result["messages"].update(messages)
+            if resolver is not None:
+                total, page = resolver.cards(0, bounded, selected)
+                result["contacts"].update(total=total, results=[
+                    card_summary(
+                        card_id, name, phones, emails, details,
+                        has_photo=photos and photo is not None,
+                    )
+                    for card_id, (name, phones, emails), details, photo in page
+                ])
+            if records is not None:
+                result["calls"].update(search_calls(
+                    records, selected, bounded,
+                    resolver.resolve if resolver is not None else None,
+                ))
+            return _SearchOutcome(
+                result, built, resolver, version=version, records=records,
+            )
+
+        return run
+
+    def _search_version(self) -> tuple[int, int, tuple[int, ...]]:
+        storage = self.dependencies.storage
+        return (
+            self._conversations.generation,
+            storage.revision if storage is not None else 0,
+            history_revision(storage=storage),
+        )
+
+    @staticmethod
+    def _only_appended(
+        before: tuple[int, int, tuple[int, ...]], after: tuple[int, int, tuple[int, ...]],
+    ) -> bool:
+        """Whether history only gained messages: nothing deleted, pruned or changed.
+
+        Event ids are AUTOINCREMENT, so every removal shows as fewer new rows
+        than the newest id advanced by.
+        """
+        generation, key, (count, newest, changes) = before
+        now_generation, now_key, (now_count, now_newest, now_changes) = after
+        return (
+            (generation, key, changes) == (now_generation, now_key, now_changes)
+            and now_newest >= newest and now_count - count == now_newest - newest
+        )
+
+    def _finish_search(self, outcome: _SearchOutcome) -> dict[str, Any]:
+        """Drop groups that went stale while queued; keep still-current caches.
+
+        Locked storage, a deletion, a reset or a contact reload since the
+        snapshot empties the affected groups, and so does call history that
+        was turned off or changed: a reply never carries what is already gone.
+        New messages alone keep the results; their HistoryChanged follows.
+        """
+        result, index = outcome.result, outcome.index
+        storage = self.dependencies.storage
+        readable = storage is None or storage.status.can_read
+        contacts = self.dependencies.contacts
+        if outcome.version is not None and (
+            not readable
+            or not self._only_appended(outcome.version, self._search_version())
+        ):
+            for group in ("conversations", "messages"):
+                result[group].update(total=0, results=[])
+            index = None
+        resolver = outcome.contacts
+        # Call names were resolved through the same snapshot.
+        contacts_stale = resolver is not None and (
+            not readable or contacts is None
+            or getattr(resolver, "card_epoch", None) != getattr(contacts, "card_epoch", None)
+        )
+        if contacts_stale:
+            result["contacts"].update(
+                total=0, results=[], available=contacts is not None,
+            )
+        elif not self._contact_photos_enabled():
+            for card in result["contacts"]["results"]:
+                card["has_photo"] = False
+        if outcome.records is not None:
+            history = self._current_call_history() if readable else None
+            if contacts_stale or history is None or history.records() != outcome.records:
+                result["calls"].update(
+                    total=0, results=[], available=history is not None,
+                )
+        current = self._conversations.cached_threads
+        if index is not None and current is not None and index.matches(current):
+            self._search_index = index
+        if resolver is not None and contacts is not None:
+            contacts.adopt_card_haystacks(resolver)
+        return result
+
     def contact_photo(self, address: str) -> bytes:
         """Return the validated photo of the one contact owning ``address``.
 
@@ -989,6 +1245,8 @@ class BackendOperations:
 
     def invalidate_conversations(self) -> None:
         self._conversations.invalidate()
+        # The folded bodies are a decrypted copy of the old projection.
+        self._search_index = None
 
     def status(self) -> dict:
         status = {
@@ -1002,6 +1260,16 @@ class BackendOperations:
             "mirror_iphone_removals": self.get_mirror_notification_removals(),
             "contact_photos": self._contact_photos_enabled(),
         }
+        # Capability marker for Messages1.Search: results per group.
+        status["search_result_limit"] = MAX_SEARCH_RESULTS
+        card_count = getattr(self.dependencies.contacts, "card_count", None)
+        if callable(card_count):
+            # Also the capability marker for ListContactCards and GetContact.
+            status["contact_card_count"] = card_count()
+            epoch = getattr(self.dependencies.contacts, "card_epoch", None)
+            if isinstance(epoch, int):
+                # Changes whenever held card ids may have stopped resolving.
+                status["contact_card_epoch"] = epoch
         if self.dependencies.notification_policy is not None:
             # Also the capability marker: daemons without click rules lack it.
             status["notification_open_map_revision"] = self._open_map_revision
@@ -1800,6 +2068,8 @@ class BackendOperations:
                 if contacts is not None else None
             )
             result.append({
+                # Opaque and stable across syncs; Search reports the same id.
+                "id": call_entry_id(record),
                 "direction": record.direction,
                 "timestamp": record.occurred_at.isoformat(),
                 "address": record.address,

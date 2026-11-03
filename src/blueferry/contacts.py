@@ -6,8 +6,12 @@ not `SetFolder`. Then `PullAll(targetfile, filters)`.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import os
+import re
+import secrets
 import tempfile
 import time
 from collections import Counter
@@ -21,10 +25,13 @@ import dbus
 
 from blueferry import config
 from blueferry.bus import obex
+from blueferry.contact_details import EMPTY as EMPTY_DETAILS
+from blueferry.contact_details import ContactDetails, parse_card_details
 from blueferry.contact_photos import REJECT_TOO_LARGE, inspect_vcard_photo
-from blueferry.contact_repository import ContactRecord, ContactRepository
+from blueferry.contact_repository import ContactRecord, ContactRepository, PhotoRef
 from blueferry.events import canonical_address, is_email_shaped
 from blueferry.limits import (
+    CARD_ID_HEX_CHARS,
     MAX_CONTACT_ADDRESS_CHARS,
     MAX_CONTACT_ADDRESSES_PER_CARD,
     MAX_CONTACT_NAME_CHARS,
@@ -38,6 +45,7 @@ from blueferry.obex.sessions import SessionManager
 from blueferry.obex.transfer import TransferStatusWatch, wait_for_transfer
 from blueferry.phone_numbers import address_identities, contact_phone
 from blueferry.private_files import runtime_private_directory
+from blueferry.text_fold import fold
 from blueferry.vcard import iter_bounded_lines, iter_vcard_bodies, iter_vcard_cards
 
 if TYPE_CHECKING:
@@ -108,14 +116,23 @@ def _parse_card(body: str) -> tuple[str | None, list[str], list[str]] | None:
 
 
 def _parse_vcard_records(
-    blob: str | Iterable[str], *, maximum: int = MAX_PHONEBOOK_CONTACTS,
+    blob: str | Iterable[str],
+    *,
+    maximum: int = MAX_PHONEBOOK_CONTACTS,
+    details: list[ContactDetails] | None = None,
 ) -> list[tuple[str | None, list[str], list[str]]]:
-    """Return names with every safe phone and email messaging address."""
+    """Return names with every safe phone and email messaging address.
+
+    With ``details``, the card details of every returned record are appended
+    to it in the same order (see :mod:`blueferry.contact_details`).
+    """
     out: list[tuple[str | None, list[str], list[str]]] = []
     for body in iter_vcard_bodies(blob, maximum=maximum):
         record = _parse_card(body)
         if record is not None:
             out.append(record)
+            if details is not None:
+                details.append(parse_card_details(body))
     return out
 
 
@@ -246,6 +263,7 @@ def _parse_vcard_entries(
     clock: Callable[[], float] = time.monotonic,
     servable: Collection[int] | None = None,
     stats: PhotoStats | None = None,
+    details: list[ContactDetails] | None = None,
 ) -> list[tuple[ContactRecord, bytes | None]]:
     """Return each contact record paired with its validated photo bytes.
 
@@ -283,6 +301,8 @@ def _parse_vcard_entries(
         record = _parse_card(body)
         if record is None:
             continue
+        if details is not None:
+            details.append(parse_card_details(body))
         index = len(out)
         photo = None
         if prop is not None:
@@ -484,9 +504,10 @@ def pull_phonebook(
             ))
             stream.seek(0)
             stats = PhotoStats()
+            details: list[ContactDetails] = []
             entries = _parse_vcard_entries(
                 iter_bounded_lines(stream), maximum=max_contacts,
-                servable=servable, stats=stats,
+                servable=servable, stats=stats, details=details,
             )
             log.info(
                 "parsed %d contacts (%d with photos) from %d bytes; photo %s",
@@ -496,19 +517,54 @@ def pull_phonebook(
             return ContactRepository(storage).replace(
                 [record for record, _photo in entries],
                 photos=[photo for _record, photo in entries],
+                details=details,
             )
         # Stream lines rather than read() plus splitlines(): the phonebook
         # may be up to MAX_PHONEBOOK_BYTES, and two whole copies of it are
         # not needed to extract bounded cards.
+        card_details: list[ContactDetails] = []
         parsed = _parse_vcard_records(
-            iter_bounded_lines(stream), maximum=max_contacts,
+            iter_bounded_lines(stream), maximum=max_contacts, details=card_details,
         )
     log.info("parsed %d contacts from %d bytes", len(parsed), size)
 
-    return ContactRepository(storage).replace(parsed)
+    return ContactRepository(storage).replace(parsed, details=card_details)
 
 
 # ---- Lookup -------------------------------------------------------------
+
+# Card ids are keyed hashes of the card content under a key that lives only
+# in this daemon run: an id survives a resync of an unchanged card, is never
+# written anywhere, and is no fingerprint that outlives the process.
+_CARD_ID_KEY = secrets.token_bytes(16)
+_PHONE_QUERY = re.compile(r"[\d\s+()./-]+")
+# A digit query shorter than this would match nearly every number.
+_MIN_DIGIT_QUERY = 3
+
+
+def _card_id(record: ContactRecord, details: ContactDetails) -> str:
+    content = json.dumps(
+        [record[0] or "", record[1], record[2], details.to_storage()],
+        ensure_ascii=False, separators=(",", ":"), sort_keys=True,
+    )
+    return hashlib.blake2b(
+        content.encode("utf-8"), key=_CARD_ID_KEY, digest_size=CARD_ID_HEX_CHARS // 2,
+    ).hexdigest()
+
+
+def _card_haystack(record: ContactRecord, details: ContactDetails) -> tuple[str, str]:
+    """Folded text and the phone digits a card query is matched against."""
+    name, phones, emails = record
+    texts = [name or "", details.organization, details.title, *emails]
+    texts.extend(item.value for item in details.emails)
+    for address in details.addresses:
+        texts.extend(address.fields().values())
+    numbers = [*phones, *(item.value for item in details.phones)]
+    digits = " ".join(re.sub(r"\D", "", number) for number in numbers)
+    return fold("\n".join(text for text in texts if text)), digits
+
+
+ContactCardView = tuple[str, ContactRecord, ContactDetails, PhotoRef | None]
 
 _LookupValue = TypeVar("_LookupValue", bound=Hashable)
 
@@ -566,24 +622,30 @@ class ContactsResolver:
         self._mem: dict[str, set[str]] = {}
         self._records: list[ContactRecord] = []
         self.photo_revision = 0
+        # Content-free: random per daemon run and bumped on every reload, so
+        # a client learns when card ids it holds may have stopped resolving.
+        self.card_epoch = secrets.randbits(31)
         self._warm(strict=strict)
 
     def _warm(self, *, strict: bool = False) -> None:
-        # Photo references are only loaded when the option is on, so the
+        # Photo references are only kept when the option is on, so the
         # disabled resolver is exactly the photo-blind one.
-        entries = (
-            self._repository.load_entries(strict=strict)
-            if self._photos()
-            else [(record, None) for record in self._repository.load(strict=strict)]
-        )
-        loaded = [(_sanitized(record), photo) for record, photo in entries]
+        with_photos = self._photos()
+        loaded = [
+            (_sanitized(record), photo if with_photos else None, details)
+            for record, photo, details in self._repository.load_cards(strict=strict)
+        ]
         # Order once here rather than per page: the cache is rebuilt only by
         # refresh(), and paging must not pay for a sort on every call.
         loaded.sort(key=lambda entry: (
             (entry[0][0] or "").casefold(), entry[0][1], entry[0][2]
         ))
-        self._records.extend(record for record, _photo in loaded)
-        photos = [photo for _record, photo in loaded]
+        self._records.extend(record for record, _photo, _details in loaded)
+        photos = [photo for _record, photo, _details in loaded]
+        self._details: list[ContactDetails] = [
+            details if isinstance(details, ContactDetails) else EMPTY_DETAILS
+            for _record, _photo, details in loaded
+        ]
         for name, phones, emails in self._records:
             if name:
                 for address in _identities(phones, emails):
@@ -618,6 +680,25 @@ class ContactsResolver:
             if photo is not None:
                 for identity in addresses:
                     self._photo_refs[identity] = photo
+        # A card shows its own picture (or a duplicate's): unlike an address
+        # lookup, the card itself is never ambiguous.
+        self._card_photos: list[int | None] = [
+            (photos[index] if index < len(photos) else None) or group_photo.get(owner)
+            for index, owner in enumerate(owner_of)
+        ]
+        self._card_ids: list[str] = []
+        self._card_index: dict[str, int] = {}
+        for index, record in enumerate(self._records):
+            base = _card_id(record, self._details[index])
+            card_id, copy_number = base, 1
+            while card_id in self._card_index:
+                copy_number += 1
+                card_id = f"{base}-{copy_number}"
+            self._card_ids.append(card_id)
+            self._card_index[card_id] = index
+        # Built on the first card query only, so an unused card view costs
+        # no extra memory.
+        self._card_haystacks: list[tuple[str, str]] | None = None
 
     def thread_addresses(self, raw: str | None) -> tuple[str, ...]:
         """Unambiguous address identities from the same PBAP record."""
@@ -630,6 +711,10 @@ class ContactsResolver:
         resolver._records = self._records.copy()
         resolver._thread_addresses = self._thread_addresses.copy()
         resolver._photo_refs = self._photo_refs.copy()
+        resolver._details = self._details.copy()
+        resolver._card_photos = self._card_photos.copy()
+        resolver._card_ids = self._card_ids.copy()
+        resolver._card_index = self._card_index.copy()
         return resolver
 
     def adopt_cache(self, prepared: ContactsResolver) -> None:
@@ -639,8 +724,29 @@ class ContactsResolver:
         self._address_count = prepared._address_count
         self._thread_addresses = prepared._thread_addresses
         self._photo_refs = prepared._photo_refs
+        self._details = prepared._details
+        self._card_photos = prepared._card_photos
+        self._card_ids = prepared._card_ids
+        self._card_index = prepared._card_index
+        self._card_haystacks = prepared._card_haystacks
         # Content-free: lets clients drop cached avatars after any reload.
         self.photo_revision += 1
+        self.card_epoch = (self.card_epoch + 1) & 0x7FFFFFFF
+
+    def adopt_card_haystacks(self, snapshot: object) -> None:
+        """Keep card query text a worker folded for a snapshot of this cache.
+
+        Ignored once the cache was reloaded since the snapshot (the epoch
+        moved on) or when this cache already has its own.
+        """
+        if (
+            isinstance(snapshot, ContactsResolver)
+            and self._card_haystacks is None
+            and snapshot._card_haystacks is not None
+            and snapshot.card_epoch == self.card_epoch
+            and len(snapshot._card_haystacks) == len(self._records)
+        ):
+            self._card_haystacks = snapshot._card_haystacks
 
     def refresh(self) -> int:
         """Replace the cache only after a successful read; propagate failures."""
@@ -678,6 +784,62 @@ class ContactsResolver:
         if limit is None:
             return self._records[start:]
         return self._records[start:start + max(0, int(limit))]
+
+    def card_count(self) -> int:
+        """Number of cards in the cache (one per phonebook record)."""
+        return len(self._records)
+
+    def _card_view(self, index: int) -> ContactCardView:
+        return (
+            self._card_ids[index], self._records[index],
+            self._details[index], self._card_photos[index],
+        )
+
+    def _matching_indices(self, query: str) -> Iterator[int]:
+        collapsed = " ".join(query.split())
+        if not collapsed:
+            yield from range(len(self._records))
+            return
+        needle = fold(collapsed)
+        if not needle:
+            # Only characters that fold away (lone combining marks).
+            return
+        digits = re.sub(r"\D", "", needle)
+        digit_query = (
+            len(digits) >= _MIN_DIGIT_QUERY and _PHONE_QUERY.fullmatch(needle) is not None
+        )
+        if self._card_haystacks is None:
+            self._card_haystacks = [
+                _card_haystack(record, self._details[index])
+                for index, record in enumerate(self._records)
+            ]
+        for index, (text, numbers) in enumerate(self._card_haystacks):
+            if needle in text or (digit_query and digits in numbers):
+                yield index
+
+    def cards(
+        self, offset: int = 0, limit: int | None = None, query: str = "",
+    ) -> tuple[int, list[ContactCardView]]:
+        """``(matching card count, one page of cards)`` in display-name order.
+
+        ``query`` matches name, organization, title, email and postal
+        address text ignoring case, accents and Unicode spelling variants,
+        and phone numbers by their digits.
+        """
+        start = max(0, int(offset))
+        stop = None if limit is None else start + max(0, int(limit))
+        total = 0
+        page: list[ContactCardView] = []
+        for index in self._matching_indices(query):
+            if start <= total and (stop is None or total < stop):
+                page.append(self._card_view(index))
+            total += 1
+        return total, page
+
+    def card(self, card_id: str) -> ContactCardView | None:
+        """One card by the id :meth:`cards` reported, while it is unchanged."""
+        index = self._card_index.get(card_id)
+        return None if index is None else self._card_view(index)
 
     def resolve(self, raw: str | None) -> str | None:
         names: set[str] = set()

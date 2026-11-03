@@ -4,6 +4,26 @@
 
 ### Added
 
+- Contact cards: the contact cache now keeps each number with its iPhone
+  label, labelled email addresses, postal addresses, company and job title,
+  inside the encrypted contact records only. `Messages1.ListContactCards`
+  pages through the cards (optionally filtered, no photo bytes) and
+  `GetContact` returns one card with its photo; `GetStatus` reports
+  `contact_card_count` and `contact_card_epoch` (changes when card ids may
+  no longer resolve). Card queries ignore case, accents and Unicode forms.
+  CLI: `blueferry contacts list|show`.
+- Global search: `Messages1.Search` looks through conversations, messages,
+  contact cards and call history in one call and groups the hits with the
+  ids to open them. It searches only the decrypted data the daemon already
+  holds in memory; there is no search index on disk. `ListCallHistory`
+  entries gain an opaque `id`, and `GetStatus` reports `search_result_limit`.
+  CLI: `blueferry search`.
+- Client models: `contacts_model` and `search_model` hold the paging,
+  typing delay, stale-id and busy handling of the contact list and the
+  global search for the KDE, GTK and terminal clients, drop contact photos
+  once the option is off and search results once their data changes
+  (`GlobalSearch.invalidate`); recent-call rows
+  from `phone_overview.call_groups` carry the ids of the folded calls.
 - Mute the desktop popups of single iPhone apps: `Messages1.ListNotificationApps`
   lists the apps seen since the daemon started (memory only) plus the muted
   ones, `SetNotificationAppMuted` saves a choice under the storage policy, and
