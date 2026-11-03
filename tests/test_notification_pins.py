@@ -16,7 +16,7 @@ from blueferry.backend_operations import BackendDependencies, BackendOperations
 from blueferry.cli_notifications import render_notifications
 from blueferry.client import BackendError
 from blueferry.dbus_security import _RULES
-from blueferry.errors import InvalidArgumentsError, NotReadyError
+from blueferry.errors import ConfigurationError, InvalidArgumentsError, NotReadyError
 from blueferry.notification_log import NotificationLog, PinLimitError
 from blueferry.notification_pins import SETTINGS_KEY, PinnedNotificationsStore
 from blueferry.settings_store import SettingsStore
@@ -29,9 +29,9 @@ def event(uid: int, app_id: str = "com.example.chat", body: str = "secret body")
     return AncsEvent(uid, app_id, "Chat", "Title", "", body, seen_at=WHEN)
 
 
-def keys():
+def keys(prefix: str = "k"):
     counter = itertools.count(1)
-    return lambda: f"k{next(counter)}"
+    return lambda: f"{prefix}{next(counter)}"
 
 
 def make_log(**kwargs) -> NotificationLog:
@@ -311,6 +311,66 @@ def test_unlocking_storage_loads_pins_and_tells_open_clients(tmp_path) -> None:
     assert locked.snapshot(1)[0]["pinned"] is True
 
 
+def pinned_three(path) -> bytes:
+    _, store = store_for(path)
+    log = make_log(pins=store)
+    for uid in (1, 2, 3):
+        log.handle_ancs(event(uid))
+        log.set_pinned(f"k{uid}", True)
+    return path.read_bytes()
+
+
+def test_pins_survive_a_settings_file_that_breaks_before_they_load(tmp_path) -> None:
+    path = tmp_path / "settings.json"
+    saved = pinned_three(path)
+    _, store = store_for(path)  # the restart reads the policy and unlocks
+    path.write_bytes(b"{ damaged")
+    restarted = make_log(pins=store, new_key=keys("n"))
+    restarted.handle_ancs(event(9))  # the first event can't load the pins
+    assert ids(restarted.snapshot(10)) == [9]
+    path.write_bytes(saved)
+    assert restarted.set_pinned("n1", True) is True
+    assert ids(restarted.snapshot(10)) == [9, 3, 2, 1]
+    _, store = store_for(path)
+    assert ids(make_log(pins=store).snapshot(10)) == [9, 3, 2, 1]
+
+
+def test_pinning_is_refused_while_the_settings_file_cannot_be_read(tmp_path) -> None:
+    path = tmp_path / "settings.json"
+    pinned_three(path)
+    storage, store = store_for(path)
+    log = make_log(pins=store, new_key=keys("n"))
+    operations = BackendOperations(object(), BackendDependencies(  # type: ignore[arg-type]
+        notification_log=log, storage=storage,
+    ))
+    path.write_bytes(b"{ damaged")
+    log.handle_ancs(event(9))  # the saved pins can't load
+    assert storage.status.can_read
+    for key, pinned in (("n1", True), ("k1", False), ("n1", True)):
+        with pytest.raises(ConfigurationError, match=r"settings\.json") as raised:
+            operations.set_notification_pinned(key, pinned)
+        assert raised.value.dbus_suffix == "Configuration"
+        assert path.read_bytes() == b"{ damaged"
+        # From the second attempt on, the storage knows the file broke.
+        assert not storage.status.can_read
+    assert ids(log.snapshot(10)) == [9]
+
+
+def test_unpinning_is_refused_once_the_settings_file_breaks(tmp_path) -> None:
+    path = tmp_path / "settings.json"
+    _, store = store_for(path)
+    log = make_log(pins=store)
+    log.handle_ancs(event(1))
+    log.handle_ancs(event(2))
+    log.set_pinned("k1", True)
+    path.write_bytes(b"{ damaged")
+    for key, pinned in (("k2", True), ("k1", False)):
+        with pytest.raises(ConfigurationError):
+            log.set_pinned(key, pinned)
+        assert path.read_bytes() == b"{ damaged"
+    assert [record["pinned"] for record in log.snapshot(10)] == [True, False]
+
+
 @pytest.mark.parametrize("policy", ["none", "plaintext"])
 def test_pins_follow_the_storage_policy(tmp_path, policy) -> None:
     path = tmp_path / "settings.json"
@@ -334,7 +394,7 @@ def test_pins_follow_the_storage_policy(tmp_path, policy) -> None:
 def ops(log=None, *, readable=True, policy="encrypted") -> BackendOperations:
     storage = SimpleNamespace(status=SimpleNamespace(
         policy=policy, can_read=readable, detail="locked",
-    ))
+    ), require_known_policy=lambda: None)
     return BackendOperations(object(), BackendDependencies(  # type: ignore[arg-type]
         notification_log=log, storage=storage,  # type: ignore[arg-type]
     ))
@@ -393,6 +453,28 @@ def test_daemon_deletes_stored_pins_while_the_list_is_off(make_daemon, monkeypat
     instance = make_daemon()
     assert SettingsStore(config.SETTINGS_JSON).read().get(SETTINGS_KEY) is None
     assert instance._status()["notification_pins_max"] == 20
+
+
+def test_daemon_deletes_stored_pins_once_the_settings_file_reads(
+    make_daemon, monkeypatch,
+) -> None:
+    from blueferry import config
+    from blueferry import daemon as daemon_mod
+
+    SettingsStore(config.SETTINGS_JSON).update(**{SETTINGS_KEY: "ciphertext"})
+    saved = config.SETTINGS_JSON.read_bytes()
+    config.SETTINGS_JSON.write_bytes(b"{ damaged")
+    monkeypatch.setattr(daemon_mod.config, "NOTIFICATION_HISTORY", False)
+    # The retry also settles contact photos; keep their erasure off a worker.
+    monkeypatch.setattr(daemon_mod, "ObexWorker", lambda *_args, **_kwargs: SimpleNamespace(
+        submit=lambda *_args, **_kwargs: None, shutdown=lambda **_kwargs: None,
+    ))
+    instance = make_daemon()
+    instance._retry_storage()
+    assert config.SETTINGS_JSON.read_bytes() == b"{ damaged"
+    config.SETTINGS_JSON.write_bytes(saved)
+    instance._retry_storage()
+    assert SettingsStore(config.SETTINGS_JSON).read().get(SETTINGS_KEY) is None
 
 
 def test_daemon_passes_storage_changes_to_the_notification_list(

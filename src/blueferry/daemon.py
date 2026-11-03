@@ -352,10 +352,12 @@ class Daemon:
         )
         # Opt-in, memory-only list of recent iPhone app notifications.
         # Pinned records persist in settings.json under the storage policy.
-        # With the list off nothing is retained: stored pins are deleted.
+        # With the list off nothing is retained: stored pins are deleted,
+        # by the storage retry once settings.json reads again if it can't now.
         pins = PinnedNotificationsStore(storage=self.storage)
-        if not config.NOTIFICATION_HISTORY:
-            pins.clear()
+        self._stale_pins = None if config.NOTIFICATION_HISTORY else pins
+        self._stale_pins_failed = False
+        self._delete_stale_pins()
         self.notification_log: NotificationLog | None = (
             NotificationLog(
                 show_content=config.SHOW_NOTIFICATION_CONTENT, idle=GLib.idle_add,
@@ -1160,6 +1162,7 @@ class Daemon:
         # A daemon activated before the desktop keyring opens must recover
         # without requiring a client launch. Wallet I/O stays off the GLib loop.
         self._settle_contact_photos()
+        self._delete_stale_pins()
         try:
             if self._dbus_service is not None:
                 self._dbus_service.retry_storage_unlock()
@@ -1184,6 +1187,19 @@ class Daemon:
 
     def _contact_photos_enabled(self) -> bool:
         return self.photo_settings.enabled
+
+    def _delete_stale_pins(self) -> None:
+        """With the notification list off, delete the saved pins once readable."""
+        if self._stale_pins is None:
+            return
+        try:
+            self._stale_pins.clear(strict=True)
+        except (OSError, ValueError) as error:
+            if not self._stale_pins_failed:
+                log.warning("could not delete pinned notifications: %s", type(error).__name__)
+            self._stale_pins_failed = True
+            return
+        self._stale_pins = None
 
     def _settle_contact_photos(self) -> None:
         """Apply the saved contact-photo choice once settings.json reads again.

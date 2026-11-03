@@ -717,8 +717,11 @@ detach all earlier records for good: they are reported with `actionable`
 false and are never matched to a UID again. Only pinned records are written,
 to the encrypted `pinned_notifications` entry of `settings.json` under the
 storage policy (never with `none`, unreadable while locked, at most 20 and
-64 KiB); records loaded at startup are detached. With the list off, the
-entry is deleted at daemon start. This path is verified only against
+64 KiB); records loaded at startup are detached. While `settings.json`
+can't be read the saved pins are not loaded, pinning and unpinning fail with
+`Configuration`, and they load on the next list, pin or storage change after
+it reads again. With the list off, the entry is deleted at daemon start, or
+by the storage retry once the file reads. This path is verified only against
 simulated events, not a physical iPhone.
 
 Conversation reads update local history immediately. The daemon delays the

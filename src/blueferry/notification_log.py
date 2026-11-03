@@ -37,6 +37,7 @@ from blueferry.notification_pins import (
     stored_form,
     valid_key,
 )
+from blueferry.settings_store import UnreadableSettingsError
 from blueferry.storage_security import StorageUnavailableError
 
 log = logging.getLogger(__name__)
@@ -90,6 +91,7 @@ class NotificationLog:
         self._session = 0
         self._store = pins
         self._pins_loaded = pins is None
+        self._pins_load_failed = False
         self._pins_dirty = False
 
     def set_listener(self, on_changed: Callable[[], None]) -> None:
@@ -177,9 +179,15 @@ class NotificationLog:
 
         Raises ``KeyError`` for an unknown key and :class:`PinLimitError`
         when the pinned list is full or would not fit the storage cap.
-        Storage errors propagate after the change was rolled back.
+        Raises :class:`UnreadableSettingsError` while settings.json can't be
+        read. Storage errors propagate after the change was rolled back.
         """
-        self._ensure_pins_loaded()
+        try:
+            self._load_pins()
+        except UnreadableSettingsError:
+            raise
+        except (OSError, ValueError) as error:
+            self._pins_unreadable(error)
         if not self._pins_loaded:
             # Saving now would overwrite pins that could not be read yet.
             raise StorageUnavailableError("saved pinned notifications are locked")
@@ -318,17 +326,30 @@ class NotificationLog:
         self._sessions.pop(key, None)
 
     def _ensure_pins_loaded(self) -> None:
+        """Load the saved pins if possible; otherwise retry on the next call."""
+        try:
+            self._load_pins()
+        except (OSError, ValueError) as error:
+            self._pins_unreadable(error)
+
+    def _pins_unreadable(self, error: Exception) -> None:
+        if not self._pins_load_failed:
+            log.warning("could not read pinned notifications: %s", type(error).__name__)
+        self._pins_load_failed = True
+
+    def _load_pins(self) -> None:
+        """Load the saved pins once readable; raise while settings.json isn't.
+
+        The pins stay unloaded after a failure, so nothing is saved over them.
+        """
         store = self._store
         if self._pins_loaded or store is None or not store.readable():
             return
-        try:
-            stored, rewrite = store.load(
-                show_content=self._show_content, max_chars=MAX_FIELD_CHARS,
-            )
-        except (OSError, ValueError) as error:
-            log.warning("could not read pinned notifications: %s", type(error).__name__)
-            return
+        stored, rewrite = store.load(
+            show_content=self._show_content, max_chars=MAX_FIELD_CHARS,
+        )
         self._pins_loaded = True
+        self._pins_load_failed = False
         loaded: list[str] = []
         stored_keys = frozenset(str(record["key"]) for record in stored)
         for record in stored:

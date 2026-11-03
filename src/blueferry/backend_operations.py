@@ -1826,6 +1826,10 @@ class BackendOperations:
                 "the notification list is off; turn it on with "
                 "'blueferry features on notification_history'"
             )
+        if self.dependencies.storage is not None:
+            # Pins are saved under the policy in settings.json; while the file
+            # can't be read, say so rather than that storage is locked.
+            self.dependencies.storage.require_known_policy()
         self._require_notification_storage()
         try:
             return log_.set_pinned(str(key), bool(pinned))

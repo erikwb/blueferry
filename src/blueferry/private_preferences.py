@@ -25,7 +25,17 @@ class PrivatePreference:
         self._storage = storage
 
     def read(self) -> object:
-        value = self._settings.read().get(self._key)
+        return self._decoded(self._settings.read().get(self._key))
+
+    def load(self) -> object:
+        """Like :meth:`read`, but raise while the settings file can't be read.
+
+        A cached preference must not take an unreadable file for "nothing
+        saved": its next write would replace the saved value.
+        """
+        return self._decoded(self._settings.load().get(self._key))
+
+    def _decoded(self, value: object) -> object:
         storage = self._storage
         if storage is None or value is None:
             return value
@@ -76,7 +86,9 @@ class PrivatePreference:
         """A non-sensitive key saved beside this preference."""
         return self._settings.read().get(key)
 
-    def clear(self) -> None:
+    def clear(self, *, strict: bool = False) -> None:
+        """Remove the preference; ``strict`` raises while the file can't be read."""
         # Clearing must also work while the keyring is locked or policy changes.
-        if self._settings.read().get(self._key) is not None:
+        saved = self._settings.load() if strict else self._settings.read()
+        if saved.get(self._key) is not None:
             self._settings.update(**{self._key: None})
