@@ -2,6 +2,7 @@ src/blueferry/conversation_state.py
 src/blueferry/onboarding.py
 src/blueferry/models.py
 src/blueferry/reconnect_view.py
+src/blueferry/notification_pin_view.py
 src/blueferry/phone_overview.py
 src/blueferry/ui/app.py
 src/blueferry/ui/window.py
@@ -18,11 +19,14 @@ src/blueferry/ui/settings_presenter.py
 src/blueferry/ui/feature_switches.py
 src/blueferry/ui/doctor.py
 src/blueferry/ui/notification_rules.py
+src/blueferry/ui/contacts.py
+src/blueferry/ui/search.py
 src/blueferry/ui/plugin_settings.py
 src/blueferry/ui/plugin_settings_presenter.py
 src/blueferry/ui/plugin_cards.py
 src/blueferry/ui/companion_tools.py
 src/blueferry/ui/photos.py
+src/blueferry/ui/file_drop.py
 src/blueferry/qt/controller.py
 src/blueferry/qt/tray.py
 src/blueferry/qt/tray_presenter.py
@@ -39,6 +43,7 @@ src/blueferry/qt/qml/NotificationOpenMapEditor.qml
 src/blueferry/qt/qml/MessageBubble.qml
 src/blueferry/qt/qml/OnboardingSummary.qml
 src/blueferry/qt/qml/GroupConfirmationDialog.qml
+src/blueferry/qt/qml/SenderConfirmationDialog.qml
 src/blueferry/qt/qml/GroupParticipantsDialog.qml
 src/blueferry/qt/qml/NewMessageDialog.qml
 src/blueferry/qt/qml/ProximityLockSettings.qml
@@ -72,6 +77,7 @@ src/blueferry/qt/qml/PluginConfigForm.qml
 src/blueferry/qt/qml/PluginStoreCard.qml
 src/blueferry/qt/qml/SettingsPlugins.qml
 src/blueferry/plugin_surfaces_model.py
+src/blueferry/file_drop_view.py
 src/blueferry/qt/qml/PhotosTab.qml
 src/blueferry/qt/qml/PluginCardSection.qml
 src/blueferry/companion_tools.py
@@ -84,3 +90,11 @@ src/blueferry/tui_calls.py
 src/blueferry/tui_notifications.py
 src/blueferry/tui_phone.py
 src/blueferry/quickshell_bridge.py
+src/blueferry/contacts_view.py
+src/blueferry/search_view.py
+src/blueferry/qt/qml/ContactsTab.qml
+src/blueferry/qt/qml/SearchDialog.qml
+src/blueferry/notification_apps_view.py
+src/blueferry/media_volume_view.py
+src/blueferry/tui_contacts.py
+src/blueferry/tui_search.py
