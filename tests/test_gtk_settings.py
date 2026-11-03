@@ -636,6 +636,20 @@ def _exercise_muted_apps():
     client.take("apps")[1]({**APPS, "mute_available": False})
     assert not apps.rows["com.example.Chat"].get_sensitive()
     assert "locked" in apps.hint.get_label()
+    # settings.json can't be read: the daemon refuses with Configuration; the
+    # toast carries its text and the list read next greys the switches.
+    client.emit("notification-apps-changed")
+    client.take("apps")[1](APPS)
+    unreadable = ("settings.json could not be read, so the change was not saved; "
+                  "repair or remove the file and try again")
+    toasts.clear()
+    apps.rows["com.example.Chat"].set_active(True)
+    client.take(("mute", "com.example.Chat", True))[2](unreadable)
+    assert toasts == [unreadable]
+    assert not apps.rows["com.example.Chat"].get_active()
+    client.take("apps")[1]({**APPS, "mute_available": False})
+    assert not apps.rows["com.example.Chat"].get_sensitive()
+    assert "settings.json can't be read" in apps.hint.get_label()
 
 
 def _exercise_feature_races():
