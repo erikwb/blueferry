@@ -137,3 +137,8 @@ MAX_NOTIFICATION_OPEN_URL_CHARS = 2048
 # Clickable app popups are tracked separately from message popups so they
 # can never evict a message popup's read-state sync.
 MAX_NOTIFICATION_CLICK_TRACKERS = 64
+# Pinned iPhone app notifications survive restarts in settings.json. A pin is
+# a deliberate act, so the count is small; the byte cap bounds the encrypted
+# settings entry even when every pinned record carries long text.
+MAX_PINNED_NOTIFICATIONS = 20
+MAX_PINNED_NOTIFICATION_BYTES = 64 * 1024

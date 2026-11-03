@@ -1,6 +1,8 @@
 """Desktop notification preferences from the command line."""
 from __future__ import annotations
 
+import json
+
 import typer
 
 from blueferry.text_safety import terminal_text
@@ -132,19 +134,32 @@ def render_notifications(snapshot: dict) -> list[str]:
         if not isinstance(record, dict):
             continue
         app = record.get("app_name") or record.get("app_id") or "?"
+        marks = []
+        if record.get("pinned") is True:
+            marks.append("[pinned]")
+        if record.get("removed") is True:
+            marks.append("[removed on iPhone]")
         head = f"{terminal_text(str(record.get('time', ''))[:19])}  {terminal_text(app)}"
+        if marks:
+            head = f"{head}  {' '.join(marks)}"
         text = " - ".join(
             terminal_text(record[key]) for key in ("title", "body") if record.get(key)
         )
-        lines.append(f"{head}  {text}" if text else head)
+        line = f"{head}  {text}" if text else head
+        key = record.get("key")
+        if isinstance(key, str) and key:
+            # Keys are opaque [A-Za-z0-9_-]; escape anyway at the terminal.
+            line = f"{line}  (key {terminal_text(key)})"
+        lines.append(line)
     return lines
 
 
 @notifications_app.command("recent")
 def notifications_recent(
     limit: int = typer.Option(20, "--limit", min=1, max=200, help="Number of entries"),
+    as_json: bool = typer.Option(False, "--json", help="Print the raw list as JSON"),
 ) -> None:
-    """List recent iPhone app notifications (opt-in, memory only)."""
+    """List recent iPhone app notifications, pinned ones first (opt-in)."""
     from blueferry.client import BackendError
 
     try:
@@ -152,8 +167,41 @@ def notifications_recent(
     except BackendError as error:
         typer.echo(terminal_text(error), err=True)
         raise typer.Exit(code=2) from None
+    if as_json:
+        typer.echo(json.dumps(snapshot, ensure_ascii=False, indent=2))
+        return
     for line in render_notifications(snapshot):
         typer.echo(line)
+
+
+def _set_pinned(key: str, pinned: bool) -> None:
+    from blueferry.client import BackendError
+
+    try:
+        _client().set_notification_pinned(key, pinned)
+    except BackendError as error:
+        typer.echo(terminal_text(error), err=True)
+        raise typer.Exit(code=2) from None
+    if pinned:
+        typer.echo("Notification pinned. It stays in the list until you unpin it.")
+    else:
+        typer.echo("Notification unpinned.")
+
+
+@notifications_app.command("pin")
+def notifications_pin(
+    key: str = typer.Argument(..., help="Key shown by 'blueferry notifications recent'"),
+) -> None:
+    """Keep a notification in the list, also across restarts, until unpinned."""
+    _set_pinned(key, True)
+
+
+@notifications_app.command("unpin")
+def notifications_unpin(
+    key: str = typer.Argument(..., help="Key shown by 'blueferry notifications recent'"),
+) -> None:
+    """Unpin a notification; it is forgotten once it leaves the recent list."""
+    _set_pinned(key, False)
 
 
 @open_map_app.command("list")

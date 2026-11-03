@@ -58,6 +58,7 @@ from blueferry.limits import (
     MAX_EVENT_QUERY_LIMIT,
     MAX_GROUP_CONFIRMATION_TOKEN_CHARS,
     MAX_OUTGOING_BODY_BYTES,
+    MAX_PINNED_NOTIFICATIONS,
     MAX_RECENT_QUERY_LIMIT,
     MAX_SEARCH_RESULTS,
     MAX_THREAD_BODY_CHARS,
@@ -67,6 +68,7 @@ from blueferry.limits import (
     MIN_SEARCH_QUERY_CHARS,
 )
 from blueferry.named_groups import is_unnamed_group_key, stored_named_group_key
+from blueferry.notification_log import PinLimitError
 from blueferry.notification_open import MAX_ACTIVATION_TOKEN_CHARS, MAX_CLICK_ID_CHARS
 from blueferry.notification_open_map import open_map_entries
 from blueferry.obex.map_query import list_recent_messages
@@ -80,6 +82,7 @@ from blueferry.recipients import (
 )
 from blueferry.settings_store import UnreadableSettingsError
 from blueferry.storage_security import (
+    NO_STORAGE,
     STORAGE_POLICIES,
     CorruptStorageError,
     StorageSecurity,
@@ -305,6 +308,10 @@ class PhoneAudioControl(Protocol):
 
 class NotificationLog(Protocol):
     def snapshot(self, limit: int) -> list[dict[str, object]]: ...
+
+    def set_pinned(self, key: str, pinned: bool) -> bool: ...
+
+    def forget_pins(self) -> None: ...
 
     def clear(self) -> None: ...
 
@@ -1638,6 +1645,8 @@ class BackendOperations:
             self.dependencies.starred_threads.clear()
         if self.dependencies.group_routes is not None:
             self.dependencies.group_routes.clear()
+        if self.dependencies.notification_log is not None:
+            self.dependencies.notification_log.forget_pins()
         if self.dependencies.notification_apps is not None:
             # Sealed under the old key; it could not be read afterwards.
             self.dependencies.notification_apps.clear()
@@ -2111,15 +2120,47 @@ class BackendOperations:
         log_ = self.dependencies.notification_log
         if log_ is None:
             return {"enabled": False, "content": False, "notifications": []}
-        storage = self.dependencies.storage
-        if storage is not None and not storage.status.can_read:
-            raise NotReadyError(storage.status.detail or "local history is locked")
+        self._require_notification_storage()
         bounded = max(1, min(int(limit), MAX_NOTIFICATION_QUERY_LIMIT))
         return {
             "enabled": True,
             "content": self.dependencies.notification_content,
+            "pins_max": MAX_PINNED_NOTIFICATIONS,
             "notifications": log_.snapshot(bounded),
         }
+
+    def set_notification_pinned(self, key: str, pinned: bool) -> bool:
+        """Pin or unpin one listed notification by its opaque ``key``."""
+        log_ = self.dependencies.notification_log
+        if log_ is None:
+            raise NotReadyError(
+                "the notification list is off; turn it on with "
+                "'blueferry features on notification_history'"
+            )
+        if self.dependencies.storage is not None:
+            # Pins are saved under the policy in settings.json; while the file
+            # can't be read, say so rather than that storage is locked.
+            self.dependencies.storage.require_known_policy()
+        self._require_notification_storage()
+        try:
+            return log_.set_pinned(str(key), bool(pinned))
+        except KeyError:
+            raise InvalidArgumentsError(
+                "unknown notification key; refresh the notification list"
+            ) from None
+        except PinLimitError as error:
+            raise InvalidArgumentsError(str(error)) from error
+        except StorageUnavailableError as error:
+            raise NotReadyError(str(error) or "local history is locked") from error
+
+    def _require_notification_storage(self) -> None:
+        """Fail closed while stored pins are locked; ``none`` keeps them in memory."""
+        storage = self.dependencies.storage
+        if storage is None:
+            return
+        status = storage.status
+        if status.policy != NO_STORAGE and not status.can_read:
+            raise NotReadyError(status.detail or "local history is locked")
 
     def get_features(self) -> dict[str, dict[str, Any]]:
         """The allowlisted local.env switches and where each value comes from."""

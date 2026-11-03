@@ -445,6 +445,16 @@ class MessagesService(StrictObject):
         ))
 
     @dbus.service.method(
+        IFACE, in_signature="sb", out_signature="b", sender_keyword="sender"
+    )
+    def SetNotificationPinned(self, key: str, pinned: bool, sender=None) -> bool:
+        """Pin or unpin one ListNotifications record by its opaque key."""
+        return self._sync(lambda: self._authorized(
+            sender, "notifications-pin",
+            lambda: self.operations.set_notification_pinned(str(key), bool(pinned)),
+        ))
+
+    @dbus.service.method(
         IFACE, in_signature="", out_signature="s", sender_keyword="sender"
     )
     def GetFeatures(self, sender=None) -> str:

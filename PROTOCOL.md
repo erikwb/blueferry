@@ -725,6 +725,28 @@ wired to them. Labels are app-defined
 strings and are requested only while notification content is shown. This path
 is verified only against simulated responses, not a physical iPhone.
 
+### Notification list and pins (opt-in)
+
+With `BLUEFERRY_NOTIFICATION_HISTORY` the daemon keeps the last 200 included
+non-Messages ANCS notifications in memory for `Messages1.ListNotifications`
+(content-gated like popups). Each record gets a random opaque `key`; clients
+pin with `Messages1.SetNotificationPinned(key, pinned)` and never address a
+record by UID, because UIDs are valid only within one ANCS session. A
+Modified event replaces the record only when UID and app ID match a record
+of the current session that the iPhone has not removed. A Removed event marks
+every such record `removed` (independent of the popup-sync opt-in). A
+PreExisting replay or a subscription reset, which end the UID session,
+detach all earlier records for good: they are reported with `actionable`
+false and are never matched to a UID again. Only pinned records are written,
+to the encrypted `pinned_notifications` entry of `settings.json` under the
+storage policy (never with `none`, unreadable while locked, at most 20 and
+64 KiB); records loaded at startup are detached. While `settings.json`
+can't be read the saved pins are not loaded, pinning and unpinning fail with
+`Configuration`, and they load on the next list, pin or storage change after
+it reads again. With the list off, the entry is deleted at daemon start, or
+by the storage retry once the file reads. This path is verified only against
+simulated events, not a physical iPhone.
+
 Conversation reads update local history immediately. The daemon delays the
 corresponding MAP read acknowledgements by at least five seconds, including
 those caused by dismissing desktop message notifications. This gives ANCS time
