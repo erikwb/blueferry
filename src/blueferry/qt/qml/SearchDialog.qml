@@ -153,7 +153,11 @@ Kirigami.Dialog {
                 width: ListView.view.width
                 text: section
             }
-            Controls.ScrollBar.vertical: Controls.ScrollBar {}
+            Controls.ScrollBar.vertical: Controls.ScrollBar { id: resultScrollBar }
+            // Rows end before a scroll bar that takes room, so it never covers
+            // their times.
+            rightMargin: resultScrollBar.visible
+                ? resultScrollBar.width : 0
 
             delegate: ListRow {
                 id: hit
