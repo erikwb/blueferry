@@ -491,6 +491,42 @@ def test_a_call_hit_selects_the_row_that_folds_that_call() -> None:
     _run_headless(scenario())
 
 
+def test_a_call_hit_older_than_the_recent_calls_page_is_still_found() -> None:
+    """Search covers every retained call, not only the newest hundred."""
+    from blueferry.limits import MAX_CALL_HISTORY_QUERY_LIMIT
+
+    backend = _ContactsBackend(call_history_enabled=True)
+    retained = [
+        CallHistoryEntry(
+            "missed", f"2026-10-01T{23 - index // 60:02d}:{59 - index % 60:02d}:00+02:00",
+            f"+4179000{index:04d}", extra={"id": f"call-{index}"},
+        )
+        for index in range(150)
+    ]
+
+    def call_history(limit: int = 200) -> list[CallHistoryEntry]:
+        backend.history_calls.append(limit)
+        return retained[:limit]
+
+    backend.call_history = call_history  # type: ignore[method-assign]
+
+    async def scenario() -> None:
+        app = BlueFerryApp(TuiState(backend), monitor_factory=lambda: None)
+        async with app.run_test(size=(130, 44)) as pilot:
+            await pilot.pause(0.2)
+            app._search_hit_chosen({"kind": "call", "call_id": "call-140"})
+            await _until(pilot, lambda: isinstance(app.screen, RecentCallsScreen))
+            recent = app.screen
+            await _until(pilot, lambda: len(list(recent.query(CallGroupItem))) == 150)
+            await pilot.pause(0.1)
+            highlighted = recent.query_one("#recent-calls-list").highlighted_child
+            assert isinstance(highlighted, CallGroupItem)
+            assert highlighted.row["ids"] == ["call-140"]
+            assert backend.history_calls == [MAX_CALL_HISTORY_QUERY_LIMIT]
+
+    _run_headless(scenario())
+
+
 def test_search_retries_when_the_daemon_is_busy_then_says_so() -> None:
     backend = _ContactsBackend()
     backend.search_reply = BackendError(
