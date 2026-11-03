@@ -21,14 +21,15 @@ Bluetooth-Verkehr und liegt außerhalb von BlueFerrys Schwerpunkt Nachrichten.
   ist.
 - Die Kommandozeile funktioniert überall. Jeder Client zeigt bei
   eingeschalteter Mediensteuerung, was gerade läuft, mit Zurück/
-  Wiedergabe-Pause/Weiter (siehe unten). Kirigami-, GTK- und
-  Quickshell-Client haben auch den Schalter; im Terminal-Client schaltet man
-  sie über die Kommandozeile ein.
+  Wiedergabe-Pause/Weiter (siehe unten). Kirigami-, GTK-, Quickshell- und
+  Terminal-Client haben auch den Schalter.
 
 ## Einschalten
 
 Im Kirigami-, GTK- oder Quickshell-Client die iPhone-Einstellungen öffnen
-und **Media Control** einschalten. Im Terminal:
+und **Media Control** einschalten. Im Terminal-Client heißt der Schalter
+**Show and Control What the iPhone Is Playing** und steht unter Settings ›
+Calls & Audio. Im Terminal:
 
 ```bash
 blueferry media enable    # blueferry media disable schaltet sie wieder aus
@@ -91,8 +92,8 @@ die zuletzt gemeldete Lautstärke in seinem Wiedergabestreifen; sie sind
 ausgegraut, wenn die spielende App keine Lautstärkeregelung anbietet. Die
 Lautstärketasten des Terminal-Clients stehen weiter unten.
 
-Im Kirigami-Client erscheint über den Unterhaltungen eine kleine Leiste mit
-Titel, Interpret und den Tasten Zurück/Wiedergabe-Pause/Weiter, solange etwas
+Im Kirigami-Client zeigt der Bereich **Now Playing** der Telefon-Karte Titel,
+Interpret und die Tasten Zurück/Wiedergabe-Pause/Weiter, solange etwas
 läuft. Der Quickshell-Client zeigt dieselbe Leiste unter seiner Kopfzeile,
 der GTK-Client auf der Telefon-Karte über seinen Reitern und der
 Terminal-Client in einer Zeile unter den Statusanzeigen; dort steuern `p`,

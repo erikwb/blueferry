@@ -57,8 +57,9 @@ Einträge und Einträge [stummgeschalteter Apps](notification-mute.md) sind
 dort ausgegraut. Sind 20 angeheftet, ist **Pin** gesperrt und der Reiter sagt
 das; schlägt das Anheften oder Lösen fehl, steht der Grund über der Liste. Im
 GTK-Client ist es der Knopf mit der Stecknadel am Ende jedes Eintrags;
-angeheftete Einträge zeigen eine Stecknadel, und sind 20 angeheftet, ist der
-Knopf ausgegraut und sein Tooltip nennt den Grund. Im Terminal-Client geht es
+angeheftete Einträge zeigen eine Stecknadel. Sind 20 angeheftet, ist der
+Knopf der übrigen Einträge ausgegraut und sein Tooltip nennt den Grund;
+angeheftete Einträge lassen sich weiter lösen. Im Terminal-Client geht es
 unter **iPhone Notifications** mit der Taste `P`. Im Quickshell-Panel hat
 unter **Show Recent Notifications** jeder Eintrag **Pin** / **Unpin**;
 entfernte Einträge und die stummgeschalteter Apps sind ausgegraut, und bei
