@@ -1511,6 +1511,8 @@ class BridgeController(QObject):
         self._refresh_timer.start()
         # ClearHistory also empties the notification list.
         self._notificationsInvalidated()
+        # Shown search hits may name messages that changed or are gone.
+        self._search.invalidate()
 
     @Slot()
     def _statusInvalidated(self) -> None:
@@ -1529,6 +1531,8 @@ class BridgeController(QObject):
 
     @Slot()
     def _callHistoryInvalidated(self) -> None:
+        # Search hits may name calls that are gone.
+        self._search.invalidate()
         # The signal carries nothing; only a shown list is refetched.
         if self.callHistoryEnabled and self._call_history_watched:
             self._call_history_timer.start()

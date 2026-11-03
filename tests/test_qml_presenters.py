@@ -1655,11 +1655,11 @@ def test_phone_audio_switch_appears_only_for_supporting_daemons(qml_engine, sett
     bridge.setProperty("phoneAudio", {
         "supported": True, "available": True, "onPc": True, "pending": False,
         "hint": "Playing on this computer.", "playing": "pc", "mismatch": False,
-        "sync": "A/V sync: 110 ms delay reported to the iPhone.",
+        "sync": "A/V sync: this computer reports 110 ms.",
     })
     QGuiApplication.processEvents()
     assert switch.property("subtitle") == (
-        "Playing on this computer.\nA/V sync: 110 ms delay reported to the iPhone."
+        "Playing on this computer.\nA/V sync: this computer reports 110 ms."
     )
 
 

@@ -1966,7 +1966,7 @@ def test_phone_audio_hint_follows_the_typed_playing_field_from_a_refresh():
     reported["phone_audio_delay_ms"] = 110
     reported["phone_audio_delay_reporting"] = True
     controller._apply_snapshot(controller._snapshot())
-    assert controller.phoneAudio["sync"] == "A/V sync: 110 ms delay reported to the iPhone."
+    assert controller.phoneAudio["sync"] == "A/V sync: this computer reports 110 ms."
 
 
 def test_feature_hints_point_to_the_setting_for_each_opt_in():
@@ -2840,8 +2840,9 @@ class _CardBackend:
              "snippet": "at noon", "match_start": 3, "match_length": 4}]}}
 
 
-def _card_status(epoch=1):
-    return {"contact_card_count": 1, "contact_card_epoch": epoch, "search_result_limit": 50}
+def _card_status(epoch=1, photos=True):
+    return {"contact_card_count": 1, "contact_card_epoch": epoch, "search_result_limit": 50,
+            "contact_photos": photos}
 
 
 def test_contacts_are_read_while_watched_and_the_card_photo_is_served(monkeypatch):
@@ -2877,6 +2878,98 @@ def test_contacts_are_read_while_watched_and_the_card_photo_is_served(monkeypatc
 
     controller.watchContacts(False)
     assert controller.contacts["rows"] == [] and controller.contactCard["open"] is False
+
+
+@pytest.mark.parametrize("status", [
+    {"contact_photos": False},
+    {"contact_photos": True, "contact_photos_state": "unknown"},
+], ids=["off", "unknown"])
+def test_the_card_photo_goes_once_contact_photos_are_off_or_unknown(monkeypatch, status):
+    backend = _CardBackend()
+    controller = _inline_controller(monkeypatch, backend)
+    controller._status = _card_status()
+    controller.statusChanged.emit()
+    controller.watchContacts(True)
+    controller.openContact("c1")
+    photo = controller.contactCard["photo"]
+    assert photo.startswith("image://blueferry-avatar/")
+    from blueferry.qt.avatars import address_from_id
+
+    key = address_from_id(photo.split("image://blueferry-avatar/", 1)[1])
+    assert controller.avatar_bytes(key) == b"\x89PNG photo"
+
+    controller._status = {**_card_status(), **status}
+    controller.statusChanged.emit()
+    assert controller.contactCard["open"] is True
+    assert controller.contactCard["photo"] == ""
+    assert controller.avatar_bytes(key) is None
+    assert all(not row.get("has_photo") for row in controller.contacts["rows"])
+
+
+def test_a_new_card_epoch_drops_the_shown_cards_at_once(monkeypatch):
+    backend = _CardBackend()
+    controller = _inline_controller(monkeypatch, backend)
+    queued: list = []
+    run_inline = controller._run
+    monkeypatch.setattr(controller, "_run", lambda *args, **kwargs: queued.append(
+        lambda: run_inline(*args, **kwargs)))
+
+    def drain():
+        while queued:
+            queued.pop(0)()
+
+    controller._status = _card_status()
+    controller.statusChanged.emit()
+    controller.watchContacts(True)
+    drain()
+    controller.openContact("c1")
+    drain()
+    assert controller.contacts["rows"] and controller.contactCard["photo"]
+
+    controller._status = _card_status(epoch=2)
+    controller.statusChanged.emit()
+    # Before the new page arrives: nothing of the old epoch is shown.
+    assert queued
+    assert controller.contacts["rows"] == []
+    assert controller.contactCard["photo"] == ""
+    drain()
+    assert controller.contacts["rows"]
+
+
+@pytest.mark.parametrize("signal", ["history", "call-history"])
+def test_history_signals_drop_the_search_answer_and_search_again(monkeypatch, signal):
+    backend = _CardBackend()
+    controller = _inline_controller(monkeypatch, backend)
+    controller._status = _card_status()
+    controller.statusChanged.emit()
+    controller.setSearchQuery("noon")
+    controller._search._timer._timer.timeout.emit()
+    assert backend.searches == [("noon", 20)]
+    assert controller.searchResults["sections"]
+
+    if signal == "history":
+        controller._historyChanged({})
+    else:
+        controller._callHistoryInvalidated()
+    assert controller.searchResults["sections"] == []
+    assert controller.searchResults["loading"] is True
+    controller._search._timer._timer.timeout.emit()
+    assert backend.searches == [("noon", 20), ("noon", 20)]
+    assert controller.searchResults["sections"]
+
+
+def test_a_status_with_locked_storage_drops_the_search_answer(monkeypatch):
+    backend = _CardBackend()
+    controller = _inline_controller(monkeypatch, backend)
+    controller._status = {**_card_status(), "storage_state": "unlocked"}
+    controller.statusChanged.emit()
+    controller.setSearchQuery("noon")
+    controller._search._timer._timer.timeout.emit()
+    assert controller.searchResults["sections"]
+
+    controller._status = {**_card_status(), "storage_state": "locked"}
+    controller.statusChanged.emit()
+    assert controller.searchResults["sections"] == []
 
 
 def test_contact_query_waits_for_a_pause(monkeypatch):
