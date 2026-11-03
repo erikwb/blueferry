@@ -2400,6 +2400,8 @@ class BackendOperations:
         replies = self._quick_replies()
         try:
             saved = replies.set([str(value) for value in values])
+        except UnreadableSettingsError:
+            raise
         except ValueError as error:
             raise InvalidArgumentsError(str(error)) from error
         except OSError as error:
