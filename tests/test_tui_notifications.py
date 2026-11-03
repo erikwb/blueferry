@@ -558,3 +558,51 @@ def test_event_monitor_subscribes_to_notification_apps_changed(monkeypatch) -> N
     assert monitor.take_notification_apps_changed()
     assert not monitor.take_notification_apps_changed()
     monitor.close()
+
+
+def _render_without_the_list(*, closing: bool) -> None:
+    import asyncio
+
+    backend = _NotificationsBackend()
+
+    async def scenario() -> None:
+        app = BlueFerryApp(TuiState(backend), monitor_factory=lambda: None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            screen = await _open(app, pilot)
+            await _until(pilot, lambda: "Mail" in screen.body_text)
+            gate = asyncio.Event()
+            original = screen._render_rows
+
+            async def held(*args, **kwargs):
+                await gate.wait()
+                await original(*args, **kwargs)
+
+            screen._render_rows = held
+            backend.records = [*backend.records, {
+                "app_name": "Chat", "title": "", "subtitle": "", "body": "",
+                "time": "2026-10-27T10:00:00+01:00",
+            }]
+            screen.refresh_button()
+            await pilot.pause(0.5)
+            # Textual removes a closing screen's widgets before it cancels
+            # the screen's workers; the render then resumes.
+            await screen.query_one("#notifications-list").remove()
+            screen._closing = closing
+            try:
+                gate.set()
+                await pilot.pause(0.5)
+            finally:
+                screen._closing = False
+
+    _run_headless(scenario())
+
+
+def test_a_notifications_render_on_a_closing_screen_stops_quietly() -> None:
+    _render_without_the_list(closing=True)
+
+
+def test_a_missing_notifications_list_on_a_healthy_screen_still_fails() -> None:
+    import pytest
+
+    with pytest.raises(Exception, match="notifications-list"):
+        _render_without_the_list(closing=False)

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import threading
 
+import pytest
 from rich.text import Text
 from textual.widgets import Button, Input
 
@@ -825,27 +826,57 @@ def test_the_contact_book_drops_photos_once_the_option_is_unknown() -> None:
     _run_headless(scenario())
 
 
-def test_a_render_with_a_widget_already_gone_stops_quietly() -> None:
-    # The screen can still be attached while its widgets are being torn
-    # down; a render reaching that point must stop, not fail the app.
+
+
+def _hold(owner, name: str):
+    """Make ``owner.name`` wait for the returned event before it runs."""
+    import asyncio
+
+    gate = asyncio.Event()
+    original = getattr(owner, name)
+
+    async def held(*args, **kwargs):
+        await gate.wait()
+        return await original(*args, **kwargs)
+
+    setattr(owner, name, held)
+    return gate
+
+
+def _contacts_render_without_call_button(*, closing: bool) -> None:
     backend = _ContactsBackend(contact_photos=True, contact_photos_state="on")
 
     async def scenario() -> None:
         app = BlueFerryApp(TuiState(backend), monitor_factory=lambda: None)
         async with app.run_test(size=(130, 44)) as pilot:
             screen = await _open_contacts(app, pilot)
-            await screen.query_one("#contacts-call").remove()
+            gate = _hold(screen, "_render_card")
             screen.open_card("c0")
-            await _until(pilot, lambda: not screen._rendering)
-            await pilot.pause(0.1)
-            assert app.return_code in (None, 0)
+            await _until(pilot, lambda: screen._rendering)
+            # Textual removes a closing screen's widgets before it cancels
+            # the screen's workers; the render then resumes.
+            await screen.query_one("#contacts-call").remove()
+            screen._closing = closing
+            try:
+                gate.set()
+                await _until(pilot, lambda: not screen._rendering)
+                await pilot.pause(0.1)
+            finally:
+                screen._closing = False
 
     _run_headless(scenario())
 
 
-def test_a_search_render_with_a_widget_already_gone_stops_quietly() -> None:
-    # Like the contacts list: a render reaching widgets that are being torn
-    # down stops instead of failing the app.
+def test_a_render_on_a_closing_screen_stops_quietly() -> None:
+    _contacts_render_without_call_button(closing=True)
+
+
+def test_a_missing_widget_on_a_healthy_contacts_screen_still_fails() -> None:
+    with pytest.raises(Exception, match="contacts-call"):
+        _contacts_render_without_call_button(closing=False)
+
+
+def _search_render_without_limit(*, closing: bool) -> None:
     backend = _ContactsBackend()
     backend.search_reply = _SEARCH_REPLY
 
@@ -853,10 +884,25 @@ def test_a_search_render_with_a_widget_already_gone_stops_quietly() -> None:
         app = BlueFerryApp(TuiState(backend), monitor_factory=lambda: None)
         async with app.run_test(size=(130, 44)) as pilot:
             screen = await _search(app, pilot, backend, "ana")
-            await screen.query_one("#search-limit").remove()
+            gate = _hold(screen, "_render_results_now")
             screen.model.invalidate()
             screen.search_now()
             await pilot.pause(0.5)
-            assert app.return_code in (None, 0)
+            await screen.query_one("#search-limit").remove()
+            screen._closing = closing
+            try:
+                gate.set()
+                await pilot.pause(0.5)
+            finally:
+                screen._closing = False
 
     _run_headless(scenario())
+
+
+def test_a_search_render_on_a_closing_screen_stops_quietly() -> None:
+    _search_render_without_limit(closing=True)
+
+
+def test_a_missing_widget_on_a_healthy_search_screen_still_fails() -> None:
+    with pytest.raises(Exception, match="search-limit"):
+        _search_render_without_limit(closing=False)

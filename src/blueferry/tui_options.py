@@ -35,6 +35,7 @@ from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.css.query import NoMatches
 from textual.screen import ModalScreen
 from textual.widgets import Button, Checkbox, Select, Static, TabbedContent, TabPane
 from textual.widgets.select import NoSelection
@@ -49,7 +50,7 @@ from blueferry.proximity_lock import clamp_grace
 from blueferry.reconnect_view import reconnect_view
 from blueferry.text_safety import terminal_text
 from blueferry.tui_doctor import DoctorScreen
-from blueferry.tui_tasks import TextualTaskRunner, TextualTimer
+from blueferry.tui_tasks import TextualTaskRunner, TextualTimer, tearing_down
 
 Values = Mapping[str, Any]
 
@@ -827,7 +828,12 @@ class OptionsScreen(ModalScreen[None]):
             self._apps_shown = ids
 
             async def rebuild() -> None:
-                await self._rebuild_apps(rows)
+                try:
+                    await self._rebuild_apps(rows)
+                except NoMatches:
+                    # Only while the screen closes; otherwise it is a bug.
+                    if not tearing_down(self):
+                        raise
 
             # Textual's overloads infer Never for an async function.
             self.run_worker(rebuild, group="options-apps-render", exclusive=True)  # type: ignore[arg-type]

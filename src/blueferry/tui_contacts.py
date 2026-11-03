@@ -34,7 +34,7 @@ from blueferry import contacts_view, phone_link_view
 from blueferry.contacts_model import MAX_QUERY_CHARS, ContactBook
 from blueferry.i18n import _
 from blueferry.text_safety import terminal_text
-from blueferry.tui_tasks import TextualTaskRunner, timer_factory
+from blueferry.tui_tasks import TextualTaskRunner, tearing_down, timer_factory
 
 ContactsResult = tuple[str, str] | None
 
@@ -256,8 +256,9 @@ class ContactsScreen(ModalScreen[ContactsResult]):
                     self._shown_card = card
                     await self._render_card(card, keep_index=same)
         except NoMatches:
-            # The screen is still attached while its widgets are torn down.
-            pass
+            # Only while the screen closes; on a healthy screen it is a bug.
+            if not tearing_down(self):
+                raise
         finally:
             self._rendering = False
 
@@ -391,8 +392,10 @@ class ContactsScreen(ModalScreen[ContactsResult]):
             call = self.query_one("#contacts-call", Button)
             message = self.query_one("#contacts-message", Button)
             copy = self.query_one("#contacts-copy", Button)
-        except NoMatches:  # the screen's widgets are being torn down
-            return
+        except NoMatches:
+            if tearing_down(self):  # the screen's widgets are being removed
+                return
+            raise
         hint = self.calls_hint
         call.disabled = not self._can(contacts_view.ACTION_DIAL) or bool(hint)
         call.tooltip = Text(_plain(hint)) if hint and self._can(contacts_view.ACTION_DIAL) else None

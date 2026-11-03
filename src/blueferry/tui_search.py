@@ -34,7 +34,7 @@ from blueferry import search_view
 from blueferry.i18n import _
 from blueferry.search_model import MAX_QUERY_CHARS, GlobalSearch
 from blueferry.text_safety import terminal_text
-from blueferry.tui_tasks import TextualTaskRunner, timer_factory
+from blueferry.tui_tasks import TextualTaskRunner, tearing_down, timer_factory
 
 SearchResult = dict[str, Any] | None
 
@@ -196,8 +196,10 @@ class SearchScreen(ModalScreen[SearchResult]):
     async def _render_results(self) -> None:
         try:
             await self._render_results_now()
-        except NoMatches:  # the screen's widgets are being torn down
-            pass
+        except NoMatches:
+            # Only while the screen closes; on a healthy screen it is a bug.
+            if not tearing_down(self):
+                raise
 
     async def _render_results_now(self) -> None:
         state = self.query_one("#search-state", Static)

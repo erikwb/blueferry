@@ -29,6 +29,7 @@ from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, Vertical
+from textual.css.query import NoMatches
 from textual.screen import ModalScreen
 from textual.widgets import Button, ListItem, ListView, Static
 
@@ -37,7 +38,7 @@ from blueferry.client_tasks import TimerFactory
 from blueferry.i18n import _
 from blueferry.notification_history import LIMIT, NotificationHistory
 from blueferry.text_safety import terminal_text
-from blueferry.tui_tasks import TextualTaskRunner, timer_factory
+from blueferry.tui_tasks import TextualTaskRunner, tearing_down, timer_factory
 
 
 class NotificationsClient(Protocol):
@@ -286,7 +287,12 @@ class NotificationsScreen(ModalScreen[str | None]):
             self._shown_key = shown
 
             async def render() -> None:
-                await self._render_rows(rows, records)
+                try:
+                    await self._render_rows(rows, records)
+                except NoMatches:
+                    # Only while the screen closes; otherwise it is a bug.
+                    if not tearing_down(self):
+                        raise
 
             # A function, not a coroutine: a newer render may cancel this one
             # before it starts, and an unstarted coroutine would warn.

@@ -1114,3 +1114,45 @@ def test_a_failed_app_list_keeps_the_last_answer_and_only_shows_the_error() -> N
             assert locked not in _plain(screen, "#options-muted-apps-hint")
 
     asyncio.run(scenario())
+
+
+
+def _rebuild_apps_without_the_list(*, closing: bool) -> None:
+    async def scenario() -> None:
+        backend = _MuteBackend()
+        app = _app(backend)
+        async with app.run_test(size=(120, 60)) as pilot:
+            screen = await _open(app, pilot, "notifications")
+            await _until(pilot, lambda: bool(_mute_boxes(screen)))
+            gate = asyncio.Event()
+            original = screen._rebuild_apps
+
+            async def held(rows):
+                await gate.wait()
+                await original(rows)
+
+            screen._rebuild_apps = held
+            backend.apps.append({"app_id": "com.example.news", "app_name": "News",
+                                 "muted": False, "seen": True})
+            screen.apps_changed()
+            await pilot.pause(0.5)
+            # Textual removes a closing screen's widgets before it cancels
+            # the screen's workers; the rebuild then resumes.
+            await screen.query_one("#options-muted-apps-list").remove()
+            screen._closing = closing
+            try:
+                gate.set()
+                await pilot.pause(0.5)
+            finally:
+                screen._closing = False
+
+    asyncio.run(scenario())
+
+
+def test_a_muted_apps_rebuild_on_a_closing_screen_stops_quietly() -> None:
+    _rebuild_apps_without_the_list(closing=True)
+
+
+def test_a_missing_muted_apps_list_on_a_healthy_screen_still_fails() -> None:
+    with pytest.raises(Exception, match="options-muted-apps-list"):
+        _rebuild_apps_without_the_list(closing=False)
