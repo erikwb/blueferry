@@ -192,6 +192,25 @@ def test_discovery_prefers_user_manifests_and_reports_ignored(tmp_path) -> None:
     assert found.with_capability("photos") == found.plugins
 
 
+def test_discovery_skips_a_fifo_without_waiting_for_a_writer(tmp_path) -> None:
+    directory = tmp_path / "plugins"
+    _write(directory, "b.plugin", VALID)
+    fifo = directory / "a.plugin"
+    os.mkfifo(fifo, 0o644)
+    found = []
+    reader = threading.Thread(target=lambda: found.append(discover([directory])), daemon=True)
+    reader.start()
+    reader.join(timeout=5)
+    if reader.is_alive():
+        # Release the blocked open so the hang fails this test only.
+        os.close(os.open(fifo, os.O_WRONLY | os.O_NONBLOCK))
+        reader.join(timeout=5)
+        pytest.fail("discovery blocked on a FIFO until a writer appeared")
+
+    assert [plugin.path for plugin in found[0].plugins] == [directory / "b.plugin"]
+    assert "not a regular file" in dict(found[0].ignored)["a.plugin"]
+
+
 # ---- client validation ---------------------------------------------------------
 
 

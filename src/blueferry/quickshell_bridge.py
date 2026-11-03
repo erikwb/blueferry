@@ -369,6 +369,11 @@ class QuickshellBridge:
             return self.client.set_storage_policy(_text(args, "policy"))
         if method == "unlock_storage":
             return self.client.unlock_storage()
+        if method == "reset_storage":
+            # Like ResetStorage itself: only the shell's confirmation sends it.
+            if not _boolean(args, "confirmed"):
+                raise RequestError("reset_storage requires confirmation")
+            return self.client.reset_storage()
         if method == "set_phone_battery_warning":
             return self.client.set_phone_battery_warning(_boolean(args, "enabled"))
         if method == "set_mirror_notification_removals":

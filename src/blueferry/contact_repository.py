@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+import threading
 import time
 from contextlib import closing
 
@@ -21,6 +22,7 @@ from blueferry.limits import (
     MAX_CONTACT_NAME_CHARS,
     MAX_PHONEBOOK_CONTACTS,
 )
+from blueferry.sqlite_files import is_damaged, remove_database
 from blueferry.storage_security import CorruptStorageError, StorageSecurity
 
 log = logging.getLogger(__name__)
@@ -84,6 +86,11 @@ _PHOTO_READ_TIMEOUT_SECONDS = 0.05
 # an interrupted write (SQLITE_READONLY_ROLLBACK) that only a writer can undo.
 _BUSY_ERROR_NAMES = frozenset({"SQLITE_BUSY", "SQLITE_LOCKED"})
 _BUSY_ERROR_PREFIXES = ("SQLITE_BUSY_", "SQLITE_LOCKED_", "SQLITE_READONLY_")
+
+# Held for a write's or clear's whole connection, never for a PBAP transfer.
+# A reset on the GLib loop waits here for a sync's write to close, so it never
+# deletes the file while that connection could still create a journal for it.
+_STORE_LOCK = threading.Lock()
 
 PhotoRef = int
 ContactEntry = tuple[ContactRecord, PhotoRef | None]
@@ -152,12 +159,19 @@ class ContactRepository:
         if _has_photo_table(connection):
             connection.execute("DELETE FROM contact_photos")
 
-    def clear(self) -> None:
-        with closing(_open_db()) as connection:
-            connection.execute("PRAGMA secure_delete = ON")
-            with connection:
-                self._delete_all(connection)
-            connection.execute("VACUUM")
+    def clear(self, *, discard_damaged: bool = False) -> None:
+        """Erase the cache; ``discard_damaged`` deletes a file SQLite can't read."""
+        with _STORE_LOCK:
+            try:
+                with closing(_open_db()) as connection:
+                    connection.execute("PRAGMA secure_delete = ON")
+                    with connection:
+                        self._delete_all(connection)
+                    connection.execute("VACUUM")
+            except sqlite3.DatabaseError as error:
+                if not discard_damaged or not is_damaged(error):
+                    raise
+                remove_database(config.CONTACTS_DB)
 
     def clear_photos(self) -> bool:
         """Erase retained photos only; return whether any existed.
@@ -202,7 +216,7 @@ class ContactRepository:
         same key and replaced in the same transaction as their contacts.
         """
         now = time.time()
-        with closing(_open_db()) as connection:
+        with _STORE_LOCK, closing(_open_db()) as connection:
             connection.execute("PRAGMA secure_delete = ON")
             with connection:
                 self._delete_all(connection)

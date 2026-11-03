@@ -777,6 +777,21 @@ def test_bridge_saves_the_one_time_code_opt_in() -> None:
         raise AssertionError("non-boolean preference was accepted")
 
 
+def test_bridge_resets_storage_only_when_the_request_is_confirmed() -> None:
+    client = FakeClient()
+    client.reset_storage = lambda: (  # type: ignore[attr-defined]
+        client.calls.append(("reset_storage",)) or {"storage_state": "ready"}
+    )
+    bridge = QuickshellBridge(client)  # type: ignore[arg-type]
+
+    for args in ({}, {"confirmed": False}, {"confirmed": "yes"}, {"confirmed": 1}):
+        with pytest.raises(RequestError):
+            bridge.dispatch("reset_storage", args)
+    assert client.calls == []
+    assert bridge.dispatch("reset_storage", {"confirmed": True}) == {"storage_state": "ready"}
+    assert client.calls == [("reset_storage",)]
+
+
 # ---- QS-1: settings parity (features, reconnect, sync, notifications) -------
 
 

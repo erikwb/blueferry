@@ -59,13 +59,22 @@ class PrivatePreference:
             # cannot open these records.
             self.read()
 
-    def write(self, value: object) -> None:
+    @property
+    def writable(self) -> bool:
+        return self._storage is None or self._storage.status.can_write
+
+    def write(self, value: object, **plain: object) -> None:
+        """Save ``value``, and in the same update any non-sensitive ``plain`` keys."""
         if self._storage is not None:
             value = self._storage.encrypt(
                 json.dumps(value, ensure_ascii=False, separators=(",", ":")),
                 purpose=self._key + "-v1",
             )
-        self._settings.update(**{self._key: value})
+        self._settings.update(**{self._key: value, **plain})
+
+    def setting(self, key: str) -> object:
+        """A non-sensitive key saved beside this preference."""
+        return self._settings.read().get(key)
 
     def clear(self) -> None:
         # Clearing must also work while the keyring is locked or policy changes.

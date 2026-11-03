@@ -103,8 +103,11 @@ class PrivateRotatingFileHandler(logging.handlers.RotatingFileHandler):
     """A RotatingFileHandler whose files are 0600 and never a symlink."""
 
     def _open(self):
-        flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_CLOEXEC", 0)
-        flags |= getattr(os, "O_NOFOLLOW", 0)
+        # O_NONBLOCK: a FIFO without a reader fails the open (ENXIO) instead
+        # of blocking it, and one with a reader fails the fstat below. The
+        # flag has no effect on writes to a regular file.
+        flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NONBLOCK
+        flags |= getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
         descriptor = os.open(self.baseFilename, flags, 0o600)
         try:
             info = os.fstat(descriptor)
