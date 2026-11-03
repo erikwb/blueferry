@@ -26,6 +26,7 @@ from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, Vertical
+from textual.css.query import NoMatches
 from textual.screen import ModalScreen
 from textual.widgets import Button, Input, ListItem, ListView, Static
 
@@ -254,6 +255,9 @@ class ContactsScreen(ModalScreen[ContactsResult]):
                             and self._shown_card["id"] == card["id"])
                     self._shown_card = card
                     await self._render_card(card, keep_index=same)
+        except NoMatches:
+            # The screen is still attached while its widgets are torn down.
+            pass
         finally:
             self._rendering = False
 
@@ -383,16 +387,17 @@ class ContactsScreen(ModalScreen[ContactsResult]):
     def _render_buttons(self) -> None:
         if not self._shown or not self.is_attached:
             return
-        call = self.query_one("#contacts-call", Button)
+        try:
+            call = self.query_one("#contacts-call", Button)
+            message = self.query_one("#contacts-message", Button)
+            copy = self.query_one("#contacts-copy", Button)
+        except NoMatches:  # the screen's widgets are being torn down
+            return
         hint = self.calls_hint
         call.disabled = not self._can(contacts_view.ACTION_DIAL) or bool(hint)
         call.tooltip = Text(_plain(hint)) if hint and self._can(contacts_view.ACTION_DIAL) else None
-        self.query_one("#contacts-message", Button).disabled = not self._can(
-            contacts_view.ACTION_MESSAGE,
-        )
-        self.query_one("#contacts-copy", Button).disabled = not self._can(
-            contacts_view.ACTION_COPY,
-        )
+        message.disabled = not self._can(contacts_view.ACTION_MESSAGE)
+        copy.disabled = not self._can(contacts_view.ACTION_COPY)
 
     @on(ListView.Highlighted, "#contacts-detail")
     def detail_highlighted(self) -> None:

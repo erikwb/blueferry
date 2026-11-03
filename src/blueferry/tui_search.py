@@ -26,6 +26,7 @@ from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, Vertical
+from textual.css.query import NoMatches
 from textual.screen import ModalScreen
 from textual.widgets import Button, Input, ListItem, ListView, Static
 
@@ -193,6 +194,12 @@ class SearchScreen(ModalScreen[SearchResult]):
         return "\n".join(lines)
 
     async def _render_results(self) -> None:
+        try:
+            await self._render_results_now()
+        except NoMatches:  # the screen's widgets are being torn down
+            pass
+
+    async def _render_results_now(self) -> None:
         state = self.query_one("#search-state", Static)
         limit = self.query_one("#search-limit", Static)
         results = self.query_one("#search-results", ListView)

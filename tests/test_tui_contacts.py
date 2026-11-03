@@ -823,3 +823,40 @@ def test_the_contact_book_drops_photos_once_the_option_is_unknown() -> None:
             assert screen.card is not None  # the card itself stays
 
     _run_headless(scenario())
+
+
+def test_a_render_with_a_widget_already_gone_stops_quietly() -> None:
+    # The screen can still be attached while its widgets are being torn
+    # down; a render reaching that point must stop, not fail the app.
+    backend = _ContactsBackend(contact_photos=True, contact_photos_state="on")
+
+    async def scenario() -> None:
+        app = BlueFerryApp(TuiState(backend), monitor_factory=lambda: None)
+        async with app.run_test(size=(130, 44)) as pilot:
+            screen = await _open_contacts(app, pilot)
+            await screen.query_one("#contacts-call").remove()
+            screen.open_card("c0")
+            await _until(pilot, lambda: not screen._rendering)
+            await pilot.pause(0.1)
+            assert app.return_code in (None, 0)
+
+    _run_headless(scenario())
+
+
+def test_a_search_render_with_a_widget_already_gone_stops_quietly() -> None:
+    # Like the contacts list: a render reaching widgets that are being torn
+    # down stops instead of failing the app.
+    backend = _ContactsBackend()
+    backend.search_reply = _SEARCH_REPLY
+
+    async def scenario() -> None:
+        app = BlueFerryApp(TuiState(backend), monitor_factory=lambda: None)
+        async with app.run_test(size=(130, 44)) as pilot:
+            screen = await _search(app, pilot, backend, "ana")
+            await screen.query_one("#search-limit").remove()
+            screen.model.invalidate()
+            screen.search_now()
+            await pilot.pause(0.5)
+            assert app.return_code in (None, 0)
+
+    _run_headless(scenario())
