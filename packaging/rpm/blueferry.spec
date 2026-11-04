@@ -89,6 +89,15 @@ Requires:       qt6-qtimageformats
 BlueFerry's Qt 6 and Kirigami graphical client for KDE Plasma and other
 Qt-based desktops.
 
+%package -n blueferry-quickshell
+Summary:        Quickshell client for BlueFerry
+Requires:       %{name} = %{version}-%{release}
+# Fedora ships quickshell from Fedora 44 on; the package installs there.
+Requires:       quickshell
+
+%description -n blueferry-quickshell
+BlueFerry's Quickshell panel for Quickshell-based desktops such as Omarchy.
+
 %prep
 %autosetup -n blueferry-%{version}
 
@@ -142,6 +151,16 @@ install -Dm0644 data/io.weirdware.BlueFerry.Tray.desktop \
 install -Dm0644 data/io.weirdware.BlueFerry.Qt.metainfo.xml \
     %{buildroot}%{_metainfodir}/io.weirdware.BlueFerry.Qt.metainfo.xml
 
+install -Dm0755 data/blueferry-quickshell %{buildroot}%{_bindir}/blueferry-quickshell
+install -d %{buildroot}%{_datadir}/blueferry/quickshell
+install -m0644 data/quickshell/*.qml %{buildroot}%{_datadir}/blueferry/quickshell/
+install -Dm0644 src/blueferry/qt/qml/ConversationLogic.qml \
+    %{buildroot}%{_datadir}/blueferry/quickshell/ConversationLogic.qml
+install -Dm0644 data/io.weirdware.BlueFerry.Quickshell.desktop \
+    %{buildroot}%{_datadir}/applications/io.weirdware.BlueFerry.Quickshell.desktop
+install -Dm0644 data/io.weirdware.BlueFerry.Quickshell.metainfo.xml \
+    %{buildroot}%{_metainfodir}/io.weirdware.BlueFerry.Quickshell.metainfo.xml
+
 %check
 dbus-run-session --config-file=tests/dbus-test.conf -- sh -ec '
     export DBUS_SYSTEM_BUS_ADDRESS="$DBUS_SESSION_BUS_ADDRESS"
@@ -154,6 +173,8 @@ desktop-file-validate data/io.weirdware.BlueFerry.Qt.desktop
 desktop-file-validate data/io.weirdware.BlueFerry.Tray.desktop
 appstreamcli validate --no-net data/io.weirdware.BlueFerry.Gtk.metainfo.xml
 appstreamcli validate --no-net data/io.weirdware.BlueFerry.Qt.metainfo.xml
+desktop-file-validate data/io.weirdware.BlueFerry.Quickshell.desktop
+appstreamcli validate --no-net data/io.weirdware.BlueFerry.Quickshell.metainfo.xml
 
 %post
 %systemd_user_post blueferry.service
@@ -219,6 +240,14 @@ fi
 %{_datadir}/applications/io.weirdware.BlueFerry.Qt.desktop
 %{_datadir}/applications/io.weirdware.BlueFerry.Tray.desktop
 %{_metainfodir}/io.weirdware.BlueFerry.Qt.metainfo.xml
+
+%files -n blueferry-quickshell
+%license LICENSE
+%{_bindir}/blueferry-quickshell
+%dir %{_datadir}/blueferry/quickshell
+%{_datadir}/blueferry/quickshell/*.qml
+%{_datadir}/applications/io.weirdware.BlueFerry.Quickshell.desktop
+%{_metainfodir}/io.weirdware.BlueFerry.Quickshell.metainfo.xml
 
 %changelog
 * Fri Oct 30 2026 BlueFerry Contributors <blueferry@weirdware.io> - 0.9.1-1
