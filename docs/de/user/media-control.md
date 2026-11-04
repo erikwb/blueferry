@@ -163,8 +163,8 @@ nicht BlueFerrys Nachrichten-Schnittstelle.
 
 ## Cover
 
-Bei eingeschalteter Mediensteuerung zeigen die Qt- und die GTK-Oberfläche
-das Cover des aktuellen Titels neben dem Titel. Desktops, die MPRIS lesen
+Bei eingeschalteter Mediensteuerung zeigen die Qt-, GTK- und
+Quickshell-Oberfläche das Cover des aktuellen Titels neben dem Titel. Desktops, die MPRIS lesen
 (GNOME, Plasma, DMS, Waybar …), zeigen es ebenfalls, wenn die MPRIS-Option
 an ist. Das Bild kommt über Bluetooth (AVRCP-Cover, 200×200 Pixel), wird als
 echtes JPEG geprüft und in `~/.cache/blueferry/cover` abgelegt (nur für dich
