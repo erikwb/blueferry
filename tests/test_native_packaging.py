@@ -315,7 +315,9 @@ def test_package_workflow_installs_identical_artifacts_on_targets() -> None:
     assert workflow.count("smoke_tui blueferry tui") == 6
     assert workflow.count('gi.require_version("Secret", "1")') == 4
     assert workflow.count('safe.directory "$GITHUB_WORKSPACE"') == 2
-    assert workflow.count("dnf install -y --allowerasing") == 2
+    assert workflow.count("packaging/install-rpms.sh") == 2
+    install_rpms = (ROOT / "packaging/install-rpms.sh").read_text()
+    assert 'dnf install -y --allowerasing "${packages[@]}"' in install_rpms
     assert workflow.count(
         "systemd-analyze verify --man=no bluetooth.service"
     ) == 3
@@ -379,6 +381,36 @@ def test_set_cod_helper_runs_btmgmt_with_an_empty_environment(tmp_path):
         "LC_ALL=C",
         "args:--index 3 class 4 8",
     ]
+
+
+def test_rpm_quickshell_package_mirrors_the_arch_package() -> None:
+    rpm = (ROOT / "packaging/rpm/blueferry.spec").read_text()
+    arch = (ROOT / "packaging/arch/PKGBUILD").read_text()
+    rpm_files = rpm.split("%files -n blueferry-quickshell", 1)[1].split("%changelog", 1)[0]
+    arch_package = arch.split("package_blueferry-quickshell()", 1)[1]
+
+    assert "%package -n blueferry-quickshell" in rpm
+    assert "Requires:       quickshell" in rpm
+    for path in (
+        "/blueferry-quickshell",
+        "/blueferry/quickshell",
+        "io.weirdware.BlueFerry.Quickshell.desktop",
+        "io.weirdware.BlueFerry.Quickshell.metainfo.xml",
+    ):
+        assert path in rpm_files and path in arch_package
+    # Both install the shared ConversationLogic over the development wrapper.
+    shared = "src/blueferry/qt/qml/ConversationLogic.qml"
+    assert shared in rpm and shared in arch_package
+    assert rpm.index("data/quickshell/*.qml") < rpm.index(shared)
+    for check in (
+        "desktop-file-validate data/io.weirdware.BlueFerry.Quickshell.desktop",
+        "appstreamcli validate --no-net data/io.weirdware.BlueFerry.Quickshell.metainfo.xml",
+    ):
+        assert check in rpm and check in arch
+    # Fedora 43 has no quickshell: CI installs the client only where it exists.
+    install_rpms = (ROOT / "packaging/install-rpms.sh").read_text()
+    assert "blueferry-quickshell-*" in install_rpms
+    assert "dnf -q repoquery quickshell" in install_rpms
 
 
 def test_qt_packages_ship_the_tray_without_a_system_autostart_entry() -> None:
