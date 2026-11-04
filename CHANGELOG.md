@@ -4,8 +4,9 @@
 
 ### Added
 
-- Fedora packages: `blueferry-quickshell`, the Quickshell client, as an RPM
-  like the Arch package. It needs Fedora's `quickshell` (Fedora 44 or newer).
+- Fedora packages: `blueferry-quickshell` is now built as an RPM alongside
+  the GTK and Qt clients; it requires Fedora's `quickshell` package (Fedora 44
+  or newer).
 - Contact cards: the contact cache now keeps each number with its iPhone
   label, labelled email addresses, postal addresses, company and job title,
   inside the encrypted contact records only. `Messages1.ListContactCards`

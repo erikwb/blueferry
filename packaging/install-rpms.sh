@@ -14,14 +14,16 @@ for rpm in "$dir"/*.noarch.rpm; do
         *) packages+=("$rpm") ;;
     esac
 done
-if (( ${#quickshell[@]} )) && dnf -q repoquery quickshell | grep -q .; then
+if (( ${#quickshell[@]} )) && [[ -n $(dnf -q repoquery quickshell) ]]; then
     packages+=("${quickshell[@]}")
 fi
 dnf install -y --allowerasing "${packages[@]}"
 
 if rpm -q blueferry-quickshell >/dev/null 2>&1; then
-    test -x /usr/bin/blueferry-quickshell
-    test -f /usr/share/blueferry/quickshell/shell.qml
+    test -x /usr/bin/blueferry-quickshell \
+        || { echo "blueferry-quickshell: launcher missing" >&2; exit 1; }
+    test -f /usr/share/blueferry/quickshell/shell.qml \
+        || { echo "blueferry-quickshell: shell.qml missing" >&2; exit 1; }
     # The packaged ConversationLogic is the shared implementation, not the
     # development wrapper that imports from the source tree.
     if grep -F '../../src/' /usr/share/blueferry/quickshell/ConversationLogic.qml; then

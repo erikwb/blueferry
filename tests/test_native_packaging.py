@@ -410,7 +410,7 @@ def test_rpm_quickshell_package_mirrors_the_arch_package() -> None:
     # Fedora 43 has no quickshell: CI installs the client only where it exists.
     install_rpms = (ROOT / "packaging/install-rpms.sh").read_text()
     assert "blueferry-quickshell-*" in install_rpms
-    assert "dnf -q repoquery quickshell" in install_rpms
+    assert "$(dnf -q repoquery quickshell)" in install_rpms
 
 
 def test_qt_packages_ship_the_tray_without_a_system_autostart_entry() -> None:

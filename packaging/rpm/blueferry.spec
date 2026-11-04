@@ -96,8 +96,7 @@ Requires:       %{name} = %{version}-%{release}
 Requires:       quickshell
 
 %description -n blueferry-quickshell
-BlueFerry's Quickshell panel for Quickshell-based desktop shells such as
-niri or Hyprland setups.
+BlueFerry's Quickshell panel for Quickshell-based desktops such as Omarchy.
 
 %prep
 %autosetup -n blueferry-%{version}

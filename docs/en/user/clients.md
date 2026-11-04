@@ -175,7 +175,7 @@ the tray icon; BlueFerry and its open windows keep running.
 `blueferry-quickshell` follows Omarchy's active palette and system monospace
 font, with compact controls and thin frames. Sent message bubbles stay blue
 across themes. Outside Omarchy, it uses the desktop palette. It's packaged
-for Arch-based distributions.
+for Arch-based distributions and Fedora 44 or newer.
 
 ![Quickshell client](../../images/quickshell.png)
 

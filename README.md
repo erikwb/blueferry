@@ -87,8 +87,8 @@ sudo dnf install ./blueferry-backend-*.fc43.noarch.rpm \
   ./blueferry-gtk-*.fc43.noarch.rpm
 ```
 
-Replace the GTK package with `blueferry-qt` for KDE Plasma. Arch and CachyOS
-also provide `blueferry-quickshell`. The tested matrix currently covers Arch
+Replace the GTK package with `blueferry-qt` for KDE Plasma. Arch, CachyOS and
+Fedora 44 or newer also provide `blueferry-quickshell`. The tested matrix currently covers Arch
 Linux, CachyOS, Debian 13, Ubuntu 24.04 and 26.04, Linux Mint 22.3, Pop!_OS
 24.04, PikaOS IV, and Fedora 43, 44, and 45. Ubuntu 24.04, Mint, and Pop!_OS do
 not provide necessary Qt dependencies, so use the GTK or terminal client there.
