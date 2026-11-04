@@ -155,8 +155,8 @@ BlueFerry's message interface through it.
 ## Cover art
 
 With media control on, the Qt, GTK and Quickshell clients show the current
-track's cover next to the title, and desktops that read MPRIS (GNOME, Plasma, DMS,
-Waybar …) show it too when the MPRIS option is on. The image comes over
+track's cover next to the title, and desktops that read MPRIS (GNOME, Plasma,
+DMS, Waybar …) show it too when the MPRIS option is on. The image comes over
 Bluetooth (AVRCP cover art, 200×200 pixels), is checked to be a real JPEG,
 and is kept in `~/.cache/blueferry/cover` (readable only by you, at most 20
 images, emptied when the phone disconnects). Nothing is downloaded from the

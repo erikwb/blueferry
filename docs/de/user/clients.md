@@ -238,7 +238,8 @@ Während etwas läuft, hat der Wiedergabestreifen unter der Kopfzeile auch
 Knöpfe für leiser und lauter sowie die Lautstärke, die das iPhone zuletzt
 gemeldet hat. Jeder Druck verstellt die iPhone-Lautstärke um eine Stufe; die
 Knöpfe sind ausgegraut, wenn die spielende App keine Lautstärkeregelung
-anbietet.
+anbietet. Mit [Cover](media-control.md#cover) zeigt der Streifen das Cover des
+Titels vor dem Titel.
 
 | | Qt | GTK | TUI | Quickshell | CLI |
 |---|---|---|---|---|---|

@@ -6519,6 +6519,7 @@ def test_quickshell_now_playing_shows_the_shared_volume_buttons(qml_engine) -> N
 
 def test_quickshell_now_playing_shows_the_cover_art(qml_engine, tmp_path) -> None:
     from PySide6.QtGui import QColor, QImage
+    from PySide6.QtQml import QQmlExpression
 
     from blueferry.quickshell_bridge import now_playing_view
 
@@ -6561,9 +6562,18 @@ def test_quickshell_now_playing_shows_the_cover_art(qml_engine, tmp_path) -> Non
         assert art.property("visible") is False
         assert strip.property("visible") is True
         strip.setProperty("view", now_playing_view({**snapshot, "cover": str(tmp_path / "gone.jpg")}))
-        for _attempt in range(50):
+        def status() -> int:
+            expression = QQmlExpression(qml_engine.contextForObject(art), art, "Number(status)")
+            value, failed = expression.evaluate()
+            assert not failed, expression.error().toString()
+            return int(value)
+
+        for _attempt in range(200):
             QGuiApplication.processEvents()
+            if status() != 2:  # Image.Loading
+                break
             time.sleep(0.01)
+        assert status() == 3  # Image.Error
         assert art.property("visible") is False
     finally:
         window.close()
