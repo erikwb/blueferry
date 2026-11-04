@@ -15,6 +15,7 @@ import sys
 import threading
 from collections.abc import Callable, Mapping
 from dataclasses import asdict
+from pathlib import Path
 from typing import Any, TextIO
 
 from blueferry import (
@@ -391,7 +392,22 @@ def now_playing_view(snapshot: object) -> dict[str, Any]:
         **{name: visible and name in view.commands for name in phone_overview.MEDIA_BUTTONS},
         # The shared volume buttons, shown inside the strip only.
         "volume": _volume_controls(snapshot, visible),
+        "cover": _cover_url(snapshot, visible),
     }
+
+
+def _cover_url(snapshot: object, visible: bool) -> str:
+    """The track's cover (AVRCP cover art) as a ``file://`` URL, or "".
+
+    The daemon names an owner-only JPEG below its cache directory; a new
+    image always gets a new path, so the shell's ``Image`` never shows a
+    stale file. Only an absolute path is passed on, encoded as a URL so
+    spaces or ``#`` in the cache path cannot change what QML loads.
+    """
+    cover = snapshot.get("cover") if visible and isinstance(snapshot, Mapping) else None
+    if isinstance(cover, str) and cover.startswith("/") and "\0" not in cover:
+        return Path(cover).as_uri()
+    return ""
 
 
 def _volume_controls(snapshot: object, visible: bool) -> dict[str, Any]:

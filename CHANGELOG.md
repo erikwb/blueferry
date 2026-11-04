@@ -4,6 +4,11 @@
 
 ### Added
 
+- Cover art of the iPhone's current track over AVRCP (Basic Imaging Profile),
+  shown in the Qt, GTK and Quickshell clients, reported as `cover` in
+  `GetNowPlaying` and `phone_media_cover` in `GetStatus`, and published as
+  MPRIS `mpris:artUrl`.
+  Images stay local in an owner-only cache; part of the media-control opt-in.
 - Contact cards: the contact cache now keeps each number with its iPhone
   label, labelled email addresses, postal addresses, company and job title,
   inside the encrypted contact records only. `Messages1.ListContactCards`
