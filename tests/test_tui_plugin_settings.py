@@ -119,12 +119,31 @@ def test_store_install_is_confirmed_and_plugins_toggle_remove_and_log(tmp_path, 
             assert manager.disabled() == set()
             assert not isinstance(app.screen, RemoveConfirmScreen)
 
+            # The On/Off button acts on the highlighted plugin too, even
+            # though pressing it takes the focus off the installed list.
+            installed.highlighted = 0
+            await pilot.click("#plugins-toggle")
+            await _drain(pilot, work)
+            assert manager.disabled() == {"io.example.demo"}
+            await pilot.click("#plugins-toggle")
+            await _drain(pilot, work)
+            assert manager.disabled() == set()
+
             installed.focus()
             await pilot.press("space")
             await _drain(pilot, work)
             assert manager.disabled() == {"io.example.demo"}
             assert installed.get_option_at_index(0).prompt.plain.startswith("○ Demo photos")
 
+            # The Remove button asks first, like Delete; cancelling keeps it.
+            await pilot.click("#plugins-remove")
+            await pilot.pause()
+            assert isinstance(app.screen, RemoveConfirmScreen)
+            await pilot.click("#plugin-remove-cancel")
+            await pilot.pause()
+            assert pane.plugin_ids == ["io.example.demo"]
+
+            installed.focus()
             await pilot.press("delete")
             await pilot.pause()
             assert isinstance(app.screen, RemoveConfirmScreen)
@@ -210,6 +229,35 @@ def test_config_form_is_guided_and_never_shows_a_stored_secret() -> None:
             assert saved["app_password"] == "app-secret"
             assert not isinstance(app.screen, PluginConfigScreen)  # saved: closed
             assert pane.form is None
+
+    _run_headless(scenario())
+
+
+def test_config_form_shows_a_load_failure_instead_of_loading_forever() -> None:
+    from tests.test_gtk_plugin_settings import _guided
+
+    _plugin, manager, client = _guided()
+
+    class BrokenClient(client):  # type: ignore[valid-type,misc]
+        def get_config(self):
+            raise RuntimeError("the plugin did not answer")
+
+    work = ManualRunner()
+    pane = PluginsPane(_factory(work, manager=lambda: manager, index=lambda: None,
+                                client=BrokenClient))
+
+    async def scenario() -> None:
+        app = _Host(pane)
+        async with app.run_test(size=(110, 60)) as pilot:
+            await _drain(pilot, work)
+            pane.open_settings("io.example.cloud")
+            await _drain(pilot, work)
+            form = app.screen
+            assert isinstance(form, PluginConfigScreen)
+            assert not form.query_one("#plugin-config-loading").display
+            error = _text(form, "#plugin-config-form-error")
+            assert "Could not load the plugin's settings" in error
+            assert "the plugin did not answer" in error
 
     _run_headless(scenario())
 

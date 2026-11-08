@@ -303,12 +303,19 @@ def _last_word(value: str) -> str | None:
     return None if quote else value[start:]
 
 
+def _escaped_suffix(rest: str) -> str:
+    """``rest`` with every shell word delimiter escaped, so
+    :func:`split_paths` reads the completed word back as one path."""
+    return "".join(
+        "\\" + char if char.isspace() or char in "'\"\\" else char for char in rest)
+
+
 def complete_path(value: str, *, limit: int = _MAX_COMPLETION_ENTRIES) -> str | None:
     """``value`` with its last path completed as far as it is unambiguous.
 
-    Only a last word without quotes or backslashes is completed; a space
-    in the completion is escaped so :func:`split_paths` reads it back.
-    *Blocking* (lists one directory).
+    Only a last word without quotes or backslashes is completed; spaces,
+    quotes and backslashes inside the completion are escaped so
+    :func:`split_paths` reads it back. *Blocking* (lists one directory).
     """
     word = _last_word(value)
     if not word or any(char in word for char in "'\"\\"):
@@ -335,7 +342,7 @@ def complete_path(value: str, *, limit: int = _MAX_COMPLETION_ENTRIES) -> str | 
         rest += "/"
     if not rest:
         return None
-    return value + rest.replace(" ", "\\ ")
+    return value + _escaped_suffix(rest)
 
 
 class PathSuggester(Suggester):

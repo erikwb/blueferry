@@ -61,8 +61,7 @@ def shown_items(items: list[Mapping[str, Any]], key: str) -> list[Mapping[str, A
 
 
 class _ReportingRunner:
-    """A runner whose failures without a handler become a notice (the
-    model fetches originals without one)."""
+    """A runner whose failures without a handler become a notice."""
 
     def __init__(self, node: Any, group: str) -> None:
         self._node = node
@@ -117,7 +116,8 @@ class PhotosScreen(ModalScreen[None]):
                 return PhotosTabModel(
                     runner=TextualTaskRunner(self, group="photos"),
                     open_runner=_ReportingRunner(self, "photos-open"),
-                    url=file_url, open_file=open_file, on_change=on_change)
+                    url=file_url, open_file=open_file, on_change=on_change,
+                    on_error=self._photo_failed)
 
             self._factory = make
         self.model = self._factory(self._redraw, self._open_file)
@@ -128,6 +128,13 @@ class PhotosScreen(ModalScreen[None]):
         self._shown = False
         if self.model is not None:
             self.model.watch(False)
+
+    def _photo_failed(self, message: str) -> None:
+        # The model hands download failures to on_error (its own callback
+        # to the runner suppresses _ReportingRunner's fallback), so the
+        # screen must surface them itself, sanitized like every label.
+        self.notify(_plain(message or _("The plugin did not answer.")),
+                    severity="error", markup=False)
 
     def _open_file(self, path: object) -> None:
         uri = file_url(path)

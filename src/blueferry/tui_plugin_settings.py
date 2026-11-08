@@ -319,26 +319,25 @@ class PluginsPane(Vertical):
         # the store, a stray Space must not flip a plugin's kill switch.
         return self.query_one("#plugins-installed", OptionList).has_focus
 
-    def action_toggle_plugin(self) -> None:
-        if not self._installed_focused():
-            return
+    def _toggle_highlighted(self) -> None:
         plugin = self._plugin(self._highlighted("#plugins-installed", self.plugin_ids))
         if plugin is not None and self.model is not None and not self._busy():
             self.model.set_enabled(str(plugin["id"]), not plugin.get("enabled"))
+
+    def action_toggle_plugin(self) -> None:
+        # The focus guard belongs to the keyboard binding: Space in the
+        # store must not flip a kill switch. The On/Off button holds the
+        # focus when pressed, so it calls _toggle_highlighted directly.
+        if not self._installed_focused():
+            return
+        self._toggle_highlighted()
 
     def action_update_plugin(self) -> None:
         plugin = self._plugin(self._highlighted("#plugins-installed", self.plugin_ids))
         if plugin is not None and plugin.get("managed") and self.model and not self._busy():
             self.model.prepare_update(str(plugin["id"]))
 
-    def action_remove_selected(self) -> None:
-        if self.query_one("#plugins-indexes", OptionList).has_focus:
-            url = self._highlighted("#plugins-indexes", self.index_urls)
-            if url and self.model is not None and not self._busy():
-                self.model.set_indexes([other for other in self.index_urls if other != url])
-            return
-        if not self._installed_focused():
-            return
+    def _remove_highlighted(self) -> None:
         plugin = self._plugin(self._highlighted("#plugins-installed", self.plugin_ids))
         if plugin is None or not plugin.get("managed") or self._busy():
             return
@@ -349,6 +348,16 @@ class PluginsPane(Vertical):
                 self.model.remove(plugin_id)
 
         self.app.push_screen(RemoveConfirmScreen(str(plugin.get("name") or "")), answered)
+
+    def action_remove_selected(self) -> None:
+        if self.query_one("#plugins-indexes", OptionList).has_focus:
+            url = self._highlighted("#plugins-indexes", self.index_urls)
+            if url and self.model is not None and not self._busy():
+                self.model.set_indexes([other for other in self.index_urls if other != url])
+            return
+        if not self._installed_focused():
+            return
+        self._remove_highlighted()
 
     def action_show_log(self) -> None:
         plugin_id = self._highlighted("#plugins-installed", self.plugin_ids)
@@ -400,7 +409,7 @@ class PluginsPane(Vertical):
     @on(Button.Pressed, "#plugins-toggle")
     def _toggle_button(self, event: Button.Pressed) -> None:
         event.stop()
-        self.action_toggle_plugin()
+        self._toggle_highlighted()
 
     @on(Button.Pressed, "#plugins-settings")
     def _settings_button(self, event: Button.Pressed) -> None:
@@ -415,8 +424,7 @@ class PluginsPane(Vertical):
     @on(Button.Pressed, "#plugins-remove")
     def _remove_button(self, event: Button.Pressed) -> None:
         event.stop()
-        self.query_one("#plugins-installed", OptionList).focus()
-        self.action_remove_selected()
+        self._remove_highlighted()
 
     @on(Button.Pressed, "#plugins-log")
     def _log_button(self, event: Button.Pressed) -> None:
@@ -838,8 +846,13 @@ class PluginConfigScreen(ModalScreen[None]):
     def _sync(self) -> None:
         config, check = self._config, self.check
         controls = present.form_controls(config, check, self.draft, self._busy)
-        self.query_one("#plugin-config-loading").display = config.get("loaded") is not True
+        load_error = _plain(config.get("loadError") or "")
+        self.query_one("#plugin-config-loading").display = (
+            config.get("loaded") is not True and not load_error)
         form_error = _plain((config.get("errors") or {}).get("") or "")
+        if load_error:
+            form_error = _plain(
+                _("Could not load the plugin's settings: {error}").format(error=load_error))
         error_line = self.query_one("#plugin-config-form-error", Static)
         error_line.update(Text(form_error, style=_ERROR))
         error_line.display = bool(form_error)

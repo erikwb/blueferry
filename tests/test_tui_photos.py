@@ -85,3 +85,48 @@ def test_photos_list_opens_and_copies_the_original(tmp_path, monkeypatch) -> Non
             assert screen.model.state["items"] == []  # forgotten when closed
 
     _run_headless(scenario())
+
+
+def test_a_failed_download_is_reported(monkeypatch) -> None:
+    """The default factory wires the model's on_error to a notice.
+
+    The screen builds its own model here; only the open runner is slowed
+    down to the test's manual one so the failure lands deterministically.
+    """
+    snapshot = photos_view.PhotosSnapshot(True, True, "", [
+        Photo("p1", "2026-10-01T10:00:00Z", "photo", None),
+    ])
+    plugin = SimpleNamespace(id="io.example.photos")
+    monkeypatch.setattr(photos_view, "load_current", lambda: (plugin, snapshot))
+
+    def fetch(_plugin_id, _photo_id):
+        raise RuntimeError("download [b]broke[/b]")
+
+    monkeypatch.setattr(photos_view, "fetch_current_original", fetch)
+    notices: list[str] = []
+
+    async def until(pilot, condition) -> None:
+        for _attempt in range(60):
+            if condition():
+                return
+            await pilot.pause(0.05)
+        assert condition()
+
+    async def scenario() -> None:
+        app = _Host()
+        async with app.run_test(size=(100, 40)) as pilot:
+            screen = PhotosScreen(opener=lambda _uri: None)
+            await app.push_screen(screen)
+            await until(pilot, lambda: bool(screen.items))
+            screen.notify = lambda message, **_kwargs: notices.append(message)  # type: ignore[method-assign]
+            work = ManualRunner()
+            assert screen.model is not None
+            screen.model._open_runner = work  # the manual runner, deterministically
+            listing = screen.query_one("#photos-list", OptionList)
+            listing.focus()
+            await pilot.press("enter")
+            work.run_tasks()
+            await pilot.pause()
+            assert notices and "download" in notices[-1] and "\x1b" not in notices[-1]
+
+    _run_headless(scenario())

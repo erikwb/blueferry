@@ -281,3 +281,9 @@ def test_split_and_complete_paths(tmp_path) -> None:
     quoted = f'"{tmp_path}/a \\" b" {tmp_path}/'
     assert complete_path(quoted + "Pi") == quoted + "Pictures/"
     assert split_paths(complete_path(base + "Ph") or "")[1] == f"{tmp_path}/Photo one.jpg"
+    # A quote or backslash inside the completed name is escaped too, so
+    # split_paths reads the suggestion back as that one file.
+    for name, prefix in (("it's.jpg", "it"), ('say "hi".jpg', "say"),
+                         ("back\\slash.jpg", "back")):
+        (tmp_path / name).write_bytes(b"")
+        assert split_paths(complete_path(base + prefix) or "")[1] == f"{tmp_path}/{name}"
