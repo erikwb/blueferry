@@ -91,6 +91,8 @@ blueferry plugins config ID --action ACTION  # press one of them
   highlighted button. **Send to…** asks for a target and file paths
   (→ completes a path); a card button that takes files asks only for the
   paths. Files cannot be dropped on a terminal.
+- **In the Quickshell panel** the same **From Plugins** section sits under
+  the now-playing strip, with every button except those that send files.
 - **Card items and Send to** on the command line: `blueferry cards` and
   `blueferry send`.
 - **Popups** that follow your notification settings.

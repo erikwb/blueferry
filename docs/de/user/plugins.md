@@ -97,6 +97,8 @@ blueferry plugins config ID --action ACTION  # einen davon drücken
   Dateipfaden (→ ergänzt einen Pfad); ein Kartenknopf, der Dateien annimmt,
   fragt nur nach den Pfaden. Auf ein Terminal lassen sich keine Dateien
   ziehen.
+- **Im Quickshell-Panel** sitzt derselbe Abschnitt **From Plugins** unter
+  dem Wiedergabestreifen, mit allen Knöpfen außer denen, die Dateien senden.
 - **Karteneinträge und Send to** auf der Kommandozeile: `blueferry cards`
   und `blueferry send`.
 - **Popups**, die deinen Mitteilungseinstellungen folgen.
