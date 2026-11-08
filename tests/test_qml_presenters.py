@@ -6666,8 +6666,9 @@ def test_quickshell_settings_follow_the_other_clients_categories(qml_engine, qui
     headings = [page.findChild(QObject, key + "Category") for key in
                 ("phone", "notifications", "calls", "security", "about")]
     assert all(heading is not None for heading in headings)
-    # Same titles and order as the Qt, GTK and terminal clients; the panel
-    # leaves plugin management to them (clients.md, "What the panel leaves out").
+    # Same titles and order as the Qt, GTK and terminal clients, without
+    # Plugins: the panel leaves plugin management to them (clients.md,
+    # "What the panel leaves out").
     assert [heading.property("text") for heading in headings] == [
         category.title for category in categories() if category.key != "plugins"
     ]

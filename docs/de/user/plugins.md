@@ -57,6 +57,13 @@ Plugin-Prozess, den BlueFerry
 installiert hat. Deaktivieren sorgt außerdem dafür, dass BlueFerry das
 Plugin sofort nicht mehr aufruft.
 
+Im Terminal-Client (`o`, Reiter **Plugins**) wirken die Tasten auf das
+markierte installierte Plugin: Leertaste schaltet es ein oder aus, Enter
+öffnet seine Einstellungen, `u` sucht ein Update, Entf entfernt es nach
+einer Rückfrage und `g` zeigt sein Protokoll direkt im Terminal. Enter auf
+einem Plugin der Liste installiert oder aktualisiert es; die Rückfrage
+zeigt dieselben Angaben wie in den grafischen Clients.
+
 ## Ein Plugin einrichten
 
 **Settings** neben einem Plugin öffnet ein Formular aus dem, was das Plugin
@@ -84,6 +91,12 @@ blueferry plugins config ID --action ACTION  # einen davon drücken
 - **Send to…** am Ende dieses Abschnitts: gibt Dateien an ein Plugin-Ziel
   wie „iPhone (LocalSend)“; manche Einträge der Karte nehmen Dateien direkt
   an (darauf ziehen).
+- **Im Terminal-Client** hat die iPhone-Übersicht (Befehlspalette:
+  **iPhone Overview**) denselben Abschnitt **From Plugins**: Enter führt den
+  markierten Knopf aus. **Send to…** fragt nach einem Ziel und den
+  Dateipfaden (→ ergänzt einen Pfad); ein Kartenknopf, der Dateien annimmt,
+  fragt nur nach den Pfaden. Auf ein Terminal lassen sich keine Dateien
+  ziehen.
 - **Im Quickshell-Panel** sitzt derselbe Abschnitt **From Plugins** unter
   dem Wiedergabestreifen, mit allen Knöpfen außer denen, die Dateien senden.
 - **Karteneinträge und Send to** auf der Kommandozeile: `blueferry cards`
@@ -105,6 +118,11 @@ blueferry plugins config ID --action ACTION  # einen davon drücken
   | Gentoo | `gui-libs/gdk-pixbuf-loader-webp` | `dev-qt/qtimageformats:6` |
 
   Nach der Installation den Client neu starten.
+
+  Der Terminal-Client zeigt keine Vorschaubilder: **Photos** in seiner
+  Befehlspalette listet die neuesten Einträge nach Datum und Art; Enter
+  lädt das Original und öffnet es im Bildbetrachter, `c` kopiert seinen
+  Pfad.
 
 ```bash
 blueferry cards
@@ -138,7 +156,8 @@ Dateien annimmt, bekommt die darauf gezogenen Dateien weiterhin selbst.
 ## Protokolle und Datenschutz
 
 Plugins schreiben `~/.local/state/blueferry/plugins/<id>.log` (nur für dich
-lesbar, Geheimnisse maskiert); **Show Log** oder `blueferry plugins log ID` öffnet es.
+lesbar, Geheimnisse maskiert); **Show Log** (`g` im Terminal-Client) oder
+`blueferry plugins log ID` öffnet es.
 BlueFerry zeigt Plugin-Text als reinen Text und lässt ein Plugin nur
 Weblinks oder Dateien aus seinem eigenen Cache öffnen. Popups eines Plugins
 folgen deinen Mitteilungseinstellungen: keine bei **None**, nur der Name
