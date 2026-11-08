@@ -7765,6 +7765,12 @@ def test_quickshell_plugin_cards_coalesce_changes_and_follow_the_watch(
         check(!root.pluginActionBusy, "action stays busy")
         check(root.pluginCards.cards === undefined && root.pluginCards.message === undefined,
           "hidden action failure shown")
+        root.pluginActionBusy = true
+        backendBridge.response("plugin_action", 61,
+          {cards: [{id: "late"}], message: "late answer"})
+        check(!root.pluginActionBusy, "action stays busy after a hidden reply")
+        check(root.pluginCards.cards === undefined && root.pluginCards.message === undefined,
+          "hidden action reply shown")
         backendBridge.failure("plugin_cards", 7, "gone")
         check(root.pluginCards.message === undefined, "hidden read failure shown")
 
@@ -7781,6 +7787,30 @@ def test_quickshell_plugin_cards_coalesce_changes_and_follow_the_watch(
           "action failure not shown with the cards")
         backendBridge.failure("plugin_cards", 10, "Unavailable.")
         check(root.pluginCards.message === "Unavailable.", "read failure not shown")
+
+        // An action from before a hide/reopen cycle belongs to the old
+        // view: its late reply and failure leave the fresh read alone.
+        root.runPluginAction("io.example.a", "item", "act")
+        check(backendBridge.take("plugin_action") === 1, "second action not sent")
+        root.phoneSettingsVisible = true
+        root.phoneSettingsVisible = false
+        check(backendBridge.take("latest:plugin_cards") === 1, "not read after the cycle")
+        backendBridge.response("plugin_cards", 11, {cards: [{id: "fresh"}], message: ""})
+        backendBridge.response("plugin_action", 12,
+          {cards: [{id: "stale"}], message: "stale answer"})
+        check(!root.pluginActionBusy, "stale action stays busy")
+        check(root.pluginCards.cards[0].id === "fresh" && root.pluginCards.message === "",
+          "stale action reply shown after reopening")
+        root.runPluginAction("io.example.a", "item", "act")
+        check(backendBridge.take("plugin_action") === 1, "third action not sent")
+        root.phoneSettingsVisible = true
+        root.phoneSettingsVisible = false
+        check(backendBridge.take("latest:plugin_cards") === 1, "not read after the cycle")
+        backendBridge.response("plugin_cards", 13, {cards: [{id: "fresh2"}], message: ""})
+        backendBridge.failure("plugin_action", 14, "stale failure")
+        check(!root.pluginActionBusy, "stale action failure stays busy")
+        check(root.pluginCards.cards[0].id === "fresh2" && root.pluginCards.message === "",
+          "stale action failure shown after reopening")
         console.log("BLUEFERRY_QS_PLUGIN_CARDS_OK")
       } catch (error) {
         console.error(error);

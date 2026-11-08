@@ -1910,6 +1910,12 @@ def test_bridge_returns_plugin_cards_with_their_simple_buttons() -> None:
     assert reply["message"] == "Pinged" and reply["messageOk"] is True
     assert reply["cards"][0]["items"][0]["id"] == "phone"  # read again afterwards
 
+    # The action's answer belongs to the action reply: an ordinary read
+    # afterwards (the panel was hidden in between, say) does not resurface it.
+    reply = bridge.dispatch("plugin_cards", {})
+    assert reply["message"] == ""
+    assert reply["cards"][0]["items"][0]["id"] == "phone"
+
 
 def test_bridge_rejects_malformed_plugin_actions() -> None:
     bridge = _surfaces_bridge([], [], [])

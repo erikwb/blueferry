@@ -698,6 +698,9 @@ class QuickshellBridge:
     def _plugin_cards(self) -> dict[str, Any]:
         with self._surfaces_lock:
             model = self._plugin_surfaces()
+            # An action's answer belongs to the action reply; an ordinary
+            # read must not resurface one the panel has since forgotten.
+            model.clear_message()
             model.reload()
             return plugin_cards_reply(model.state())
 

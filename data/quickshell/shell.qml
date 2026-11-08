@@ -114,6 +114,10 @@ ShellRoot {
   // the conversations, again on plugin-cards-changed, forgotten when hidden.
   property var pluginCards: ({})
   property bool pluginActionBusy: false
+  // Bumped whenever the cards are forgotten (hidden): an action started
+  // in an earlier showing must not land in a later one.
+  property int pluginCardsGeneration: 0
+  property int pluginActionGeneration: -1
   readonly property bool pluginCardsWatched: window.visible && setupController.configured
     && !root.phoneSettingsVisible
   onPluginCardsWatchedChanged: root.refreshPluginCards()
@@ -270,6 +274,7 @@ ShellRoot {
     } else {
       backendBridge.cancelLatest("plugin_cards")
       pluginCardsReload.stop()
+      root.pluginCardsGeneration++
       root.pluginCards = ({})
     }
   }
@@ -277,6 +282,7 @@ ShellRoot {
   function runPluginAction(pluginId, itemId, actionId) {
     if (root.pluginActionBusy) return
     root.pluginActionBusy = true
+    root.pluginActionGeneration = root.pluginCardsGeneration
     backendBridge.request("plugin_action", {
       plugin_id: pluginId, item_id: itemId, action_id: actionId
     })
@@ -642,7 +648,9 @@ ShellRoot {
           root.pluginCards = result
       } else if (method === "plugin_action") {
         root.pluginActionBusy = false
-        if (root.pluginCardsWatched && typeof result === "object" && result !== null)
+        if (root.pluginCardsWatched
+            && root.pluginActionGeneration === root.pluginCardsGeneration
+            && typeof result === "object" && result !== null)
           root.pluginCards = result
       } else if (method === "now_playing") {
         root.applyNowPlaying(result)
@@ -847,7 +855,9 @@ ShellRoot {
         // BackendBridge always supplies a message (its own when the bridge
         // sent none); a hidden panel keeps its cards forgotten.
         if (method === "plugin_action") root.pluginActionBusy = false
-        if (root.pluginCardsWatched) root.pluginCards = ({
+        const fromCurrentShowing = method !== "plugin_action"
+          || root.pluginActionGeneration === root.pluginCardsGeneration
+        if (root.pluginCardsWatched && fromCurrentShowing) root.pluginCards = ({
           cards: root.pluginCards.cards || [], message: message || "", messageOk: false
         })
       } else if (method === "now_playing") {
