@@ -166,6 +166,9 @@
 - Mute this computer's microphone for the running call only, without muting
   the microphone for other applications (`Calls1.SetCallMuted`, ListCalls
   `audio.muted`, `blueferry calls mute on|off`).
+- Edit the replies for declining a call in the Quickshell settings
+  (Calls & Audio). Muting during a call and declining with a message stay
+  with the other clients, because the panel has no call view.
 
 ### Fixed
 
