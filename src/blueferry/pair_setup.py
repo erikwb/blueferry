@@ -157,10 +157,24 @@ def bluetooth_compatibility(adapter_name: str | None = None) -> dict:
 
 def bluez_support_status(*, proc_root: Path = Path("/proc")) -> dict:
     """Report whether the packaged experimental bearer API is active."""
-    return capabilities.bluez_support_status(
+    status = capabilities.bluez_support_status(
         run_command=run_command,
         proc_root=proc_root,
     )
+    if not status["active"]:
+        # BlueZ also enables experimental APIs through main.conf. Probe the
+        # running API instead of reading a file that may await a restart.
+        try:
+            managed = _object_manager().GetManagedObjects(timeout=5)
+        except dbus.exceptions.DBusException:
+            return status
+        status["active"] = any(
+            "org.bluez.AdvertisementMonitorManager1" in interfaces
+            for interfaces in managed.values()
+        )
+        if status["active"]:
+            status.pop("activation_hint", None)
+    return status
 
 
 def activate_bluez_support() -> dict:

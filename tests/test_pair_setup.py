@@ -898,7 +898,49 @@ def test_bluez_support_status_rejects_configured_but_unrestarted_daemon(
 
     monkeypatch.setattr(pair_setup, "run_command", service_status)
 
+    class Manager:
+        def GetManagedObjects(self, **_kwargs):
+            return {"/org/bluez/hci0": {"org.bluez.Adapter1": {}}}
+
+    monkeypatch.setattr(pair_setup, "_object_manager", Manager)
     assert pair_setup.bluez_support_status(proc_root=tmp_path)["active"] is False
+
+
+@pytest.mark.parametrize("experimental", [False, True])
+def test_bluez_support_status_probes_running_api_without_command_line_flag(
+    monkeypatch, tmp_path, experimental,
+):
+    monkeypatch.setattr(
+        pair_setup.capabilities, "bluez_support_status",
+        lambda **_kwargs: {"active": False, "activation_hint": "restart BlueZ"},
+    )
+
+    class Manager:
+        def GetManagedObjects(self, **_kwargs):
+            interfaces = {"org.bluez.Adapter1": {}, "org.bluez.LEAdvertisingManager1": {}}
+            if experimental:
+                interfaces["org.bluez.AdvertisementMonitorManager1"] = {}
+            return {"/org/bluez/hci0": interfaces}
+
+    monkeypatch.setattr(pair_setup, "_object_manager", Manager)
+    status = pair_setup.bluez_support_status(proc_root=tmp_path)
+
+    assert status["active"] is experimental
+    assert ("activation_hint" not in status) is experimental
+
+
+def test_bluez_support_status_keeps_inactive_result_when_api_is_unreachable(monkeypatch):
+    status = {"active": False, "packaged_drop_in": False}
+    monkeypatch.setattr(
+        pair_setup.capabilities, "bluez_support_status", lambda **_kwargs: status.copy(),
+    )
+
+    class Manager:
+        def GetManagedObjects(self, **_kwargs):
+            raise pair_setup.dbus.exceptions.DBusException("BlueZ unavailable")
+
+    monkeypatch.setattr(pair_setup, "_object_manager", Manager)
+    assert pair_setup.bluez_support_status() == status
 
 
 def test_compatibility_is_based_on_controller_features_not_vendor(monkeypatch):
