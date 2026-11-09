@@ -410,6 +410,7 @@ class Daemon:
             schedule=GLib.timeout_add_seconds,
             cancel=GLib.source_remove,
             on_changed=self._emit_calls_changed,
+            on_saved=self._emit_status,
         )
         # Where the iPhone's media playback goes, using the desktop's roles.
         self.phone_audio_route = PhoneAudioRoute(

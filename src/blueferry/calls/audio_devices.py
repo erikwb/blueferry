@@ -419,6 +419,7 @@ class CallAudioRouter:
         schedule: Schedule,
         cancel: Cancel,
         on_changed: Callable[[], None] | None = None,
+        on_saved: Callable[[], None] | None = None,
     ) -> None:
         self._settings = settings
         self._mac = mac
@@ -427,6 +428,7 @@ class CallAudioRouter:
         self._schedule = schedule
         self._cancel = cancel
         self._on_changed = on_changed or (lambda: None)
+        self._on_saved = on_saved or (lambda: None)
         self._in_call = False
         self._generation = 0
         self._overrides: dict[str, str] = {}
@@ -477,7 +479,11 @@ class CallAudioRouter:
 
     def set_preferred(self, direction: object, name: object) -> dict[str, str]:
         direction, name = valid_direction(direction), valid_node_name(name)
+        changed = self._settings.get(direction) != name
         self._settings.set(direction, name)
+        if changed:
+            # GetStatus reports the saved choices.
+            self._on_saved()
         if self._in_call:
             self._recheck()
         return self.snapshot()

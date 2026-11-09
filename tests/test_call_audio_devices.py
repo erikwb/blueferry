@@ -417,6 +417,19 @@ def test_saving_without_a_call_runs_nothing() -> None:
         router.set_preferred("speaker", HEADSET)
 
 
+def test_saving_a_changed_choice_reports_a_status_change() -> None:
+    loop, saved = Loop(), []
+    router = CallAudioRouter(
+        settings=Settings(), mac=MAC, submit=loop.submit, run=FakePipeWire(),
+        schedule=loop.schedule, cancel=loop.cancel, on_saved=lambda: saved.append(1),
+    )
+
+    router.set_preferred(OUTPUT, HEADSET)
+    router.set_preferred(OUTPUT, HEADSET)
+
+    assert saved == [1]
+
+
 def test_results_of_an_ended_call_are_dropped() -> None:
     loop = Loop()
     loop.defer = True
