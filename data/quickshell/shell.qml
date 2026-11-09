@@ -137,6 +137,17 @@ ShellRoot {
   property string searchSources: ""
   readonly property bool contactCardsSupported:
     typeof root.backendStatus.contact_card_count === "number"
+  // Plugin cards (bridge plugin_cards): read only while the window shows
+  // the conversations, again on plugin-cards-changed, forgotten when hidden.
+  property var pluginCards: ({})
+  property bool pluginActionBusy: false
+  // Bumped whenever the cards are forgotten (hidden): an action started
+  // in an earlier showing must not land in a later one.
+  property int pluginCardsGeneration: 0
+  property int pluginActionGeneration: -1
+  readonly property bool pluginCardsWatched: window.visible && setupController.configured
+    && !root.phoneSettingsVisible
+  onPluginCardsWatchedChanged: root.refreshPluginCards()
   readonly property bool searchSupported:
     typeof root.backendStatus.search_result_limit === "number"
     && root.backendStatus.search_result_limit > 0
@@ -298,6 +309,34 @@ ShellRoot {
       root.notificationList = ({})
       root.notificationPinError = ""
     }
+  }
+
+  // Asking starts the card plugins (D-Bus activation): only while shown.
+  function refreshPluginCards() {
+    if (root.pluginCardsWatched) {
+      backendBridge.requestLatest("plugin_cards", {})
+    } else {
+      backendBridge.cancelLatest("plugin_cards")
+      pluginCardsReload.stop()
+      root.pluginCardsGeneration++
+      root.pluginCards = ({})
+    }
+  }
+
+  function runPluginAction(pluginId, itemId, actionId) {
+    if (root.pluginActionBusy) return
+    root.pluginActionBusy = true
+    root.pluginActionGeneration = root.pluginCardsGeneration
+    backendBridge.request("plugin_action", {
+      plugin_id: pluginId, item_id: itemId, action_id: actionId
+    })
+  }
+
+  Timer {
+    id: pluginCardsReload
+    // plugin_surfaces_model.RELOAD_DELAY_MS: one read for a burst of changes.
+    interval: 400
+    onTriggered: root.refreshPluginCards()
   }
 
   function applyFeatures(result) {
@@ -663,6 +702,15 @@ ShellRoot {
         // HistoryChanged reloads the thread list.
       } else if (method === "set_thread_starred") {
         // HistoryChanged reloads the thread list.
+      } else if (method === "plugin_cards") {
+        if (root.pluginCardsWatched && typeof result === "object" && result !== null)
+          root.pluginCards = result
+      } else if (method === "plugin_action") {
+        root.pluginActionBusy = false
+        if (root.pluginCardsWatched
+            && root.pluginActionGeneration === root.pluginCardsGeneration
+            && typeof result === "object" && result !== null)
+          root.pluginCards = result
       } else if (method === "now_playing") {
         root.applyNowPlaying(result)
       } else if (method === "calls" || method === "call_cards"
@@ -883,6 +931,15 @@ ShellRoot {
         root.errorText = message
       } else if (method === "mark_thread_read") {
         // Keep the conversation open even if MAP write-back fails.
+      } else if (method === "plugin_cards" || method === "plugin_action") {
+        // BackendBridge always supplies a message (its own when the bridge
+        // sent none); a hidden panel keeps its cards forgotten.
+        if (method === "plugin_action") root.pluginActionBusy = false
+        const fromCurrentShowing = method !== "plugin_action"
+          || root.pluginActionGeneration === root.pluginCardsGeneration
+        if (root.pluginCardsWatched && fromCurrentShowing) root.pluginCards = ({
+          cards: root.pluginCards.cards || [], message: message || "", messageOk: false
+        })
       } else if (method === "now_playing") {
         root.nowPlaying = ({})
       } else if (method === "calls" || method === "call_cards") {
@@ -1099,6 +1156,8 @@ ShellRoot {
       else if (name === "host" && data && typeof data.bluetooth_restart_command === "string")
         root.bluetoothRestartCommand = data.bluetooth_restart_command
       else if (name === "tether-changed") backendBridge.requestLatest("tether_state", {})
+      else if (name === "plugin-cards-changed" && root.pluginCardsWatched)
+        pluginCardsReload.restart()
     }
   }
 
@@ -1216,6 +1275,18 @@ ShellRoot {
           Layout.fillWidth: true
           view: root.nowPlaying
           onCommandRequested: command => backendBridge.request("media_command", {command: command})
+        }
+
+        QuickshellPluginCards {
+          objectName: "pluginCards"
+          ferryTheme: theme
+          Layout.fillWidth: true
+          visible: root.pluginCardsWatched && (cards.length > 0 || message !== "")
+          view: root.pluginCards
+          busy: root.pluginActionBusy
+          onActionRequested: (pluginId, itemId, actionId) =>
+            root.runPluginAction(pluginId, itemId, actionId)
+          onRefreshRequested: root.refreshPluginCards()
         }
 
         FerryLabel {

@@ -24,7 +24,7 @@ src/blueferry/ui/notification_rules.py
 src/blueferry/ui/contacts.py
 src/blueferry/ui/search.py
 src/blueferry/ui/plugin_settings.py
-src/blueferry/ui/plugin_settings_presenter.py
+src/blueferry/plugin_settings_presenter.py
 src/blueferry/ui/plugin_cards.py
 src/blueferry/ui/companion_tools.py
 src/blueferry/ui/photos.py
@@ -75,6 +75,7 @@ src/blueferry/plugin_surfaces.py
 src/blueferry/photos_view.py
 src/blueferry/plugin_settings_view.py
 src/blueferry/plugin_settings_model.py
+src/blueferry/plugin_logs.py
 src/blueferry/qt/qml/PluginConfigForm.qml
 src/blueferry/qt/qml/PluginStoreCard.qml
 src/blueferry/qt/qml/SettingsPlugins.qml
@@ -100,4 +101,7 @@ src/blueferry/notification_apps_view.py
 src/blueferry/media_volume_view.py
 src/blueferry/tui_contacts.py
 src/blueferry/tui_search.py
+src/blueferry/tui_plugins.py
+src/blueferry/tui_plugin_settings.py
+src/blueferry/tui_photos.py
 src/blueferry/call_audio_view.py
