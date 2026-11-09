@@ -1216,6 +1216,34 @@ def test_mirror_removals_setter_round_trips_and_reports_status(public_service) -
     assert len(changes) == 2
 
 
+def _raw_call(name, member, args, signature, interface=MESSAGES_IFACE):
+    """Send ``args`` with exactly ``signature``, which dbus-python never checks.
+
+    A proxy call would convert the arguments to the introspected types; a raw
+    message shows what the service does with the wrong ones.
+    """
+    outcome = {}
+
+    def request() -> None:
+        connection = dbus.SessionBus(private=True, mainloop=dbus.mainloop.NULL_MAIN_LOOP)
+        try:
+            message = dbus.lowlevel.MethodCallMessage(name, OBJECT_PATH, interface, member)
+            if signature:
+                message.append(*args, signature=signature)
+            reply = connection.send_message_with_reply_and_block(message, 5)
+            outcome["value"] = reply.get_args_list()
+        except dbus.exceptions.DBusException as error:
+            outcome["error"] = error.get_dbus_name()
+        finally:
+            connection.close()
+
+    client_thread = threading.Thread(target=request)
+    client_thread.start()
+    _dispatch_until(lambda: not client_thread.is_alive())
+    client_thread.join(timeout=1)
+    return outcome
+
+
 def test_raw_call_with_the_wrong_argument_types_is_rejected(public_service) -> None:
     name, _pending, _policy, _changes, service = public_service
     cleared = []
@@ -1274,3 +1302,52 @@ def test_raw_call_to_a_python_attribute_gets_the_usual_error(public_service) -> 
     client_thread.join(timeout=1)
 
     assert outcome == {"error": "org.freedesktop.DBus.Python.AttributeError"}
+
+
+class _Untouched:
+    """Stands in for the operations: records every attribute a method reads."""
+
+    def __init__(self) -> None:
+        self.touched: list[str] = []
+
+    def __getattr__(self, name):
+        self.touched.append(name)
+        raise AttributeError(name)
+
+
+# Messages1 methods added after the strict check landed (#320/#339), each with
+# arguments the method would otherwise convert and act on.
+WRONGLY_TYPED = [
+    ("Search", ("ana", "50"), "ss"),
+    ("Search", ("ana",), "s"),
+    ("ListContactCards", (0, 50, "ana"), "iis"),
+    ("ListContactCards", (0, 50), "uu"),
+    ("GetContact", (7,), "u"),
+    ("GetContact", (dbus.ObjectPath("/c1"),), "o"),
+    # bool() would read the string "false" as true.
+    ("SetNotificationPinned", ("key", "false"), "ss"),
+    ("SetNotificationPinned", ("key", 0), "si"),
+    ("ListNotificationApps", ("all",), "s"),
+    ("SetNotificationAppMuted", ("com.example.App", "false"), "ss"),
+    ("SetNotificationAppMuted", ("com.example.App",), "s"),
+]
+
+
+@pytest.mark.parametrize(
+    ("member", "args", "signature"), WRONGLY_TYPED,
+    ids=[f"{member}-{signature or 'none'}" for member, _args, signature in WRONGLY_TYPED],
+)
+def test_new_methods_reject_wrongly_typed_arguments(
+    public_service, member, args, signature,
+) -> None:
+    name, _pending, _policy, _changes, service = public_service
+    declared = getattr(MessagesService, member)._dbus_in_signature
+    assert declared != signature
+    operations, service.operations = service.operations, _Untouched()
+    try:
+        outcome = _raw_call(name, member, args, signature)
+    finally:
+        untouched, service.operations = service.operations, operations
+
+    assert outcome == {"error": "org.freedesktop.DBus.Error.InvalidArgs"}
+    assert untouched.touched == []
