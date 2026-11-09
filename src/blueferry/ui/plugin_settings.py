@@ -27,10 +27,10 @@ from typing import Any
 
 from gi.repository import Adw, Gtk, Pango
 
+from blueferry import plugin_settings_presenter as present
 from blueferry.i18n import _
 from blueferry.plugin_api.surfaces import icon_name
 from blueferry.plugin_settings_model import PluginSettingsModel
-from blueferry.ui import plugin_settings_presenter as present
 from blueferry.ui.util import glib_timer, launch_uri
 
 ModelFactory = Callable[[Callable[[], None], Callable[[str], None]], PluginSettingsModel]

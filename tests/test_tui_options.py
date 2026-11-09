@@ -206,14 +206,16 @@ def _plain(screen, selector: str) -> str:
 
 def test_the_categories_follow_the_qt_and_gtk_settings() -> None:
     assert [c.key for c in categories()] == [
-        "phone", "notifications", "calls", "security", "about",
+        "phone", "notifications", "calls", "security", "plugins", "about",
     ]
     # Every row named in a group exists, and every row is placed once.
     placed = [item for group in GROUPS for item in group.items]
     assert len(placed) == len(set(placed))
     assert {f"opt:{key}" for key in SAVED_SWITCHES} <= set(placed)
     assert {f"feature:{name}" for name in FEATURE_ROWS} <= set(placed)
-    assert {group.category for group in GROUPS} == {c.key for c in categories()}
+    # The Plugins tab is PluginsPane instead of option groups.
+    assert {group.category for group in GROUPS} == {
+        c.key for c in categories()} - {"plugins"}
 
 
 def test_options_screen_saves_the_contact_photo_opt_in() -> None:
@@ -700,6 +702,28 @@ def test_the_command_palette_opens_a_category_and_the_diagnostics() -> None:
             await _until(pilot, lambda: tabs.active == "options-about")
             commands["Run Diagnostics"].callback()
             await _mounted(pilot, app, DoctorScreen)
+
+    asyncio.run(scenario())
+
+
+def test_the_palette_offers_photos_only_while_a_photo_plugin_is_enabled() -> None:
+    async def scenario() -> None:
+        enabled = [False]
+        app = _app(_OptionsBackend(), photos_plugin=lambda: enabled[0])
+
+        def titles() -> set[str]:
+            return {command.title for command in app.get_system_commands(app.screen)}
+
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause(0.1)
+            assert "Photos" not in titles() and "Run Diagnostics" in titles()
+            # Turned on in Settings > Plugins: checked again when Options closes.
+            enabled[0] = True
+            app.action_options()
+            await _mounted(pilot, app, OptionsScreen)
+            assert "Photos" not in titles()
+            app.screen.dismiss(None)
+            await _until(pilot, lambda: "Photos" in titles())
 
     asyncio.run(scenario())
 
