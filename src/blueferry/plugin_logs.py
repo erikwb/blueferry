@@ -13,10 +13,17 @@ import os
 import stat
 from pathlib import Path
 
+from blueferry.i18n import _
 from blueferry.plugin_api.logs import candidate_paths, valid_plugin_id
 
 MAX_TAIL_BYTES = 256 * 1024
 DEFAULT_LINES = 200
+
+
+def missing_text() -> str:
+    """What "Show Log" says for a plugin without a log file yet."""
+    return _("This plugin has not written a log yet. Plugins for plugin API "
+             "1.4 start one the first time they run.")
 
 
 def find_log(plugin_id: str) -> Path | None:
