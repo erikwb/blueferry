@@ -1,6 +1,7 @@
 """Toolkit-neutral state of the Photos tab (a plugin with ``photos``).
 
-Shared by the Qt client (``qt/controller.py``) and, soon, the GTK client.
+Shared by the Qt client (``qt/controller.py``), the GTK client and the
+terminal client (``tui_photos.py``).
 The list is loaded only while the tab is shown and forgotten when it is
 hidden. Opening a photo looks the plugin up again on the worker and calls
 it only if it is still the one the list came from, because a call would
