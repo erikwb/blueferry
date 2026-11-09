@@ -10,6 +10,9 @@ Textual ones:
   ``on_error(str(exception))``, then ``on_finished()``, in that order. A
   worker whose node was removed (a dismissed screen) delivers nothing, so a
   late answer never touches widgets that are gone.
+- :class:`SerialTaskRunner` runs one operation at a time, in order, for
+  models that want a single worker (the plugin settings: git, pip and
+  plugin calls).
 - :class:`TextualTimer` is a restartable single-shot timer over the node's
   ``set_timer``. Textual stops a node's timers when the node is removed.
 
@@ -79,6 +82,43 @@ class TextualTaskRunner:
         return self._node.run_worker(
             work, thread=True, group=self._group, exit_on_error=True,
         )
+
+
+class SerialTaskRunner:
+    """A :class:`TextualTaskRunner` that starts the next operation only
+    after the previous one reported back, like a one-thread pool."""
+
+    def __init__(self, node: DOMNode, *, group: str = "tasks") -> None:
+        self._runner = TextualTaskRunner(node, group=group)
+        self._queue: list[tuple] = []
+        self._running = False
+
+    def submit(
+        self,
+        operation: Callable[[], Any],
+        on_done: Callable[[Any], None] | None = None,
+        on_error: Callable[[str], None] | None = None,
+        on_finished: Callable[[], None] | None = None,
+    ) -> None:
+        self._queue.append((operation, on_done, on_error, on_finished))
+        if not self._running:
+            self._next()
+
+    def _next(self) -> None:
+        if not self._queue:
+            self._running = False
+            return
+        self._running = True
+        operation, on_done, on_error, on_finished = self._queue.pop(0)
+
+        def finished() -> None:
+            try:
+                if on_finished is not None:
+                    on_finished()
+            finally:
+                self._next()
+
+        self._runner.submit(operation, on_done, on_error, finished)
 
 
 class TextualTimer:

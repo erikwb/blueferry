@@ -11,7 +11,12 @@ from textual.screen import Screen
 from textual.widgets import Static
 
 from blueferry.client_tasks import TaskRunner, Timer
-from blueferry.tui_tasks import TextualTaskRunner, TextualTimer, timer_factory
+from blueferry.tui_tasks import (
+    SerialTaskRunner,
+    TextualTaskRunner,
+    TextualTimer,
+    timer_factory,
+)
 
 
 class _App(App[None]):
@@ -200,5 +205,34 @@ def test_a_negative_delay_fires_at_once() -> None:
         async with app.run_test() as pilot:
             TextualTimer(app, lambda: fired.append(1)).start(-5)
             await _until(pilot, lambda: fired == [1])
+
+    asyncio.run(scenario())
+
+
+def test_the_serial_runner_starts_one_operation_after_the_other() -> None:
+    async def scenario() -> None:
+        app = _App()
+        running: list[int] = []
+        overlaps: list[int] = []
+        order: list[str] = []
+        async with app.run_test() as pilot:
+            runner = SerialTaskRunner(app)
+
+            def operation(name: str):
+                def work() -> str:
+                    running.append(1)
+                    overlaps.append(len(running))
+                    threading.Event().wait(0.02)
+                    running.pop()
+                    if name == "b":
+                        raise RuntimeError("b failed")
+                    return name
+                return work
+
+            for name in "abc":
+                runner.submit(operation(name), order.append, lambda error: order.append(error))
+            await _until(pilot, lambda: len(order) == 3)
+            assert order == ["a", "b failed", "c"]
+            assert overlaps == [1, 1, 1]
 
     asyncio.run(scenario())

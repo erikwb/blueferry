@@ -8,8 +8,11 @@
   connection, battery, signal, network and now playing, and for each opt-in
   feature that is off the setting that turns it on
   (``phone_link_view.feature_hints``). Volume down, Play/Pause and volume
-  up sit under now playing. Its other buttons open the notification
-  list, the recent calls, the calls panel and Settings.
+  up sit under now playing. Below, "From Plugins" shows the enabled card
+  plugins' items with their actions and "Send to…"
+  (:class:`~blueferry.tui_plugins.PluginCardsPanel`), loaded only while
+  the overview is open. Its other buttons open the notification list, the
+  recent calls, the calls panel and Settings.
 - :class:`RecentCallsScreen` (``h``) lists the iPhone's recent calls grouped
   by day (``phone_overview.call_groups``), with call back and message.
 
@@ -28,6 +31,7 @@ from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
+from textual.widget import Widget
 from textual.widgets import Button, ListItem, ListView, Static
 
 from blueferry import media_volume_view, phone_link_view
@@ -173,8 +177,11 @@ class PhoneOverviewScreen(ModalScreen[str | None]):
         on_name: Callable[[str], None] | None = None,
         volume: Mapping[str, Any] | None = None,
         send_media: Callable[[str], None] | None = None,
+        plugin_cards: Callable[[], Widget] | None = None,
     ) -> None:
         super().__init__()
+        # Builds the "From Plugins" panel; None leaves it out.
+        self._plugin_cards = plugin_cards
         self._shown = False  # composed and mounted; widgets exist
         self.status: Mapping[str, Any] = dict(status)
         self.now_playing = now_playing
@@ -197,6 +204,8 @@ class PhoneOverviewScreen(ModalScreen[str | None]):
                 yield Button(_("Play/Pause  p"), id="phone-overview-play")
                 yield Button(f"{labels['up_label']}  +", id="phone-overview-volume-up")
             yield Static("", id="phone-overview-hints", classes="phone-overview-hint")
+            if self._plugin_cards is not None:
+                yield self._plugin_cards()
             with Horizontal(classes="dialog-actions"):
                 yield Button(_("Close"), id="phone-overview-close")
                 yield Button(_("Settings"), id="phone-overview-options")
