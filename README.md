@@ -98,6 +98,42 @@ system notifications. Debian-family packages do not change or restart
 Bluetooth; messages and contacts still work, and notifications are added only
 when that machine already supports them.
 
+### Nix and NixOS
+
+The flake builds the backend, terminal client, GTK client, Qt client, and tray
+for `x86_64-linux` and `aarch64-linux`:
+
+```sh
+nix build github:erikwb/blueferry
+nix run github:erikwb/blueferry -- --help
+```
+
+On NixOS, add the input and import its module:
+
+```nix
+# flake.nix inputs
+blueferry.url = "github:erikwb/blueferry";
+blueferry.inputs.nixpkgs.follows = "nixpkgs";
+
+# NixOS module
+imports = [ inputs.blueferry.nixosModules.default ];
+services.blueferry.enable = true;
+```
+
+The module enables Bluetooth experimental APIs, disables BlueZ's competing
+`hfp` plugin, and installs the D-Bus activation and user services. The daemon
+starts only after pairing has written its configuration. An active local
+session may start the fixed Class-of-Device helper; it receives no general
+permission to run `btmgmt` or manage system services. A desktop Secret Service
+provider and a working Bluetooth controller are still required. The Quickshell
+frontend and experimental oFono calling setup are not configured by this module.
+
+After rebuilding, open `blueferry-gtk` or `blueferry-qt` and pair from the client.
+Building a package alone does not configure a non-NixOS host's system services.
+`nix flake check` builds the package and runs installed-client and isolated
+pairing-helper startup checks. These checks do not access a phone or establish
+a Bluetooth connection.
+
 ### Build packages from source
 
 Clone the repository, then choose the build instructions for your
