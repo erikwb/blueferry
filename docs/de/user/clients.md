@@ -246,6 +246,15 @@ anbietet.
 | Mitteilungen anheften/lösen | ✓ Reiter Notifications | ✓ Reiter Notifications | ✓ iPhone Notifications, `P` | ✓ Show Recent Notifications | ✓ `blueferry notifications pin\|unpin KEY` |
 | Apps stummschalten | ✓ Settings › Notifications | ✓ Settings › Notifications | ✓ Settings › Notifications › Muted apps | ✓ iPhone settings › Notifications | ✓ `blueferry notifications apps\|mute\|unmute` |
 
+**From Plugins** unter dem Wiedergabestreifen zeigt, solange die
+Unterhaltungen zu sehen sind, was deine [Plugins](plugins.md) anbieten, etwa
+AirPods oder den nächsten Kalendereintrag, mit ihren Knöpfen; ↻ liest sie
+neu. Ein Plugin, das versagt, erscheint als ausgegraute Zeile. Knöpfe, die
+Dateien senden (etwa **Send files…** bei einem LocalSend-Gerät), fehlen,
+weil das Panel keine Dateiauswahl hat; ein Hinweis unter dem Abschnitt sagt,
+wo es sie gibt. Solange das Panel verborgen ist, werden die Karten nicht
+gelesen.
+
 Die Mitteilungsliste des Panels hat keine weiteren Aktionen pro Eintrag (sie
 öffnet und beantwortet keine Mitteilungen), daher sieht eine Mitteilung, auf
 die das iPhone nicht mehr reagieren kann, dort bis auf **Removed on
@@ -276,8 +285,8 @@ anderen Clients:
 
 | Weggelassen | Warum | Stattdessen |
 |---|---|---|
-| Plugin-Verwaltung und Plugin-Einstellungen | Jedes Plugin bringt sein eigenes Einstellungsformular mit Geheimnissen, Knöpfen und Protokoll mit, dazu kommt der Store mit installierbaren Plugins; das ist zu viel und zu unterschiedlich für ein kompaktes Panel | Qt- oder GTK-Einstellungen, `blueferry plugins` |
-| **Send to…** und der Tab **Photos** (Plugin-Funktionen) | Send to braucht eine Dateiauswahl oder Drag & Drop, die das Panel nicht hat; beides kommt von Plugins, die das Panel nicht verwaltet | Qt-Client (Photos), Qt- oder GTK-Client (Send to), `blueferry send`, `blueferry photos` |
+| Plugin-Verwaltung und Plugin-Einstellungen | Jedes Plugin bringt sein eigenes Einstellungsformular mit Geheimnissen, Knöpfen und Protokoll mit, dazu kommt der Store mit installierbaren Plugins; das ist zu viel und zu unterschiedlich für ein kompaktes Panel | Qt-, GTK- oder Terminal-Einstellungen, `blueferry plugins` |
+| **Send to…**, Kartenknöpfe, die Dateien senden, und der Tab **Photos** (Plugin-Funktionen) | Senden braucht eine Dateiauswahl oder Drag & Drop, die das Panel nicht hat; Fotos brauchen ein Raster aus Vorschaubildern, zu groß für das Panel | Qt- oder GTK-Client (Photos mit Vorschaubildern, Send to), Terminal-Client, `blueferry send`, `blueferry photos` |
 | Begleitwerkzeuge | Desktop-Helfer richtet man einmal ein; das ist keine Aufgabe für ein Panel | Qt- oder GTK-Einstellungen, `blueferry tools` |
 | Nachrichtenverlauf löschen | Bietet auch der Terminal-Client nicht an | `blueferry history-clear` |
 | Click Rules, letzte Anrufe, das Anruf-Panel (und damit das Umschalten eines laufenden Anrufs auf einen anderen Lautsprecher oder ein anderes Mikrofon) | Noch nicht im Quickshell-Client | Qt-, GTK- oder Terminal-Client, `blueferry calls audio … --this-call` |
@@ -317,6 +326,7 @@ Hintergrunddienst sie anbietet.
 | Notifications | Welche Ereignisse Popups erzeugen, nur Kontakte, **Click Rules** (auch `l`), [stummgeschaltete Apps](notification-mute.md), Mitteilungsinhalt, Aktionsknöpfe, Mitteilungen mit dem iPhone abgleichen, beim Wegklicken als gelesen markieren, letzte iPhone-Mitteilungen behalten |
 | Calls & Audio | Telefonate, Anrufliste und Popups für verpasste Anrufe, Akkuwarnung, iPhone-Ton auf diesem Computer (auch `a`), Mediensteuerung und MPRIS |
 | Security | Einmalcodes, Sperre bei Abwesenheit, die Speichereinstellung (nur angezeigt; ändern mit `blueferry storage-policy-set`) |
+| Plugins | Installierte [Plugins](plugins.md) (Leertaste ein/aus, Enter **Settings**, `u` Update, Entf entfernen, `g` das Protokoll im Terminal), die Plugin-Listen mit Installieren und Aktualisieren, eine eigene Git-URL und die Listen selbst. Jede Installation fragt vorher nach. Die **Settings** eines Plugins öffnen sich als eigenes Formular |
 | About | Version, der Hintergrunddienst mit **Restart Service**, die Tastenbelegung |
 
 Die Schalter, die einen Neustart brauchen (siehe oben), zeigen den Hinweis
@@ -328,10 +338,17 @@ zu setzen ist.
 **Copy Report** legt ihn über das Terminal (OSC 52) in die Zwischenablage;
 reicht das Terminal das nicht weiter, markiere den Text mit der Maus.
 
+Das Einstellungsformular eines Plugins folgt dem, was das Plugin braucht,
+wie in Qt und GTK: Abschnitte (eingeklappte öffnet **Show**), Felder, die
+nur bei bestimmten Auswahlen erscheinen, Beispiele und Hilfe-Links, **Test
+Connection**, eine Anmeldung im Browser und die eigenen Knöpfe des Plugins.
+**Save** (oder `Strg+S`) wird verfügbar, sobald die Pflichtfelder gültig
+sind. Ein gespeichertes Passwort oder ein Schlüssel wird nie angezeigt: das
+Feld bleibt leer und maskiert, leer lassen behält den Wert.
+
 Die Befehlspalette (`Strg+P`) kennt außerdem **Settings: Phone** … **Settings:
 About** und **Run Diagnostics**. Die Kopplung bleibt bei `blueferry
-pair-setup` oder einem grafischen Client; Plugin-Einstellungen hat der
-Terminal-Client noch nicht.
+pair-setup` oder einem grafischen Client.
 
 ### iPhone, Anrufe und Mitteilungen
 
@@ -345,6 +362,24 @@ die Übersicht zu schließen; außerhalb eines Textfelds ändern auch `-` und
 jeweils um eine iPhone-Stufe, und neben dem Titel steht der Wert, den das
 iPhone zuletzt gemeldet hat. Die übrigen Knöpfe öffnen die Mitteilungsliste,
 die letzten Anrufe, das Anruf-Panel und Settings.
+
+Darunter listet **From Plugins**, was deine [Plugins](plugins.md) anbieten,
+etwa einen Kalendereintrag, AirPods oder ein LocalSend-Gerät, mit ihren
+Knöpfen; Enter führt den markierten aus. **Send to…** fragt nach einem Ziel
+und den Pfaden der Dateien (→ ergänzt einen Pfad). Gelesen wird nur, solange
+die Übersicht offen ist. **Photos** in der Palette (da, solange ein
+Foto-Plugin eingeschaltet ist) listet die neuesten Einträge dieses Plugins;
+Enter öffnet einen im Bildbetrachter, `c`
+kopiert seinen Pfad.
+
+| | Qt | GTK | TUI | Quickshell | CLI |
+|---|---|---|---|---|---|
+| Plugin-Karten mit ihren Knöpfen | ✓ | ✓ | ✓ iPhone-Übersicht | ✓ From Plugins, ohne Knöpfe, die Dateien senden | ✓ `blueferry cards` |
+| Plugins verwalten und einstellen | ✓ | ✓ | ✓ Settings › Plugins | — | ✓ `blueferry plugins` |
+| Send to… | ✓ | ✓ | ✓ Dateipfade | — | ✓ `blueferry send` |
+| Dateien auf das Fenster oder einen Karteneintrag ziehen | ✓ | ✓ | — ein Terminal bekommt keine Dateien gezogen | — | — |
+| Photos | ✓ Vorschaubilder | ✓ Vorschaubilder | ✓ Liste ohne Vorschaubilder | — | ✓ `blueferry photos` |
+| Begleitprogramme | ✓ | ✓ | — | — | ✓ `blueferry tools` |
 
 **iPhone Notifications** (in der Palette und in der Übersicht) listet die
 letzten Mitteilungen von iPhone-Apps, die **Keep recent iPhone

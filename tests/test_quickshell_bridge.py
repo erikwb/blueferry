@@ -1897,3 +1897,71 @@ def test_bridge_dials_only_digits_and_reports_the_calls_hint() -> None:
         "daemon": True, "calls_enabled": False,
     })
     assert "dial_hint" not in bridge.dispatch("status", {})
+
+
+def _surfaces_bridge(opened, watched, invoked):
+    from blueferry import plugin_surfaces as surfaces
+    from blueferry.plugin_api.surfaces import Action, CardItem
+    from blueferry.plugin_surfaces_model import PluginSurfacesModel
+
+    cards = [
+        surfaces.PluginCard("io.example.ls", "LocalSend", True, "", [
+            CardItem("phone", "<b>iPhone</b>", subtitle="ready", actions=[
+                Action("send", "Send files…", kind="primary", send_to="phone"),
+                Action("ping", "<i>Ping</i>")]),
+        ], can_send=True),
+        surfaces.PluginCard("io.example.broken", "Broken", False, "Unavailable: timeout"),
+    ]
+
+    def make(**kwargs) -> PluginSurfacesModel:
+        return PluginSurfacesModel(
+            **kwargs,
+            load_cards=lambda: cards,
+            card_names=lambda: ["io.weirdware.BlueFerry.Plugin.ls"],
+            share_available=lambda: True,
+            find=lambda plugin_id, capability: plugin_id,
+            invoke=lambda plugin, item, action: invoked.append((plugin, item, action))
+            or surfaces.Outcome(True, "Pinged", "https://example.org/x"),
+        )
+
+    bridge = QuickshellBridge(FakeClient(), surfaces=make, open_uri=opened.append)
+    bridge.watch_cards = watched.append
+    return bridge
+
+
+def test_bridge_returns_plugin_cards_with_their_simple_buttons() -> None:
+    opened: list[str] = []
+    watched: list[list[str]] = []
+    invoked: list[tuple] = []
+    bridge = _surfaces_bridge(opened, watched, invoked)
+    reply = bridge.dispatch("plugin_cards", {})
+    assert watched == [["io.weirdware.BlueFerry.Plugin.ls"]]
+    assert reply["loaded"] is True and reply["sendHidden"] is True and reply["sendHint"]
+    assert reply["cards"] == [
+        {"pluginId": "io.example.ls", "name": "LocalSend", "ok": True, "hint": "",
+         "items": [{"id": "phone", "title": "<b>iPhone</b>", "subtitle": "ready",
+                    # The panel has no file picker: the sending button is left out.
+                    "actions": [{"id": "ping", "label": "<i>Ping</i>", "primary": False}]}]},
+        {"pluginId": "io.example.broken", "name": "Broken", "ok": False,
+         "hint": "Unavailable: timeout", "items": []},
+    ]
+
+    reply = bridge.dispatch("plugin_action", {
+        "plugin_id": "io.example.ls", "item_id": "phone", "action_id": "ping"})
+    assert invoked == [("io.example.ls", "phone", "ping")]
+    assert opened == ["https://example.org/x"]
+    assert reply["message"] == "Pinged" and reply["messageOk"] is True
+    assert reply["cards"][0]["items"][0]["id"] == "phone"  # read again afterwards
+
+    # The action's answer belongs to the action reply: an ordinary read
+    # afterwards (the panel was hidden in between, say) does not resurface it.
+    reply = bridge.dispatch("plugin_cards", {})
+    assert reply["message"] == ""
+    assert reply["cards"][0]["items"][0]["id"] == "phone"
+
+
+def test_bridge_rejects_malformed_plugin_actions() -> None:
+    bridge = _surfaces_bridge([], [], [])
+    with pytest.raises(RequestError):
+        bridge.dispatch("plugin_action", {"plugin_id": "io.example.ls", "item_id": 3,
+                                          "action_id": "ping"})
