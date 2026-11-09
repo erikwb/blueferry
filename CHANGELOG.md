@@ -4,6 +4,9 @@
 
 ### Added
 
+- Fedora packages: `blueferry-quickshell` is now built as an RPM alongside
+  the GTK and Qt clients; it requires Fedora's `quickshell` package (Fedora 44
+  or newer).
 - Terminal client plugins: the iPhone overview shows **From Plugins** (card
   items with their buttons, re-read on `CardChanged` while it is open) and
   **Send to…** with a path field that completes paths; card buttons with

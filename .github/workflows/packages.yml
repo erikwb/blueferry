@@ -291,7 +291,7 @@ jobs:
       - name: Build packages and run recipe checks
         run: ./packaging/build-rpm.sh
       - name: Install the built artifacts
-        run: dnf install -y --allowerasing dist/rpm/*.noarch.rpm
+        run: packaging/install-rpms.sh dist/rpm
       - name: Smoke test
         run: |
           install -d -m700 /tmp/blueferry-systemd-analyze
@@ -347,7 +347,7 @@ jobs:
           path: packages
       - name: Install and smoke-test the exact Fedora artifacts
         run: |
-          dnf install -y --allowerasing packages/*.noarch.rpm
+          packaging/install-rpms.sh packages
           install -d -m700 /tmp/blueferry-systemd-analyze
           XDG_RUNTIME_DIR=/tmp/blueferry-systemd-analyze \
             systemd-analyze --user verify --recursive-errors=no --man=no \

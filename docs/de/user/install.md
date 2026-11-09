@@ -8,7 +8,7 @@ enthält auch den Terminal-Client `blueferry-tui`.
 | --- | --- |
 | `blueferry-gtk` | GNOME, Cinnamon und ähnliche Desktops |
 | `blueferry-qt` | KDE Plasma |
-| `blueferry-quickshell` | Quickshell und Omarchy (nur Arch-Pakete) |
+| `blueferry-quickshell` | Quickshell und Omarchy (Arch sowie Fedora ab 44) |
 
 Lade die Pakete für deine Distribution aus dem
 [neuesten Release](https://github.com/erikwb/blueferry/releases/latest) herunter
@@ -39,7 +39,9 @@ sudo dnf install ./blueferry-backend-*.fc43.noarch.rpm \
   ./blueferry-gtk-*.fc43.noarch.rpm
 ```
 
-Ersetze `blueferry-gtk` für KDE Plasma durch `blueferry-qt`.
+Ersetze `blueferry-gtk` für KDE Plasma durch `blueferry-qt` oder für einen
+Quickshell-Desktop durch `blueferry-quickshell` (ab Fedora 44; Fedora 43 hat
+kein `quickshell`-Paket).
 
 ## Gentoo, Alpine und andere Systeme ohne systemd
 
@@ -70,7 +72,7 @@ WSL2-Besonderheiten erledigt sind; siehe [Betrieb unter WSL2](wsl2.md).
 | Arch | Arch Linux, CachyOS | TUI, GTK, Qt, Quickshell |
 | DEB | Debian 13, Ubuntu 26.04, PikaOS IV | TUI, GTK, Qt |
 | DEB | Ubuntu 24.04, Linux Mint 22.3, Pop!_OS 24.04 | TUI, GTK |
-| RPM | Fedora 43, 44, 45 | TUI, GTK, Qt |
+| RPM | Fedora 43, 44, 45 | TUI, GTK, Qt; Quickshell auf 44 und 45 |
 
 Einzelheiten stehen in
 [packaging/README.md](https://github.com/erikwb/blueferry/blob/main/packaging/README.md)
