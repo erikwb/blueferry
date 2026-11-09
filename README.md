@@ -752,6 +752,12 @@ What happens then:
   blueferry calls hangup          # or: hangup --all
   ```
 
+- A ringing call with a caller number can be declined with a text: a saved
+  reply or your own (**Decline with message** in the clients,
+  `blueferry calls decline-with-message`). Up to 5 replies are
+  saved under **Calls & Audio** (`blueferry calls replies`). If the text
+  cannot be sent the call stays declined and BlueFerry says so; see
+  [Declining with a message](docs/en/user/calls.md#declining-with-a-message).
 - `dial` accepts plain numbers only (an optional leading `+` and digits;
   spaces, dashes, dots, parentheses, and slashes are ignored). `*` and `#`
   are refused: dialed, they form service codes such as `**21*…#` that
