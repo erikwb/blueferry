@@ -45,7 +45,9 @@ flowchart LR
 - Raises oFono's call volume to 100 %, because the 50 % default is barely
   audible with an iPhone.
 
-Audio itself is routed by PipeWire. BlueFerry only controls the call.
+Audio itself is routed by PipeWire. By default the call uses the system's
+speaker and microphone; see [Call speaker and microphone](#call-speaker-and-microphone)
+to pick others for calls only.
 
 ## How to enable it
 
@@ -99,6 +101,48 @@ plays here. Turning calls off (or quitting the backend) releases that link
 again, so call audio goes back to the phone.
 
 `blueferry calls` should then show `ready` while the iPhone is connected.
+
+## Call speaker and microphone
+
+BlueFerry can play calls on another speaker and record them from another
+microphone than the system's, for example a headset for calls while music
+stays on the desk speakers. Other applications and the system defaults
+keep their devices.
+
+- **Speaker for calls** and **Microphone for calls** in the client settings
+  apply to every call. **Same as system** (the default)
+  follows the system's devices.
+- During a call, the call view shows the devices actually used and lets you
+  switch them for this call only; the next call uses the settings again.
+- A chosen device that is not connected is skipped: the call uses the
+  system's device and the call view says so. Plugging the device in during
+  the call moves the call to it within a few seconds.
+- Other Bluetooth headsets can be chosen too; only the iPhone itself is
+  left out.
+- While a call runs, BlueFerry decides where its audio goes: moving the
+  call in a mixer such as pavucontrol or Helvum lasts only until the next
+  check. Use the call view's switch instead.
+
+```bash
+blueferry calls audio                    # choices, devices and the running call
+blueferry calls audio output alsa_output.usb-Logitech_A50-00.stereo-chat
+blueferry calls audio input system       # back to the system's microphone
+blueferry calls audio output alsa_output.pci-0000_00_1f.3.analog-stereo --this-call
+```
+
+Devices are saved by their PipeWire node name, which survives reboots and
+replugging. This needs PipeWire with WirePlumber and the `pw-dump` and
+`pw-metadata` tools (part of PipeWire). The call audio appears a few seconds
+after a call is answered or dialed; until then the call view shows
+"Waiting for the call audio".
+
+WirePlumber remembers the last device of the call streams in
+`~/.local/state/wireplumber/stream-properties` (a line starting with
+`Output/Audio:node.name:bluez_input.<MAC>` or `Input/Audio:…bluez_output.<MAC>`)
+and uses it again on the next call. BlueFerry corrects that on every call,
+and when calls are switched off it deletes it once more if the call
+streams still exist. If calls stay off and a remembered device still
+applies, delete those lines while WirePlumber is not running.
 
 ## Phone links
 

@@ -165,6 +165,10 @@
   folders and remote URIs are skipped.
 - GTK client: the iPhone sound rows in Settings and the quick switches show
   the A/V sync line under the sound status.
+- Choose the speaker and microphone for phone calls, saved for every call or
+  switched for the running call only, without changing the system defaults
+  (`Calls1.ListCallAudioDevices`, `SetCallAudioDevice`,
+  `SetCallAudioDeviceForCall`, `blueferry calls audio`).
 
 ### Fixed
 
