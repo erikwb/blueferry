@@ -1,7 +1,8 @@
 """Toolkit-neutral plugin surfaces (PLUGINS.md, ApiVersion 1.2).
 
-Shared by the Qt client (``qt/plugin_surfaces.py``) and, soon, the GTK
-client. The phone card's "From Plugins" section (capability ``card``) and
+Shared by the Qt client (``qt/plugin_surfaces.py``), the GTK client and
+the terminal client (``tui_plugins.py``). The phone card's "From
+Plugins" section (capability ``card``) and
 "Send to…" (capability ``share``) call plugins over D-Bus with timeouts, so
 every call runs on the client's :class:`~blueferry.client_tasks.TaskRunner`;
 neither the UI thread nor the client's D-Bus worker waits on a plugin.

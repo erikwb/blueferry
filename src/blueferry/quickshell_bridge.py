@@ -43,6 +43,8 @@ from blueferry.config import FEATURE_SWITCHES
 from blueferry.contact_photos import image_type, valid_photo
 from blueferry.i18n import _
 from blueferry.phone_audio_view import phone_audio
+from blueferry.plugin_card_watch import CardChangeWatcher
+from blueferry.plugin_surfaces_model import PluginSurfacesModel
 from blueferry.protocol import BUS_NAME, EVENTS_IFACE, OBJECT_PATH, TETHER_IFACE
 from blueferry.reconnect_view import ManualReconnect, reconnect_view
 from blueferry.service_manager import bluetooth_restart_command
@@ -406,6 +408,83 @@ def _volume_controls(snapshot: object, visible: bool) -> dict[str, Any]:
     }
 
 
+class _InlineRunner:
+    """The shared client models' ``TaskRunner`` inside a request worker.
+
+    Bridge requests already run on worker threads, off the shell, so a
+    model's step runs right away on the worker that asked for it.
+    """
+
+    def submit(
+        self,
+        operation: Callable[[], Any],
+        on_done: Callable[[Any], None] | None = None,
+        on_error: Callable[[str], None] | None = None,
+        on_finished: Callable[[], None] | None = None,
+    ) -> None:
+        try:
+            value = operation()
+        except Exception as error:  # every failure goes to on_error
+            if on_error is not None:
+                on_error(str(error))
+        else:
+            if on_done is not None:
+                on_done(value)
+        if on_finished is not None:
+            on_finished()
+
+
+class _NoTimer:
+    """The shell asks again itself (after an action, on plugin-cards-changed)."""
+
+    active = False
+
+    def __init__(self, _callback: Callable[[], None]) -> None:
+        pass
+
+    def start(self, _delay_ms: int) -> None:
+        pass
+
+    def stop(self) -> None:
+        pass
+
+
+def plugin_cards_reply(state: Mapping[str, Any]) -> dict[str, Any]:
+    """The panel's plugin cards from the shared model's state.
+
+    Only the panel's simple buttons: an action that sends files
+    (``sendTo``) needs a file picker the panel does not have, so it is left
+    out and ``sendHidden`` says so. Labels are the raw plugin text for the
+    panel's plain-text buttons; nothing else of a card is passed.
+    """
+    cards = []
+    hidden = False
+    for card in state.get("cards") or []:
+        items = []
+        for item in card.get("items") or []:
+            actions = []
+            for action in item.get("actions") or []:
+                if action.get("sendTo"):
+                    hidden = True
+                    continue
+                actions.append({"id": action["id"], "label": action.get("labelPlain") or "",
+                                "primary": action.get("primary") is True})
+            items.append({"id": item["id"], "title": item.get("title") or "",
+                          "subtitle": item.get("subtitle") or "", "actions": actions})
+        cards.append({"pluginId": card.get("pluginId") or "", "name": card.get("name") or "",
+                      "ok": card.get("ok") is True, "hint": card.get("hint") or "",
+                      "items": items})
+    return {
+        "loaded": state.get("loaded") is True,
+        "cards": cards,
+        "message": str(state.get("message") or ""),
+        "messageOk": state.get("messageOk") is not False,
+        "sendHidden": hidden,
+        "sendHint": _("Buttons that send files are in the other BlueFerry clients and "
+                      "blueferry send.") if hidden else "",
+    }
+
+
 class QuickshellBridge:
     """Decode local requests and dispatch them through ``BackendClient``."""
 
@@ -415,6 +494,8 @@ class QuickshellBridge:
         output: TextIO = sys.stdout,
         *,
         desktop_client: bool = False,
+        surfaces: Callable[..., PluginSurfacesModel] = PluginSurfacesModel,
+        open_uri: Callable[[str], None] | None = None,
     ) -> None:
         self.client = client
         self.output = output
@@ -443,6 +524,14 @@ class QuickshellBridge:
         self._muted_lock = threading.Lock()
         self._muted_cache: frozenset[str] | None = None
         self._muted_generation = 0
+        # Plugin cards: the shared model, one request at a time. It names
+        # the card plugins to watch for CardChanged after each load;
+        # ``watch_cards`` (set by main) subscribes on the GLib thread.
+        self._surfaces_lock = threading.Lock()
+        self._surfaces_factory = surfaces
+        self._surfaces: PluginSurfacesModel | None = None
+        self._open_uri = open_uri
+        self.watch_cards: Callable[[list[str]], None] = lambda _names: None
 
     def host_info(self) -> dict[str, str]:
         """Return daemon-independent facts sent to the shell at startup."""
@@ -637,6 +726,40 @@ class QuickshellBridge:
             if not 0 <= index < len(current):
                 raise RequestError("index is out of range")
             return self._saved_quick_replies(quick_reply_view.with_removed(current, index))
+
+    def _plugin_surfaces(self) -> PluginSurfacesModel:
+        if self._surfaces is None:
+            self._surfaces = self._surfaces_factory(
+                runner=_InlineRunner(), timer=_NoTimer, opener=self._open_plugin_uri,
+                watch=lambda names: self.watch_cards(list(names)),
+            )
+        return self._surfaces
+
+    def _open_plugin_uri(self, uri: str) -> None:
+        """Only what the model hands over after its plugin re-check."""
+        if self._open_uri is not None:
+            self._open_uri(uri)
+            return
+        from blueferry import desktop_open
+
+        desktop_open.open_uri(uri)
+
+    def _plugin_cards(self) -> dict[str, Any]:
+        with self._surfaces_lock:
+            model = self._plugin_surfaces()
+            # An action's answer belongs to the action reply; an ordinary
+            # read must not resurface one the panel has since forgotten.
+            model.clear_message()
+            model.reload()
+            return plugin_cards_reply(model.state())
+
+    def _plugin_action(self, plugin_id: str, item_id: str, action_id: str) -> dict[str, Any]:
+        with self._surfaces_lock:
+            model = self._plugin_surfaces()
+            model.clear_message()
+            model.invoke(plugin_id, item_id, action_id)
+            model.reload()  # an action usually changes the card
+            return plugin_cards_reply(model.state())
 
     def emit(self, payload: Mapping[str, Any]) -> None:
         line = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
@@ -869,6 +992,12 @@ class QuickshellBridge:
             return self._notification_apps()
         if method == "toggle_notification_app":
             return self._toggle_notification_app(_index(args, "index"), _text(args, "app_id"))
+        if method == "plugin_cards":
+            return self._plugin_cards()
+        if method == "plugin_action":
+            return self._plugin_action(
+                _text(args, "plugin_id"), _text(args, "item_id"), _text(args, "action_id"),
+            )
         if method in _TETHER_METHODS:
             return self._tether(method, args)
         raise RequestError(f"unsupported method: {method}")
@@ -1078,6 +1207,18 @@ def main() -> int:
         record_client_use("quickshell")
     workers = _RequestWorkers(bridge)
     signal_matches = _install_signal_receivers(bridge)
+    # CardChanged only from the enabled card plugins the last load named;
+    # the matches live on this (the GLib) thread, the loads on workers.
+    card_watcher = CardChangeWatcher(lambda: bridge.emit_event("plugin-cards-changed"))
+
+    def watch_cards(names: list[str]) -> None:
+        def on_glib_thread() -> bool:
+            card_watcher.watch(names)
+            return GLib.SOURCE_REMOVE
+
+        GLib.idle_add(on_glib_thread)
+
+    bridge.watch_cards = watch_cards
     loop = GLib.MainLoop()
 
     # A dedicated reader drains TextIO's prefetched lines and keeps a partial
@@ -1098,6 +1239,7 @@ def main() -> int:
                 source.destroy()
         # A running diagnostics child would otherwise outlive the shell.
         bridge.doctor.stop()
+        card_watcher.stop()
         if activation is not None:
             activation.close()
         for match in signal_matches:

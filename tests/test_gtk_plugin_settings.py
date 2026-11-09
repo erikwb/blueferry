@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from blueferry.ui import plugin_settings_presenter as present
+from blueferry import plugin_settings_presenter as present
 from tests.gtk_broadway import run_scenario
 
 

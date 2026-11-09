@@ -236,6 +236,14 @@ app does not offer volume control.
 | Pin / unpin notifications | ✓ Notifications tab | ✓ Notifications tab | ✓ iPhone Notifications, `P` | ✓ Show Recent Notifications | ✓ `blueferry notifications pin\|unpin KEY` |
 | Mute apps | ✓ Settings › Notifications | ✓ Settings › Notifications | ✓ Settings › Notifications › Muted apps | ✓ iPhone settings › Notifications | ✓ `blueferry notifications apps\|mute\|unmute` |
 
+**From Plugins** under the now-playing strip shows what your
+[plugins](plugins.md) offer while the conversations are shown, for example
+AirPods or the next calendar entry, with their buttons; ↻ reads them again.
+A plugin that fails shows a dimmed line. Buttons that send files (such as
+**Send files…** on a LocalSend device) are left out, since the panel has
+no file picker; a note under the section says where to find them. The
+cards are not read while the panel is hidden.
+
 The panel's notification list has no other row actions (it does not open or
 answer notifications), so a notification the iPhone can no longer act on
 looks the same there apart from **Removed on iPhone**.
@@ -263,8 +271,8 @@ Quickshell is a compact panel, so some parts stay with the other clients:
 
 | Left out | Why | Use instead |
 |---|---|---|
-| Plugin management and plugin settings | Each plugin brings its own settings form, secrets, buttons and log, and the store lists plugins to install; that is too much, and too varied, for a compact panel | Qt or GTK settings, `blueferry plugins` |
-| **Send to…** and the **Photos** tab (plugin features) | Send to needs a file picker or file drop, which the panel does not have; both come from plugins, which the panel does not manage | Qt client (Photos), Qt or GTK client (Send to), `blueferry send`, `blueferry photos` |
+| Plugin management and plugin settings | Each plugin brings its own settings form, secrets, buttons and log, and the store lists plugins to install; that is too much, and too varied, for a compact panel | Qt, GTK or terminal settings, `blueferry plugins` |
+| **Send to…**, card buttons that send files, and the **Photos** tab (plugin features) | Sending needs a file picker or file drop, which the panel does not have; photos need a grid of thumbnails, too large for the panel | Qt or GTK client (Photos with thumbnails, Send to), terminal client, `blueferry send`, `blueferry photos` |
 | Companion tools | Setting up desktop helpers is a one-time job, not a panel task | Qt or GTK settings, `blueferry tools` |
 | Clearing the message history | Not offered by the terminal client either | `blueferry history-clear` |
 | Click Rules, recent calls, the calls panel (and with it switching a running call to another speaker or microphone) | Not in the Quickshell client yet | Qt, GTK or terminal client, `blueferry calls audio … --this-call` |
@@ -304,6 +312,7 @@ tabs. A setting appears only when the running background service offers it.
 | Notifications | Which events create popups, contacts only, **Click Rules** (also `l`), [muted apps](notification-mute.md), notification content, action buttons, sync notifications with iPhone, mark read on dismiss, keeping recent iPhone notifications |
 | Calls & Audio | Phone calls, call history and missed-call popups, battery warning, iPhone sound on this computer (also `a`), media control and MPRIS |
 | Security | One-time codes, away lock, the local storage setting (shown; change it with `blueferry storage-policy-set`) |
+| Plugins | Installed [plugins](plugins.md) (Space on/off, Enter **Settings**, `u` update, Delete remove, `g` the log in the terminal), the plugin lists with install and update, your own Git URL and the lists themselves. Every install asks first. A plugin's **Settings** open as a form of their own |
 | About | Version, the background service with **Restart Service**, the keyboard map |
 
 The switches that need a restart (see above) show the restart notice at the
@@ -314,9 +323,16 @@ each switch greyed out with the `local.env` variable to set instead.
 Report** puts it on the clipboard through the terminal (OSC 52); where the
 terminal does not pass that on, select the text with the mouse instead.
 
+A plugin's settings form follows what the plugin asks for, like the Qt and
+GTK forms: sections (folded ones open with **Show**), fields that appear only
+for some choices, examples and help links, **Test Connection**, a browser
+sign-in and the plugin's own buttons. **Save** (or `Ctrl+S`) becomes
+available once the required fields are valid. A stored password or key is
+never shown: its field stays empty and masked, and leaving it empty keeps it.
+
 The command palette (`Ctrl+P`) also has **Settings: Phone** … **Settings:
 About** and **Run Diagnostics**. Pairing stays with `blueferry pair-setup`
-or a graphical client; the terminal client has no plugin settings yet.
+or a graphical client.
 
 ### iPhone, calls and notifications
 
@@ -330,6 +346,22 @@ without Shift) step the volume too.
 The volume moves one iPhone step at a time, and the level the iPhone last
 reported is shown next to the title. Its other buttons open the
 notification list, the recent calls, the calls panel and Settings.
+
+Below, **From Plugins** lists what your [plugins](plugins.md) offer, for
+example a calendar entry, AirPods or a LocalSend device, with their buttons;
+Enter runs the highlighted one. **Send to…** asks for a target and the
+paths of the files to send (→ completes a path). It is read only while the
+overview is open. **Photos** in the palette (there while a photo plugin is
+enabled) lists the newest items of that plugin; Enter opens one in your image viewer, `c` copies its path.
+
+| | Qt | GTK | TUI | Quickshell | CLI |
+|---|---|---|---|---|---|
+| Plugin cards with their buttons | ✓ | ✓ | ✓ iPhone overview | ✓ From Plugins, without buttons that send files | ✓ `blueferry cards` |
+| Plugin management and settings | ✓ | ✓ | ✓ Settings › Plugins | — | ✓ `blueferry plugins` |
+| Send to… | ✓ | ✓ | ✓ file paths | — | ✓ `blueferry send` |
+| Dropping files on the window or a card item | ✓ | ✓ | — a terminal gets no file drops | — | — |
+| Photos | ✓ thumbnails | ✓ thumbnails | ✓ list without thumbnails | — | ✓ `blueferry photos` |
+| Companion tools | ✓ | ✓ | — | — | ✓ `blueferry tools` |
 
 **iPhone Notifications** (in the palette and the overview) lists the recent
 iPhone app notifications that **Keep recent iPhone notifications** keeps:
