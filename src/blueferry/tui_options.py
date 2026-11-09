@@ -1,6 +1,7 @@
 """The terminal client's Settings screen (``o``; ``OptionsScreen`` in code),
 in the settings categories of the Qt and GTK clients: Phone, Notifications,
-Calls & Audio, Security and About.
+Calls & Audio, Security, Plugins and About. The Plugins tab is
+:class:`~blueferry.tui_plugin_settings.PluginsPane`.
 
 - Saved preferences the daemon reports in ``GetStatus`` are checkboxes
   (:data:`SAVED_SWITCHES`). Each one is shown only when the daemon reports
@@ -37,6 +38,7 @@ from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.css.query import NoMatches
 from textual.screen import ModalScreen
+from textual.widget import Widget
 from textual.widgets import Button, Checkbox, Select, Static, TabbedContent, TabPane
 from textual.widgets.select import NoSelection
 
@@ -50,6 +52,7 @@ from blueferry.proximity_lock import clamp_grace
 from blueferry.reconnect_view import reconnect_view
 from blueferry.text_safety import terminal_text
 from blueferry.tui_doctor import DoctorScreen
+from blueferry.tui_plugin_settings import PluginsPane
 from blueferry.tui_tasks import TextualTaskRunner, TextualTimer, tearing_down
 
 Values = Mapping[str, Any]
@@ -79,13 +82,13 @@ class Category:
 
 
 def categories() -> tuple[Category, ...]:
-    """The Qt and GTK settings categories, in their order. Plugins are left
-    out: the terminal client has no plugin settings yet."""
+    """The Qt and GTK settings categories, in their order."""
     return (
         Category("phone", _("Phone")),
         Category("notifications", _("Notifications")),
         Category("calls", _("Calls & Audio")),
         Category("security", _("Security")),
+        Category("plugins", _("Plugins")),
         Category("about", _("About")),
     )
 
@@ -497,9 +500,12 @@ class OptionsScreen(ModalScreen[None]):
         restart: Callable[[], None] | None = None,
         doctor: Callable[[], DoctorReport] | None = None,
         restart_state: RestartState | None = None,
+        plugins: Callable[[], Widget] | None = PluginsPane,
     ) -> None:
         super().__init__()
         self.client = client
+        # Builds the Plugins tab (tui_plugin_settings); None leaves it empty.
+        self._plugins = plugins
         self._restart_state = restart_state or RestartState()
         self.category = category if category in {c.key for c in categories()} else "phone"
         self._restart = restart or restart_backend
@@ -544,6 +550,8 @@ class OptionsScreen(ModalScreen[None]):
                 for category in categories():
                     with TabPane(category.title, id=f"options-{category.key}"):
                         with VerticalScroll(classes="options-page"):
+                            if category.key == "plugins" and self._plugins is not None:
+                                yield self._plugins()
                             for group in GROUPS:
                                 if group.category == category.key:
                                     yield from self._compose_group(group)
