@@ -155,9 +155,22 @@ nicht BlueFerrys Nachrichten-Schnittstelle.
 - Kommt das iPhone nach dem Verlassen der Reichweite zurück, ist die
   Mediensteuerung von selbst wieder da. Sie braucht die LE-Verbindung und
   pausiert deshalb auch, solange die Mitteilungen getrennt sind.
-- BlueFerry nutzt bewusst kein AVRCP. Als AVRCP-Fernbedienung könnte der
-  Computer das iPhone dazu bringen, seinen Ton an den Computer zu schicken,
-  was BlueFerry verhindert.
+- BlueFerry tritt selbst nicht als AVRCP-Fernbedienung auf; das könnte das
+  iPhone dazu bringen, seinen Ton an den Computer zu schicken. Das Cover
+  (siehe unten) nutzt nur die AVRCP-Verbindung, die BlueZ ohnehin hat.
+- Bei manchen Playern erscheint das Cover des Titels, der beim Verbinden
+  schon läuft, erst ab dem nächsten Titel.
+
+## Cover
+
+Bei eingeschalteter Mediensteuerung zeigen die Qt- und die GTK-Oberfläche
+das Cover des aktuellen Titels neben dem Titel. Desktops, die MPRIS lesen
+(GNOME, Plasma, DMS, Waybar …), zeigen es ebenfalls, wenn die MPRIS-Option
+an ist. Das Bild kommt über Bluetooth (AVRCP-Cover, 200×200 Pixel), wird als
+echtes JPEG geprüft und in `~/.cache/blueferry/cover` abgelegt (nur für dich
+lesbar, höchstens 20 Bilder, beim Trennen des Telefons geleert). Aus dem
+Internet wird nichts geladen. Getestet mit Apple Music, YouTube Music und
+Pocket FM.
 - Auf echter Hardware geprüft sind bisher die „Wird gespielt“-Anzeige,
   Befehle und das Aus- und Wiedereinschalten der Mediensteuerung. Das erneute
   Anfordern der Befehlsliste nach einer Wiederverbindung und das

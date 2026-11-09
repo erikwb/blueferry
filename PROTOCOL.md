@@ -915,15 +915,76 @@ specification-based expectation, not a captured result.
 - AMS ATT application errors 0xA0 (InvalidState), 0xA1 (InvalidCommand) and
   0xA2 (AbsentAttribute) appear only in BlueZ's error message text; BlueFerry
   logs them by name.
-- AVRCP is intentionally not used: acting as an AVRCP controller could make
-  iOS route audio to this computer, which BlueFerry's WirePlumber policy
-  exists to prevent.
+- BlueFerry does not act as an AVRCP controller itself: that could make iOS
+  route audio to this computer. It only reads what BlueZ's own AVRCP
+  connection already publishes (see "AVRCP cover art" below).
 
 Open questions for further hardware tests: whether iOS 26 also exposes AMS
 without soliciting it; that current values always follow a registration
 immediately (the specification guarantees it); remote commands, truncation
 reads and reconnect behavior; and whether AMS traffic affects ANCS
 reliability on other controllers.
+
+## AVRCP cover art
+
+Tested on a real iPhone (iOS 27, Intel AX200, BlueZ 5.87, obexd) on
+2026-10-30 with Apple Music, YouTube Music and Pocket FM.
+
+- The iPhone's SDP record (AVRCP target 1.6) has SupportedFeatures `0x01d1`:
+  bit 8 (cover art) and bit 6 (browsing) are set, and an additional protocol
+  descriptor lists L2CAP plus OBEX. BlueZ publishes that PSM as
+  `org.bluez.MediaPlayer1.ObexPort` (4105 in the tests).
+- Without a connected Basic Imaging Profile (BIP) session the phone sends no
+  image handle at all. With `org.bluez.obex.Client1.CreateSession(mac,
+  {Target: "bip-avrcp", PSM: ObexPort})` every track change brings
+  `Track.ImgHandle`, and `Image1.GetThumbnail(file, handle)` writes a
+  200x200 JPEG (Apple Music 6/6 titles, YouTube Music, Pocket FM episodes).
+- **obexd closes the session as soon as the D-Bus client that created it
+  leaves the bus.** One-shot `busctl` tests therefore seem to fail (the PC
+  sends an L2CAP disconnect about 70 ms after connecting). The daemon holds
+  the session on a private session-bus connection and ends it by closing
+  that connection, never with `RemoveSession` (see "OBEX lifecycle").
+- The phone accepts one BIP session at a time; a second `CreateSession`
+  fails with "Connection refused (111)". BlueFerry keeps one session per
+  phone (not per player), reopens it after a player with another port, an
+  AVRCP disconnect or an obexd restart, and backs off after failures
+  (2, 5, 10, 30, then 60 s). iOS removes and recreates its player on an app
+  change (and sometimes on pause/play); while AVRCP stays connected the
+  session waits 5 s for a player to return instead of closing and
+  reopening.
+- In every test the track already playing when the session opened had no
+  `ImgHandle`; the next track change brought one. The phone apparently adds
+  the handle only to attributes requested after the OBEX connect. BlueZ
+  5.87 offers no call that repeats GetElementAttributes, but when the player
+  is browsable, `MediaFolder1.ChangeFolder(Playlist)` is a local scope change
+  in bluetoothd and `ListItems` sends GetFolderItems with the image-handle
+  attribute. BlueFerry does that once per session and takes the handle of
+  the item named in `Track.Item`. `ListItems` is not side-effect free:
+  bluetoothd first makes that player the browsed (and possibly addressed)
+  player, sending SetBrowsedPlayer/SetAddressedPlayer (`set_ct_player` in
+  `avrcp.c`). BlueFerry therefore only lists the player BlueZ already
+  addresses (`MediaControl1.Player`), never a fallback. Without browsing the
+  cover appears from the next track on. Playback is never interrupted.
+- Observed with the daemon (2026-10-30, iOS 27, BlueZ 5.87): right after
+  "iPhone cover art session open (PSM 4105)" the cover of the Pocket FM
+  episode that was already playing arrived without a track change, and
+  `mpris:artUrl` (`file://…/cover-…-1000039.jpg`) showed in the DMS media
+  widget. Whether the handle came through the Now Playing list or the phone
+  re-sent the track attributes was not distinguished.
+- Handles are untrusted input: only seven ASCII digits (BIP) are accepted,
+  and they are only valid within one BIP session, so the cache is cleared
+  whenever the session ends. A downloaded file must be a complete JPEG
+  (start/end markers, a frame header with at most 1024x1024 pixels) of at
+  most 1 MiB; anything else is deleted and that handle is not requested
+  again in the session.
+
+Privacy: the images stay on this computer, in `$XDG_CACHE_HOME/blueferry/cover`
+(directory 0700, files 0600, at most 20 files or 8 MiB, emptied when the
+session ends and at start). Nothing is sent anywhere. Cover art carries no
+more than the track details media control already shows, so it follows the
+media-control opt-in without a switch of its own: while media control is
+off, BlueFerry neither watches the players nor opens a BIP session. MPRIS
+clients see the file as `mpris:artUrl` only with the separate MPRIS opt-in.
 
 ## Bluetooth PAN tethering (not yet observed)
 

@@ -160,7 +160,7 @@ backend. Media calls have their own rate-limit buckets.
 
 | Method | Arguments → result | Notes |
 | --- | --- | --- |
-| `GetNowPlaying` | → `s json` | `enabled`, `available`, `detail` (`disabled`, `requires-notification-access-mode`, `le-link-state-unknown`, `waiting-for-iphone`, `ready`), plus `player`, `queue`, `track`, `supported_commands` and `supported_commands_known` (false while the phone has not sent its list; commands are then sent as asked) while available |
+| `GetNowPlaying` | → `s json` | `enabled`, `available`, `detail` (`disabled`, `requires-notification-access-mode`, `le-link-state-unknown`, `waiting-for-iphone`, `ready`), plus `player`, `queue`, `track`, `supported_commands` and `supported_commands_known` (false while the phone has not sent its list; commands are then sent as asked) while available, and `cover` (absolute path of the current cover JPEG, owner-only) while one is known |
 | `SetMediaControl` | `b enabled` → `s status_json` | Saves the opt-in and starts or stops media control at once |
 | `SetMprisPlayer` | `b enabled` → `s status_json` | Saves the separate MPRIS opt-in (`media_mpris_enabled`, `media_mpris_active`); the player exists only while media control is on and uses its own private connection |
 | `SendMediaCommand` | `s command` | `play`, `pause`, `toggle`, `next`, `previous`, `volume-up`, `volume-down`, `repeat`, `shuffle`, `skip-forward`, `skip-backward`, `like`, `dislike`, `bookmark`; only commands the iPhone currently offers are sent |
@@ -179,6 +179,13 @@ currently offer this media command") and nothing is sent; while
 off or not connected the call also fails with `NotReady`; a refused GATT
 write arrives as `MediaCommandFailed`. Clients derive the buttons from
 `blueferry.media_volume_view.volume_controls(snapshot)`.
+
+`GetStatus` also reports `phone_media_cover`: the absolute path of the
+current track's cover image (a JPEG of at most 1 MiB, mode 0600, below
+`$XDG_CACHE_HOME/blueferry/cover`), or an empty string. It comes from AVRCP
+cover art and needs media control to be on; files are replaced, not
+rewritten, so a new path means a new image. The MPRIS player publishes the
+same file as `mpris:artUrl` (`file://…`).
 
 The phone-audio keys in `GetStatus` (independent of the media-control
 opt-in; clients show the switch only when `phone_audio_route` exists):

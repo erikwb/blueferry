@@ -609,3 +609,39 @@ def test_mpris_keeps_transport_usable_while_the_command_list_is_unknown(
     _dispatch_until(lambda: not _player_props(name)["CanGoNext"])
     props = _player_props(name)
     assert not (props["CanGoPrevious"] or props["CanPlay"] or props["CanPause"])
+
+
+def test_mpris_art_url_follows_the_cover_file(mpris_factory, tmp_path) -> None:
+    media, _writer = _media()
+    _bus, name, player = mpris_factory(media)
+    _play(media)
+    _dispatch_until(lambda: player.owned)
+    assert "mpris:artUrl" not in _player_props(name)["Metadata"]
+    listener = dbus.SessionBus(private=True, mainloop=dbus.mainloop.glib.DBusGMainLoop())
+    changes = []
+    listener.add_signal_receiver(
+        lambda interface, changed, _invalidated: changes.append(dict(changed)),
+        dbus_interface=dbus.PROPERTIES_IFACE, signal_name="PropertiesChanged",
+        path="/org/mpris/MediaPlayer2",
+    )
+    cover = tmp_path / "cover-abc-1000039.jpg"
+    try:
+        _call(name, "/org/mpris/MediaPlayer2", dbus.PROPERTIES_IFACE, "GetAll", ROOT_IFACE)
+        media.set_cover(str(cover))
+        _dispatch_until(lambda: changes)
+        assert changes[0]["Metadata"]["mpris:artUrl"] == cover.as_uri()
+        assert media.snapshot()["cover"] == str(cover)
+        changes.clear()
+        media.set_cover(None)
+        _dispatch_until(lambda: changes)
+        assert "mpris:artUrl" not in changes[0]["Metadata"]
+        assert "cover" not in media.snapshot()
+    finally:
+        listener.close()
+
+
+def test_now_playing_snapshot_omits_cover_while_unavailable(tmp_path) -> None:
+    media = MediaController(clock=lambda: 10.0)
+    _controllers.append(media)
+    media.set_cover(str(tmp_path / "c.jpg"))
+    assert "cover" not in media.snapshot()
