@@ -1,4 +1,7 @@
-"""Pure presentation rules of the GTK Settings > Plugins page (no display).
+"""Pure presentation rules of Settings > Plugins (no display, no toolkit).
+
+Shared by the GTK page (``ui/plugin_settings.py``) and the terminal
+client (``tui_plugins.py``), so it imports nothing from either toolkit.
 
 The rules follow the Qt client's ``SettingsPlugins.qml``,
 ``PluginStoreCard.qml`` and ``PluginConfigForm.qml`` line by line: which
