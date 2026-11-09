@@ -412,6 +412,54 @@ def test_answer_hangup_and_decline_use_the_call_object() -> None:
         controller.hangup("../../org", _noop, _noop)
 
 
+def test_a_call_answered_here_is_told_apart_from_one_answered_on_the_iphone() -> None:
+    controller, transport, _timers, _changes, _events = _ready()
+    _ring(transport)
+    assert not controller.has_active_call and not controller.answered_here
+
+    controller.answer("voicecall01", _noop, _noop)
+    # The call can turn active before oFono's reply to Answer arrives.
+    transport.emit(VOICE_CALL_IFACE, "PropertyChanged", CALL, "State", dbus.String("active"))
+    assert controller.has_active_call and controller.answered_here
+    transport.take("Answer").on_reply()
+    assert controller.answered_here
+
+    transport.emit(VOICE_CALL_IFACE, "PropertyChanged", CALL, "State", dbus.String("held"))
+    assert not controller.has_active_call and not controller.answered_here
+    transport.emit(VOICE_CALL_MANAGER_IFACE, "CallRemoved", MODEM, dbus.ObjectPath(CALL))
+    assert not controller.has_active_call and not controller.answered_here
+
+    # Answered on the iPhone: the same call id, but nothing was requested here.
+    _ring(transport)
+    transport.emit(VOICE_CALL_IFACE, "PropertyChanged", CALL, "State", dbus.String("active"))
+    assert controller.has_active_call and not controller.answered_here
+
+
+def test_a_refused_answer_does_not_count_as_answered_here() -> None:
+    controller, transport, _timers, _changes, _events = _ready()
+    _ring(transport)
+    failures = []
+    controller.answer("voicecall01", _noop, failures.append)
+    transport.take("Answer").on_error(dbus.exceptions.DBusException(
+        "busy", name="org.ofono.Error.Failed",
+    ))
+    assert failures
+    transport.emit(VOICE_CALL_IFACE, "PropertyChanged", CALL, "State", dbus.String("active"))
+    assert controller.has_active_call and not controller.answered_here
+
+
+def test_hold_and_answer_marks_the_waiting_call() -> None:
+    controller, transport, _timers, _changes, _events = _ready()
+    _ring(transport, state="active")
+    second = f"{MODEM}/voicecall02"
+    _ring(transport, state="waiting", path=second)
+    controller.hold_and_answer(_noop, _noop)
+    assert transport.take("HoldAndAnswer").path == MODEM
+    transport.emit(VOICE_CALL_IFACE, "PropertyChanged", CALL, "State", dbus.String("held"))
+    transport.emit(VOICE_CALL_IFACE, "PropertyChanged", second, "State", dbus.String("active"))
+    assert controller.answered_here
+
+
 def test_answering_a_waiting_call_holds_the_active_one() -> None:
     controller, transport, _timers, _changes, _events = _ready()
     _ring(transport, state="active")

@@ -1071,6 +1071,48 @@ class MessagesService(StrictObject):
         except Exception:
             log.exception("TetherChanged emit failed")
 
+    @dbus.service.method(
+        CALLS_IFACE, in_signature="", out_signature="s", sender_keyword="sender",
+        async_callbacks=("reply_handler", "error_handler"),
+    )
+    def ListCallAudioDevices(self, reply_handler, error_handler, sender=None) -> None:
+        """Speakers and microphones for calls, and the saved choices."""
+        def reply(payload: object) -> None:
+            try:
+                encoded = self._json_response(payload)
+            except Exception as error:
+                error_handler(self._dbus_error(error))
+                return
+            reply_handler(encoded)
+
+        self._call_control(
+            sender, "read",
+            lambda _success, failure: self.operations.list_call_audio_devices(reply, failure),
+            reply_handler, error_handler,
+        )
+
+    @dbus.service.method(
+        CALLS_IFACE, in_signature="ss", out_signature="s", sender_keyword="sender"
+    )
+    def SetCallAudioDevice(self, direction: str, name: str, sender=None) -> str:
+        """Save the speaker (output) or microphone (input) for every call."""
+        return self._sync(lambda: self._authorized(
+            sender, "settings",
+            lambda: self._json_response(
+                self.operations.set_call_audio_device(str(direction), str(name))
+            ),
+        ))
+
+    @dbus.service.method(
+        CALLS_IFACE, in_signature="ss", out_signature="", sender_keyword="sender"
+    )
+    def SetCallAudioDeviceForCall(self, direction: str, name: str, sender=None) -> None:
+        """Use another speaker or microphone until the running call ends."""
+        self._sync(lambda: self._authorized(
+            sender, "calls-control",
+            lambda: self.operations.set_call_audio_device_for_call(str(direction), str(name)),
+        ))
+
     @dbus.service.signal(EVENTS_IFACE, signature="a{sv}")
     def HistoryChanged(self, props):
         """Private history changed; payload contains only a local revision."""

@@ -26,6 +26,11 @@
   forwards `CardChanged` (through `plugin_card_watch`) as
   `plugin-cards-changed`. Buttons that send files are left out: the panel
   has no file picker.
+- When an answered iPhone call has no sound on this computer after about
+  8 seconds, the call view says the sound is on the iPhone and how to move it
+  here (`audio.state` `phone` in `Calls1.ListCalls`); the log tells a call
+  answered here from one answered on the iPhone
+  ([#230](https://github.com/erikwb/blueferry/issues/230)).
 - Contact cards: the contact cache now keeps each number with its iPhone
   label, labelled email addresses, postal addresses, company and job title,
   inside the encrypted contact records only. `Messages1.ListContactCards`
@@ -154,6 +159,10 @@
   folders and remote URIs are skipped.
 - GTK client: the iPhone sound rows in Settings and the quick switches show
   the A/V sync line under the sound status.
+- Choose the speaker and microphone for phone calls, saved for every call or
+  switched for the running call only, without changing the system defaults
+  (`Calls1.ListCallAudioDevices`, `SetCallAudioDevice`,
+  `SetCallAudioDeviceForCall`, `blueferry calls audio`).
 
 ### Fixed
 

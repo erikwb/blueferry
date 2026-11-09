@@ -50,7 +50,10 @@ flowchart LR
 - Stellt die Anruflautstärke von oFono auf 100 %, weil die
   Standardeinstellung von 50 % mit einem iPhone kaum hörbar ist.
 
-Das Audio selbst leitet PipeWire. BlueFerry steuert nur den Anruf.
+Das Audio selbst leitet PipeWire. Standardmässig nutzt der Anruf den
+Lautsprecher und das Mikrofon des Systems; unter
+[Lautsprecher und Mikrofon für Anrufe](#lautsprecher-und-mikrofon-fur-anrufe)
+lassen sich eigene nur für Anrufe wählen.
 
 ## Einschalten
 
@@ -106,8 +109,65 @@ laufen, wenn du sie hier annimmst, auch hier über Lautsprecher und Mikrofon.
 Schaltest du Anrufe aus (oder beendest das Backend), gibt BlueFerry diese
 Verbindung wieder frei, und das Gesprächsaudio geht zurück aufs Telefon.
 
+Wo der Ton eines Anrufs läuft, hängt davon ab, wo du ihn annimmst, wie bei
+einem Bluetooth-Headset: Nimmst du ihn hier an (Mitteilung, Client oder
+`blueferry calls answer`), soll das iPhone den Ton hierher schicken; nimmst
+du ihn am iPhone an, bleibt er am iPhone. BlueFerry kann den Ton nicht
+selbst herüberholen (nur PipeWire darf die Audioverbindung über oFono
+öffnen). Hat ein angenommener Anruf nach etwa 8 Sekunden hier keinen Ton,
+sagt die Anrufansicht „The sound of this call is on the iPhone“, und die
+Zeilen für Lautsprecher und Mikrofon zeigen **On the iPhone**: Wähle dann im
+Anrufbildschirm des iPhones unter **Audio** diesen Computer, und der Anruf
+wechselt nach wenigen Sekunden hierher. Ob das iPhone den Ton nach dem
+Annehmen am Computer wirklich hierher schickt, ist auf echter Hardware noch
+nicht geprüft; tut es das nicht, steht es im Log des Backends.
+
 `blueferry calls` sollte dann `ready` zeigen, solange das iPhone verbunden
 ist.
+
+## Lautsprecher und Mikrofon für Anrufe
+
+BlueFerry kann Anrufe über einen anderen Lautsprecher abspielen und von einem
+anderen Mikrofon aufnehmen als das System, zum Beispiel über ein Headset,
+während die Musik auf den Boxen bleibt. Andere Anwendungen und die
+Standardgeräte des Systems behalten ihre Geräte.
+
+- **Lautsprecher für Anrufe** und **Mikrofon für Anrufe** in den Einstellungen
+  der Clients gelten für jeden Anruf. **Wie System** (Standard) folgt den
+  Geräten des Systems.
+- Während eines Anrufs zeigt die Anrufansicht die tatsächlich genutzten
+  Geräte und lässt sie nur für diesen Anruf umschalten; der nächste Anruf
+  nutzt wieder die Einstellungen.
+- Ist ein gewähltes Gerät nicht angeschlossen, nutzt der Anruf das Gerät des
+  Systems, und die Anrufansicht sagt das. Wird es während des Anrufs
+  eingesteckt, wechselt der Anruf nach wenigen Sekunden dorthin.
+- Andere Bluetooth-Headsets lassen sich ebenfalls wählen; nur das iPhone
+  selbst fehlt in der Liste.
+- Während eines Anrufs bestimmt BlueFerry, wohin sein Ton geht: Verschiebst
+  du den Anruf in einem Mixer wie pavucontrol oder Helvum, gilt das nur bis
+  zur nächsten Prüfung. Nutze dafür den Umschalter der Anrufansicht.
+
+```bash
+blueferry calls audio                    # Auswahl, Geräte und laufender Anruf
+blueferry calls audio output alsa_output.usb-Logitech_A50-00.stereo-chat
+blueferry calls audio input system       # wieder das Mikrofon des Systems
+blueferry calls audio output alsa_output.pci-0000_00_1f.3.analog-stereo --this-call
+```
+
+Geräte werden mit ihrem PipeWire-Knotennamen gespeichert, der Neustarts und
+erneutes Einstecken übersteht. Das braucht PipeWire mit WirePlumber und die
+Werkzeuge `pw-dump` und `pw-metadata` (Teil von PipeWire). Das Gesprächsaudio
+erscheint einige Sekunden nach dem Annehmen oder Wählen; bis dahin zeigt die
+Anrufansicht „Warte auf das Gesprächsaudio“.
+
+WirePlumber merkt sich das letzte Gerät der Anruf-Streams in
+`~/.local/state/wireplumber/stream-properties` (eine Zeile, die mit
+`Output/Audio:node.name:bluez_input.<MAC>` bzw. `Input/Audio:…bluez_output.<MAC>`
+beginnt) und nutzt es beim nächsten Anruf wieder. BlueFerry korrigiert das
+bei jedem Anruf, und beim Ausschalten der Anrufe löscht es das gemerkte
+Gerät noch einmal, falls die Anruf-Streams noch existieren. Bleiben die
+Anrufe aus und wirkt ein gemerktes Gerät noch, lösche diese Zeilen, solange
+WirePlumber nicht läuft.
 
 ## Telefon-Links
 
