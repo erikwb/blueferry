@@ -8,6 +8,28 @@
   shown in the Qt and GTK clients, reported as `cover` in `GetNowPlaying` and
   `phone_media_cover` in `GetStatus`, and published as MPRIS `mpris:artUrl`.
   Images stay local in an owner-only cache; part of the media-control opt-in.
+- Terminal client plugins: the iPhone overview shows **From Plugins** (card
+  items with their buttons, re-read on `CardChanged` while it is open) and
+  **Send to…** with a path field that completes paths; card buttons with
+  `sendTo` ask only for paths. Settings › Plugins installs, updates, removes
+  and switches plugins (every install shows what it runs first), manages the
+  plugin lists, opens the guided settings form (sections, ShowIf, Test
+  Connection, browser sign-in, the plugin's own buttons; stored secrets
+  never shown) and shows a plugin's log in the terminal (`g`). **Photos** in
+  the command palette (while a photo plugin is enabled) lists its newest
+  items and opens one in the image viewer. The GTK plugin settings presenter
+  moved to `blueferry.plugin_settings_presenter` so the terminal client
+  shares it without loading GTK.
+- `plugin_card_watch` (dbus-python) hears `CardChanged` from enabled card
+  plugins only, one match per plugin bus name checked against its owner, for
+  the clients without the GTK or Qt D-Bus stack.
+- Quickshell panel: **From Plugins** under the now-playing strip shows the
+  enabled card plugins' items (for example AirPods or the calendar) with
+  their buttons while the conversations are shown. The bridge serves
+  `plugin_cards` and `plugin_action` on the shared `PluginSurfacesModel` and
+  forwards `CardChanged` (through `plugin_card_watch`) as
+  `plugin-cards-changed`. Buttons that send files are left out: the panel
+  has no file picker.
 - Contact cards: the contact cache now keeps each number with its iPhone
   label, labelled email addresses, postal addresses, company and job title,
   inside the encrypted contact records only. `Messages1.ListContactCards`
