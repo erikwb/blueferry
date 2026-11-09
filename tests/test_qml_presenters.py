@@ -6666,9 +6666,11 @@ def test_quickshell_settings_follow_the_other_clients_categories(qml_engine, qui
     headings = [page.findChild(QObject, key + "Category") for key in
                 ("phone", "notifications", "calls", "security", "about")]
     assert all(heading is not None for heading in headings)
-    # Same titles and order as the Qt, GTK and terminal clients.
+    # Same titles and order as the Qt, GTK and terminal clients, without
+    # Plugins: the panel leaves plugin management to them (clients.md,
+    # "What the panel leaves out").
     assert [heading.property("text") for heading in headings] == [
-        category.title for category in categories()
+        category.title for category in categories() if category.key != "plugins"
     ]
     positions = [_scene_y(heading) for heading in headings]
     assert positions == sorted(positions)
@@ -7498,47 +7500,9 @@ def test_quickshell_search_popup_reads_only_while_open(tmp_path, quickshell_envi
     """The real shell: contact cards and search are read while the popup is
     open, a new epoch rereads, a stale card rereads, Call is confirmed and
     Message prefills the recipient; closing forgets everything."""
-    import shutil
     import subprocess
 
-    executable = shutil.which("quickshell")
-    if executable is None:
-        pytest.skip("Quickshell is not installed")
-    for source in (ROOT / "data/quickshell").glob("*.qml"):
-        shutil.copyfile(source, tmp_path / source.name)
-    shutil.copyfile(
-        ROOT / "src/blueferry/qt/qml/ConversationLogic.qml",
-        tmp_path / "ConversationLogic.qml",
-    )
-    (tmp_path / "Theme.qml").write_text("import QtQuick\nThemePalette {}\n")
-    (tmp_path / "SetupTransport.qml").write_text('''import QtQuick
-Item {
-  signal lineReceived(int id, string kind, string line)
-  signal finished(int id, string kind, int code, string output, string diagnostic)
-  function execute(id, kind, command, interactive) {}
-  function cancel(id) {}
-  function write(id, text) {}
-}
-''')
-    (tmp_path / "BackendBridge.qml").write_text('''import QtQuick
-Item {
-  property bool desktopClient: false
-  property int nextId: 1
-  property var log: []
-  property var lastArgs: ({})
-  signal response(string method, int requestId, var result)
-  signal failure(string method, int requestId, string message)
-  signal eventReceived(string name, var data)
-  function request(method, args) { log.push(method); lastArgs = args; return nextId++; }
-  function requestLatest(method, args) { log.push("latest:" + method); lastArgs = args; }
-  function cancelLatest(method) { log.push("cancel:" + method); }
-  function take(prefix) {
-    const found = log.filter(entry => entry.indexOf(prefix) === 0).length;
-    log = log.filter(entry => entry.indexOf(prefix) !== 0);
-    return found;
-  }
-}
-''')
+    executable = _quickshell_test_shell(tmp_path)
     config = tmp_path / "shell.qml"
     source = config.read_text()
     probe = r'''
@@ -7646,6 +7610,245 @@ Item {
     )
     log = result.stdout + result.stderr
     assert result.returncode == 0 and "BLUEFERRY_QS_SEARCH_OK" in log, log
+    assert "ReferenceError" not in log and "TypeError" not in log, log
+
+
+def _quickshell_test_shell(tmp_path) -> str:
+    """Copy the real shell next to fake transports; returns the executable.
+
+    The fake BackendBridge logs requests (``latest:``/``cancel:`` prefixes)
+    for ``take(prefix)`` and keeps the last arguments in ``lastArgs``.
+    """
+    import shutil
+
+    executable = shutil.which("quickshell")
+    if executable is None:
+        pytest.skip("Quickshell is not installed")
+    for source in (ROOT / "data/quickshell").glob("*.qml"):
+        shutil.copyfile(source, tmp_path / source.name)
+    shutil.copyfile(
+        ROOT / "src/blueferry/qt/qml/ConversationLogic.qml",
+        tmp_path / "ConversationLogic.qml",
+    )
+    (tmp_path / "Theme.qml").write_text("import QtQuick\nThemePalette {}\n")
+    (tmp_path / "SetupTransport.qml").write_text('''import QtQuick
+Item {
+  signal lineReceived(int id, string kind, string line)
+  signal finished(int id, string kind, int code, string output, string diagnostic)
+  function execute(id, kind, command, interactive) {}
+  function cancel(id) {}
+  function write(id, text) {}
+}
+''')
+    (tmp_path / "BackendBridge.qml").write_text('''import QtQuick
+Item {
+  property bool desktopClient: false
+  property int nextId: 1
+  property var log: []
+  property var lastArgs: ({})
+  signal response(string method, int requestId, var result)
+  signal failure(string method, int requestId, string message)
+  signal eventReceived(string name, var data)
+  function request(method, args) { log.push(method); lastArgs = args; return nextId++; }
+  function requestLatest(method, args) { log.push("latest:" + method); lastArgs = args; }
+  function cancelLatest(method) { log.push("cancel:" + method); }
+  function take(prefix) {
+    const found = log.filter(entry => entry.indexOf(prefix) === 0).length;
+    log = log.filter(entry => entry.indexOf(prefix) !== 0);
+    return found;
+  }
+}
+''')
+    return executable
+
+
+def test_quickshell_plugin_cards_render_the_bridge_reply(qml_engine) -> None:
+    from blueferry import plugin_surfaces as surfaces
+    from blueferry.plugin_api.surfaces import Action, CardItem
+    from blueferry.quickshell_bridge import plugin_cards_reply
+
+    theme_component = _component(qml_engine, "data/quickshell/ThemePalette.qml")
+    theme = theme_component.create()
+    assert theme is not None, theme_component.errors()
+    theme.setParent(qml_engine)
+    component = _component(qml_engine, "data/quickshell/QuickshellPluginCards.qml")
+    section = component.createWithInitialProperties({"ferryTheme": theme})
+    assert section is not None, component.errors()
+    theme.setParent(section)
+    window = QQuickWindow()
+    window.resize(640, 400)
+    section.setParentItem(window.contentItem())
+    window.show()
+    QGuiApplication.processEvents()
+    cards = [
+        surfaces.PluginCard("io.example.pods", "AirPods", True, "", [
+            CardItem("pods", "<b>AirPods Pro</b>", subtitle="L 80 % · R 75 %", actions=[
+                Action("anc", "Noise control", kind="primary"),
+                Action("send", "Send files…", send_to="x")]),
+        ], can_send=True),
+        surfaces.PluginCard("io.example.cal", "Calendar", False, "Unavailable: timeout"),
+    ]
+    try:
+        assert section.property("visible") is False
+        section.setProperty("view", plugin_cards_reply(
+            {"loaded": True, "cards": surfaces.card_rows(cards), "message": ""}))
+        QGuiApplication.processEvents()
+        assert section.property("visible") is True
+        def named(name):
+            def walk(item):
+                for child in item.childItems():
+                    yield child
+                    yield from walk(child)
+            return [item for item in walk(section) if item.objectName() == name]
+
+        titles = [child.property("text") for child in named("pluginCardTitle")]
+        assert titles == ["<b>AirPods Pro</b>"]
+        buttons = named("pluginCardAction")
+        assert [button.property("text") for button in buttons] == ["Noise control"]
+        assert buttons[0].property("highlighted") is True
+        hints = [child.property("text") for child in named("pluginCardHint")
+                 if child.property("visible")]
+        assert hints == ["Unavailable: timeout"]
+        send_hint = section.findChild(QObject, "pluginCardsSendHint")
+        assert send_hint.property("visible") is True
+
+        actions = []
+        section.actionRequested.connect(lambda *args: actions.append(args))
+        assert QMetaObject.invokeMethod(buttons[0], "clicked")
+        assert actions == [("io.example.pods", "pods", "anc")]
+
+        section.setProperty("busy", True)
+        assert buttons[0].property("enabled") is False
+        section.setProperty("view", {"cards": [], "message": "Pinged", "messageOk": True})
+        QGuiApplication.processEvents()
+        message = section.findChild(QObject, "pluginCardsMessage")
+        assert section.property("visible") is True and message.property("text") == "Pinged"
+    finally:
+        window.close()
+        section.deleteLater()
+        window.deleteLater()
+        QGuiApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+
+
+def test_quickshell_plugin_cards_coalesce_changes_and_follow_the_watch(
+    tmp_path, quickshell_environment,
+):
+    """The real shell: plugin-cards-changed bursts become one read, hiding
+    the cards cancels the read and forgets them, and late replies or
+    failures while hidden leave them forgotten."""
+    import subprocess
+
+    executable = _quickshell_test_shell(tmp_path)
+    config = tmp_path / "shell.qml"
+    source = config.read_text()
+    probe = r"""
+  Timer {
+    id: probeLater
+    interval: 600
+    onTriggered: {
+      function check(value, message) { if (!value) throw new Error(message); }
+      try {
+        // The burst became one read after the delay.
+        check(!pluginCardsReload.running, "reload still pending")
+        check(backendBridge.take("latest:plugin_cards") === 1, "burst not read once")
+
+        // Hidden (iPhone settings shown): cancelled and forgotten.
+        root.phoneSettingsVisible = true
+        check(!root.pluginCardsWatched, "still watched behind the settings")
+        check(backendBridge.take("cancel:plugin_cards") === 1, "read not cancelled")
+        check(root.pluginCards.cards === undefined, "hidden cards kept")
+        backendBridge.eventReceived("plugin-cards-changed", {})
+        check(!pluginCardsReload.running, "reload while hidden")
+        backendBridge.response("plugin_cards", 5, {cards: [{id: "late"}], message: ""})
+        check(root.pluginCards.cards === undefined, "late reply shown while hidden")
+        root.pluginActionBusy = true
+        backendBridge.failure("plugin_action", 6, "gone")
+        check(!root.pluginActionBusy, "action stays busy")
+        check(root.pluginCards.cards === undefined && root.pluginCards.message === undefined,
+          "hidden action failure shown")
+        root.pluginActionBusy = true
+        backendBridge.response("plugin_action", 61,
+          {cards: [{id: "late"}], message: "late answer"})
+        check(!root.pluginActionBusy, "action stays busy after a hidden reply")
+        check(root.pluginCards.cards === undefined && root.pluginCards.message === undefined,
+          "hidden action reply shown")
+        backendBridge.failure("plugin_cards", 7, "gone")
+        check(root.pluginCards.message === undefined, "hidden read failure shown")
+
+        // Shown again: read again; failures show the bridge's message.
+        root.phoneSettingsVisible = false
+        check(backendBridge.take("latest:plugin_cards") === 1, "not read again when shown")
+        backendBridge.response("plugin_cards", 8, {cards: [{id: "a"}], message: ""})
+        root.runPluginAction("io.example.a", "item", "act")
+        check(backendBridge.take("plugin_action") === 1 && root.pluginActionBusy,
+          "action not sent")
+        backendBridge.failure("plugin_action", 9, "No answer.")
+        check(!root.pluginActionBusy && root.pluginCards.message === "No answer."
+          && root.pluginCards.messageOk === false && root.pluginCards.cards.length === 1,
+          "action failure not shown with the cards")
+        backendBridge.failure("plugin_cards", 10, "Unavailable.")
+        check(root.pluginCards.message === "Unavailable.", "read failure not shown")
+
+        // An action from before a hide/reopen cycle belongs to the old
+        // view: its late reply and failure leave the fresh read alone.
+        root.runPluginAction("io.example.a", "item", "act")
+        check(backendBridge.take("plugin_action") === 1, "second action not sent")
+        root.phoneSettingsVisible = true
+        root.phoneSettingsVisible = false
+        check(backendBridge.take("latest:plugin_cards") === 1, "not read after the cycle")
+        backendBridge.response("plugin_cards", 11, {cards: [{id: "fresh"}], message: ""})
+        backendBridge.response("plugin_action", 12,
+          {cards: [{id: "stale"}], message: "stale answer"})
+        check(!root.pluginActionBusy, "stale action stays busy")
+        check(root.pluginCards.cards[0].id === "fresh" && root.pluginCards.message === "",
+          "stale action reply shown after reopening")
+        root.runPluginAction("io.example.a", "item", "act")
+        check(backendBridge.take("plugin_action") === 1, "third action not sent")
+        root.phoneSettingsVisible = true
+        root.phoneSettingsVisible = false
+        check(backendBridge.take("latest:plugin_cards") === 1, "not read after the cycle")
+        backendBridge.response("plugin_cards", 13, {cards: [{id: "fresh2"}], message: ""})
+        backendBridge.failure("plugin_action", 14, "stale failure")
+        check(!root.pluginActionBusy, "stale action failure stays busy")
+        check(root.pluginCards.cards[0].id === "fresh2" && root.pluginCards.message === "",
+          "stale action failure shown after reopening")
+        console.log("BLUEFERRY_QS_PLUGIN_CARDS_OK")
+      } catch (error) {
+        console.error(error);
+      }
+      Qt.quit();
+    }
+  }
+  Timer {
+    interval: 200; running: true
+    onTriggered: {
+      function check(value, message) { if (!value) throw new Error(message); }
+      try {
+        setupController.configured = true
+        root.presentWindow()
+        check(root.pluginCardsWatched, "cards not watched with the window shown")
+        check(backendBridge.take("latest:plugin_cards") === 1, "cards not read when shown")
+        backendBridge.response("plugin_cards", 1, {cards: [{id: "a"}], message: ""})
+        check(root.pluginCards.cards.length === 1, "reply ignored")
+        for (let burst = 0; burst < 3; ++burst)
+          backendBridge.eventReceived("plugin-cards-changed", {})
+        check(pluginCardsReload.running, "change did not schedule a read")
+        check(backendBridge.take("latest:plugin_cards") === 0, "read before the delay")
+        probeLater.start()
+      } catch (error) {
+        console.error(error);
+        Qt.quit();
+      }
+    }
+  }
+"""
+    config.write_text(source[:source.rfind("}")] + probe + "}\n")
+    result = subprocess.run(
+        [executable, "--path", str(config)], env=quickshell_environment,
+        capture_output=True, text=True, timeout=10, check=False,
+    )
+    log = result.stdout + result.stderr
+    assert result.returncode == 0 and "BLUEFERRY_QS_PLUGIN_CARDS_OK" in log, log
     assert "ReferenceError" not in log and "TypeError" not in log, log
 
 
