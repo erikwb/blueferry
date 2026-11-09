@@ -10,7 +10,7 @@ described below.
 | `arch/PKGBUILD` | Arch Linux, CachyOS | backend with TUI, GTK, Qt, Quickshell |
 | `deb/` | Debian 13, Ubuntu 26.04, PikaOS IV | MAP/PBAP backend with TUI, GTK, Qt |
 | `deb/` | Ubuntu 24.04, Linux Mint 22.3, Pop!_OS 24.04 | MAP/PBAP backend with TUI, GTK |
-| `rpm/blueferry.spec` | Fedora 43, Fedora 44, Fedora 45 | backend with TUI, GTK, Qt |
+| `rpm/blueferry.spec` | Fedora 43, Fedora 44, Fedora 45 | backend with TUI, GTK, Qt; Quickshell on Fedora 44 and 45 |
 
 The matrix tests current package ecosystems rather than claiming that one
 artifact works forever. Arch and CachyOS are rolling releases, and PikaOS IV
