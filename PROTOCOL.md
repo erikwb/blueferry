@@ -304,6 +304,14 @@ validated before interpolation so CR/LF or vCard delimiters cannot inject an
 additional recipient. Message lines beginning with bMessage structural tokens
 also require MAP byte-stuffing.
 
+Declining a call with a message (`Calls1.DeclineWithMessage`) is HFP
+`Hangup` (oFono `VoiceCall.Hangup`, which declines a ringing call) followed by
+this same one-recipient `PushMessage` to the caller's `LineIdentification`.
+The two are not atomic: the phone has no "decline with message" command over
+HFP or MAP, so a failed send leaves the call declined. Callers without a
+number (withheld, unknown) cannot be texted and are refused before declining.
+Not tested on hardware yet.
+
 ## Group metadata side channel
 
 MAP delivers an incoming group message with only one sender and no participant

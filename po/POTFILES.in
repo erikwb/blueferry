@@ -4,6 +4,8 @@ src/blueferry/models.py
 src/blueferry/reconnect_view.py
 src/blueferry/notification_pin_view.py
 src/blueferry/phone_overview.py
+src/blueferry/quick_reply_view.py
+src/blueferry/calls/quick_replies.py
 src/blueferry/ui/app.py
 src/blueferry/ui/window.py
 src/blueferry/ui/conversations.py

@@ -79,7 +79,8 @@ class EventDispatcher:
         ancs_actions_enabled: Callable[[], bool] | None = None,
         ancs_app_seen: Callable[[str, str], None] | None = None,
         ancs_app_muted: Callable[[str], bool] | None = None,
-        on_call_action: Callable[[str, str], None] | None = None,
+        on_call_action: Callable[..., None] | None = None,
+        quick_replies: Callable[[], list[str]] | None = None,
         plugin_action=None,
         notification_sink_factory: Callable[..., Sink] = LibnotifySink,
         otp_autocopy: Callable[[], bool] | None = None,
@@ -106,6 +107,8 @@ class EventDispatcher:
         # Live check: hide the desktop popup of an app the user muted.
         self.ancs_app_muted = ancs_app_muted
         self.on_call_action = on_call_action
+        # The texts a ringing-call popup may offer for declining with a message.
+        self.quick_replies = quick_replies
         # Click on a plugin popup's button (plugin_notify.PluginPopups.invoke).
         self.plugin_action = plugin_action
         self._notification_sink_factory = notification_sink_factory
@@ -147,6 +150,8 @@ class EventDispatcher:
         # Shutdown: the server is still ours, so retire live iPhone action
         # buttons instead of leaving them wired to a daemon that is gone.
         self.ancs_actions_reset()
+        # Likewise call popups: no Hang up button may outlive the daemon.
+        self._fan_out("close_all_call_notifications")
         self._remove_libnotify_sink(log_change=False)
         self._remove_sinks(_OTP_SINK_NAME)
 
@@ -246,6 +251,8 @@ class EventDispatcher:
             options["contact_photo"] = self.contact_photo
         if self.plugin_action is not None:
             options["on_plugin_action"] = self.plugin_action
+        if self.quick_replies is not None:
+            options["quick_replies"] = self.quick_replies
         if self.ancs_app_muted is not None:
             options["app_muted"] = self.ancs_app_muted
         try:
@@ -357,6 +364,21 @@ class EventDispatcher:
                 handler(*args)
             except Exception:
                 log.exception("sink %s failed in %s", sink.name, method)
+
+    def call_reply_failed(self, declined: bool = True) -> None:
+        """A reply from a ringing popup was not sent; tell the user."""
+        for sink in self.sinks:
+            handler = getattr(sink, "handle_call_reply_failed", None)
+            if handler is None:
+                continue
+            try:
+                handler(declined=declined)
+            except Exception:
+                log.exception("sink %s failed in handle_call_reply_failed", sink.name)
+
+    def notification_policy_changed(self) -> None:
+        """Let sinks apply a new notification policy to popups already open."""
+        self._fan_out("call_popups_reset")
 
     def ancs_actions_reset(self) -> None:
         """Retire every action popup after the ANCS session reset its UIDs."""

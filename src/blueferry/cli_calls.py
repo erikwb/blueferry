@@ -159,6 +159,94 @@ def calls_hangup(
     typer.echo("Hung up.")
 
 
+@calls_app.command("decline-with-message")
+def calls_decline_with_message(
+    call_id: str = typer.Argument("", help="Call ID; defaults to the ringing call"),
+    text: str = typer.Option("", "--text", "-t", help="Your own message"),
+    reply: int = typer.Option(
+        0, "--reply", "-r", min=0, help="Number of a saved reply ('blueferry calls replies')",
+    ),
+) -> None:
+    """Decline the ringing call and text the caller (needs the caller's number).
+
+    Without --text or --reply the first saved reply is sent.
+    """
+    if text and reply:
+        typer.echo(
+            typer.style("Pass either --text or --reply, not both.", fg=typer.colors.RED),
+            err=True,
+        )
+        raise typer.Exit(code=2)
+    body = text
+    if not body:
+        saved = _saved_replies()
+        index = (reply or 1) - 1
+        if not 0 <= index < len(saved):
+            typer.echo(typer.style(
+                "No such saved reply; pass --text or see 'blueferry calls replies'.",
+                fg=typer.colors.RED,
+            ), err=True)
+            raise typer.Exit(code=2)
+        body = saved[index]
+    selected = call_id or _only(_snapshot(), {"incoming", "waiting"}, "ringing")
+    _run(lambda: _client().decline_call_with_message(selected, body),
+         "Could not decline with a message")
+    typer.echo(typer.style("Declined and sent the message.", fg=typer.colors.GREEN))
+
+
+def _saved_replies() -> list[str]:
+    status = _run(lambda: _client().status(), "Could not read the status")
+    value = status.extra.get("calls_quick_replies")
+    if not isinstance(value, list):
+        typer.echo(typer.style(
+            "Declining with a message needs calls on and an updated daemon.",
+            fg=typer.colors.RED,
+        ), err=True)
+        raise typer.Exit(code=3)
+    return [str(item) for item in value]
+
+
+replies_app = typer.Typer(
+    help="Saved replies for declining a call with a message (at most 5).",
+    invoke_without_command=True,
+    no_args_is_help=False,
+)
+calls_app.add_typer(replies_app, name="replies")
+
+
+@replies_app.callback()
+def calls_replies(ctx: typer.Context) -> None:
+    """List the saved replies."""
+    if ctx.invoked_subcommand is not None:
+        return
+    saved = _saved_replies()
+    if not saved:
+        typer.echo("No saved replies; 'decline-with-message --text' still works.")
+        return
+    for number, item in enumerate(saved, start=1):
+        typer.echo(f"{number}. {terminal_text(item)}")
+
+
+@replies_app.command("set")
+def calls_replies_set(
+    replies: list[str] = typer.Argument(  # noqa: B008 - Typer's declaration style
+        ..., help="Up to 5 one-line replies",
+    ),
+) -> None:
+    """Replace the saved replies."""
+    status = _run(lambda: _client().set_call_quick_replies(list(replies)),
+                  "Could not save the replies")
+    count = len(status.get("calls_quick_replies") or [])
+    typer.echo(typer.style(f"Saved {count} replies.", fg=typer.colors.GREEN))
+
+
+@replies_app.command("clear")
+def calls_replies_clear() -> None:
+    """Remove every saved reply (declining then needs --text)."""
+    _run(lambda: _client().set_call_quick_replies([]), "Could not save the replies")
+    typer.echo(typer.style("Removed the saved replies.", fg=typer.colors.GREEN))
+
+
 @calls_app.command("dtmf")
 def calls_dtmf(
     digits: str = typer.Argument(..., help="Tones: 0-9, * and #"),

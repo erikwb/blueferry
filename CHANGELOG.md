@@ -26,6 +26,17 @@
   forwards `CardChanged` (through `plugin_card_watch`) as
   `plugin-cards-changed`. Buttons that send files are left out: the panel
   has no file picker.
+- A lasting desktop notification while an iPhone call is in progress, with
+  the caller, the start time, an **On hold** state, and a **Hang up** button.
+  Closing it never ends the call
+  ([#230](https://github.com/erikwb/blueferry/issues/230)).
+- Decline a ringing call with a text to the caller: saved replies (up to 5,
+  translated defaults) or your own text, through
+  `Calls1.DeclineWithMessage`, `SetCallQuickReplies`,
+  `blueferry calls decline-with-message` and `blueferry calls replies`.
+  A text that cannot be sent is reported; the call stays declined.
+- The ringing-call popup can decline with a text: **Reply…** on notification
+  servers with inline replies, otherwise the first saved reply.
 - Contact cards: the contact cache now keeps each number with its iPhone
   label, labelled email addresses, postal addresses, company and job title,
   inside the encrypted contact records only. `Messages1.ListContactCards`
