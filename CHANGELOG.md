@@ -4,6 +4,13 @@
 
 ### Added
 
+- Cover art of the iPhone's current track over AVRCP (Basic Imaging Profile),
+  shown in the Qt and GTK clients, reported as `cover` in `GetNowPlaying` and
+  `phone_media_cover` in `GetStatus`, and published as MPRIS `mpris:artUrl`.
+  Images stay local in an owner-only cache; part of the media-control opt-in.
+- Fedora packages: `blueferry-quickshell` is now built as an RPM alongside
+  the GTK and Qt clients; it requires Fedora's `quickshell` package (Fedora 44
+  or newer).
 - Terminal client plugins: the iPhone overview shows **From Plugins** (card
   items with their buttons, re-read on `CardChanged` while it is open) and
   **Send to…** with a path field that completes paths; card buttons with
@@ -34,6 +41,10 @@
   `contact_card_count` and `contact_card_epoch` (changes when card ids may
   no longer resolve). Card queries ignore case, accents and Unicode forms.
   CLI: `blueferry contacts list|show`.
+- Contact list photos: `Messages1.GetContactCardPhotos` returns the photos of
+  up to 50 cards by id in one call (bounded reply, no decoding in the
+  daemon), and the shared contact list model loads them for the rows on
+  screen, in memory only, with initials as the fallback.
 - Global search: `Messages1.Search` looks through conversations, messages,
   contact cards and call history in one call and groups the hits with the
   ids to open them. It searches only the decrypted data the daemon already

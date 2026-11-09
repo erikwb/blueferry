@@ -87,8 +87,8 @@ sudo dnf install ./blueferry-backend-*.fc43.noarch.rpm \
   ./blueferry-gtk-*.fc43.noarch.rpm
 ```
 
-Replace the GTK package with `blueferry-qt` for KDE Plasma. Arch and CachyOS
-also provide `blueferry-quickshell`. The tested matrix currently covers Arch
+Replace the GTK package with `blueferry-qt` for KDE Plasma. Arch, CachyOS and
+Fedora 44 or newer also provide `blueferry-quickshell`. The tested matrix currently covers Arch
 Linux, CachyOS, Debian 13, Ubuntu 24.04 and 26.04, Linux Mint 22.3, Pop!_OS
 24.04, PikaOS IV, and Fedora 43, 44, and 45. Ubuntu 24.04, Mint, and Pop!_OS do
 not provide necessary Qt dependencies, so use the GTK or terminal client there.
@@ -1118,8 +1118,18 @@ waits for BlueZ to report the iPhone's LE link (`Bearer.LE1`, BlueZ 5.86 or
 newer with the bearer API); on older BlueZ `blueferry media` says so instead
 of waiting forever.
 
-BlueFerry deliberately does not use AVRCP for this: acting as an AVRCP
-controller could make the iPhone route its audio to this computer.
+With media control on, BlueFerry also shows the cover of the current track.
+It comes over Bluetooth Classic (AVRCP cover art): BlueFerry keeps the
+iPhone's cover-art connection open and stores the small images in
+`~/.cache/blueferry/cover`, readable only by you and emptied when the phone
+disconnects. Nothing goes to the internet. The Qt and GTK clients show it
+next to the track, and with the MPRIS option desktops (GNOME, Plasma, DMS,
+Waybar …) pick it up as `mpris:artUrl`. The track that is already playing
+when the phone connects may get its cover only from the next track on.
+
+BlueFerry does not act as an AVRCP controller itself: that could make the
+iPhone route its audio to this computer. Cover art only uses the connection
+BlueZ already has.
 
 ## Internet sharing (experimental)
 

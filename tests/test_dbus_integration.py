@@ -1280,6 +1280,22 @@ def test_raw_call_with_the_wrong_argument_types_is_rejected(public_service) -> N
     assert cleared == [False]
 
 
+def test_contact_card_photos_reject_wrongly_typed_ids(public_service) -> None:
+    name, _pending, _policy, _changes, service = public_service
+    asked = []
+    service.operations.contact_card_photos = asked.append
+
+    for args, signature in (
+        # A plain string is not a one-id list; list() would split it.
+        (("c1",), "s"),
+        (([1, 2],), "au"),
+        ((["c1"], "c2"), "ass"),
+    ):
+        outcome = _raw_call(name, "GetContactCardPhotos", args, signature)
+        assert outcome == {"error": "org.freedesktop.DBus.Error.InvalidArgs"}, signature
+    assert asked == []
+
+
 def test_raw_call_to_a_python_attribute_gets_the_usual_error(public_service) -> None:
     name, _pending, _policy, _changes, _service = public_service
     outcome = {}

@@ -68,6 +68,7 @@ from blueferry.contact_photos import PhotoFiles
 from blueferry.contact_repository import ContactRepository
 from blueferry.contact_sync import ContactSync
 from blueferry.contacts import ContactsResolver
+from blueferry.cover_art import PhoneCoverArt
 from blueferry.dbus_service import MessagesService, claim_bus_name
 from blueferry.errors import BlueFerryError, NotReadyError
 from blueferry.event_dispatcher import EventDispatcher
@@ -426,6 +427,16 @@ class Daemon:
                 not self.bearers.can_change_profiles or self.recovery.active
             ),
             bluez_blocked=lambda: self.bluez_health.unresponsive,
+        )
+        # AVRCP cover art over BIP; follows the media-control opt-in.
+        self.cover_art = PhoneCoverArt(
+            GioDBus(gio_system_bus),
+            device_path,
+            config.IPHONE_MAC,
+            on_cover=self._cover_changed,
+            schedule=GLib.timeout_add_seconds,
+            cancel=GLib.source_remove,
+            enabled=self.media is not None,
         )
         self.audio_autoconnect = PhoneAudioAutoConnectPolicy()
         self.audio_preference = PhoneAudioPreference(
@@ -1160,11 +1171,17 @@ class Daemon:
             media, self.media = self.media, None
             media.close()
             self.phone_audio_route.media_changed()
+        self.cover_art.set_enabled(selected)
         log.info("iPhone media control %s", "enabled" if selected else "disabled")
         self._emit_status()
         if self._dbus_service is not None:
             self._dbus_service.emit_now_playing_changed()
         return self._media_status()
+
+    def _cover_changed(self, path: str | None) -> None:
+        if self.media is not None:
+            self.media.set_cover(path)
+        self._emit_status_soon()
 
     def _on_media_availability(self, available: bool) -> None:
         if not available:
@@ -1527,6 +1544,7 @@ class Daemon:
         self.calls.start()
         self.phone_battery.start()
         self.phone_audio_route.start()
+        self.cover_art.start()
 
         # Signal subscriptions belong to the GLib thread; the blocking session
         # creation itself belongs to the serialized OBEX worker.
@@ -1580,6 +1598,7 @@ class Daemon:
         self._bluez_owner_generation += 1
         generation = self._bluez_owner_generation
         self.phone_audio_route.bluez_owner_changed(bool(new_owner))
+        self.cover_art.bluez_owner_changed(bool(new_owner))
         self.audio_preference.bluez_restarted()
         # Invalidate before discovery or advertising can dispatch more D-Bus
         # work. An interrupted power restoration keeps ordinary reconnects
@@ -2083,6 +2102,7 @@ class Daemon:
             **self._media_status(),
             **self.phone_audio_route.snapshot(),
             "notification_history_enabled": self.notification_log is not None,
+            **self.cover_art.snapshot(),
             "notification_pins_max": MAX_PINNED_NOTIFICATIONS,
             **self.audio_preference.snapshot(),
             **self._controller_identity(),
@@ -2268,6 +2288,7 @@ class Daemon:
         self.phone_battery.stop()
         self.audio_preference.stop()
         self.phone_audio_route.stop()
+        self.cover_art.stop()
         if self._phone_emit_id is not None:
             try:
                 GLib.source_remove(self._phone_emit_id)

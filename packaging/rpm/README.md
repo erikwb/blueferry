@@ -1,7 +1,10 @@
 # Fedora RPM packages
 
-This spec builds `blueferry-backend`, `blueferry-gtk`, and `blueferry-qt`
-using only Fedora repository dependencies. Package CI builds one artifact set
+This spec builds `blueferry-backend`, `blueferry-gtk`, `blueferry-qt`, and
+`blueferry-quickshell` using only Fedora repository dependencies.
+`blueferry-quickshell` needs Fedora's `quickshell` package, which exists from
+Fedora 44 on; package CI installs it only where the release provides it
+(`packaging/install-rpms.sh`). Package CI builds one artifact set
 for each Python ABI in the supported Fedora releases, then installs each exact
 set on the compatible releases. The `.fc43` packages cover Fedora 43 and 44;
 Fedora 45 gets separate `.fc45` packages because it uses Python 3.15.

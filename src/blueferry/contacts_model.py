@@ -16,20 +16,41 @@ lock or reset also moves it. Photos follow
 ``contact_photos``: once it is off or unknown, the open card's photo and
 every photo hint are dropped at once, including from answers still on
 their way; turning it on reads the list and the open card again.
+
+List rows show photos instead of initials once loaded: a client passes the
+ids of the rows on screen to :meth:`ContactBook.request_photos`, which reads
+the photos of those with ``has_photo`` in batches through
+``GetContactCardPhotos`` on the worker and reports the loaded ids through
+``on_photos``. Photos stay in memory only, keyed by card id, and are
+dropped with the rows, on an epoch change and when the photo setting or
+revision changes; :meth:`ContactBook.row_photo` returns ``b""`` (show the
+initials) for everything else.
 """
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from typing import Any
 
 from blueferry import contacts_view
 from blueferry.client import ContactNotFoundError
 from blueferry.client_tasks import TaskRunner, TimerFactory
+from blueferry.limits import (
+    MAX_CONTACT_PHOTO_BATCH,
+    MAX_CONTACT_PHOTO_BATCH_BYTES,
+    MAX_CONTACT_PHOTO_BYTES,
+)
 from blueferry.search_view import TYPING_DELAY_MS
 
 PAGE_SIZE = contacts_view.DEFAULT_PAGE
 # Longest query sent to the daemon; the search field allows no more.
 MAX_QUERY_CHARS = 128
+
+# Row photos held at once (each at most limits.MAX_CONTACT_PHOTO_BYTES; iOS
+# sends thumbnails of about 5 KiB). The oldest are dropped first and read
+# again when their rows come back into view.
+MAX_ROW_PHOTOS = 400
+# Status keys whose change invalidates loaded row photos.
+_PHOTO_STATUS_KEYS = ("contact_photos", "contact_photos_state", "contact_photo_revision")
 
 _STALE = object()
 
@@ -51,14 +72,21 @@ class ContactBook:
         fetch_page: Callable[[int, int, str], object],
         fetch_card: Callable[[str], tuple[object, bytes]],
         on_change: Callable[[], None] = lambda: None,
+        fetch_photos: Callable[[list[str]], Mapping[str, bytes]] | None = None,
+        on_photos: Callable[[list[str]], None] = lambda _ids: None,
     ) -> None:
-        """``fetch_page(offset, limit, query)`` and ``fetch_card(id)`` are the
-        client's blocking ``ListContactCards``/``GetContact`` calls; they run
-        on ``runner`` (the client's D-Bus worker)."""
+        """``fetch_page(offset, limit, query)``, ``fetch_card(id)`` and
+        ``fetch_photos(ids)`` are the client's blocking ``ListContactCards``,
+        ``GetContact`` and ``GetContactCardPhotos`` calls; they run on
+        ``runner`` (the client's D-Bus worker). ``on_photos(ids)`` runs on
+        the UI thread when row photos for ``ids`` arrived; without
+        ``fetch_photos`` rows keep their initials."""
         self._runner = runner
         self._fetch_page = fetch_page
         self._fetch_card = fetch_card
         self._on_change = on_change
+        self._fetch_photos = fetch_photos
+        self._on_photos = on_photos
         self._timer = timer(self.reload)
         self._watched = False
         self._supported = False
@@ -79,6 +107,13 @@ class ContactBook:
         self._error = ""
         self._card = _empty_card()
         self._photo = b""
+        self._photo_status: tuple[object, ...] = ()
+        # Row photos by card id: bytes (undecoded, untrusted) or b"" for a
+        # card that turned out to have none. Insertion order is age.
+        self._row_photos: dict[str, bytes] = {}
+        self._photos_pending: set[str] = set()
+        self._photo_serial = 0
+        self._photo_revision = 0
 
     # ---- state ----------------------------------------------------------
 
@@ -110,6 +145,15 @@ class ContactBook:
         """Photo bytes of the open card (undecoded, untrusted), or ``b""``."""
         return self._photo
 
+    @property
+    def photo_revision(self) -> int:
+        """Grows whenever row photos arrive or are dropped."""
+        return self._photo_revision
+
+    def row_photo(self, contact_id: str) -> bytes:
+        """The loaded photo of a list row (undecoded, untrusted), or ``b""``."""
+        return self._row_photos.get(str(contact_id or ""), b"")
+
     def view(self) -> dict[str, Any]:
         """Everything the list shows: rows, count and empty texts, paging."""
         loaded = self._loaded
@@ -134,6 +178,10 @@ class ContactBook:
         supported = contacts_view.supported(status)
         epoch = status.get(contacts_view.EPOCH_KEY) if supported else None
         previous, self._epoch = self._epoch, epoch
+        photo_status = (epoch, *(status.get(key) for key in _PHOTO_STATUS_KEYS))
+        if photo_status != self._photo_status:
+            self._photo_status = photo_status
+            self._drop_row_photos()
         changed = previous is not None and epoch != previous
         if changed:
             self._drop_cards()
@@ -247,6 +295,69 @@ class ContactBook:
 
         self._runner.submit(operation, completed, failed)
 
+    def request_photos(self, contact_ids: Iterable[str]) -> None:
+        """Rows ``contact_ids`` are on screen: read the photos they lack.
+
+        Only rows with ``has_photo`` that are neither loaded nor being read
+        are asked for, at most ``MAX_CONTACT_PHOTO_BATCH`` per call; the
+        client calls again as the visible rows change. A failed read is
+        forgotten so the next call tries again.
+        """
+        if self._fetch_photos is None or not (
+            self._watched and self._supported and self._photos
+        ):
+            return
+        with_photo = {row["id"] for row in self._rows if row.get("has_photo")}
+        wanted: list[str] = []
+        for value in contact_ids:
+            contact_id = str(value or "")
+            if (
+                contact_id in with_photo
+                and contact_id not in self._row_photos
+                and contact_id not in self._photos_pending
+                and contact_id not in wanted
+            ):
+                wanted.append(contact_id)
+                if len(wanted) >= MAX_CONTACT_PHOTO_BATCH:
+                    break
+        if not wanted:
+            return
+        self._photos_pending.update(wanted)
+        serial = self._photo_serial
+        fetch = self._fetch_photos
+
+        def completed(value: object) -> None:
+            if serial != self._photo_serial:
+                return
+            self._photos_pending.difference_update(wanted)
+            found = value if isinstance(value, Mapping) else {}
+            photos = {
+                key: data for key in wanted
+                if isinstance(data := found.get(key), bytes) and data
+            }
+            # The daemon leaves out photos past its reply budget. When that
+            # budget cannot have been reached, an absent row has no photo.
+            settled = (
+                sum(len(data) for data in photos.values()) + MAX_CONTACT_PHOTO_BYTES
+                <= MAX_CONTACT_PHOTO_BATCH_BYTES
+            )
+            for contact_id in wanted:
+                if contact_id in photos:
+                    self._row_photos[contact_id] = photos[contact_id]
+                elif settled:
+                    self._row_photos[contact_id] = b""
+            while len(self._row_photos) > MAX_ROW_PHOTOS:
+                del self._row_photos[next(iter(self._row_photos))]
+            if photos:
+                self._photo_revision += 1
+                self._on_photos(list(photos))
+
+        def failed(_message: str) -> None:
+            if serial == self._photo_serial:
+                self._photos_pending.difference_update(wanted)
+
+        self._runner.submit(lambda: fetch(wanted), completed, failed)
+
     def close(self) -> None:
         """Leave the card view (and drop its photo)."""
         self._card_serial += 1
@@ -277,10 +388,12 @@ class ContactBook:
         if self._card["open"]:
             self._card = {**_empty_card(), "open": True, "id": self._card["id"]}
         self._photo = b""
+        self._drop_row_photos()
         self._on_change()
 
     def _drop_photos(self) -> None:
         """Photos were turned off or became unknown: drop them now."""
+        self._drop_row_photos()
         rows = [self._without_photo(row) for row in self._rows]
         card = self._without_photo(self._card)
         if self._photo or card is not self._card or any(
@@ -297,8 +410,16 @@ class ContactBook:
         self._rows, self._page, self._loaded = [], {}, False
         self._loading, self._error = False, ""
         self._card, self._photo = _empty_card(), b""
+        self._drop_row_photos()
         if changed:
             self._on_change()
+
+    def _drop_row_photos(self) -> None:
+        self._photo_serial += 1
+        self._photos_pending.clear()
+        if self._row_photos:
+            self._row_photos.clear()
+            self._photo_revision += 1
 
     def _load(self, offset: int, *, replace: bool) -> None:
         self._list_serial += 1

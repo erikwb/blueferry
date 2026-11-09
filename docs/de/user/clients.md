@@ -179,7 +179,7 @@ im Menü entfernt nur das Symbol; BlueFerry und offene Fenster laufen weiter.
 Monospace-Systemschrift von Omarchy, mit kompakten Bedienelementen und
 dünnen Rahmen. Gesendete Nachrichten bleiben in jedem Theme blau. Außerhalb
 von Omarchy nutzt der Client die Desktop-Palette. Pakete gibt es für
-Arch-basierte Distributionen.
+Arch-basierte Distributionen und Fedora ab 44.
 
 ![Quickshell-Client](../../images/quickshell.png)
 
