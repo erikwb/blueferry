@@ -25,8 +25,9 @@ bottom in a narrow window:
   company, job title and photo, with **Call** and **Message** (opens the
   conversation with that number, or a new message).
 - **Calls**: running [phone calls](calls.md) with answer, hold/resume,
-  hang up, keypad tones (0-9, `*`, `#`) for the active call and the sound
-  switch, a dial pad that also searches your
+  hang up, **Decline with message** for a ringing call (a saved reply or
+  your own text), keypad tones (0-9, `*`, `#`) and **Mute** for the active
+  call and the sound switch, a dial pad that also searches your
   contacts by name, and the [call history](call-history.md) grouped by day,
   with All and Missed, call back and message buttons, and **Refresh from
   iPhone**. Every call asks for confirmation first.
@@ -63,7 +64,7 @@ bottom in a narrow window, and the search button finds any setting:
 | --- | --- |
 | Phone | Pairing, connection health with **Reconnect**, **Run Diagnostics** (the same checks as `blueferry doctor`; the report opens in its own dialog with a copy button), pairing report, contact sync, contact photos |
 | Notifications | Which events create popups, contacts only, [muted apps](notification-mute.md), click rules, notification content, action buttons, sync notifications with iPhone, mark read on dismiss, keeping recent notifications |
-| Calls & Audio | Phone calls, call history, battery warning, [iPhone sound on this computer](phone-audio.md), media control |
+| Calls & Audio | Phone calls, the replies offered when declining a call (add, edit, remove; up to 5), call history, battery warning, [iPhone sound on this computer](phone-audio.md), media control |
 | Network | Opt-in [Bluetooth tethering](bluetooth-tethering.md) |
 | Security | One-time codes, away lock, local storage and its encryption, Clear History |
 | Plugins | Installed [plugins](plugins.md) with their switch, **Show Log**, **Check for Update** and **Remove**; the store, your own Git URL and the plugin lists. Every install asks first. A plugin's **Settings** open as a page of their own |

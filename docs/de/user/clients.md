@@ -29,8 +29,9 @@ in der Kopfzeile, in einem schmalen Fenster unten:
   Firma, Funktion und Foto, mit **Call** und **Message** (öffnet die
   Unterhaltung mit dieser Nummer oder eine neue Nachricht).
 - **Calls**: laufende [Anrufe](calls.md) mit annehmen, halten/fortsetzen,
-  auflegen, Tastentönen (0-9, `*`, `#`) für den aktiven Anruf sowie dem
-  Ton-Schalter, ein Wählfeld, das auch deine
+  auflegen, **Decline with message** für einen klingelnden Anruf (eine
+  gespeicherte Antwort oder eigener Text), Tastentönen (0-9, `*`, `#`) und
+  **Mute** für den aktiven Anruf sowie dem Ton-Schalter, ein Wählfeld, das auch deine
   Kontakte nach Namen durchsucht, und die [Anrufliste](call-history.md) nach Tagen
   gruppiert, mit All und Missed, Rückruf- und Nachrichtenknöpfen und
   **Refresh from iPhone**. Jeder Anruf fragt vorher nach.
@@ -68,7 +69,7 @@ einem schmalen Fenster unten, und der Suchknopf findet jede Einstellung:
 | --- | --- |
 | Phone | Kopplung, Verbindungszustand mit **Reconnect**, **Run Diagnostics** (dieselben Prüfungen wie `blueferry doctor`; der Bericht öffnet sich in einem eigenen Dialog mit Kopierknopf), Kopplungsbericht, Kontaktabgleich, Kontaktfotos |
 | Notifications | Welche Ereignisse Popups erzeugen, nur Kontakte, [stummgeschaltete Apps](notification-mute.md), Klickregeln, Mitteilungsinhalt, Aktionsknöpfe, Mitteilungen mit dem iPhone abgleichen, beim Wegklicken als gelesen markieren, letzte Mitteilungen behalten |
-| Calls & Audio | Anrufe, Anrufliste, Akku-Warnung, [iPhone-Ton am Computer](phone-audio.md), Mediensteuerung |
+| Calls & Audio | Anrufe, die Antworten beim Ablehnen eines Anrufs (hinzufügen, bearbeiten, entfernen; bis zu 5), Anrufliste, Akku-Warnung, [iPhone-Ton am Computer](phone-audio.md), Mediensteuerung |
 | Network | Optionales [Bluetooth-Tethering](bluetooth-tethering.md) |
 | Security | Einmalcodes, Abwesenheitssperre, lokale Daten und ihre Verschlüsselung, Verlauf löschen |
 | Plugins | Installierte [Plugins](plugins.md) mit Schalter, **Show Log**, **Check for Update** und **Remove**; der Store, eine eigene Git-URL und die Plugin-Listen. Jede Installation fragt vorher nach. Die **Settings** eines Plugins öffnen sich als eigene Seite |

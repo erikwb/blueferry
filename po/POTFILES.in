@@ -4,6 +4,8 @@ src/blueferry/models.py
 src/blueferry/reconnect_view.py
 src/blueferry/notification_pin_view.py
 src/blueferry/phone_overview.py
+src/blueferry/quick_reply_view.py
+src/blueferry/calls/quick_replies.py
 src/blueferry/ui/app.py
 src/blueferry/ui/window.py
 src/blueferry/ui/conversations.py
@@ -27,6 +29,7 @@ src/blueferry/ui/plugin_cards.py
 src/blueferry/ui/companion_tools.py
 src/blueferry/ui/photos.py
 src/blueferry/ui/file_drop.py
+src/blueferry/ui/quick_replies.py
 src/blueferry/qt/controller.py
 src/blueferry/qt/tray.py
 src/blueferry/qt/tray_presenter.py
