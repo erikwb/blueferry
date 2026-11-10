@@ -68,3 +68,15 @@ def test_media_shows_remote_text_verbatim_and_supported_buttons() -> None:
     assert state.available and state.title == "<b>Song</b> — A & B"
     assert state.playing is False
     assert state.buttons == {"previous": False, "toggle": True, "next": True}
+
+
+def test_media_passes_only_an_absolute_cover_path() -> None:
+    base = {"enabled": True, "available": True, "track": {"title": "Song"}}
+    status = {"media_control_enabled": True}
+    assert media(status, {**base, "cover": "/c/cover-x-1000001.jpg"}).cover == (
+        "/c/cover-x-1000001.jpg")
+    for bad in ("relative.jpg", "file:///c/x.jpg", 3, None, "/c/x\0.jpg"):
+        assert media(status, {**base, "cover": bad}).cover == ""
+    assert media(status, base).cover == ""
+    # Nothing while media is unavailable.
+    assert media({}, {**base, "cover": "/c/x.jpg"}).cover == ""

@@ -357,6 +357,46 @@ def _exercise_card():
     assert [buttons[n].get_sensitive() for n in ("previous", "toggle", "next")] == [
         False, True, True]
     assert buttons["toggle"].get_icon_name() == "media-playback-pause-symbolic"
+    assert card.media_icon.get_visible() and not card.media_cover.get_visible()
+
+    # AVRCP cover art replaces the generic icon, decoded off the GTK thread.
+    import tempfile
+
+    from gi.repository import GdkPixbuf
+
+    cover_dir = tempfile.TemporaryDirectory()
+    cover = Path(cover_dir.name) / "cover-abc-1000001.jpg"
+    pixbuf = GdkPixbuf.Pixbuf.new(GdkPixbuf.Colorspace.RGB, False, 8, 200, 200)
+    pixbuf.fill(0xC0392BFF)
+    pixbuf.savev(str(cover), "jpeg", [], [])
+    card._media_loaded({
+        "available": True, "player": {"state": "playing"},
+        "track": {"title": "Song"}, "supported_commands": ["pause"],
+        "cover": str(cover),
+    })
+    for _ in range(200):
+        _settle()
+        if card.media_cover.get_visible():
+            break
+    assert card.media_cover.get_visible() and not card.media_icon.get_visible()
+    assert card.media_cover.get_paintable() is not None
+    assert card.media_cover.get_pixel_size() == 48
+    # The next track without a cover shows the icon again.
+    card._media_loaded({
+        "available": True, "player": {"state": "playing"},
+        "track": {"title": "Other"}, "supported_commands": ["pause"],
+    })
+    assert card.media_icon.get_visible() and not card.media_cover.get_visible()
+    # A cover that is gone (session ended) never shows a broken image.
+    card._media_loaded({
+        "available": True, "player": {"state": "playing"},
+        "track": {"title": "Other"}, "supported_commands": ["pause"],
+        "cover": str(cover.with_name("cover-gone-1.jpg")),
+    })
+    for _ in range(50):
+        _settle()
+    assert card.media_icon.get_visible() and not card.media_cover.get_visible()
+    cover_dir.cleanup()
     # A refused command says why and reads the player again.
     toasts = []
     window.toast = toasts.append

@@ -43,6 +43,8 @@ class MediaState:
     hint: str = ""
     playing: bool = False
     buttons: Mapping[str, bool] = field(default_factory=dict)
+    # Absolute path of the track's cover image (AVRCP cover art), or "".
+    cover: str = ""
 
 
 def _percent(value: object) -> int | None:
@@ -97,7 +99,15 @@ def media(status: Mapping[str, Any], snapshot: object) -> MediaState:
         title=view.title,
         playing=view.playing,
         buttons={name: name in view.commands for name in overview.MEDIA_BUTTONS},
+        cover=_cover_path(snapshot),
     )
+
+
+def _cover_path(snapshot: object) -> str:
+    cover = snapshot.get("cover") if isinstance(snapshot, Mapping) else None
+    if isinstance(cover, str) and cover.startswith("/") and "\0" not in cover:
+        return cover
+    return ""
 
 
 def direction_icon(direction: str) -> str:

@@ -17,7 +17,7 @@ from __future__ import annotations
 import threading
 from collections.abc import Callable
 
-from gi.repository import GLib, Gtk, Pango
+from gi.repository import Gdk, GdkPixbuf, GLib, Gtk, Pango
 
 from blueferry import phone_link_view
 from blueferry import phone_overview as overview
@@ -34,6 +34,8 @@ from blueferry.ui.quick_switches import (
 from blueferry.ui.reads import CoalescedRead
 
 _END = Pango.EllipsizeMode.END
+# The phone sends 200x200 thumbnails; shown at 48 px they stay sharp at 2x.
+COVER_PIXELS = 48
 NameLoader = Callable[[Callable[[str], None]], None]
 
 
@@ -143,7 +145,17 @@ class PhoneCard(Gtk.Box):
             valign=Gtk.Align.CENTER, hexpand=True,
         )
         self.media_box.update_property([Gtk.AccessibleProperty.LABEL], [_("Now Playing")])
-        self.media_box.append(Gtk.Image(icon_name="audio-x-generic-symbolic"))
+        self.media_icon = Gtk.Image(icon_name="audio-x-generic-symbolic")
+        self.media_box.append(self.media_icon)
+        # The track's cover (AVRCP cover art) replaces the generic icon.
+        self.media_cover = Gtk.Image(
+            pixel_size=COVER_PIXELS, valign=Gtk.Align.CENTER, visible=False,
+            overflow=Gtk.Overflow.HIDDEN, css_classes=["card"],
+        )
+        self.media_cover.update_property([Gtk.AccessibleProperty.LABEL], [_("Cover art")])
+        self.media_box.append(self.media_cover)
+        self._cover_path = ""
+        self._cover_generation = 0
         self.media_title = Gtk.Label(
             xalign=0, ellipsize=_END, hexpand=True, max_width_chars=36, use_markup=False,
         )
@@ -296,7 +308,43 @@ class PhoneCard(Gtk.Box):
         self.media_hint.set_visible(not state.available)
         self.media_hint.set_label(state.hint)
         self.media_hint.set_tooltip_text(state.hint or None)
+        self._show_cover(state.cover if state.available else "")
         self._render_volume(state.available)
+
+    def _show_cover(self, path: str) -> None:
+        """Decode the cover off the GTK thread; a newer track wins."""
+        if path == self._cover_path:
+            return
+        self._cover_path = path
+        self._cover_generation += 1
+        generation = self._cover_generation
+        if not path:
+            self._set_cover(None)
+            return
+
+        def work() -> None:
+            try:
+                # Decode at the shown size (2x for HiDPI), whatever the file has.
+                size = COVER_PIXELS * 2
+                pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_scale(path, size, size, True)
+                texture: Gdk.Texture | None = Gdk.Texture.new_for_pixbuf(pixbuf)
+            except Exception:
+                # Removed with its session, or not an image after all.
+                texture = None
+
+            def deliver() -> bool:
+                if generation == self._cover_generation:
+                    self._set_cover(texture)
+                return False
+
+            GLib.idle_add(deliver)
+
+        threading.Thread(target=work, name="blueferry-cover", daemon=True).start()
+
+    def _set_cover(self, texture: Gdk.Texture | None) -> None:
+        self.media_cover.set_from_paintable(texture)
+        self.media_cover.set_visible(texture is not None)
+        self.media_icon.set_visible(texture is None)
 
     def _render_volume(self, available: bool) -> None:
         volume = volume_controls(self._now_playing if available else {})
