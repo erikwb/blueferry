@@ -42,6 +42,44 @@ def call_hint() -> str:
     return _("Applies to this call only.")
 
 
+def mute_label(muted: bool) -> str:
+    """The mute button: what a press does."""
+    return _("Unmute") if muted else _("Mute")
+
+
+def mute_hint(muted: bool) -> str:
+    return _("Your microphone is muted for this call.") if muted else _(
+        "Mutes this computer's microphone for this call only."
+    )
+
+
+def mute(value: CallAudio | Mapping[str, Any] | None) -> dict[str, Any]:
+    """The mute button of the call view.
+
+    ``supported`` is False for daemons that cannot mute a call; ``muted``
+    is the current state, ``label`` names the action (Mute/Unmute) and
+    ``hint`` explains it (a tooltip or a status line). ``available`` is
+    True once the call's microphone stream exists: the daemon refuses to
+    mute before that, so clients offer the button only then.
+    """
+    audio = value if isinstance(value, CallAudio) else CallAudio.from_dict(value)
+    if audio is None or audio.muted is None:
+        return {
+            "supported": False, "available": False, "muted": False,
+            "label": mute_label(False), "hint": "",
+        }
+    return {
+        "supported": True, "available": audio.state == "ready" and audio.input.stream,
+        "muted": audio.muted, "label": mute_label(audio.muted), "hint": mute_hint(audio.muted),
+    }
+
+
+def mute_failure_text(error: object) -> str:
+    """A refused or failed mute; the daemon's text says why."""
+    detail = str(error).strip()
+    return detail or _("Could not change the microphone for this call.")
+
+
 def saved(status: Mapping[str, Any], direction: str) -> str:
     value = status.get(STATUS_KEYS[direction])
     return value if isinstance(value, str) else ""
@@ -101,10 +139,11 @@ def call_audio(value: CallAudio | Mapping[str, Any] | None) -> dict[str, Any]:
     ``text`` (the device actually used), ``using`` (the same as a sentence),
     ``selected`` (the node.name the switch should show) and ``missing``.
     ``hint`` explains a waiting or missing device and is empty otherwise.
+    ``mute`` is the mute button (see ``mute``).
     """
     audio = value if isinstance(value, CallAudio) else CallAudio.from_dict(value)
     if audio is None:
-        return {"supported": False, "state": "", "rows": [], "hint": ""}
+        return {"supported": False, "state": "", "rows": [], "hint": "", "mute": mute(None)}
     rows = []
     missing = []
     for direction in DIRECTIONS:
@@ -134,7 +173,10 @@ def call_audio(value: CallAudio | Mapping[str, Any] | None) -> dict[str, Any]:
         hint = _("The chosen devices are not connected; the call uses the system defaults.")
     else:
         hint = ""
-    return {"supported": True, "state": audio.state, "rows": rows, "hint": hint}
+    return {
+        "supported": True, "state": audio.state, "rows": rows, "hint": hint,
+        "mute": mute(audio),
+    }
 
 
 def settings_view(

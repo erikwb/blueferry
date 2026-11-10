@@ -65,6 +65,9 @@ class FakeAudio:
     def set_for_call(self, direction, name):
         self.saved.append(("call", direction, name))
 
+    def set_muted(self, muted):
+        self.saved.append(("muted", muted))
+
 
 def _operations(calls=None, audio=None):
     return BackendOperations(_Sessions(), BackendDependencies(
@@ -184,3 +187,24 @@ def test_switching_calls_off_releases_the_call_stream_targets(make_daemon, monke
 
     # The release is queued before the hands-free link (and the streams) go.
     assert order == ["calls True", "release", "calls False"]
+
+
+def test_muting_the_call_needs_calls_and_the_capability() -> None:
+    audio = FakeAudio()
+
+    _operations(audio=audio).set_call_muted(True)
+
+    assert audio.saved == [("muted", True)]
+    with pytest.raises(CallsDisabledError):
+        _operations(calls=FakeCalls(enabled=False), audio=audio).set_call_muted(True)
+    with pytest.raises(NotReadyError):
+        _operations().set_call_muted(False)
+
+
+def test_models_read_the_call_mute() -> None:
+    muted = CallAudio.from_dict({"state": "ready", "muted": True})
+    older = CallAudio.from_dict({"state": "ready"})
+
+    assert muted.muted is True and older.muted is None
+    assert CallAudio.from_dict(muted.to_dict()) == muted
+    assert "muted" not in older.to_dict()
