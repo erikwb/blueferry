@@ -490,6 +490,13 @@
       <annotation name="io.weirdware.BlueFerry.Errors"
                   value="InvalidArgs,NotReady"/>
     </method>
+    <method name="SetCallMuted">
+      <annotation name="org.freedesktop.DBus.Description"
+                  value="Mute or unmute this computer's microphone for the running call only (the phone's call stream in PipeWire, not the microphone itself); ends when no call is left; NotReady before the call audio exists; the state PipeWire shows is in ListCalls audio.muted"/>
+      <arg name="muted" type="b" direction="in"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="InvalidArgs,NotReady"/>
+    </method>
   </interface>
   <interface name="io.weirdware.BlueFerry.Events1">
     <annotation name="org.freedesktop.DBus.Description"

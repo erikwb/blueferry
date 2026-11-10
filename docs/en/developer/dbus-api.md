@@ -242,6 +242,7 @@ the system". Their presence tells clients the choice is offered. See the
 | `ListCallAudioDevices` | → `s json` | `outputs` and `inputs` (each `name`, `description`, `default`) read from PipeWire, plus the saved `output`/`input`. The phone's own nodes are left out. "read" rate limit |
 | `SetCallAudioDevice` | `s direction, s name` → `s status_json` | `output` or `input`; a `node.name` or `""` (system). Saved for every call; returns the `calls_audio_*` keys. "settings" rate limit |
 | `SetCallAudioDeviceForCall` | `s direction, s name` | Same, but only until no call is left; `NotReady` without a call. "calls-control" rate limit |
+| `SetCallMuted` | `b muted` | Mute this computer's microphone for the running call only (the phone's call stream, not the microphone); ends when no call is left. `NotReady` without a call, before the call audio exists, or when PipeWire cannot be read. "calls-control" rate limit |
 
 With a backend that offers the choice, `ListCalls` also returns `audio`:
 `state` (`idle`, `waiting` until PipeWire shows the call audio, `ready`,
@@ -249,8 +250,12 @@ With a backend that offers the choice, `ListCalls` also returns `audio`:
 `selected` (the `node.name` in effect, `""` for the system), `origin`
 (`call`, `settings`, `system`), `device`/`description` of the device the
 call actually uses, `stream` (the call audio exists) and `missing` (the
-chosen device is not connected, so the system's device is used). A change
-emits `CallsChanged`.
+chosen device is not connected, so the system's device is used). From
+daemons that can mute a call, `audio.muted` tells whether PipeWire shows the
+call microphone stream muted (the state, not the request; `false` without
+call audio). A failed mute write leaves it unchanged and emits
+`CallsChanged`.
+A change emits `CallsChanged`.
 
 ## Events1 signals
 

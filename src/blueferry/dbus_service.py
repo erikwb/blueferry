@@ -1128,6 +1128,16 @@ class MessagesService(StrictObject):
             lambda: self.operations.set_call_audio_device_for_call(str(direction), str(name)),
         ))
 
+    @dbus.service.method(
+        CALLS_IFACE, in_signature="b", out_signature="", sender_keyword="sender"
+    )
+    def SetCallMuted(self, muted: bool, sender=None) -> None:
+        """Mute or unmute this computer's microphone for the running call."""
+        self._sync(lambda: self._authorized(
+            sender, "calls-control",
+            lambda: self.operations.set_call_muted(bool(muted)),
+        ))
+
     @dbus.service.signal(EVENTS_IFACE, signature="a{sv}")
     def HistoryChanged(self, props):
         """Private history changed; payload contains only a local revision."""

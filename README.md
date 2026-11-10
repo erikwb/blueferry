@@ -751,6 +751,7 @@ What happens then:
   blueferry calls dtmf 1234#      # tones on the active call
   blueferry calls hangup          # or: hangup --all
   blueferry calls audio           # speaker/microphone for calls
+  blueferry calls mute on         # mute this computer for the running call
   ```
 
 - Calls can use their own speaker and microphone (**Speaker for calls** and
@@ -759,6 +760,9 @@ What happens then:
   device for that call only. Other sound and the system defaults stay as
   they are; a chosen device that is not connected falls back to the system's
   device. See [Call speaker and microphone](docs/en/user/calls.md#call-speaker-and-microphone).
+- **Mute** in the call view (`blueferry calls mute on|off`) mutes this
+  computer's microphone for the running call only; other applications keep
+  it, and the next call starts unmuted.
 - `dial` accepts plain numbers only (an optional leading `+` and digits;
   spaces, dashes, dots, parentheses, and slashes are ignored). `*` and `#`
   are refused: dialed, they form service codes such as `**21*…#` that

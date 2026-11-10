@@ -144,6 +144,23 @@ and when calls are switched off it deletes it once more if the call
 streams still exist. If calls stay off and a remembered device still
 applies, delete those lines while WirePlumber is not running.
 
+## Muting your microphone during a call
+
+**Mute** in the call view of the Qt, GTK and terminal clients (or
+`blueferry calls mute on|off`) mutes this computer's microphone for the
+running call only: the caller hears nothing, while other applications keep
+recording from the microphone. The mute ends when no call is left (with a
+held or waiting call it carries over to that call); the next call starts
+unmuted. If the call audio drops and comes back during the call (a new
+hands-free audio link), it stays muted. The button works once the call
+audio is there, a few seconds after answering, and shows what PipeWire
+reports: if muting fails, it stays on **Mute**.
+
+BlueFerry mutes the call's own audio stream in PipeWire with `pw-cli`
+(part of PipeWire), not the microphone device. Unmuting that stream by hand
+in a mixer lasts for the rest of the call. WirePlumber may remember a mute
+for the call stream; BlueFerry lifts it at the start of the next call.
+
 ## Phone links
 
 The Qt and GTK clients can open `tel:` and `callto:` links, for example a

@@ -415,7 +415,8 @@ dbus-python; the guard tolerates that.
   Its `CallsChanged` invalidation on `Events1` has no arguments; caller
   numbers and names are only returned by the rate-limited `ListCalls`.
   `ListCallAudioDevices`, `SetCallAudioDevice` and
-  `SetCallAudioDeviceForCall` choose the call speaker and microphone.
+  `SetCallAudioDeviceForCall` choose the call speaker and microphone;
+  `SetCallMuted` mutes this computer for the running call.
   Dialing has its own strict quota. Adding it did not change the API
   generation.
 
@@ -798,6 +799,15 @@ A change to these rules has to be made in both places.
   `settings.json`; a per-call choice is kept in memory and dropped when no
   call is left. Results carry a generation, so a finished call's check is
   ignored. Clients share `call_audio_view.py` for the wording.
+  Muting for the call sets `mute` in the `Props` of the phone's
+  `bluez_output.<MAC>` stream with `pw-cli set-param`, after the same
+  serial check. The request is in memory and ends when no call is left;
+  `audio.muted` reports the stream's state from the last check (a failed
+  write resets the request and announces it). Each new
+  stream is checked once (so a stream that comes back gets the mute again,
+  and a mute WirePlumber restored from an earlier call is lifted), and a
+  muted call that ends, or switching calls off, unmutes the stream if it
+  still exists.
 - `stop()` (daemon exit or switching calls off) sends `Powered=false`,
   flushed and without awaiting a reply, for the modem BlueFerry powered
   itself; a modem another oFono client powered is left alone.

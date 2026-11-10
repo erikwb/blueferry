@@ -444,11 +444,16 @@ class CallAudioRoute:
 
 @dataclass(frozen=True, slots=True)
 class CallAudio:
-    """ListCalls ``audio``: ``state`` is idle, waiting, ready or unavailable."""
+    """ListCalls ``audio``: ``state`` is idle, waiting, ready or unavailable.
+
+    ``muted`` is True while this computer's microphone is muted for the
+    running call; None for daemons that cannot mute a call.
+    """
 
     state: str = "idle"
     output: CallAudioRoute = field(default_factory=CallAudioRoute)
     input: CallAudioRoute = field(default_factory=CallAudioRoute)
+    muted: bool | None = None
 
     @classmethod
     def from_dict(cls, value: object) -> CallAudio | None:
@@ -458,10 +463,16 @@ class CallAudio:
             state=_str(value.get("state"), "idle"),
             output=CallAudioRoute.from_dict(value.get("output")),
             input=CallAudioRoute.from_dict(value.get("input")),
+            muted=_bool(value["muted"]) if "muted" in value else None,
         )
 
     def to_dict(self) -> dict[str, Any]:
-        return {"state": self.state, "output": self.output.to_dict(), "input": self.input.to_dict()}
+        result: dict[str, Any] = {
+            "state": self.state, "output": self.output.to_dict(), "input": self.input.to_dict(),
+        }
+        if self.muted is not None:
+            result["muted"] = self.muted
+        return result
 
 
 @dataclass(frozen=True, slots=True)

@@ -907,3 +907,9 @@ class BackendClient:
         self._calls_call(
             "SetCallAudioDeviceForCall", direction, name, timeout=STATUS_CALL_TIMEOUT_SEC,
         )
+
+    def set_call_muted(self, muted: bool) -> None:
+        """Mute or unmute this computer's microphone for the running call."""
+        self._calls_call(
+            "SetCallMuted", dbus.Boolean(bool(muted)), timeout=STATUS_CALL_TIMEOUT_SEC,
+        )

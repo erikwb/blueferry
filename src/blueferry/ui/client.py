@@ -673,6 +673,15 @@ class DaemonClient(GObject.Object):
             mutation=True,
         )
 
+    def set_call_muted_async(self, muted: bool, on_ok, on_err) -> None:
+        """Mute or unmute this computer's microphone for the running call."""
+        self._submit(
+            lambda: self._call_backend(lambda backend: backend.set_call_muted(muted)),
+            on_ok,
+            on_err,
+            mutation=True,
+        )
+
     def dial_async(self, number: str, on_ok, on_err) -> None:
         """Place a call the user has just confirmed (Calls1.Dial)."""
         self._submit(
