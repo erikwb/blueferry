@@ -122,6 +122,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `calls/model.py` | Optional HFP calls: pure oFono property parsing, modem selection, dial/DTMF/call-id validation. |
 | `calls/ofono.py` | Asynchronous oFono system-bus transport (hand-built calls with NO_AUTO_START, no synchronous owner lookup). |
 | `calls/controller.py` | Optional HFP calls: oFono modem discovery, Powered→Online bring-up, call tracking and control, backoff; watches the phone's battery/signal interfaces while online. |
+| `calls/quick_replies.py` | Saved texts for declining a call with a message (`settings.json`, translated defaults, at most 5 one-line texts). `quick_reply_view.py` is the shared, toolkit-free client logic for offering and editing them. |
 | `phone_battery.py` | The phone's battery over LE (BlueZ `Battery1` or GATT Battery Level), asynchronous, no HFP; saved low-battery warning opt-in. |
 | `calls/phone_status.py` | Optional phone status: pure parsing of oFono's Handsfree/NetworkRegistration properties and the once-per-cycle low-battery decision. |
 | `tether.py` | Opt-in Bluetooth PAN tethering: saved opt-in (`TetherSettings`), state machine, Network1 link watch, and BlueZ error tokens. |
@@ -315,7 +316,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `qt/qml/CallHistorySettings.qml` | Call-history opt-in checkboxes in the iPhone settings. |
 | `qt/qml/NowPlayingBar.qml` | Opt-in iPhone now-playing bar with transport buttons. |
 | `qt/qml/MediaControlSettings.qml` | Media-control opt-in checkbox and state; loaded only for daemons that report it. |
-| `quickshell_bridge.py` | Persistent stdin/stdout JSON bridge from Quickshell to the session D-Bus API. Settings replies are built on the shared `features_view`, `phone_link_view.notifications_view`, `notification_pin_view`, `notification_apps_view`, `media_volume_view`, `reconnect_view` and `doctor_report` helpers, the contact search and global search on `contacts_view` and `search_view` (flat rows: the card's detail rows with call/message flags, search hits with the match split out and the caller's number on call hits), a busy (`NotReady`) search answered as `busy` so the panel retries it, and `dial` for the confirmed Call; row edits the panel sends by index (muted apps) reread the list under a lock right before writing. Lists (threads, contacts, feature switches, recent notifications) are plain JSON arrays; Qt 6.12 hands arrays in a `var` signal argument over as sequence wrappers that fail `Array.isArray` (#213), so `shell.qml` passes every reply and event through `plainValue()`, a JSON round trip; content-free D-Bus signals become events (`status-changed`, `now-playing-changed`, `notifications-changed`, `notification-apps-changed`, …). Plugin cards run on the shared `plugin_surfaces_model` with an inline runner on the request worker (one request at a time): `plugin_cards` and `plugin_action` (the model re-checks the plugin before it opens a page); `CardChanged` is heard only from the enabled card plugins through `plugin_card_watch.CardChangeWatcher` on the GLib thread and becomes `plugin-cards-changed`. |
+| `quickshell_bridge.py` | Persistent stdin/stdout JSON bridge from Quickshell to the session D-Bus API. Settings replies are built on the shared `features_view`, `phone_link_view.notifications_view`, `notification_pin_view`, `notification_apps_view`, `media_volume_view`, `reconnect_view`, `doctor_report` and `quick_reply_view` helpers (the bridge checks a saved decline reply with `quick_reply_view.reply_error` before it is sent), the contact search and global search on `contacts_view` and `search_view` (flat rows: the card's detail rows with call/message flags, search hits with the match split out and the caller's number on call hits), a busy (`NotReady`) search answered as `busy` so the panel retries it, and `dial` for the confirmed Call; row edits the panel sends by index (muted apps) reread the list under a lock right before writing. Lists (threads, contacts, feature switches, recent notifications) are plain JSON arrays; Qt 6.12 hands arrays in a `var` signal argument over as sequence wrappers that fail `Array.isArray` (#213), so `shell.qml` passes every reply and event through `plainValue()`, a JSON round trip; content-free D-Bus signals become events (`status-changed`, `now-playing-changed`, `notifications-changed`, `notification-apps-changed`, …). Plugin cards run on the shared `plugin_surfaces_model` with an inline runner on the request worker (one request at a time): `plugin_cards` and `plugin_action` (the model re-checks the plugin before it opens a page); `CardChanged` is heard only from the enabled card plugins through `plugin_card_watch.CardChangeWatcher` on the GLib thread and becomes `plugin-cards-changed`. |
 
 ### Quickshell client (`data/quickshell/`)
 
@@ -415,7 +416,12 @@ dbus-python; the guard tolerates that.
   Its `CallsChanged` invalidation on `Events1` has no arguments; caller
   numbers and names are only returned by the rate-limited `ListCalls`.
   `ListCallAudioDevices`, `SetCallAudioDevice` and
-  `SetCallAudioDeviceForCall` choose the call speaker and microphone.
+  `SetCallAudioDeviceForCall` choose the call speaker and microphone;
+  `SetCallMuted` mutes this computer for the running call.
+  `DeclineWithMessage` declines a ringing call and then sends a text to the
+  caller's number through the normal MAP send path (charged to the hang-up
+  quota it shares with `Hangup` and to the send quota);
+  `SetCallQuickReplies` saves its texts.
   Dialing has its own strict quota. Adding it did not change the API
   generation.
 
@@ -752,6 +758,11 @@ A change to these rules has to be made in both places.
 
 ## Optional phone calls
 
+- Declining with a message checks everything it can first (ringing call,
+  caller number, a valid recipient and body), then hangs up through oFono
+  and only on success queues the text on the OBEX worker like `Send`, so it
+  is recorded in the history. A send that fails afterwards is reported as
+  `DeclinedNotSent`; the call stays declined.
 - `calls.controller` only observes and drives oFono on the system bus; BlueZ
   and PipeWire/WirePlumber own the HFP profile and SCO audio. oFono is an
   optional runtime service: `ServiceUnknown` means "unavailable", retried
@@ -798,6 +809,15 @@ A change to these rules has to be made in both places.
   `settings.json`; a per-call choice is kept in memory and dropped when no
   call is left. Results carry a generation, so a finished call's check is
   ignored. Clients share `call_audio_view.py` for the wording.
+  Muting for the call sets `mute` in the `Props` of the phone's
+  `bluez_output.<MAC>` stream with `pw-cli set-param`, after the same
+  serial check. The request is in memory and ends when no call is left;
+  `audio.muted` reports the stream's state from the last check (a failed
+  write resets the request and announces it). Each new
+  stream is checked once (so a stream that comes back gets the mute again,
+  and a mute WirePlumber restored from an earlier call is lifted), and a
+  muted call that ends, or switching calls off, unmutes the stream if it
+  still exists.
 - `stop()` (daemon exit or switching calls off) sends `Powered=false`,
   flushed and without awaiting a reply, for the modem BlueFerry powered
   itself; a modem another oFono client powered is left alone.

@@ -73,6 +73,29 @@ ShellRoot {
   property bool syncContactsBusy: false
   property string contactsSyncNotice: ""
   property var doctor: ({})
+  // Speaker and microphone for calls: the bridge's settings rows, read
+  // when Settings opens while the daemon offers the choice.
+  property var callAudio: ({})
+  property bool callAudioBusy: false
+  readonly property bool callAudioWanted: root.featuresWanted
+    && root.backendStatus.calls_audio_output !== undefined
+  onCallAudioWantedChanged: if (root.callAudioWanted) root.loadCallAudio()
+
+  function loadCallAudio() {
+    if (root.callAudioWanted) backendBridge.requestLatest("call_audio_settings", {})
+  }
+  // Replies offered when declining a call: the bridge's list with its
+  // wording, read when Settings opens while the daemon offers them and
+  // again when the saved list changes (e.g. from the command line).
+  property var quickReplies: ({})
+  property bool quickRepliesBusy: false
+  readonly property bool quickRepliesWanted: root.featuresWanted
+    && root.backendStatus.calls_quick_replies !== undefined
+  onQuickRepliesWantedChanged: if (root.quickRepliesWanted) root.loadQuickReplies()
+
+  function loadQuickReplies() {
+    if (root.quickRepliesWanted) backendBridge.requestLatest("quick_replies", {})
+  }
   // Recent iPhone notifications: private, read only while the settings
   // page shows the list in a visible window, forgotten otherwise.
   property var notificationList: ({})
@@ -540,7 +563,12 @@ ShellRoot {
         // The service came back: the switches read while it was away are
         // only the local.env fallback.
         const daemonReturned = result.daemon === true && root.backendStatus.daemon !== true
+        // A changed saved list rereads the replies; when they only now
+        // become wanted, onQuickRepliesWantedChanged reads them.
+        const repliesChanged = root.quickRepliesWanted && JSON.stringify(result.calls_quick_replies)
+          !== JSON.stringify(root.backendStatus.calls_quick_replies)
         root.backendStatus = result
+        if (repliesChanged && !root.quickRepliesBusy) root.loadQuickReplies()
         if (daemonReturned && root.featuresWanted) root.loadFeatures()
         let searchedAgain = false
         if (result.contact_card_epoch !== root.contactCardEpoch) {
@@ -770,6 +798,24 @@ ShellRoot {
         root.contactsSyncNotice = typeof result === "object" && result !== null
           ? String(result.text || "") : ""
         root.reload()
+      } else if (method === "call_audio_settings") {
+        root.callAudio = typeof result === "object" && result !== null ? result : ({})
+      } else if (method === "set_call_audio_device") {
+        root.callAudioBusy = false
+        root.loadCallAudio()
+        root.reload()
+      } else if (method === "quick_replies") {
+        root.quickReplies = typeof result === "object" && result !== null ? result : ({})
+      } else if (method === "save_quick_reply" || method === "remove_quick_reply") {
+        // The reply is the new list, or the unchanged one with the reason.
+        // A saved list goes into the status too, so the next status round
+        // does not read the replies a second time.
+        root.quickRepliesBusy = false
+        root.quickReplies = typeof result === "object" && result !== null ? result : ({})
+        if (root.quickReplies.saved === true && Array.isArray(root.quickReplies.replies))
+          root.backendStatus = Object.assign({}, root.backendStatus, {
+            calls_quick_replies: root.quickReplies.replies
+          })
       } else if (method === "features") {
         root.applyFeatures(result)
       } else if (method === "set_feature") {
@@ -953,6 +999,18 @@ ShellRoot {
         root.syncContactsBusy = false
         root.contactsSyncNotice = ""
         root.errorText = "Contact sync failed: " + (message || "BlueFerry is unavailable")
+      } else if (method === "call_audio_settings") {
+        root.callAudio = ({})
+      } else if (method === "set_call_audio_device") {
+        root.callAudioBusy = false
+        root.errorText = message || "Could not save the call audio device"
+        root.loadCallAudio()
+      } else if (method === "quick_replies") {
+        root.quickReplies = ({})
+      } else if (method === "save_quick_reply" || method === "remove_quick_reply") {
+        root.quickRepliesBusy = false
+        root.errorText = message || "Could not save the replies"
+        root.loadQuickReplies()
       } else if (method === "features") {
         root.features = ({})
       } else if (method === "set_feature") {
@@ -1738,6 +1796,8 @@ ShellRoot {
           features: root.features
           featurePending: root.featurePending
           doctor: root.doctor
+          callAudio: root.callAudio
+          quickReplies: root.quickReplies
           notificationList: root.notificationList
           notificationPinError: root.notificationPinError
           notificationApps: root.notificationApps
@@ -1752,6 +1812,8 @@ ShellRoot {
                   autoProfileReset: root.autoProfileReset.busy,
                   proximityLock: root.proximityLock.busy,
                   calls: root.callsChoice.busy,
+                  callAudio: root.callAudioBusy,
+                  quickReplies: root.quickRepliesBusy,
                   callHistory: root.callHistory.busy || root.missedCallPopups.busy,
                   tether: root.tetherBusy,
                   photos: root.contactPhotos.busy,
@@ -1815,6 +1877,9 @@ ShellRoot {
             if (method === "set_auto_profile_reset") root.autoProfileReset.request(args.enabled)
             if (method === "set_proximity_lock") root.proximityLock.request(args.enabled)
             if (method === "set_calls_enabled") root.callsChoice.request(args.enabled)
+            if (method === "set_call_audio_device") root.callAudioBusy = true
+            if (method === "save_quick_reply" || method === "remove_quick_reply")
+              root.quickRepliesBusy = true
             if (method === "set_call_history") {
               root.callHistory.request(args.enabled)
               root.missedCallPopups.request(args.missed_call_notifications)

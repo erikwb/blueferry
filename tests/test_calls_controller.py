@@ -412,6 +412,22 @@ def test_answer_hangup_and_decline_use_the_call_object() -> None:
         controller.hangup("../../org", _noop, _noop)
 
 
+def test_ringing_number_is_only_for_ringing_calls_with_a_number() -> None:
+    controller, transport, _timers, _changes, _events = _ready()
+    _ring(transport)
+    _ring(transport, state="waiting", number="withheld", path=f"{MODEM}/voicecall02")
+
+    assert controller.ringing_number("voicecall01") == "+41791234567"
+    with pytest.raises(InvalidArgumentsError, match="number is unknown"):
+        controller.ringing_number("voicecall02")
+    transport.emit(VOICE_CALL_IFACE, "PropertyChanged", CALL, "State", "active")
+    with pytest.raises(InvalidArgumentsError, match="not ringing"):
+        controller.ringing_number("voicecall01")
+    with pytest.raises(NotFoundError):
+        controller.ringing_number("voicecall99")
+    assert not any(p.method == "Hangup" for p in transport.pending)
+
+
 def test_answering_a_waiting_call_holds_the_active_one() -> None:
     controller, transport, _timers, _changes, _events = _ready()
     _ring(transport, state="active")
