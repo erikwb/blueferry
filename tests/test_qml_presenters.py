@@ -4441,6 +4441,10 @@ def test_now_playing_bar_is_absent_until_media_is_available(
         "testBridge.calls.filter(c => c.method === 'sendMediaCommand').map(c => c.args[0])",
     ) == ["next", "toggle"]
 
+    # No cover: nothing reserved for it.
+    cover = window.findChild(QObject, "nowPlayingCover")
+    assert cover is not None and not cover.property("visible")
+
     _evaluate(qml_engine, "testBridge.nowPlaying = {enabled: true, available: false}")
     from PySide6.QtCore import QCoreApplication, QEvent
 
@@ -7240,6 +7244,39 @@ def test_quickshell_empty_activation_only_presents_the_window(qml_engine) -> Non
         return JSON.stringify(calls);
     })()'''
     assert _evaluate(qml_engine, script) == '["present","present","select:m1","reload"]'
+
+
+def test_now_playing_bar_shows_the_cover_art(qml_engine, settings_window, tmp_path) -> None:
+    from PySide6.QtCore import QUrl
+    from PySide6.QtGui import QColor, QImage
+
+    window, _bridge = settings_window
+    image = QImage(200, 200, QImage.Format.Format_RGB32)
+    image.fill(QColor("darkred"))
+    path = tmp_path / "cover-abc-1000001.jpg"
+    assert image.save(str(path), "JPEG")
+    url = QUrl.fromLocalFile(str(path)).toString()
+    _evaluate(qml_engine, f"""testBridge.nowPlaying = {{
+        enabled: true, available: true, player: {{state: "playing"}},
+        track: {{title: "Song", artist: "Artist"}}, supported_commands: ["toggle"],
+        cover_url: "{url}"
+    }}""")
+    cover = None
+    for _ in range(200):
+        QGuiApplication.processEvents()
+        cover = window.findChild(QObject, "nowPlayingCover")
+        if cover is not None and cover.property("visible"):
+            break
+    assert cover is not None and cover.property("visible")
+    assert cover.property("source").toString() == url
+    assert cover.property("width") > 0
+
+    # The next track without a cover hides it again.
+    _evaluate(qml_engine, """testBridge.nowPlaying = Object.assign(
+        {}, testBridge.nowPlaying, {cover_url: undefined})""")
+    for _ in range(50):
+        QGuiApplication.processEvents()
+    assert not cover.property("visible")
 
 
 # ---- Quickshell contact search and global search (Welle C) ----------------
