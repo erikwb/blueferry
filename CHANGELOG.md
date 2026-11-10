@@ -33,6 +33,14 @@
   forwards `CardChanged` (through `plugin_card_watch`) as
   `plugin-cards-changed`. Buttons that send files are left out: the panel
   has no file picker.
+- A lasting desktop notification while an iPhone call is in progress, with
+  the caller, the start time, an **On hold** state, and a **Hang up** button.
+  Closing it never ends the call
+  ([#230](https://github.com/erikwb/blueferry/issues/230)).
+- The call duration in the clients and in `blueferry calls` now counts from
+  the moment the call was answered instead of the first ring, and shows hours
+  (`1:02:05`). `Calls1.ListCalls` reports the start as `active_since`
+  ([#230](https://github.com/erikwb/blueferry/issues/230)).
 - Contact cards: the contact cache now keeps each number with its iPhone
   label, labelled email addresses, postal addresses, company and job title,
   inside the encrypted contact records only. `Messages1.ListContactCards`
