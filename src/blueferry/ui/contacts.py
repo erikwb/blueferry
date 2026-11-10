@@ -12,10 +12,14 @@ comes from the iPhone and is shown as plain text. The photo arrives as
 bytes over D-Bus (never a path) and is decoded by the bounded avatar decoder
 on a worker; it goes as soon as the book drops it, and a late decode of a
 dropped photo is ignored.
+List rows show initials until the model has read the photos of the rows on
+screen; those are decoded on the client's worker and kept in memory only,
+like the rows.
 """
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Callable
 from typing import Any
 from urllib.parse import quote
@@ -30,6 +34,9 @@ from blueferry.ui.avatars import decode_avatar
 from blueferry.ui.util import glib_timer
 
 _END = Pango.EllipsizeMode.END
+# Pause after scrolling or a list change before the rows on screen are
+# asked for their photos.
+PHOTO_DELAY_MS = 120
 _ACTION_ICONS = {
     contacts_view.ACTION_DIAL: "call-start-symbolic",
     contacts_view.ACTION_MESSAGE: "chat-message-new-symbolic",
@@ -84,14 +91,26 @@ class ContactsPage(Gtk.Box):
         self._message = message
         self._shown_rows: list[dict[str, Any]] = []
         self._shown_card: dict[str, Any] | None = None
+        self._shown_photo_revision = 0
+        self._client = client
+        # Row avatars by card id, and textures decoded on the worker keyed by
+        # the photo bytes they came from: a texture is shown only while the
+        # model still holds exactly those bytes for the row.
+        self._row_avatars: dict[str, Adw.Avatar] = {}
+        self._row_textures: dict[str, tuple[bytes, Gdk.Texture]] = {}
+        self._decoded: dict[str, tuple[bytes, Gdk.Texture]] = {}
+        self._decoded_lock = threading.Lock()
+        timers = timer or glib_timer
+        self._photo_timer = timers(self._request_visible_photos)
         self._shown_photo = b""
         self._photo_serial = 0
         # Decoding is not for the GTK thread.
         self._decoder = client.task_runner("contact-photo")
         self.book = ContactBook(
-            runner=client, timer=timer or glib_timer,
+            runner=client, timer=timers,
             fetch_page=client.contact_cards, fetch_card=client.contact,
             on_change=self._render,
+            fetch_photos=self._fetch_row_photos, on_photos=self._row_photos_loaded,
         )
 
         # ---- left: search and list -------------------------------------
@@ -127,11 +146,15 @@ class ContactsPage(Gtk.Box):
         listing = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         listing.append(self.list)
         listing.append(self.more_button)
+        self._listing = listing
         self.list_scroll = Gtk.ScrolledWindow(
             hscrollbar_policy=Gtk.PolicyType.NEVER, width_request=240,
             hexpand=True, vexpand=True, child=listing,
         )
         self.list_scroll.connect("edge-reached", self._edge_reached)
+        adjustment = self.list_scroll.get_vadjustment()
+        adjustment.connect("value-changed", lambda _a: self._schedule_photos())
+        adjustment.connect("changed", lambda _a: self._schedule_photos())
         self.list_placeholder = Adw.StatusPage(
             icon_name="avatar-default-symbolic", css_classes=["compact"], vexpand=True,
         )
@@ -247,6 +270,64 @@ class ContactsPage(Gtk.Box):
         if contact_id:
             self.open_contact(contact_id)
 
+    # ---- row photos -----------------------------------------------------
+
+    def _fetch_row_photos(self, contact_ids: list[str]) -> dict[str, bytes]:
+        """On the worker: read the photos and decode them there as well."""
+        photos = self._client.contact_card_photos(contact_ids)
+        decoded = {}
+        for contact_id, data in photos.items():
+            texture = decode_avatar(data)
+            if texture is not None:
+                decoded[contact_id] = (data, texture)
+        with self._decoded_lock:
+            self._decoded.update(decoded)
+        return photos
+
+    def _row_photos_loaded(self, contact_ids: list[str]) -> None:
+        with self._decoded_lock:
+            decoded = {key: self._decoded.pop(key) for key in contact_ids if key in self._decoded}
+        self._row_textures.update(decoded)
+        for contact_id in contact_ids:
+            avatar = self._row_avatars.get(contact_id)
+            if avatar is not None:
+                avatar.set_custom_image(self._row_texture(contact_id))
+
+    def _row_texture(self, contact_id: str) -> Gdk.Texture | None:
+        held = self._row_textures.get(contact_id)
+        if held is None:
+            return None
+        if held[0] is not self.book.row_photo(contact_id):
+            del self._row_textures[contact_id]  # dropped or replaced by the model
+            return None
+        return held[1]
+
+    def _schedule_photos(self) -> None:
+        if self.book.watched and self._shown_rows:
+            self._photo_timer.start(PHOTO_DELAY_MS)
+
+    def _request_visible_photos(self) -> None:
+        """Ask the model for the photos of the rows inside the viewport."""
+        adjustment = self.list_scroll.get_vadjustment()
+        top = adjustment.get_value()
+        bottom = top + adjustment.get_page_size()
+        if bottom <= top:
+            return
+        visible = []
+        row = self.list.get_first_child()
+        while row is not None:
+            contact_id = getattr(row, "contact_id", "")
+            # The adjustment counts in the scrolled child's coordinates.
+            found, bounds = row.compute_bounds(self._listing)
+            if contact_id and found:
+                start = bounds.get_y()
+                if start > bottom:
+                    break
+                if start + bounds.get_height() >= top:
+                    visible.append(contact_id)
+            row = row.get_next_sibling()
+        self.book.request_photos(visible)
+
     def _edge_reached(self, _scroll, position) -> None:
         if position == Gtk.PositionType.BOTTOM:
             self.book.load_more()
@@ -278,6 +359,11 @@ class ContactsPage(Gtk.Box):
 
     def _render(self) -> None:
         view = self.book.view()
+        if not self.book.watched:
+            self._photo_timer.stop()
+            self._row_textures.clear()
+            with self._decoded_lock:
+                self._decoded.clear()
         self.stack.set_visible_child_name("contacts" if view["supported"] else "unsupported")
         self.count_label.set_label(view["count_text"])
         self.count_label.set_visible(bool(view["count_text"]))
@@ -286,6 +372,13 @@ class ContactsPage(Gtk.Box):
         self.more_button.set_visible(view["has_more"])
         self.more_button.set_sensitive(not view["loading"])
         self._render_rows(view["rows"])
+        if self.book.photo_revision != self._shown_photo_revision:
+            # Photos were dropped (new epoch, setting or revision): back to
+            # initials for every row whose bytes the model no longer holds.
+            self._shown_photo_revision = self.book.photo_revision
+            for contact_id, avatar in self._row_avatars.items():
+                avatar.set_custom_image(self._row_texture(contact_id))
+            self._schedule_photos()
         self._render_photo()
         if view["rows"]:
             self.list_stack.set_visible_child_name("list")
@@ -308,10 +401,12 @@ class ContactsPage(Gtk.Box):
             added = rows[len(shown):]  # a further page: keep the scroll position
         else:
             self.list.remove_all()
+            self._row_avatars.clear()
             added = rows
         for item in added:
             self.list.append(self._contact_row(item))
         self._shown_rows = rows
+        self._schedule_photos()
 
     def _contact_row(self, item: dict[str, Any]) -> Adw.ActionRow:
         row = Adw.ActionRow(
@@ -319,9 +414,13 @@ class ContactsPage(Gtk.Box):
             use_markup=False, title_lines=1, subtitle_lines=1,
         )
         row.contact_id = item["id"]
-        row.add_prefix(Adw.Avatar(
+        avatar = Adw.Avatar(
             size=32, text=avatar_text(item["initials"]), show_initials=bool(item["initials"]),
-        ))
+        )
+        # Initials until the model has read the photo of a row on screen.
+        avatar.set_custom_image(self._row_texture(item["id"]))
+        self._row_avatars[item["id"]] = avatar
+        row.add_prefix(avatar)
         return row
 
     def _render_card(self) -> None:
