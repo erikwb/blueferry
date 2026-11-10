@@ -301,12 +301,13 @@ All paths are relative to `src/blueferry/` unless noted.
 | `qt/qml/NewMessageDialog.qml` | New message composition. |
 | `qt/qml/FileDropLayer.qml` | The window drop zone's overlay, target picker and "no target" explanation over `file_drop_view.py`; the `DropArea` itself sits in `Main.qml` below the pages, so card items that take files keep their own drop. `qt/plugin_surfaces.py` runs the shared `FileDrop` on its pool. |
 | `qt/qml/PhoneCard.qml` | The phone card left of the tabs: name, connection, battery/signal, now playing and quick switches (sound, away lock); opt-ins that are off stay greyed out with a hint. Folds behind a header button in a narrow window. |
-| `qt/qml/CallsTab.qml` | Calls tab: running calls as cards (answer, hold, hang up), dial pad, and the day-grouped recent calls (`RecentCallsPage.qml`). |
+| `qt/qml/CallsTab.qml` | Calls tab: running calls as cards (answer, hold, hang up), their speaker and microphone with a switch for this call only, dial pad, and the day-grouped recent calls (`RecentCallsPage.qml`). |
 | `qt/qml/NotificationsTab.qml` | Notifications tab: the opt-in recent-notification list, loaded only while shown. |
 | `qt/qml/ui/` | Shared building blocks of the design: `SectionHeader`, `ListRow`, `CardFrame`, `FilterBar`, `EmptyState`, `Notice`. |
 | `qt/qml/ContactPhotoSettings.qml` | Contact-photo checkbox; loaded only for daemons that report `contact_photos`. |
 | `qt/qml/OtpAutocopySettings.qml` | One-time code auto-copy checkbox; loaded only for daemons that report `otp_autocopy`. |
 | `qt/qml/PhoneCallsSettings.qml` | Phone-calls opt-in checkbox; loaded only for daemons that report `calls_enabled`. |
+| `qt/qml/CallAudioSettings.qml` | Speaker and microphone for calls (`call_audio_view.settings_view`); loaded only for daemons that report `calls_audio_output`. |
 | `qt/qml/PhoneStatusIndicator.qml` | Optional iPhone battery/signal indicator (loaded only when values are known; plain-text tooltip). |
 | `qt/qml/ExpandingMessageComposer.qml` | Growing message editor. |
 | `qt/qml/MessageBubble.qml` | Message bubble. |

@@ -180,6 +180,79 @@ GridLayout {
                 }
             }
 
+            // The running call's speaker and microphone, once for all calls:
+            // what is in use, and a switch for this call only
+            // (call_audio_view.call_view; Calls1.SetCallAudioDeviceForCall).
+            ColumnLayout {
+                id: callAudio
+                objectName: "callAudioRows"
+                readonly property var view: callsTab.bridge.callAudioView(
+                    callsTab.bridge.phoneCallAudio || ({}),
+                    callsTab.bridge.callAudioDevices || ({})) || ({})
+                Layout.fillWidth: true
+                visible: callsTab.phoneCalls.length > 0 && callAudio.view.supported === true
+                spacing: Kirigami.Units.smallSpacing
+
+                Repeater {
+                    model: callAudio.visible ? (callAudio.view.rows || []) : []
+                    delegate: ColumnLayout {
+                        id: audioRow
+                        required property var modelData
+                        Layout.fillWidth: true
+                        spacing: 0
+                        RowLayout {
+                            Layout.fillWidth: true
+                            Controls.Label {
+                                text: audioRow.modelData.label || ""
+                                textFormat: Text.PlainText
+                            }
+                            Controls.ComboBox {
+                                id: callDevice
+                                objectName: "callAudioCombo_" + (audioRow.modelData.direction || "")
+                                Layout.fillWidth: true
+                                model: audioRow.modelData.options || []
+                                textRole: "label"
+                                valueRole: "value"
+                                currentIndex: audioRow.modelData.index ?? 0
+                                enabled: !callsTab.bridge.busy
+                                Accessible.name: audioRow.modelData.label || ""
+                                Accessible.description: callAudio.view.call_hint || ""
+                                Controls.ToolTip.text: callAudio.view.call_hint || ""
+                                Controls.ToolTip.visible: hovered
+                                popup.onAboutToShow: callsTab.bridge.loadCallAudioDevices()
+                                onActivated: index => {
+                                    const choice = (audioRow.modelData.options || [])[index]
+                                    if (choice)
+                                        callsTab.bridge.setCallAudioDeviceForCall(
+                                            audioRow.modelData.direction, choice.value)
+                                    callDevice.currentIndex = Qt.binding(function() {
+                                        return audioRow.modelData.index ?? 0
+                                    })
+                                }
+                            }
+                        }
+                        Controls.Label {
+                            objectName: "callAudioUsing_" + (audioRow.modelData.direction || "")
+                            Layout.fillWidth: true
+                            text: audioRow.modelData.using || ""
+                            textFormat: Text.PlainText
+                            elide: Text.ElideRight
+                            font: Kirigami.Theme.smallFont
+                            opacity: 0.7
+                        }
+                    }
+                }
+                Controls.Label {
+                    objectName: "callAudioHint"
+                    Layout.fillWidth: true
+                    visible: text !== ""
+                    text: callAudio.view.hint || ""
+                    textFormat: Text.PlainText
+                    wrapMode: Text.WordWrap
+                    font: Kirigami.Theme.smallFont
+                }
+            }
+
             Kirigami.InlineMessage {
                 objectName: "callsHint"
                 Layout.fillWidth: true

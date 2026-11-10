@@ -865,6 +865,40 @@ def settings_window(qml_engine):
             function setTetherConnected(connected) { record("setTetherConnected", [connected]); }
             function setPhoneAudioRoute(route) { record("setPhoneAudioRoute", [route]); }
             function swapCalls() { record("swapCalls", []); }
+            property var phoneCallAudio: ({})
+            property var callAudioDevices: ({})
+            // Simplified stand-ins for call_audio_view (tested in test_call_audio_view).
+            function callAudioSettingsView(status, devices) {
+                const rows = ["output", "input"].map(direction => {
+                    const selected = status["calls_audio_" + direction] || "";
+                    const options = [{value: "", label: "Same as system"}].concat(
+                        (devices[direction + "s"] || []).map(d => ({value: d.name, label: d.description})));
+                    const index = Math.max(0, options.findIndex(o => o.value === selected));
+                    return {direction: direction, label: direction === "output"
+                        ? "Speaker for calls" : "Microphone for calls", options: options, index: index};
+                });
+                return {supported: status.calls_audio_output !== undefined,
+                        hint: "Used only for phone calls.", rows: rows};
+            }
+            function callAudioView(audio, devices) {
+                if (audio.state === undefined) return {supported: false, rows: [], hint: ""};
+                const rows = ["output", "input"].map(direction => {
+                    const route = audio[direction] || {};
+                    const options = [{value: "", label: "Same as system"}].concat(
+                        (devices[direction + "s"] || []).map(d => ({value: d.name, label: d.description})));
+                    return {direction: direction, label: direction === "output" ? "Speaker" : "Microphone",
+                            using: "In use: " + (route.description || "Not connected yet"),
+                            options: options,
+                            index: Math.max(0, options.findIndex(o => o.value === (route.selected || "")))};
+                });
+                return {supported: true, rows: rows, call_hint: "Applies to this call only.",
+                        hint: audio.state === "waiting" ? "Waiting for the call audio\\u2026" : ""};
+            }
+            function loadCallAudioDevices() { record("loadCallAudioDevices", []); }
+            function setCallAudioDevice(direction, name) { record("setCallAudioDevice", [direction, name]); }
+            function setCallAudioDeviceForCall(direction, name) {
+                record("setCallAudioDeviceForCall", [direction, name]);
+            }
             property string callTonesDraft: ""
             property string activeCallId: ""
             property string callTonesSent: ""
@@ -5909,6 +5943,78 @@ def test_keypad_tones_go_to_the_active_call_and_survive_a_refresh(qml_engine, se
     assert field.property("text") == ""
     bridge.setProperty("phoneCalls", [])
     QGuiApplication.processEvents()
+
+
+def _recorded(engine):
+    calls = _evaluate(engine, "testBridge.calls")
+    return calls.toVariant() if hasattr(calls, "toVariant") else calls
+
+
+def test_call_audio_settings_choose_a_device_for_every_call(qml_engine, settings_window):
+    window, bridge = settings_window
+    devices = {"outputs": [{"name": "alsa_output.a50", "description": "A50 Chat"}],
+               "inputs": [{"name": "alsa_input.cam", "description": "Webcam"}]}
+    bridge.setProperty("callAudioDevices", devices)
+    bridge.setProperty("status", {"daemon": True, "calls_enabled": True})
+    _open_category(qml_engine, window, "calls")
+    assert _find(window, "callAudioOutputCombo") is None  # older daemon
+
+    bridge.setProperty("status", {
+        "daemon": True, "calls_enabled": True,
+        "calls_audio_output": "alsa_output.a50", "calls_audio_input": "",
+    })
+    QGuiApplication.processEvents()
+    output = _settings_object(window, "callAudioOutputCombo")
+    microphone = _settings_object(window, "callAudioInputCombo")
+    assert output is not None and microphone is not None
+    assert output.property("currentIndex") == 1
+    assert output.property("currentText") == "A50 Chat"
+    assert microphone.property("currentText") == "Same as system"
+    assert {"method": "loadCallAudioDevices", "args": []} in _recorded(qml_engine)
+
+    QMetaObject.invokeMethod(microphone, "activated", Q_ARG(int, 1))
+    QGuiApplication.processEvents()
+    assert _recorded(qml_engine)[-1] == {
+        "method": "setCallAudioDevice", "args": ["input", "alsa_input.cam"],
+    }
+    _evaluate(qml_engine, "testWindow.closePhoneSettings()")
+
+
+def test_running_call_shows_and_switches_its_audio_devices(qml_engine, settings_window):
+    window, bridge = settings_window
+    _evaluate(qml_engine, "testWindow.currentTab = testWindow.callsTab")
+    bridge.setProperty("status", {"calls_enabled": True, "calls_audio_output": ""})
+    bridge.setProperty("callsState", "ready")
+    bridge.setProperty("callAudioDevices", {
+        "outputs": [{"name": "alsa_output.a50", "description": "A50 Chat"}], "inputs": [],
+    })
+    bridge.setProperty("phoneCallAudio", {"state": "ready", "output": {
+        "selected": "", "stream": True, "description": "Built-in Audio",
+    }, "input": {"selected": "", "stream": True, "description": "A50 Chat"}})
+    QGuiApplication.processEvents()
+    rows = _visual_find(window.contentItem(), "callAudioRows", qml_engine)
+    assert rows.property("visible") is False  # no call, no switch
+
+    bridge.setProperty("phoneCalls", [
+        {"call_id": "voicecall01", "state": "active", "ringing": False,
+         "display_peer": "Alice", "number": "+41790000001", "first_seen": ""},
+    ])
+    QGuiApplication.processEvents()
+    assert rows.property("visible") is True
+    assert _visual_find(rows, "callAudioUsing_output").property("text") == "In use: Built-in Audio"
+    speaker = _visual_find(rows, "callAudioCombo_output")
+    assert speaker.property("currentText") == "Same as system"
+    QMetaObject.invokeMethod(speaker, "activated", Q_ARG(int, 1))
+    QGuiApplication.processEvents()
+    assert _recorded(qml_engine)[-1] == {
+        "method": "setCallAudioDeviceForCall", "args": ["output", "alsa_output.a50"],
+    }
+    bridge.setProperty("phoneCallAudio", {"state": "waiting"})
+    QGuiApplication.processEvents()
+    assert _visual_find(rows, "callAudioHint").property("text") == "Waiting for the call audio…"
+    bridge.setProperty("phoneCalls", [])
+    QGuiApplication.processEvents()
+    assert rows.property("visible") is False
 
 
 def _recorded_calls(engine):
