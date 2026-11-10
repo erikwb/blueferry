@@ -42,7 +42,7 @@ from textual.widget import Widget
 from textual.widgets import Button, Checkbox, Select, Static, TabbedContent, TabPane
 from textual.widgets.select import NoSelection
 
-from blueferry import __version__, features_view, notification_apps_view
+from blueferry import __version__, call_audio_view, features_view, notification_apps_view
 from blueferry.backend_lifecycle import restart_backend
 from blueferry.doctor_report import DoctorReport
 from blueferry.i18n import _, ngettext
@@ -51,6 +51,7 @@ from blueferry.phone_audio_view import phone_audio
 from blueferry.proximity_lock import clamp_grace
 from blueferry.reconnect_view import reconnect_view
 from blueferry.text_safety import terminal_text
+from blueferry.tui_call_audio import DeviceSelect
 from blueferry.tui_doctor import DoctorScreen
 from blueferry.tui_plugin_settings import PluginsPane
 from blueferry.tui_tasks import TextualTaskRunner, TextualTimer, tearing_down
@@ -60,6 +61,10 @@ Values = Mapping[str, Any]
 
 class OptionsClient(Protocol):
     def status(self) -> BackendStatus: ...
+
+    def call_audio_devices(self) -> dict: ...
+
+    def set_call_audio_device(self, direction: str, name: str) -> dict: ...
 
     def features(self) -> dict: ...
 
@@ -413,6 +418,7 @@ GROUPS: tuple[Group, ...] = (
     )),
     Group("history", "notifications", _("History"), ("feature:notification_history",)),
     Group("phone-calls", "calls", _("Phone Calls"), ("opt:calls_enabled",)),
+    Group("call-audio", "calls", _("Call Speaker and Microphone"), ("row:call-audio",)),
     Group("call-history", "calls", _("Call History"),
           ("opt:call_history_enabled", "opt:missed_call_notifications")),
     Group("battery", "calls", _("Battery"), ("opt:phone_battery_warning",)),
@@ -521,6 +527,9 @@ class OptionsScreen(ModalScreen[None]):
         self.load_error = ""
         self._closed = False
         self._tasks = TextualTaskRunner(self, group="options")
+        # ListCallAudioDevices, read when the daemon offers the choice.
+        self.call_audio_devices: dict[str, Any] = {}
+        self._call_audio_loading = False
         # Muted apps: the last ListNotificationApps answer (normalized), and
         # the changes being stored with the user's choice until the answer.
         self.apps: dict[str, Any] | None = None
@@ -599,6 +608,18 @@ class OptionsScreen(ModalScreen[None]):
             yield Static(_("Show Popups"), classes="options-label")
             yield PolicySelect(
                 _POLICIES, allow_blank=False, value="messages", id="options-policy",
+            )
+        elif name == "call-audio":
+            for direction in call_audio_view.DIRECTIONS:
+                yield Static(
+                    call_audio_view.settings_label(direction), classes="options-label",
+                )
+                yield DeviceSelect(
+                    id=f"options-call-audio-{direction}", classes="call-audio-select",
+                )
+            yield Static(
+                call_audio_view.settings_hint(), id="options-call-audio-hint",
+                classes="options-caption",
             )
         elif name == "click-rules":
             with Horizontal(classes="options-action"):
@@ -757,6 +778,7 @@ class OptionsScreen(ModalScreen[None]):
         with self.prevent(Select.Changed):
             select.value = policy if policy in {p for _l, p in _POLICIES} else "messages"
         select.disabled = not daemon or "policy" in self.pending
+        self._render_call_audio(values, daemon)
         self.query_one("#options-click-rules", Button).disabled = not daemon
         self.query_one("#options-sync-contacts", Button).disabled = not daemon
         storage = str(values.get("storage_policy") or "")
@@ -775,6 +797,66 @@ class OptionsScreen(ModalScreen[None]):
                 "To erase local data and start over, run blueferry storage-reset."
             )
         self.query_one("#options-storage", Static).update(Text(_one_line(caption)))
+
+    def _render_call_audio(self, values: Values, daemon: bool) -> None:
+        view = call_audio_view.settings_view(values, self.call_audio_devices)
+        shown = self.values is not None and view["supported"] is True
+        self.query_one("#options-group-call-audio").display = shown
+        if shown and not self.call_audio_devices:
+            self.load_call_audio_devices()
+        for row in view["rows"]:
+            key = f"call-audio-{row['direction']}"
+            select = self.query_one(f"#options-{key}", DeviceSelect)
+            pending = self.pending.get(key)
+            select.show(row, pending if isinstance(pending, str) else None)
+            select.disabled = not daemon or key in self.pending
+
+    def load_call_audio_devices(self) -> None:
+        """Read the speakers and microphones once per opened Options screen."""
+        if self._call_audio_loading:
+            return
+        self._call_audio_loading = True
+
+        def loaded(devices: object) -> None:
+            if isinstance(devices, dict) and devices:
+                self.call_audio_devices = devices
+
+        def failed(_message: str) -> None:
+            # "Same as system" stays available; the lists are read next time.
+            self.call_audio_devices = {"outputs": [], "inputs": []}
+
+        self._tasks.submit(self.client.call_audio_devices, loaded, failed, self._render_state)
+
+    @on(Select.Changed, ".call-audio-select")
+    def call_audio_changed(self, event: Select.Changed) -> None:
+        select = event.select
+        if not isinstance(select, DeviceSelect) or self.values is None:
+            return
+        direction, name = select.direction, event.value
+        key = f"call-audio-{direction}"
+        if not isinstance(name, str) or not direction or key in self.pending:
+            return
+        if name == call_audio_view.saved(self.values, direction):
+            return
+        self.pending[key] = name
+
+        def saved(result: object) -> None:
+            if self.values is not None and isinstance(result, Mapping):
+                self.values = {**self.values, **result}
+            self.error = ""
+
+        def failed(message: str) -> None:
+            self.error = _one_line(message)
+
+        def finished() -> None:
+            self.pending.pop(key, None)
+            self._render_state()
+            self.load_status()
+
+        self._render_state()
+        self._tasks.submit(
+            lambda: self.client.set_call_audio_device(direction, name), saved, failed, finished,
+        )
 
     # ---- muted apps -------------------------------------------------------
 
