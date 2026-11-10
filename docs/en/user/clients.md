@@ -201,7 +201,7 @@ background service offers it.
 |---|---|
 | Phone | Pairing, connection health with **Reconnect**, resetting a stuck connection automatically, **Run Diagnostics**, **Sync Contacts**, contact photos |
 | Notifications | Which events create popups, contacts only, muted apps, notification content, action buttons, sync notifications with iPhone, mark read on dismiss, keeping recent iPhone notifications, and the recent notifications themselves with **Pin** / **Unpin** |
-| Calls & Audio | Phone calls, call history and missed-call popups, battery warning, iPhone sound on this computer, media control and MPRIS |
+| Calls & Audio | Phone calls with their speaker and microphone, call history and missed-call popups, battery warning, iPhone sound on this computer, media control and MPRIS |
 | Security | One-time codes, away lock, the local storage setting, and **Reset Local Storage…** when the saved data can't be opened |
 | About | The background service, its version and **Restart Service** |
 
@@ -275,7 +275,7 @@ Quickshell is a compact panel, so some parts stay with the other clients:
 | **Send to…**, card buttons that send files, and the **Photos** tab (plugin features) | Sending needs a file picker or file drop, which the panel does not have; photos need a grid of thumbnails, too large for the panel | Qt or GTK client (Photos with thumbnails, Send to), terminal client, `blueferry send`, `blueferry photos` |
 | Companion tools | Setting up desktop helpers is a one-time job, not a panel task | Qt or GTK settings, `blueferry tools` |
 | Clearing the message history | Not offered by the terminal client either | `blueferry history-clear` |
-| Click Rules, recent calls, the calls panel | Not in the Quickshell client yet | Qt, GTK or terminal client |
+| Click Rules, recent calls, the calls panel (and with it switching a running call to another speaker or microphone) | Not in the Quickshell client yet | Qt, GTK or terminal client, `blueferry calls audio … --this-call` |
 | Contact photos, copying card entries, writing an email (mail app), opening a call hit in the recent calls | The panel's search only finds a contact to call or write; it has no recent-calls list | `blueferry contacts show --photo`; recent calls in the Qt, GTK or terminal client |
 
 The panel loads no translation catalog, so its own labels are English.

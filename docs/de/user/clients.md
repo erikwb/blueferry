@@ -206,7 +206,7 @@ erscheint nur, wenn der laufende Hintergrunddienst sie anbietet.
 |---|---|
 | Phone | Kopplung, Verbindungszustand mit **Reconnect**, automatisches Zurücksetzen einer hängenden Verbindung, **Run Diagnostics**, Kontaktabgleich (**Sync Contacts**), Kontaktfotos |
 | Notifications | Welche Ereignisse Popups erzeugen, nur Kontakte, stummgeschaltete Apps, Mitteilungsinhalt, Aktionsknöpfe, Mitteilungen mit dem iPhone abgleichen, beim Wegklicken als gelesen markieren, letzte Mitteilungen behalten und die Liste dieser Mitteilungen mit **Pin** / **Unpin** |
-| Calls & Audio | Telefonanrufe, Anrufliste und Popups für verpasste Anrufe, Akku-Warnung, iPhone-Ton auf diesem Computer, Mediensteuerung und MPRIS |
+| Calls & Audio | Telefonanrufe mit ihrem Lautsprecher und Mikrofon, Anrufliste und Popups für verpasste Anrufe, Akku-Warnung, iPhone-Ton auf diesem Computer, Mediensteuerung und MPRIS |
 | Security | Einmalcodes, Abwesenheitssperre, die lokale Speicherung und **Reset Local Storage…**, wenn sich die gespeicherten Daten nicht öffnen lassen |
 | About | Der Hintergrunddienst, seine Version und **Restart Service** |
 
@@ -289,7 +289,7 @@ anderen Clients:
 | **Send to…**, Kartenknöpfe, die Dateien senden, und der Tab **Photos** (Plugin-Funktionen) | Senden braucht eine Dateiauswahl oder Drag & Drop, die das Panel nicht hat; Fotos brauchen ein Raster aus Vorschaubildern, zu groß für das Panel | Qt- oder GTK-Client (Photos mit Vorschaubildern, Send to), Terminal-Client, `blueferry send`, `blueferry photos` |
 | Begleitwerkzeuge | Desktop-Helfer richtet man einmal ein; das ist keine Aufgabe für ein Panel | Qt- oder GTK-Einstellungen, `blueferry tools` |
 | Nachrichtenverlauf löschen | Bietet auch der Terminal-Client nicht an | `blueferry history-clear` |
-| Click Rules, letzte Anrufe, das Anruf-Panel | Noch nicht im Quickshell-Client | Qt-, GTK- oder Terminal-Client |
+| Click Rules, letzte Anrufe, das Anruf-Panel (und damit das Umschalten eines laufenden Anrufs auf einen anderen Lautsprecher oder ein anderes Mikrofon) | Noch nicht im Quickshell-Client | Qt-, GTK- oder Terminal-Client, `blueferry calls audio … --this-call` |
 | Kontaktfotos, Einträge einer Karte kopieren, eine E-Mail schreiben (Mail-Programm), einen Anruf-Treffer in den letzten Anrufen öffnen | Die Suche im Panel findet nur einen Kontakt zum Anrufen oder Schreiben; eine Liste der letzten Anrufe hat das Panel nicht | `blueferry contacts show --photo`; die letzten Anrufe im Qt-, GTK- oder Terminal-Client |
 
 Das Panel lädt keinen Übersetzungskatalog, seine eigenen Beschriftungen

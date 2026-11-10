@@ -18,6 +18,7 @@ from dataclasses import asdict
 from typing import Any, TextIO
 
 from blueferry import (
+    call_audio_view,
     contacts_view,
     doctor_report,
     features_view,
@@ -836,6 +837,18 @@ class QuickshellBridge:
             )
         if method == "set_calls_enabled":
             return self.client.set_calls_enabled(_boolean(args, "enabled"))
+        if method == "call_audio_settings":
+            # The speaker/microphone rows with their wording; the panel has
+            # no gettext and no call view (see the README gap matrix).
+            status = self.client.status().to_dict()
+            if not call_audio_view.supported(status):
+                return call_audio_view.settings_view(status, None)
+            return call_audio_view.settings_view(status, self.client.call_audio_devices())
+        if method == "set_call_audio_device":
+            direction = _text(args, "direction")
+            if direction not in call_audio_view.DIRECTIONS:
+                raise RequestError("direction must be output or input")
+            return self.client.set_call_audio_device(direction, _text(args, "name"))
         if method == "set_contact_photos":
             return self.client.set_contact_photos(_boolean(args, "enabled"))
         if method == "set_otp_autocopy":
