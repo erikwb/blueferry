@@ -93,6 +93,8 @@ AVATAR_RETRY_MAX_SECONDS = 600
 # Avatar-provider key of the open contact card's photo; never a phone number
 # or e-mail address, so it cannot collide with a conversation avatar.
 CARD_PHOTO_PREFIX = "contact-card:"
+# Avatar-provider key prefix of a Contacts list row's photo, by card id.
+ROW_PHOTO_PREFIX = "contact-row:"
 
 
 class _WorkerRunner:
@@ -243,6 +245,7 @@ class BridgeController(QObject):
     fileDropNotice = Signal(str, bool)
     notificationAppsChanged = Signal()
     contactsChanged = Signal()
+    contactPhotosChanged = Signal()
     searchChanged = Signal()
     phoneIdentityChanged = Signal()
     featuresChanged = Signal()
@@ -416,12 +419,19 @@ class BridgeController(QObject):
         # use the shared models, the D-Bus calls run on the worker.
         self._card_photo: tuple[str, bytes] = ("", b"")
         self._card_photo_serial = 0
+        # The list rows' photos for the image provider's thread: a copy of
+        # the model's, replaced under _avatar_lock whenever photos arrive or
+        # are dropped. Memory only, like the rows.
+        self._row_photos: dict[str, bytes] = {}
+        self._row_photo_revision = 0
         self._contact_book = ContactBook(
             runner=_WorkerRunner(self), timer=qt_timers(self),
             fetch_page=lambda offset, limit, query: self._backend.contact_cards(
                 offset, limit, query),
             fetch_card=lambda contact_id: self._backend.contact(contact_id),
             on_change=self._contacts_updated,
+            fetch_photos=lambda ids: self._backend.contact_card_photos(ids),
+            on_photos=lambda _ids: self._sync_row_photos(),
         )
         self._search = GlobalSearch(
             runner=_WorkerRunner(self), timer=qt_timers(self),
@@ -681,6 +691,8 @@ class BridgeController(QObject):
             if address.startswith(CARD_PHOTO_PREFIX):
                 key, data = self._card_photo
                 return data if data and address == key else None
+            if address.startswith(ROW_PHOTO_PREFIX):
+                return self._row_photos.get(address[len(ROW_PHOTO_PREFIX):]) or None
             return self._avatars.get(address)
 
     def _sync_avatars(self) -> None:
@@ -1164,6 +1176,7 @@ class BridgeController(QObject):
     def _status_for_contacts(self) -> None:
         self._contact_book.apply_status(self._status)
         self._search.apply_status(self._status)
+        self._sync_row_photos()
 
     def _contacts_updated(self) -> None:
         book = self._contact_book
@@ -1176,6 +1189,39 @@ class BridgeController(QObject):
                 self._card_photo_serial += 1
                 self._card_photo = (f"{CARD_PHOTO_PREFIX}{self._card_photo_serial}", photo)
         self.contactsChanged.emit()
+        self._sync_row_photos()
+
+    def _sync_row_photos(self) -> None:
+        """Mirror the model's row photos for the provider when they changed."""
+        book = self._contact_book
+        if book.photo_revision == self._row_photo_revision:
+            return
+        self._row_photo_revision = book.photo_revision
+        photos = {
+            row["id"]: photo for row in book.rows
+            if row.get("has_photo") and (photo := book.row_photo(row["id"]))
+        }
+        with self._avatar_lock:
+            self._row_photos = photos
+        self.contactPhotosChanged.emit()
+
+    @Property(int, notify=contactPhotosChanged)
+    def contactPhotoRevision(self) -> int:
+        """Grows when list row photos arrive or are dropped."""
+        return self._row_photo_revision
+
+    @Slot(str, result=str)
+    def contactRowPhoto(self, contact_id: str) -> str:
+        """Image URL of a list row's loaded photo, or "" for the initials."""
+        with self._avatar_lock:
+            if not self._row_photos.get(str(contact_id)):
+                return ""
+        return avatar_url(f"{ROW_PHOTO_PREFIX}{contact_id}", self._row_photo_revision)
+
+    @Slot("QVariantList")
+    def requestContactPhotos(self, contact_ids) -> None:
+        """The list rows on screen: read the photos they lack (on the worker)."""
+        self._contact_book.request_photos(str(value) for value in list(contact_ids or []))
 
     @Property(bool, notify=statusChanged)
     def contactsSupported(self) -> bool:
