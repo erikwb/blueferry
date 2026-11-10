@@ -14,7 +14,7 @@ from tests.gtk_broadway import run_scenario
 @pytest.mark.parametrize(
     "scenario", [
         "layout", "card", "quick-settings", "dial-pad", "running-calls", "call-tones",
-        "keypad-tones", "recent-calls",
+        "call-audio", "keypad-tones", "recent-calls",
         "notifications", "close", "volume", "pins", "contacts", "contact-photo", "search",
     ],
 )
@@ -107,6 +107,12 @@ class FakeClient:
 
     def send_call_tones_async(self, call_id, tones, on_ok, on_err):
         self.calls.append((("tones", call_id, tones), on_ok, on_err))
+
+    def call_audio_devices_async(self, on_ok, on_err=None):
+        self.calls.append(("audio-devices", on_ok, on_err))
+
+    def set_call_audio_device_for_call_async(self, direction, name, on_ok, on_err):
+        self.calls.append((("call-audio", direction, name), on_ok, on_err))
 
     def set_phone_audio_route_async(self, route, on_ok, on_err):
         self.calls.append((("route", route), on_ok, on_err))
@@ -595,6 +601,64 @@ def _exercise_call_tones():
     client.take("list-calls")[1](CallsSnapshot.from_dict({"state": "ready", "calls": [active]}))
     assert running.tones.get_text() == ""
     window.destroy()
+
+
+def _exercise_call_audio():
+    from blueferry.models import CallsSnapshot
+
+    window, client = _window()
+    running = window.calls.running
+    client.answer_status(CALLS_READY)
+    active = {"call_id": "voicecall01", "state": "active", "number": "+41790000001"}
+    # An older daemon: no device rows.
+    client.take("list-calls")[1](CallsSnapshot.from_dict({"state": "ready", "calls": [active]}))
+    speaker = running.audio_rows["output"]
+    assert speaker.row.get_parent() is None and "audio-devices" not in client.names()
+
+    audio = {"state": "waiting"}
+    client.emit("calls-changed")
+    client.take("list-calls")[1](CallsSnapshot.from_dict({
+        "state": "ready", "calls": [active], "audio": audio,
+    }))
+    assert speaker.row.get_parent() is running
+    assert running.audio_hint.get_visible()
+    assert running.audio_hint.get_title() == "Waiting for the call audio…"
+    assert speaker.row.get_subtitle() == "In use: Not connected yet"
+    client.take("audio-devices")[1]({
+        "outputs": [{"name": "alsa_output.a50", "description": "A50 Chat", "default": False}],
+        "inputs": [],
+    })
+    assert speaker.values == ["", "alsa_output.a50"]
+
+    ready = {"state": "ready", "output": {"stream": True, "description": "Built-in Audio"},
+             "input": {"stream": True, "description": "Webcam"}}
+    client.emit("calls-changed")
+    client.take("list-calls")[1](CallsSnapshot.from_dict({
+        "state": "ready", "calls": [active], "audio": ready,
+    }))
+    client.take("audio-devices")  # the call's audio changed: lists read again
+    assert speaker.row.get_subtitle() == "In use: Built-in Audio"
+    assert not running.audio_hint.get_visible()
+    assert speaker.row.get_tooltip_text() == "Applies to this call only."
+
+    speaker.row.set_selected(1)
+    assert not speaker.row.get_sensitive(), "busy while the call switches"
+    client.take(("call-audio", "output", "alsa_output.a50"))[1](None)
+    assert speaker.row.get_sensitive()
+    moved = {**ready, "output": {"stream": True, "description": "A50 Chat",
+                                 "selected": "alsa_output.a50", "origin": "call"}}
+    client.take("list-calls")[1](CallsSnapshot.from_dict({
+        "state": "ready", "calls": [active], "audio": moved,
+    }))
+    assert speaker.row.get_selected() == 1
+    assert speaker.row.get_subtitle() == "In use: A50 Chat"
+    # The call ends: the rows go with it.
+    client.take("audio-devices")
+    client.emit("calls-changed")
+    client.take("list-calls")[1](CallsSnapshot.from_dict({
+        "state": "ready", "calls": [], "audio": {"state": "idle"},
+    }))
+    assert speaker.row.get_parent() is None and running.audio is None
 
 
 def _exercise_keypad_tones():
@@ -1427,6 +1491,9 @@ if __name__ == "__main__":
         "dial-pad": _exercise_dial_pad,
         "running-calls": _exercise_running_calls,
         "call-tones": _exercise_call_tones,
+        "call-audio": _exercise_call_audio,
+
+
         "keypad-tones": _exercise_keypad_tones,
         "quick-settings": _exercise_quick_settings,
         "recent-calls": _exercise_recent_calls,
