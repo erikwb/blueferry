@@ -141,7 +141,10 @@ def _modem(powered=False, online=False, interfaces=()):
     }, signature="sv"))
 
 
-def _build(*, enabled=True, reachable=lambda: True, contacts=None, on_phone_status=None):
+def _build(
+    *, enabled=True, reachable=lambda: True, contacts=None, on_phone_status=None,
+    clock=lambda: 1000.0,
+):
     transport = FakeTransport()
     timers = Timers()
     changes: list[str] = []
@@ -159,6 +162,7 @@ def _build(*, enabled=True, reachable=lambda: True, contacts=None, on_phone_stat
         on_phone_status=on_phone_status,
         schedule=timers.schedule,
         cancel=timers.cancel,
+        clock=clock,
     )
     return controller, transport, timers, changes, events
 
@@ -410,6 +414,51 @@ def test_answer_hangup_and_decline_use_the_call_object() -> None:
         controller.hangup("voicecall99", _noop, _noop)
     with pytest.raises(InvalidArgumentsError):
         controller.hangup("../../org", _noop, _noop)
+
+
+def test_ringing_number_is_only_for_ringing_calls_with_a_number() -> None:
+    controller, transport, _timers, _changes, _events = _ready()
+    _ring(transport)
+    _ring(transport, state="waiting", number="withheld", path=f"{MODEM}/voicecall02")
+
+    assert controller.ringing_number("voicecall01") == "+41791234567"
+    with pytest.raises(InvalidArgumentsError, match="number is unknown"):
+        controller.ringing_number("voicecall02")
+    transport.emit(VOICE_CALL_IFACE, "PropertyChanged", CALL, "State", "active")
+    with pytest.raises(InvalidArgumentsError, match="not ringing"):
+        controller.ringing_number("voicecall01")
+    with pytest.raises(NotFoundError):
+        controller.ringing_number("voicecall99")
+    assert not any(p.method == "Hangup" for p in transport.pending)
+
+
+def test_an_answered_call_reports_when_it_became_active() -> None:
+    now = [1000.0]
+    controller, transport, _timers, _changes, events = _ready(clock=lambda: now[0])
+    _ring(transport)
+    assert controller.list_calls()["calls"][0]["active_since"] == ""
+
+    now[0] = 1010.0
+    transport.emit(VOICE_CALL_IFACE, "PropertyChanged", CALL, "State", "active")
+    wire = controller.list_calls()["calls"][0]
+    assert wire["active_since"] == "1970-01-01T00:16:50+00:00"
+    # oFono's StartTime follows the state change and replaces the guess.
+    transport.emit(
+        VOICE_CALL_IFACE, "PropertyChanged", CALL, "StartTime", "1970-01-01T00:16:49+0000",
+    )
+    assert controller.calls()[0].start_time == 1009.0
+    now[0] = 2000.0
+    transport.emit(VOICE_CALL_IFACE, "PropertyChanged", CALL, "State", "held")
+    assert controller.calls()[0].start_time == 1009.0
+    assert events[-1].call.start_time == 1009.0
+
+
+def test_a_call_already_active_when_seen_starts_then() -> None:
+    controller, transport, _timers, _changes, _events = _ready(clock=lambda: 1234.0)
+    _ring(transport, state="active")
+    assert controller.calls()[0].start_time == 1234.0
+    _ring(transport, state="dialing", path=f"{MODEM}/voicecall02")
+    assert controller.calls()[1].start_time is None
 
 
 def test_answering_a_waiting_call_holds_the_active_one() -> None:

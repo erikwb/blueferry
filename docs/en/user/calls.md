@@ -26,12 +26,28 @@ flowchart LR
   link is connected, and brings it online (iOS does not do this by itself).
 - Shows a desktop popup for an incoming call with **Answer** and
   **Decline**. It closes itself when the call stops ringing.
+- While a call is in progress (answered here or on the iPhone, or an
+  outgoing call once connected), a lasting notification shows **Call with**
+  the caller, the start time ("since 15:14"), and **Hang up**. On hold it
+  says **On hold**. Closing the notification never ends the call, and it
+  stays closed until the call is put on hold or resumed. It goes away when
+  the call ends. With `BLUEFERRY_SHOW_NOTIFICATION_CONTENT=false` it shows no
+  caller; switching to **No notifications** closes open call popups at once.
 - The Qt and GTK clients show running calls as cards on their **Calls**
   tab (answer, hold/resume, hang up and, while a call is active, keypad
   tones: each dial pad key and each 0-9, `*`, `#` typed outside a text
   field is sent at once and shown as "Sent: …"; a keypad-tone field with
   **Send Tones** takes whole sequences such as a PIN), the terminal client a calls panel (`c`: answer, hold/resume, hang up, keypad tones, contact
-  suggestions), and the CLI a `calls` command group:
+  suggestions), the Quickshell panel a compact card above the conversations
+  (caller, state or duration, **Answer** while it rings, **Hang Up** or
+  **Decline**), and the CLI a `calls` command group. While a call is
+  answered, the cards, the panels and `blueferry calls` show how long it has
+  run (`2:05`, from one hour on `1:02:05`), counted from the moment it was
+  answered here or on the iPhone (or the other side picked up), not from
+  the first ring. The desktop notification only names the start time:
+  updating it every second would make some notification servers show it
+  again or keep each update in their history. If the backend restarts during
+  a call and oFono reports no start time, the duration starts again at 0:00.
 
   ```bash
   blueferry calls                 # state and current calls
@@ -144,6 +160,23 @@ and when calls are switched off it deletes it once more if the call
 streams still exist. If calls stay off and a remembered device still
 applies, delete those lines while WirePlumber is not running.
 
+## Muting your microphone during a call
+
+**Mute** in the call view of the Qt, GTK and terminal clients (or
+`blueferry calls mute on|off`) mutes this computer's microphone for the
+running call only: the caller hears nothing, while other applications keep
+recording from the microphone. The mute ends when no call is left (with a
+held or waiting call it carries over to that call); the next call starts
+unmuted. If the call audio drops and comes back during the call (a new
+hands-free audio link), it stays muted. The button works once the call
+audio is there, a few seconds after answering, and shows what PipeWire
+reports: if muting fails, it stays on **Mute**.
+
+BlueFerry mutes the call's own audio stream in PipeWire with `pw-cli`
+(part of PipeWire), not the microphone device. Unmuting that stream by hand
+in a mixer lasts for the rest of the call. WirePlumber may remember a mute
+for the call stream; BlueFerry lifts it at the start of the next call.
+
 ## Phone links
 
 The Qt and GTK clients can open `tel:` and `callto:` links, for example a
@@ -178,6 +211,37 @@ are refused except for the `?call` suffix on `callto:` links.
 Printed notation such as `+41 (0)79 …` is also refused: whether the bracketed
 zero is dialed depends on the numbering plan. Use an unambiguous international
 number instead, such as `+4179…` for Switzerland or `+3906…` for Rome.
+
+## Declining with a message
+
+A ringing call can be declined with a text to the caller, like "Can't talk
+now. I'll call you back.": the call is declined on the iPhone first, then
+the text goes out through the iPhone's Messages connection (MAP), exactly
+like a message written in BlueFerry, and shows up in the conversation.
+
+- The Qt, GTK and terminal clients offer **Decline with message** in the
+  call view while a call rings: pick a saved reply or type your own text.
+- Only calls with a number get the choice; withheld or unknown callers can
+  only be declined.
+- Without the Messages connection the call is not declined and BlueFerry
+  says why. If the text cannot be sent after the call was declined,
+  BlueFerry says so; the call stays declined. Your own text can have up to
+  1000 characters.
+- Saved replies are edited under **Calls & Audio** in the settings: up to 5
+  lines of at most 160 characters each. Until you change them, three English
+  replies (translated where a translation exists) are offered; with an empty
+  list only your own text remains.
+
+```bash
+blueferry calls decline-with-message            # the first saved reply
+blueferry calls decline-with-message --reply 2  # another saved reply
+blueferry calls decline-with-message --text "In a meeting, call you at 3"
+blueferry calls replies                         # list the saved replies
+blueferry calls replies set "On my way" "Call you back later"
+blueferry calls replies clear                   # own text only
+```
+
+The feature exists only while calls are on; it needs no switch of its own.
 
 ## Limits
 

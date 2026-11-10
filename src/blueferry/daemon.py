@@ -59,6 +59,7 @@ from blueferry.call_history_sync import CallHistorySync
 from blueferry.calls.audio_devices import CallAudioRouter
 from blueferry.calls.controller import CallController
 from blueferry.calls.phone_status import SOURCE_HFP, LowBatteryMonitor, PhoneStatus
+from blueferry.calls.quick_replies import QuickReplySettings
 from blueferry.calls.settings import CallAudioSettings, CallsSettings
 from blueferry.commands import run_command
 from blueferry.confirmed_groups import ConfirmedGroupsStore
@@ -236,6 +237,8 @@ class Daemon:
         self.setup_verification = SetupVerification(config.IPHONE_MAC)
         # The saved one-time code opt-in (local.env only seeds it).
         self.otp_settings = OtpSettings(log_overrides=True)
+        # Saved texts for declining a ringing call with a message.
+        self.quick_replies = QuickReplySettings()
         self.events = EventDispatcher(
             self.contacts,
             defer_mark_read=self._defer_message_read_path,
@@ -807,8 +810,15 @@ class Daemon:
             emit()
 
     def _notification_call_action(self, call_id: str, action: str) -> None:
-        """Answer or decline from an incoming-call desktop notification."""
-        operation = self.calls.answer if action == "answer" else self.calls.hangup
+        """Answer, decline or hang up from a call's desktop notification."""
+        operation = {
+            "answer": self.calls.answer,
+            "decline": self.calls.hangup,
+            "hangup": self.calls.hangup,
+        }.get(action)
+        if operation is None:
+            log.debug("ignoring unknown call notification action")
+            return
 
         def failed(error: Exception) -> None:
             # The controller already logged oFono's error name; never log the
@@ -991,6 +1001,7 @@ class Daemon:
             self.sessions,
             BackendDependencies(
                 on_sent=self.events.sent,
+                quick_replies=self.quick_replies,
                 on_group_sent=self.events.group_sent,
                 submit_obex=self.obex_worker.submit,
                 defer_mark_read=self._defer_message_reads,
@@ -1908,6 +1919,8 @@ class Daemon:
         ancs = self.ancs
         if ancs is not None:
             ancs.notification_actions_changed()
+        # "No notifications" also retires open call popups right away.
+        self.events.notification_policy_changed()
         # The app list reports the policy ("all_notifications").
         self._notification_apps_changed()
         self._emit_status()

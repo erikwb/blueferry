@@ -720,6 +720,16 @@ hands-free modem down again (`Powered=false`) if BlueFerry powered it or
 found it powered while calls were on, so
 call audio goes back to the phone; a call in progress continues there.
 
+While a call is in progress (answered here or on the iPhone, or an outgoing
+call once connected), BlueFerry keeps a notification **Call with** the caller,
+with its start time and **Hang up**; on hold it says **On hold**. Closing that
+notification never ends the call, and it stays closed until the call is held
+or resumed. It follows the same content rule as the ringing popup, and
+switching to **No notifications** closes open call popups at once. The
+notification keeps the start time instead of a running timer, so it is not
+sent again every second; the clients and `blueferry calls` show the duration
+since the call was answered (`2:05`, `1:02:05`).
+
 Toggling rewrites the phone-audio fragment. BlueFerry restarts
 `wireplumber.service` only through systemd; on hosts where WirePlumber is not
 a systemd user service (for example OpenRC with a session launcher), restart
@@ -751,6 +761,7 @@ What happens then:
   blueferry calls dtmf 1234#      # tones on the active call
   blueferry calls hangup          # or: hangup --all
   blueferry calls audio           # speaker/microphone for calls
+  blueferry calls mute on         # mute this computer for the running call
   ```
 
 - Calls can use their own speaker and microphone (**Speaker for calls** and
@@ -759,6 +770,15 @@ What happens then:
   device for that call only. Other sound and the system defaults stay as
   they are; a chosen device that is not connected falls back to the system's
   device. See [Call speaker and microphone](docs/en/user/calls.md#call-speaker-and-microphone).
+- **Mute** in the call view (`blueferry calls mute on|off`) mutes this
+  computer's microphone for the running call only; other applications keep
+  it, and the next call starts unmuted.
+- A ringing call with a caller number can be declined with a text: a saved
+  reply or your own (**Decline with message** in the clients,
+  `blueferry calls decline-with-message`). Up to 5 replies are
+  saved under **Calls & Audio** (`blueferry calls replies`). If the text
+  cannot be sent the call stays declined and BlueFerry says so; see
+  [Declining with a message](docs/en/user/calls.md#declining-with-a-message).
 - `dial` accepts plain numbers only (an optional leading `+` and digits;
   spaces, dashes, dots, parentheses, and slashes are ignored). `*` and `#`
   are refused: dialed, they form service codes such as `**21*…#` that
