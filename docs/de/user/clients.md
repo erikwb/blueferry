@@ -406,6 +406,19 @@ als „Sent: …“. Das Tastentonfeld sendet eine ganze Folge wie eine PIN. Wer
 Telefonnummern passender Kontakte vorgeschlagen. Jeder Anruf wird zuerst
 bestätigt.
 
+Sobald der Ton eines aktiven Anrufs da ist, schaltet **Mute** (oder `m`
+ausserhalb von Textfeldern) das Mikrofon dieses Computers nur für diesen
+Anruf stumm; der Knopf heisst dann **Unmute**. Ein einzelner klingelnder
+Anruf mit Nummer bekommt **Decline with message**: eine gespeicherte Antwort
+mit den Pfeiltasten und Enter wählen oder **Own text…** wählen und bis zu
+1000 Zeichen tippen. Der Anruf wird abgelehnt, und der Text geht wie jede
+gesendete Nachricht an den Anrufer. Scheitert das Senden, meldet das Panel
+das; der Anruf bleibt abgelehnt. Die gespeicherten Antworten bearbeitest du
+unter Settings › Calls & Audio › **Replies when declining a call**: Enter
+auf einer Antwort lädt sie ins Feld für **Save**, **Remove** oder
+**Cancel**, und **Add reply** speichert das Feld als neue Antwort (höchstens
+5, je eine Zeile mit bis zu 160 Zeichen).
+
 **Recent calls** (`h`) sind nach Tagen gruppiert; `m` zeigt nur verpasste
 Anrufe, `s` (oder **Refresh from iPhone**) liest die Liste des iPhones neu
 ein. Enter oder **Call Back** ruft die gewählte Nummer nach der

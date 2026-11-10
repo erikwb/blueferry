@@ -11,8 +11,16 @@ The wording is shared with the Qt and GTK Calls tabs
 those show a card with buttons per call, the terminal keeps one action row
 whose buttons pick the obvious call (answer the ringing one, hold or resume
 the connected one, hang up the active one first): fewer widgets to tab
-through, the same actions. Keypad tones go to the active call. Names,
-numbers and errors are rendered as Rich ``Text`` after ``terminal_text``.
+through, the same actions. Keypad tones go to the active call. While a
+call runs, the panel shows its speaker and microphone with a switch for
+this call only (``call_audio_view.call_view``); the device lists are read
+again whenever the call's audio report changes (a call starts, a choice is
+applied, or a plugged or unplugged device is the chosen or the used one).
+Mute/Unmute (``m``) mutes this computer's microphone for the running call
+(``call_audio_view.mute``). A single ringing call whose caller has a number
+can be declined with a message (:class:`DeclineMessageScreen`, wording and
+checks from ``quick_reply_view``). Names, numbers, device names, saved
+replies and errors are rendered as Rich ``Text`` after ``terminal_text``.
 """
 from __future__ import annotations
 
@@ -25,16 +33,18 @@ from textual import events, on
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, Vertical
+from textual.notifications import SeverityLevel
 from textual.screen import ModalScreen
-from textual.widgets import Button, Input, OptionList, Static
+from textual.widgets import Button, Input, OptionList, Select, Static
 from textual.widgets.option_list import Option
 
-from blueferry import phone_link_view
+from blueferry import call_audio_view, phone_link_view, quick_reply_view
 from blueferry.calls.model import MAX_DTMF_TONES
 from blueferry.conversation_state import ConversationState
 from blueferry.i18n import _
 from blueferry.models import CALLS_STATE_TEXT, CallInfo, CallsSnapshot
 from blueferry.text_safety import terminal_text
+from blueferry.tui_call_audio import DeviceSelect
 from blueferry.tui_tasks import TextualTaskRunner, TextualTimer
 
 _POLL_SECONDS = 2.0
@@ -61,6 +71,14 @@ class CallsClient(Protocol):
     def send_call_tones(self, call_id: str, tones: str) -> None: ...
 
     def find_contacts(self, query: str) -> list[tuple[str, str]]: ...
+
+    def call_audio_devices(self) -> dict: ...
+
+    def set_call_audio_device_for_call(self, direction: str, name: str) -> None: ...
+
+    def set_call_muted(self, muted: bool) -> None: ...
+
+    def decline_call_with_message(self, call_id: str, text: str) -> None: ...
 
 
 def _plain(value: object) -> str:
@@ -142,6 +160,88 @@ def active_call(snapshot: CallsSnapshot) -> CallInfo | None:
     return next((call for call in snapshot.calls if call.state == "active"), None)
 
 
+def message_target(status: Mapping[str, Any], snapshot: CallsSnapshot) -> CallInfo | None:
+    """The one ringing call "Decline with message" acts on, if it may."""
+    call_id = ringing_call(snapshot)
+    call = next((call for call in snapshot.calls if call.call_id == call_id), None)
+    return call if quick_reply_view.can_decline_with_message(status, call) else None
+
+
+class DeclineMessageScreen(ModalScreen[str | None]):
+    """Pick a saved reply or type one; dismisses with the text to send.
+
+    Enter on a saved reply sends it at once (that is what the list is for);
+    "Own text…" moves to the field, where Enter or Send sends the typed text.
+    """
+
+    BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("escape", "cancel", "Cancel", show=False),
+    ]
+
+    def __init__(self, status: Mapping[str, Any], call_id: str, caller: str) -> None:
+        super().__init__()
+        self.call_id = call_id
+        self.caller = caller
+        self.view = quick_reply_view.dialog_view(status)
+        self.choices: list[dict[str, str]] = self.view["choices"]
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="calls-reply-dialog", classes="dialog"):
+            yield Static(self.view["title"], classes="dialog-title")
+            if self.caller:
+                yield Static(Text(_plain(self.caller)), classes="dialog-copy")
+            yield OptionList(
+                *(Option(Text(_plain(choice["label"]))) for choice in self.choices),
+                id="calls-reply-choices",
+            )
+            yield Input(
+                placeholder=self.view["placeholder"], id="calls-reply-text",
+                max_length=self.view["max_chars"],
+            )
+            yield Static("", id="calls-reply-error")
+            with Horizontal(classes="dialog-actions"):
+                yield Button(_("Cancel"), id="calls-reply-cancel")
+                yield Button(_("Send"), variant="error", id="calls-reply-send")
+
+    def on_mount(self) -> None:
+        self.query_one("#calls-reply-error", Static).display = False
+        choices = self.query_one("#calls-reply-choices", OptionList)
+        if len(self.choices) > 1:
+            choices.highlighted = 0
+            choices.focus()
+        else:  # no saved replies: only the own text remains
+            choices.display = False
+            self.query_one("#calls-reply-text", Input).focus()
+
+    @on(OptionList.OptionSelected, "#calls-reply-choices")
+    def choice_selected(self, event: OptionList.OptionSelected) -> None:
+        if not 0 <= event.option_index < len(self.choices):
+            return
+        value = self.choices[event.option_index]["value"]
+        if value == self.view["custom"]:
+            self.query_one("#calls-reply-text", Input).focus()
+        else:
+            self.dismiss(value)
+
+    @on(Button.Pressed, "#calls-reply-send")
+    @on(Input.Submitted, "#calls-reply-text")
+    def send(self) -> None:
+        text = self.query_one("#calls-reply-text", Input).value
+        error = quick_reply_view.custom_text_error(text)
+        label = self.query_one("#calls-reply-error", Static)
+        label.update(Text(error))
+        label.display = bool(error)
+        if not error:
+            self.dismiss(text.strip())
+
+    @on(Button.Pressed, "#calls-reply-cancel")
+    def cancel_button(self) -> None:
+        self.dismiss(None)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
 class DialConfirmScreen(ModalScreen[bool]):
     """Ask before a number is dialed; a stray Enter must not place a call."""
 
@@ -183,6 +283,7 @@ class DialConfirmScreen(ModalScreen[bool]):
 class CallsScreen(ModalScreen[None]):
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "close", "Close", show=False),
+        Binding("m", "toggle_mute", "Mute", show=False),
     ]
     # on_mount focuses the number field itself. Automatic focus would run
     # again on screen resume and could put the focus back into the empty
@@ -216,7 +317,10 @@ class CallsScreen(ModalScreen[None]):
         # The text a picked suggestion put into the field: no new search.
         self._filled: str | None = None
         self._suggestions: list[str] = []
+        # ListCallAudioDevices for the running call's switch.
+        self.devices: dict[str, Any] = {}
         self._runner = TextualTaskRunner(self, group="calls")
+        self._devices_runner = TextualTaskRunner(self, group="calls-devices")
         self._search_runner = TextualTaskRunner(self, group="calls-search")
         # Keypad tones: one SendTones at a time, keys pressed meanwhile follow
         # in order (phone_link_view.KeypadTones, shared with Qt and GTK).
@@ -228,6 +332,8 @@ class CallsScreen(ModalScreen[None]):
             ),
         )
         self._active_call = ""
+        # The open "Decline with message" dialog and the call it is for.
+        self._reply_screen: DeclineMessageScreen | None = None
         self._search_timer = TextualTimer(self, self._search_contacts)
 
     def compose(self) -> ComposeResult:
@@ -235,6 +341,10 @@ class CallsScreen(ModalScreen[None]):
             yield Static(_("Phone calls (experimental)"), classes="dialog-title")
             yield Static(_("Loading…"), id="calls-state")
             yield Static("", id="calls-list", classes="dialog-copy")
+            with Horizontal(id="calls-reply-row"):
+                yield Button(
+                    quick_reply_view.button_label(), variant="error", id="calls-reply",
+                )
             with Horizontal(id="calls-tones-row"):
                 yield Input(
                     placeholder=_("Keypad tones (0-9 * #)"), id="calls-tones",
@@ -242,6 +352,19 @@ class CallsScreen(ModalScreen[None]):
                 )
                 yield Button(_("Send Tones"), id="calls-tones-send")
             yield Static("", id="calls-tones-sent", classes="dialog-copy")
+            with Vertical(id="calls-audio"):
+                for direction in call_audio_view.DIRECTIONS:
+                    with Horizontal(classes="calls-audio-row"):
+                        yield Static(
+                            call_audio_view.label(direction), classes="calls-audio-label",
+                        )
+                        yield DeviceSelect(
+                            id=f"calls-audio-{direction}", classes="call-audio-select",
+                        )
+                yield Static("", id="calls-audio-text", classes="dialog-copy")
+                with Horizontal(id="calls-mute-row"):
+                    yield Button(call_audio_view.mute_label(False), id="calls-mute")
+                    yield Static("", id="calls-mute-hint")
             yield Static(_("Number or name"), classes="field-label")
             yield Input(
                 value=self._initial_number, placeholder="+1 555 123 4567",
@@ -302,8 +425,19 @@ class CallsScreen(ModalScreen[None]):
     def _show(self, snapshot: object) -> None:
         if not isinstance(snapshot, CallsSnapshot):
             return
+        previous = self.snapshot.audio
         self.snapshot, self.loaded = snapshot, True
+        if snapshot.calls and snapshot.audio is not None and snapshot.audio != previous:
+            self._load_devices()  # a call started or its chosen/used device changed
         self._update_view()
+
+    def _load_devices(self) -> None:
+        def loaded(devices: object) -> None:
+            if isinstance(devices, dict):
+                self.devices = devices
+                self._render_audio()
+
+        self._devices_runner.submit(self._client.call_audio_devices, loaded, lambda _m: None)
 
     def _show_error(self, message: str) -> None:
         # No stale calls or buttons after ListCalls failed.
@@ -329,8 +463,32 @@ class CallsScreen(ModalScreen[None]):
             state.update(Text(_plain(error or self.hint)))
             list_view.update(calls_text(snapshot, self._clock()))
         state.display = bool(error or self.hint) or not self.loaded
+        self._render_audio()
         self._follow_active_call()
         self._render_buttons(failed=bool(error))
+
+    def _render_audio(self) -> None:
+        if not self._shown or not self.is_attached:
+            return
+        audio = self.snapshot.audio if self.snapshot.calls else None
+        view = call_audio_view.call_view(audio, self.devices)
+        self.query_one("#calls-audio").display = view["supported"] is True
+        lines = [row["label"] + ": " + row["text"] for row in view["rows"]]
+        if view["hint"]:
+            lines.append(view["hint"])
+        if view["rows"]:
+            lines.append(view["call_hint"])
+        self.query_one("#calls-audio-text", Static).update(
+            Text("\n".join(_plain(line) for line in lines))
+        )
+        for row in view["rows"]:
+            self.query_one(f"#calls-audio-{row['direction']}", DeviceSelect).show(row)
+        offered = self._mute_view()
+        mute = offered or view["mute"]
+        self.query_one("#calls-mute-row").display = offered is not None
+        # The key is part of the label, as in the recent calls' buttons.
+        self.query_one("#calls-mute", Button).label = f"{mute['label']}  m"
+        self.query_one("#calls-mute-hint", Static).update(Text(_plain(mute["hint"])))
 
     def _follow_active_call(self) -> None:
         active = active_call(self.snapshot)
@@ -378,6 +536,19 @@ class CallsScreen(ModalScreen[None]):
             phone_link_view.call_card(held.to_dict(), now)["hold"]
             if held is not None else _("Hold")
         )
+        for direction in call_audio_view.DIRECTIONS:
+            self.query_one(f"#calls-audio-{direction}", DeviceSelect).disabled = busy
+        self.query_one("#calls-mute", Button).disabled = busy or self._mute_view() is None
+        message = message_target(self._status, snapshot)
+        self.query_one("#calls-reply-row").display = message is not None
+        self.query_one("#calls-reply", Button).disabled = busy or message is None
+        reply = self._reply_screen
+        if reply is not None and (message is None or message.call_id != reply.call_id):
+            # The call stopped ringing (answered, declined, gone): nothing
+            # left to decline, so the dialog closes without sending.
+            self._reply_screen = None
+            if reply is self.app.screen:
+                reply.dismiss(None)
         active = active_call(snapshot)
         self.query_one("#calls-tones-row").display = active is not None
         # Tones queue up behind a running request, so busy does not block them.
@@ -393,7 +564,11 @@ class CallsScreen(ModalScreen[None]):
 
     # ---- actions --------------------------------------------------------
 
-    def _act(self, operation: Callable[[], object], done: str) -> None:
+    def _act(
+        self, operation: Callable[[], object], done: str,
+        failure: Callable[[str], str] = lambda message: message,
+        severity: SeverityLevel = "error",
+    ) -> None:
         if self.busy:
             return
         self.busy = True
@@ -403,7 +578,7 @@ class CallsScreen(ModalScreen[None]):
             self.notify(done, markup=False)
 
         def failed(message: str) -> None:
-            self.notify(_plain(message), severity="error", markup=False)
+            self.notify(_plain(failure(message)), severity=severity, markup=False)
 
         def finished() -> None:
             self.busy = False
@@ -461,6 +636,57 @@ class CallsScreen(ModalScreen[None]):
         call_id = target.call_id
         self._act(lambda: self._client.hangup_call(call_id), _("Declined"))
 
+    def _mute_view(self) -> dict[str, Any] | None:
+        """The mute button's view, offered only for an active call whose
+        microphone stream exists and only where the daemon can mute.
+
+        The daemon refuses mute (NotReady) before the call audio is there,
+        which also covers a call that is still ringing."""
+        audio = self.snapshot.audio
+        if active_call(self.snapshot) is None or audio is None or not audio.input.stream:
+            return None
+        view = call_audio_view.mute(audio)
+        return view if view["supported"] is True else None
+
+    @on(Button.Pressed, "#calls-mute")
+    def toggle_mute(self) -> None:
+        view = self._mute_view()
+        if view is None:
+            return
+        muted = not view["muted"]
+        # A refusal (NotReady: the call audio went away, PipeWire cannot be
+        # read) is a notice, not an error: the next ListCalls shows the state.
+        self._act(
+            lambda: self._client.set_call_muted(muted),
+            call_audio_view.mute_hint(muted), severity="warning",
+        )
+
+    def action_toggle_mute(self) -> None:
+        self.toggle_mute()
+
+    @on(Button.Pressed, "#calls-reply")
+    def decline_with_message(self) -> None:
+        target = message_target(self._status, self.snapshot)
+        if target is None or self.busy or self._reply_screen is not None:
+            return
+        call_id = target.call_id
+        caller = phone_link_view.call_card(target.to_dict(), self._clock())["title"]
+        screen = DeclineMessageScreen(self._status, call_id, str(caller or target.number))
+
+        def chosen(text: str | None) -> None:
+            if self._reply_screen is screen:
+                self._reply_screen = None
+            current = message_target(self._status, self.snapshot)
+            if not text or current is None or current.call_id != call_id:
+                return
+            self._act(
+                lambda: self._client.decline_call_with_message(call_id, text),
+                quick_reply_view.sent_text(), quick_reply_view.failure_text,
+            )
+
+        self._reply_screen = screen
+        self.app.push_screen(screen, chosen)
+
     @on(Button.Pressed, "#calls-tones-send")
     @on(Input.Submitted, "#calls-tones")
     def send_tones(self) -> None:
@@ -482,6 +708,22 @@ class CallsScreen(ModalScreen[None]):
     def _send_tones(self, call_id: str, tones: str, done, failed) -> None:
         self._tones_runner.submit(
             lambda: self._client.send_call_tones(call_id, tones), done, failed,
+        )
+
+    @on(Select.Changed, ".call-audio-select")
+    def device_changed(self, event: Select.Changed) -> None:
+        """Switch the running call to another speaker or microphone."""
+        select, name = event.select, event.value
+        audio = self.snapshot.audio
+        if not isinstance(select, DeviceSelect) or audio is None or not isinstance(name, str):
+            return
+        direction = select.direction
+        route = audio.output if direction == "output" else audio.input
+        if not direction or name == route.selected:
+            return
+        self._act(
+            lambda: self._client.set_call_audio_device_for_call(direction, name),
+            call_audio_view.call_hint(),
         )
 
     # ---- contact suggestions -------------------------------------------

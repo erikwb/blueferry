@@ -21,6 +21,12 @@ Calls & Audio, Security, Plugins and About. The Plugins tab is
 - The per-key actions (reconnect ``b``, click rules ``l``) have buttons in
   their category; the sound route ``a`` and automatic reset ``B`` are
   checkboxes there. Diagnostics opens :class:`~blueferry.tui_doctor.DoctorScreen`.
+- Calls & Audio lists the replies offered when a call is declined with a
+  message while the daemon reports them (:mod:`blueferry.quick_reply_view`,
+  shared with Qt and GTK): Enter on a reply puts it into the field, where it
+  is changed with Save or taken out with Remove (Cancel leaves it as it
+  is); Add stores the field as a new reply. Each change saves the whole list through
+  ``SetCallQuickReplies``.
 
 Background work runs through :class:`~blueferry.tui_tasks.TextualTaskRunner`;
 results arrive on the UI thread. Daemon text is never parsed as markup.
@@ -39,10 +45,26 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.css.query import NoMatches
 from textual.screen import ModalScreen
 from textual.widget import Widget
-from textual.widgets import Button, Checkbox, Select, Static, TabbedContent, TabPane
+from textual.widgets import (
+    Button,
+    Checkbox,
+    Input,
+    OptionList,
+    Select,
+    Static,
+    TabbedContent,
+    TabPane,
+)
+from textual.widgets.option_list import Option
 from textual.widgets.select import NoSelection
 
-from blueferry import __version__, features_view, notification_apps_view
+from blueferry import (
+    __version__,
+    call_audio_view,
+    features_view,
+    notification_apps_view,
+    quick_reply_view,
+)
 from blueferry.backend_lifecycle import restart_backend
 from blueferry.doctor_report import DoctorReport
 from blueferry.i18n import _, ngettext
@@ -51,6 +73,7 @@ from blueferry.phone_audio_view import phone_audio
 from blueferry.proximity_lock import clamp_grace
 from blueferry.reconnect_view import reconnect_view
 from blueferry.text_safety import terminal_text
+from blueferry.tui_call_audio import DeviceSelect
 from blueferry.tui_doctor import DoctorScreen
 from blueferry.tui_plugin_settings import PluginsPane
 from blueferry.tui_tasks import TextualTaskRunner, TextualTimer, tearing_down
@@ -60,6 +83,12 @@ Values = Mapping[str, Any]
 
 class OptionsClient(Protocol):
     def status(self) -> BackendStatus: ...
+
+    def call_audio_devices(self) -> dict: ...
+
+    def set_call_audio_device(self, direction: str, name: str) -> dict: ...
+
+    def set_call_quick_replies(self, replies: list[str]) -> dict: ...
 
     def features(self) -> dict: ...
 
@@ -413,6 +442,8 @@ GROUPS: tuple[Group, ...] = (
     )),
     Group("history", "notifications", _("History"), ("feature:notification_history",)),
     Group("phone-calls", "calls", _("Phone Calls"), ("opt:calls_enabled",)),
+    Group("call-audio", "calls", _("Call Speaker and Microphone"), ("row:call-audio",)),
+    Group("call-replies", "calls", quick_reply_view.settings_label(), ("row:call-replies",)),
     Group("call-history", "calls", _("Call History"),
           ("opt:call_history_enabled", "opt:missed_call_notifications")),
     Group("battery", "calls", _("Battery"), ("opt:phone_battery_warning",)),
@@ -521,6 +552,13 @@ class OptionsScreen(ModalScreen[None]):
         self.load_error = ""
         self._closed = False
         self._tasks = TextualTaskRunner(self, group="options")
+        # ListCallAudioDevices, read when the daemon offers the choice.
+        self.call_audio_devices: dict[str, Any] = {}
+        self._call_audio_loading = False
+        # The saved reply shown in the field for Save/Remove (None: adding).
+        self.editing_reply: int | None = None
+        self._reply_rows: list[str] | None = None
+        self.reply_error = ""
         # Muted apps: the last ListNotificationApps answer (normalized), and
         # the changes being stored with the user's choice until the answer.
         self.apps: dict[str, Any] | None = None
@@ -600,6 +638,35 @@ class OptionsScreen(ModalScreen[None]):
             yield PolicySelect(
                 _POLICIES, allow_blank=False, value="messages", id="options-policy",
             )
+        elif name == "call-audio":
+            for direction in call_audio_view.DIRECTIONS:
+                yield Static(
+                    call_audio_view.settings_label(direction), classes="options-label",
+                )
+                yield DeviceSelect(
+                    id=f"options-call-audio-{direction}", classes="call-audio-select",
+                )
+            yield Static(
+                call_audio_view.settings_hint(), id="options-call-audio-hint",
+                classes="options-caption",
+            )
+        elif name == "call-replies":
+            yield Static(
+                quick_reply_view.settings_hint(), id="options-replies-hint",
+                classes="options-caption",
+            )
+            yield OptionList(id="options-replies")
+            yield Static("", id="options-replies-empty", classes="options-caption")
+            yield Input(
+                placeholder=quick_reply_view.custom_placeholder(), id="options-reply-text",
+                max_length=quick_reply_view.settings_view({})["max_chars"],
+            )
+            yield Static("", id="options-reply-error", classes="options-caption")
+            with Horizontal(id="options-reply-actions", classes="options-action"):
+                yield Button(quick_reply_view.add_label(), id="options-reply-add")
+                yield Button(_("Save"), variant="primary", id="options-reply-save")
+                yield Button(_("Remove"), variant="error", id="options-reply-remove")
+                yield Button(_("Cancel"), id="options-reply-cancel")
         elif name == "click-rules":
             with Horizontal(classes="options-action"):
                 yield Static(
@@ -757,6 +824,8 @@ class OptionsScreen(ModalScreen[None]):
         with self.prevent(Select.Changed):
             select.value = policy if policy in {p for _l, p in _POLICIES} else "messages"
         select.disabled = not daemon or "policy" in self.pending
+        self._render_call_audio(values, daemon)
+        self._render_replies(values, daemon)
         self.query_one("#options-click-rules", Button).disabled = not daemon
         self.query_one("#options-sync-contacts", Button).disabled = not daemon
         storage = str(values.get("storage_policy") or "")
@@ -775,6 +844,194 @@ class OptionsScreen(ModalScreen[None]):
                 "To erase local data and start over, run blueferry storage-reset."
             )
         self.query_one("#options-storage", Static).update(Text(_one_line(caption)))
+
+    def _render_call_audio(self, values: Values, daemon: bool) -> None:
+        view = call_audio_view.settings_view(values, self.call_audio_devices)
+        shown = self.values is not None and view["supported"] is True
+        self.query_one("#options-group-call-audio").display = shown
+        if shown and not self.call_audio_devices:
+            self.load_call_audio_devices()
+        for row in view["rows"]:
+            key = f"call-audio-{row['direction']}"
+            select = self.query_one(f"#options-{key}", DeviceSelect)
+            pending = self.pending.get(key)
+            select.show(row, pending if isinstance(pending, str) else None)
+            select.disabled = not daemon or key in self.pending
+
+    def load_call_audio_devices(self) -> None:
+        """Read the speakers and microphones once per opened Options screen."""
+        if self._call_audio_loading:
+            return
+        self._call_audio_loading = True
+
+        def loaded(devices: object) -> None:
+            if isinstance(devices, dict) and devices:
+                self.call_audio_devices = devices
+
+        def failed(_message: str) -> None:
+            # "Same as system" stays available; the lists are read next time.
+            self.call_audio_devices = {"outputs": [], "inputs": []}
+
+        self._tasks.submit(self.client.call_audio_devices, loaded, failed, self._render_state)
+
+    # ---- replies for declining a call --------------------------------------
+
+    def _replies(self) -> list[str]:
+        """The saved replies, or the list being stored."""
+        pending = self.pending.get("call-replies")
+        if isinstance(pending, list):
+            return list(pending)
+        return quick_reply_view.replies(self.values or {})
+
+    def _render_replies(self, values: Values, daemon: bool) -> None:
+        view = quick_reply_view.settings_view(values)
+        shown = self.values is not None and view["supported"] is True
+        self.query_one("#options-group-call-replies").display = shown
+        replies = self._replies()
+        if self.editing_reply is not None and self.editing_reply >= len(replies):
+            self.editing_reply = None
+        options = self.query_one("#options-replies", OptionList)
+        if replies != self._reply_rows:
+            highlighted = options.highlighted
+            options.clear_options()
+            options.add_options([Option(Text(_one_line(reply))) for reply in replies])
+            if replies:
+                options.highlighted = min(highlighted or 0, len(replies) - 1)
+            self._reply_rows = replies
+        options.display = bool(replies)
+        empty = self.query_one("#options-replies-empty", Static)
+        empty.update(Text(view["empty"]))
+        empty.display = not replies
+        error = self.query_one("#options-reply-error", Static)
+        error.update(Text(self.reply_error))
+        error.display = bool(self.reply_error)
+        saving = "call-replies" in self.pending
+        editing = self.editing_reply is not None
+        locked = saving or not daemon
+        self.query_one("#options-reply-text", Input).disabled = locked
+        self.query_one("#options-reply-add", Button).disabled = (
+            locked or editing or not quick_reply_view.can_add(replies)
+        )
+        for button_id in ("#options-reply-save", "#options-reply-remove", "#options-reply-cancel"):
+            button = self.query_one(button_id, Button)
+            button.display = editing
+            button.disabled = locked
+
+    @on(OptionList.OptionSelected, "#options-replies")
+    def reply_selected(self, event: OptionList.OptionSelected) -> None:
+        """Enter on a reply: edit it in the field."""
+        replies = self._replies()
+        if not 0 <= event.option_index < len(replies):
+            return
+        self.editing_reply = event.option_index
+        self.reply_error = ""
+        field = self.query_one("#options-reply-text", Input)
+        field.value = replies[event.option_index]
+        field.focus()
+        self._render_state()
+
+    @on(Button.Pressed, "#options-reply-cancel")
+    def reply_cancel(self) -> None:
+        self.editing_reply = None
+        self.reply_error = ""
+        self.query_one("#options-reply-text", Input).value = ""
+        self._render_state()
+
+    @on(Button.Pressed, "#options-reply-add")
+    def reply_add(self) -> None:
+        if self.editing_reply is None:
+            self._change_reply()
+
+    @on(Button.Pressed, "#options-reply-save")
+    def reply_save(self) -> None:
+        if self.editing_reply is not None:
+            self._change_reply()
+
+    @on(Input.Submitted, "#options-reply-text")
+    def reply_submitted(self) -> None:
+        self._change_reply()
+
+    @on(Button.Pressed, "#options-reply-remove")
+    def reply_remove(self) -> None:
+        index = self.editing_reply
+        if index is None:
+            return
+        self._save_replies(quick_reply_view.with_removed(self._replies(), index))
+
+    def _change_reply(self) -> None:
+        """Add the field's text, or save it over the reply being edited."""
+        if "call-replies" in self.pending:
+            return
+        replies = self._replies()
+        text = self.query_one("#options-reply-text", Input).value
+        index = self.editing_reply
+        error = quick_reply_view.reply_error(text, replies, editing=index)
+        self.reply_error = error
+        if error:
+            self._render_state()
+            return
+        self._save_replies(
+            quick_reply_view.with_added(replies, text) if index is None
+            else quick_reply_view.with_replaced(replies, index, text)
+        )
+
+    def _save_replies(self, replies: list[str]) -> None:
+        if self.values is None or "call-replies" in self.pending:
+            return
+        self.pending["call-replies"] = replies
+
+        def saved(result: object) -> None:
+            if self.values is not None and isinstance(result, Mapping):
+                self.values = {**self.values, **result}
+            self.error = ""
+            self.editing_reply = None
+            self.reply_error = ""
+            self.query_one("#options-reply-text", Input).value = ""
+
+        def failed(message: str) -> None:
+            # The field keeps the text, so the change can be tried again.
+            self.error = _one_line(message)
+
+        def finished() -> None:
+            self.pending.pop("call-replies", None)
+            self._render_state()
+            self.load_status()
+
+        self._render_state()
+        self._tasks.submit(
+            lambda: self.client.set_call_quick_replies(list(replies)), saved, failed, finished,
+        )
+
+    @on(Select.Changed, ".call-audio-select")
+    def call_audio_changed(self, event: Select.Changed) -> None:
+        select = event.select
+        if not isinstance(select, DeviceSelect) or self.values is None:
+            return
+        direction, name = select.direction, event.value
+        key = f"call-audio-{direction}"
+        if not isinstance(name, str) or not direction or key in self.pending:
+            return
+        if name == call_audio_view.saved(self.values, direction):
+            return
+        self.pending[key] = name
+
+        def saved(result: object) -> None:
+            if self.values is not None and isinstance(result, Mapping):
+                self.values = {**self.values, **result}
+            self.error = ""
+
+        def failed(message: str) -> None:
+            self.error = _one_line(message)
+
+        def finished() -> None:
+            self.pending.pop(key, None)
+            self._render_state()
+            self.load_status()
+
+        self._render_state()
+        self._tasks.submit(
+            lambda: self.client.set_call_audio_device(direction, name), saved, failed, finished,
+        )
 
     # ---- muted apps -------------------------------------------------------
 

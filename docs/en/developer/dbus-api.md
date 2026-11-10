@@ -238,10 +238,13 @@ the system". Their presence tells clients the choice is offered. See the
 | `HangupAll` | | |
 | `SendTones` | `s call_id, s tones` | DTMF on the active call: `0-9`, `*`, `#`. Requests are played one after another in arrival order (at most 32 waiting); the log records only how many tones went out |
 | `SwapCalls` | | Swap active and held |
+| `DeclineWithMessage` | `s call_id, s text` | Decline a ringing call (like `Hangup`), then send `text` to the caller's number over MAP like `Send`. Refused before declining (`InvalidArgs`) when the call does not ring, the caller has no number, or the text is empty or too long, and with `NotReady` while MAP is not connected. `DeclinedNotSent` means the call was declined but the text was not sent. Charged to "calls-hangup" (shared with `Hangup`, so tones and swaps never block it) and "send" |
+| `SetCallQuickReplies` | `as replies` → `s status_json` | Save up to 5 one-line texts of at most 160 characters offered when declining; `[]` leaves only typed text. Returns `calls_quick_replies`, the `GetStatus` key (a list, present while calls are on; built-in translated defaults until a list is saved). "settings" rate limit |
 | `HoldAndAnswer` | | Hold the active call and answer the waiting one. 10 per minute |
 | `ListCallAudioDevices` | → `s json` | `outputs` and `inputs` (each `name`, `description`, `default`) read from PipeWire, plus the saved `output`/`input`. The phone's own nodes are left out. "read" rate limit |
 | `SetCallAudioDevice` | `s direction, s name` → `s status_json` | `output` or `input`; a `node.name` or `""` (system). Saved for every call; returns the `calls_audio_*` keys. "settings" rate limit |
 | `SetCallAudioDeviceForCall` | `s direction, s name` | Same, but only until no call is left; `NotReady` without a call. "calls-control" rate limit |
+| `SetCallMuted` | `b muted` | Mute this computer's microphone for the running call only (the phone's call stream, not the microphone); ends when no call is left. `NotReady` without a call, before the call audio exists, or when PipeWire cannot be read. "calls-control" rate limit |
 
 With a backend that offers the choice, `ListCalls` also returns `audio`:
 `state` (`idle`, `waiting` until PipeWire shows the call audio, `ready`,
@@ -249,8 +252,12 @@ With a backend that offers the choice, `ListCalls` also returns `audio`:
 `selected` (the `node.name` in effect, `""` for the system), `origin`
 (`call`, `settings`, `system`), `device`/`description` of the device the
 call actually uses, `stream` (the call audio exists) and `missing` (the
-chosen device is not connected, so the system's device is used). A change
-emits `CallsChanged`.
+chosen device is not connected, so the system's device is used). From
+daemons that can mute a call, `audio.muted` tells whether PipeWire shows the
+call microphone stream muted (the state, not the request; `false` without
+call audio). A failed mute write leaves it unchanged and emits
+`CallsChanged`.
+A change emits `CallsChanged`.
 
 ## Events1 signals
 
@@ -274,7 +281,7 @@ bounded messages:
 `NotReady`, `ConfirmationRequired`, `SendFailed`, `SendOutcomeUnknown`,
 `ResponseTooLarge`, `QueryFailed`, `ContactSyncFailed`, `CallHistorySyncFailed`,
 `MediaCommandFailed`, and for the optional calls `CallsDisabled`,
-`CallsUnavailable`, `CallFailed`
+`CallsUnavailable`, `CallFailed`, `DeclinedNotSent`
 
 The XML lists which errors each method can return. Unexpected exceptions and
 OBEX details stay in the backend log.

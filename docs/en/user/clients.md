@@ -383,6 +383,18 @@ focus; the panel shows them as "Sent: …". The keypad tone field sends a
 whole sequence such as a PIN. Typing a name in the number field suggests the
 phone numbers of matching contacts. A call is always confirmed first.
 
+Once an active call's audio is there, **Mute** (or `m` outside text
+fields) mutes this computer's microphone for that call only; the button
+then reads **Unmute**. A single ringing call whose caller has a number gets
+**Decline with message**: pick a saved reply with the arrow keys and Enter,
+or choose **Own text…** and type up to 1000 characters. The call is
+declined and the text goes to the caller like any sent message. If sending
+fails, the panel says so; the call stays declined. The saved replies are
+edited in Settings › Calls & Audio › **Replies when declining a call**:
+Enter on a reply loads it into the field for **Save**, **Remove** or
+**Cancel**, and **Add reply** stores the field as a new reply (at most 5,
+one line of up to 160 characters each).
+
 **Recent calls** (`h`) are grouped by day; `m` shows only missed calls and
 `s` (or **Refresh from iPhone**) reads the iPhone's list again. Enter or
 **Call Back** calls the selected number after the confirmation, **Send a
