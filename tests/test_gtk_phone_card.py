@@ -192,9 +192,10 @@ class FakeClient:
 class FakeSettings:
     opened: ClassVar[list] = []
 
-    def __init__(self, _client):
+    def __init__(self, _client, *, ui_state=None):
         from types import SimpleNamespace
 
+        self.ui_state = ui_state
         self.listeners = []
         self.plugins = SimpleNamespace(add_listener=self.listeners.append)
 
