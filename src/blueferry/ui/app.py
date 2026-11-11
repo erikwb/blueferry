@@ -213,16 +213,25 @@ class BlueFerryApp(Adw.Application):
     def _quick_reply_closed(self, _box: Gtk.Window) -> None:
         self._quick_reply = None
 
-    def _open_in_window(self, handle: str) -> None:
-        self._open_message(handle, "")
+    def _open_in_window(self, handle: str, draft: str = "") -> None:
+        self._open_message(handle, "", draft)
+
+    def _main_window(self) -> MainWindow | None:
+        """The open main window, even while the quick reply box is in front."""
+        active = self.get_active_window()
+        if isinstance(active, MainWindow):
+            return active
+        return next(
+            (window for window in self.get_windows() if isinstance(window, MainWindow)), None,
+        )
 
     def _open_dial(self, link: str, token: str) -> None:
         # Only asks for confirmation; the window dials after Call.
         self._open_message("", token).request_dial(link)
 
-    def _open_message(self, handle: str, token: str) -> MainWindow:
-        win = self.props.active_window
-        if not isinstance(win, MainWindow):
+    def _open_message(self, handle: str, token: str, draft: str = "") -> MainWindow:
+        win = self._main_window()
+        if win is None:
             if self._client is None:
                 self._client = DaemonClient()
             win = MainWindow(application=self, client=self._client)
@@ -230,7 +239,7 @@ class BlueFerryApp(Adw.Application):
         if token:
             win.set_startup_id(token)
         if handle:
-            win.open_message(handle)
+            win.open_message(handle, draft)
         else:
             win.present()
         record_client_use("gtk")

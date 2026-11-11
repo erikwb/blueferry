@@ -380,11 +380,11 @@ class MainWindow(Adw.ApplicationWindow):
     def _on_open_message_requested(self, _client, handle: str) -> None:
         self.open_message(handle)
 
-    def open_message(self, handle: str) -> None:
+    def open_message(self, handle: str, draft: str = "") -> None:
         self.settings.close()
         self.show_tab("messages")
         self.present()
-        self.messages.open_message(handle)
+        self.messages.open_message(handle, draft)
 
     def request_dial(self, link: str) -> None:
         """Confirm a clicked phone link; only the Call response dials."""

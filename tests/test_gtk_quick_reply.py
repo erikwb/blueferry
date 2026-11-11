@@ -10,7 +10,10 @@ from tests.gtk_broadway import run_scenario
 
 SCENARIOS = [
     "render", "send-once", "sent-waits", "failed", "escape", "second-click",
-    "long-text", "read-only", "fallback", "incoming",
+    "long-text", "read-only", "fallback", "incoming", "switch-after-sent",
+    "same-thread-click", "failed-pending-retry", "escape-while-sending",
+    "escape-while-sending-ok", "group-handoff", "open-link-draft", "long-history",
+    "escape-binding", "click-away",
 ]
 
 
@@ -30,9 +33,10 @@ def _message(handle, body, *, outgoing=False, read=False):
     }
 
 
-def _thread(messages, *, key=KEY, name="Jordan", reply_ready=True):
+def _thread(messages, *, key=KEY, name="Jordan", reply_ready=True, is_group=False):
     return {
-        "key": key, "name": name, "recipients": ["+15551111111"],
+        "key": key, "name": name, "is_group": is_group,
+        "recipients": ["+15551111111", "+15552222222"] if is_group else ["+15551111111"],
         "reply_ready": reply_ready, "last_ts": "2026-11-10T18:00:00Z", "messages": messages,
     }
 
@@ -100,6 +104,7 @@ class FakeClient:
 def _exercise(scenario):
     from blueferry.models import Thread
     from blueferry.ui.quick_reply import (
+        BUBBLE_LINES,
         FADE_OUT_DELAY_MS,
         RELOAD_DELAY_MS,
         WIDTH,
@@ -135,8 +140,11 @@ def _exercise(scenario):
 
     handle = "h6"
     window = QuickReplyWindow(
-        application=None, client=client, handle=handle, open_in_app=opened.append, timer=timer,
+        application=None, client=client, handle=handle,
+        open_in_app=lambda value, draft: opened.append((value, draft)), timer=timer,
     )
+    late_failures = []
+    window._report_late_failure = late_failures.append
     window.present()
     _settle()
     try:
@@ -145,14 +153,75 @@ def _exercise(scenario):
             assert window.get_visible() and opened == []
             fire(RELOAD_DELAY_MS)
             answer([OTHER])
-            assert opened == [handle]
+            assert opened == [(handle, "")]
             assert not window.get_visible()
             return
 
         reply_ready = scenario != "read-only"
         messages = [*SIX[:-1], _message("h6", LONG)] if scenario == "long-text" else SIX
-        answer([_thread(messages, reply_ready=reply_ready), OTHER])
+        if scenario == "long-history":
+            messages = [_message(f"h{n}", f"{n}" + "word " * 300) for n in range(3, 7)]
+        answer([_thread(messages, reply_ready=reply_ready,
+                        is_group=scenario == "group-handoff"), OTHER])
         entry = window.entry
+
+        if scenario == "long-history":
+            assert window.get_height() < 640, window.get_height()
+            assert all(label.get_lines() == BUBBLE_LINES for label in window.bubble_labels())
+            return
+
+        if scenario == "escape-binding":
+            bindings = []
+            controllers = window.observe_controllers()
+            for index in range(controllers.get_n_items()):
+                controller = controllers.get_item(index)
+                if isinstance(controller, Gtk.ShortcutController):
+                    for position in range(controller.get_n_items()):
+                        shortcut = controller.get_item(position)
+                        action = shortcut.get_action()
+                        if isinstance(action, Gtk.NamedAction):
+                            bindings.append((shortcut.get_trigger().to_string(),
+                                             action.get_action_name()))
+            assert ("Escape", "quick-reply.close") in bindings, bindings
+            return
+
+        if scenario == "click-away":
+            entry.set_text("half")
+            window.is_active = lambda: True
+            window._active_changed()
+            assert window.get_visible()
+            window.is_active = lambda: False
+            window._active_changed()
+            _settle()
+            assert client.sends() == []
+            assert not window.get_visible()
+            return
+
+        if scenario == "same-thread-click":
+            entry.set_text("draft text")
+            window.show_handle("h5")
+            _settle()
+            assert entry.get_text() == "draft text"
+            assert window.title_label.get_label() == "Jordan"
+            return
+
+        if scenario == "open-link-draft":
+            entry.set_text("half typed")
+            window.open_button.emit("clicked")
+            _settle()
+            assert opened == [("h6", "half typed")]
+            assert client.sends() == []
+            assert not window.get_visible()
+            return
+
+        if scenario == "group-handoff":
+            entry.set_text("hi all")
+            entry.emit("activate")
+            _settle()
+            assert client.sends() == []
+            assert opened == [("h6", "hi all")]
+            assert not window.get_visible()
+            return
 
         if scenario == "render":
             assert bubbles(window) == ["m3", "m4", "m5", "m6"]
@@ -199,6 +268,51 @@ def _exercise(scenario):
         if scenario == "send-once":
             return
 
+        if scenario == "switch-after-sent":
+            client.take(client.sends()[0])[1]("transfer")
+            _settle()
+            assert window.status_label.get_label() == "Sent"
+            window.show_handle("o1")
+            _settle()
+            answer([_thread(SIX), OTHER])
+            assert window.title_label.get_label() == "Casey"
+            entry.set_text("reply to Casey")
+            assert [made.delay for made in timers if made.delay == FADE_OUT_DELAY_MS] == []
+            assert window.get_opacity() == 1.0
+            assert window.get_visible() and entry.get_text() == "reply to Casey"
+            return
+
+        if scenario == "failed-pending-retry":
+            window.show_handle("o1")
+            client.take(client.sends()[0])[2]("iPhone not reachable")
+            _settle()
+            assert window.title_label.get_label() == "Jordan"
+            entry.emit("activate")
+            _settle()
+            assert len(client.sends()) == 1
+            assert bubbles(window).count("on my way") == 1
+            client.take(client.sends()[0])[1]("transfer")
+            _settle()
+            fire(FADE_OUT_DELAY_MS)
+            assert not window.get_visible()
+            return
+
+        if scenario in ("escape-while-sending", "escape-while-sending-ok"):
+            window.activate_action("quick-reply.close", None)
+            _settle()
+            assert not window.get_visible()
+            send = client.take(client.sends()[0])
+            if scenario == "escape-while-sending":
+                send[2]("iPhone not reachable")
+                _settle()
+                assert late_failures == ["on my way"]
+            else:
+                send[1]("transfer")
+                _settle()
+                assert late_failures == []
+            assert not window.get_visible()
+            return
+
         if scenario == "second-click":
             window.show_handle("o1")
             _settle()
@@ -217,8 +331,6 @@ def _exercise(scenario):
         send = client.take(client.sends()[0])
         if scenario == "sent-waits":
             assert not window.status_label.get_visible()
-            window.activate_action("quick-reply.close", None)  # deferred while sending
-            _settle()
             assert window.get_visible()
             send[1]("transfer")
             _settle()

@@ -151,3 +151,20 @@ def test_click_routing_needs_handle_and_preference() -> None:
     assert not click_opens_quick_reply("", {QUICK_REPLY: True})
     assert not click_opens_quick_reply("h1", {})
     assert not click_opens_quick_reply("h1", {QUICK_REPLY: "yes"})
+
+
+def test_failure_drops_a_pending_switch() -> None:
+    state = _loaded()
+    state.request_send("x")
+    assert state.request_switch("h-other") is False
+    state.send_failed()
+    assert state.pending_handle == ""
+
+
+def test_knows_which_handles_the_shown_conversation_holds() -> None:
+    messages = (_message("h1"), _message("h2"))
+    state = QuickReplyState("h2")
+    state.apply_threads([_thread(messages=messages), _thread("t2", "Casey", (_message("o1"),))])
+    assert state.shows_handle("h1") and state.shows_handle("h2")
+    assert not state.shows_handle("o1")
+    assert not QuickReplyState("h1").shows_handle("h1")

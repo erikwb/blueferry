@@ -296,6 +296,8 @@ class ConversationsPage(Gtk.Box):
         self._state = ConversationState(select_first=False)
         self._avatars = AvatarCache(client.contact_photo_async, self._refresh_avatars)
         self._pending_open_handle: str | None = None
+        # Text typed elsewhere (the quick reply box) for that message's composer.
+        self._pending_draft = ""
         # A conversation picked in the global search that was not loaded
         # yet, and the message a search hit pointed at: marked while its
         # conversation is shown, scrolled to once (_focus_pending).
@@ -561,9 +563,13 @@ class ConversationsPage(Gtk.Box):
         """Name of a known direct conversation with ``number``, else ``""``."""
         return known_contact_name(self._state, number)
 
-    def open_message(self, handle: str) -> None:
-        """Select a notification's message, refreshing if it is not loaded."""
+    def open_message(self, handle: str, draft: str = "") -> None:
+        """Select a notification's message, refreshing if it is not loaded.
+
+        A non-empty ``draft`` replaces the composer's text once it is selected.
+        """
         self._pending_open_handle = handle
+        self._pending_draft = draft
         if not self._select_pending_message():
             self._reload_threads()
 
@@ -629,6 +635,9 @@ class ConversationsPage(Gtk.Box):
             self._on_thread_selected(self._thread_list, row)
         else:
             self._thread_list.select_row(row)
+        if self._pending_draft:
+            self._entry.set_text(self._pending_draft)
+            self._pending_draft = ""
         return True
 
     def _reload_threads(self) -> None:

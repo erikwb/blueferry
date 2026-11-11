@@ -163,6 +163,15 @@ class QuickReplyState:
     def send_failed(self) -> None:
         if self._send_state is SendState.SENDING:
             self._send_state = SendState.FAILED
+            # The unsent text stays on screen; a deferred switch would discard it.
+            self._pending_handle = ""
+
+    def shows_handle(self, handle: str) -> bool:
+        """Whether ``handle`` belongs to the conversation on screen."""
+        thread = self.thread
+        return thread is not None and any(
+            message.handle == handle for message in thread.messages
+        )
 
     def may_close(self, reason: CloseReason) -> bool:
         return self._send_state is not SendState.SENDING

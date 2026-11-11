@@ -34,8 +34,11 @@ WIDTH = 380
 RELOAD_DELAY_MS = 500
 FADE_OUT_DELAY_MS = 900
 FADE_OUT_MS = 200
+# After a send fails behind a dismissed box: time for the desktop notice.
+LATE_CLOSE_MS = 3000
 REVEAL_MS = 220
 BUBBLE_CHARS = 30
+BUBBLE_LINES = 4
 
 _CSS = """
 window.quick-reply-pinned { background: none; }
@@ -83,7 +86,8 @@ def _bubble(text: str, outgoing: bool) -> Gtk.Label:
     classes += ["msg-out", "outgoing"] if outgoing else ["incoming"]
     return Gtk.Label(
         label=text, wrap=True, wrap_mode=Pango.WrapMode.WORD_CHAR,
-        max_width_chars=BUBBLE_CHARS, xalign=0,
+        max_width_chars=BUBBLE_CHARS, lines=BUBBLE_LINES,
+        ellipsize=Pango.EllipsizeMode.END, xalign=0,
         halign=Gtk.Align.END if outgoing else Gtk.Align.START,
         css_classes=classes,
     )
@@ -96,7 +100,7 @@ class QuickReplyWindow(Gtk.Window):
         application: Gtk.Application | None,
         client,
         handle: str,
-        open_in_app: Callable[[str], None],
+        open_in_app: Callable[[str, str], None],
         timer: TimerFactory | None = None,
     ) -> None:
         super().__init__(application=application, title=_("Quick Reply"))
@@ -108,8 +112,12 @@ class QuickReplyWindow(Gtk.Window):
         self._reload_timer = make_timer(self._load)
         self._fade_timer = make_timer(self._finish_sent)
         self._idle_timer = make_timer(self._idle_elapsed)
+        self._late_close_timer = make_timer(self.close)
+        self._fade: Adw.TimedAnimation | None = None
         self._marked_read: set[str] = set()
         self._failed_text = ""
+        # Dismissed while a send was in flight: finish it out of sight.
+        self._hidden_while_sending = False
         self._was_active = False
         self._closing = False
         if place_top_center(self, TOP_MARGIN):
@@ -152,9 +160,12 @@ class QuickReplyWindow(Gtk.Window):
         footer = Gtk.Box(spacing=6)
         footer.append(Gtk.Label(label=_("Enter to send · Esc to close"),
                                 css_classes=["caption", "dim-label"], xalign=0, hexpand=True))
-        open_button = Gtk.Button(label=_("Open in BlueFerry"), css_classes=["flat", "caption"])
-        open_button.connect("clicked", lambda *_args: self._open_full_window())
-        footer.append(open_button)
+        self.open_button = Gtk.Button(label=_("Open in BlueFerry"),
+                                      css_classes=["flat", "caption"])
+        self.open_button.connect(
+            "clicked", lambda *_args: self._open_full_window(self.entry.get_text()),
+        )
+        footer.append(self.open_button)
         card.append(footer)
         self.set_child(card)
 
@@ -243,11 +254,20 @@ class QuickReplyWindow(Gtk.Window):
 
     def show_handle(self, handle: str) -> None:
         """Another popup was clicked: show its conversation once no send is in flight."""
-        if self._state.request_switch(handle):
+        self._hidden_while_sending = False
+        if self._state.shows_handle(handle):
+            # Same conversation: keep what is typed, just refresh.
+            self._load()
+        elif self._state.request_switch(handle):
             self._reset_for_switch()
         self.present()
 
     def _reset_for_switch(self) -> None:
+        self._fade_timer.stop()
+        if self._fade is not None:
+            self._fade.reset()
+            self._fade = None
+        self.set_opacity(1.0)
         self._failed_text = ""
         self.status_label.set_visible(False)
         self.entry.set_text("")
@@ -259,13 +279,21 @@ class QuickReplyWindow(Gtk.Window):
     def _send(self, _entry: Gtk.Entry) -> None:
         self._restart_idle()
         decision = self._state.request_send(self.entry.get_text())
-        if decision.action in (SendAction.HANDOFF, SendAction.BLOCKED):
+        if decision.action is SendAction.HANDOFF:
+            # Confirmations live in the full window; the typed text goes along.
+            self._open_full_window(self.entry.get_text())
+            return
+        if decision.action is SendAction.BLOCKED:
             self._show_note(decision.message)
             return
         if decision.action is not SendAction.SEND or decision.plan is None:
             return
         plan = decision.plan
-        assert plan.thread is not None
+        if plan.thread is None:
+            self._state.send_failed()
+            return
+        if self._failed_text:
+            self._remove_failed_bubble()
         self._show_note("")
         self.status_label.set_visible(False)
         label = _bubble(plan.body, True)
@@ -284,13 +312,30 @@ class QuickReplyWindow(Gtk.Window):
             on_err=lambda _message, body=plan.body: self._send_failed(body),
         )
 
+    def _remove_failed_bubble(self) -> None:
+        child = self._bubble_box.get_first_child()
+        while child is not None:
+            following = child.get_next_sibling()
+            label = child.get_child() if isinstance(child, Gtk.Revealer) else child
+            if isinstance(label, Gtk.Label) and label.has_css_class("failed"):
+                self._bubble_box.remove(child)
+            child = following
+        self._failed_text = ""
+
     def _sent(self, _transfer: str) -> None:
         self._state.send_succeeded()
+        if self._hidden_while_sending:
+            self.close()
+            return
         self._show_status(_("Sent"))
         self._fade_timer.start(FADE_OUT_DELAY_MS)
 
     def _send_failed(self, body: str) -> None:
         self._state.send_failed()
+        if self._hidden_while_sending:
+            self._report_late_failure(body)
+            self._late_close_timer.start(LATE_CLOSE_MS)
+            return
         labels = self.bubble_labels()
         if labels:
             labels[-1].remove_css_class("sending")
@@ -300,28 +345,45 @@ class QuickReplyWindow(Gtk.Window):
         self.entry.set_text(body)
         self.entry.set_sensitive(self._state.compose_enabled)
         self.entry.grab_focus()
+        # Messages that arrived while sending were not loaded; catch up.
+        self._load()
+
+    def _report_late_failure(self, body: str) -> None:
+        """The box was dismissed mid-send and the send failed: say so on the desktop."""
+        application = self.get_application()
+        if application is None:
+            return
+        notice = Gio.Notification.new(_("Message not sent"))
+        notice.set_body(_("To {name}: {text}").format(name=self._state.title, text=body))
+        application.send_notification("blueferry-quick-reply-not-sent", notice)
 
     def _finish_sent(self) -> None:
         pending = self._state.pending_handle
         if pending and self._state.request_switch(pending):
             self._reset_for_switch()
             return
-        fade = Adw.TimedAnimation(
+        self._fade = Adw.TimedAnimation(
             widget=self, value_from=1.0, value_to=0.0, duration=FADE_OUT_MS,
             target=Adw.CallbackAnimationTarget.new(self.set_opacity),
         )
-        fade.connect("done", lambda *_args: self.close())
-        fade.play()
+        self._fade.connect("done", lambda *_args: self.close())
+        self._fade.play()
 
     # ---- closing -------------------------------------------------------
 
-    def _open_full_window(self) -> None:
-        self._open_in_app(self._state.handle)
+    def _open_full_window(self, draft: str = "") -> None:
+        self._open_in_app(self._state.handle, draft)
         self._request_close(CloseReason.OPENED_APP)
 
     def _request_close(self, reason: CloseReason) -> None:
         if self._state.may_close(reason):
             self.close()
+        else:
+            self._hide_while_sending()
+
+    def _hide_while_sending(self) -> None:
+        self._hidden_while_sending = True
+        self.set_visible(False)
 
     def _active_changed(self, *_args) -> None:
         if self.is_active():
@@ -340,10 +402,12 @@ class QuickReplyWindow(Gtk.Window):
 
     def _close_requested(self, _window: Gtk.Window) -> bool:
         if not self._state.may_close(CloseReason.ESCAPE):
+            self._hide_while_sending()
             return True
         if not self._closing:
             self._closing = True
-            for timer in (self._reload_timer, self._fade_timer, self._idle_timer):
+            for timer in (self._reload_timer, self._fade_timer, self._idle_timer,
+                          self._late_close_timer):
                 timer.stop()
             if self._history_id:
                 self._client.disconnect(self._history_id)
