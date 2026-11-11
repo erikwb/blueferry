@@ -23,8 +23,11 @@ from blueferry import __version__  # noqa: E402
 from blueferry.client_activation import forward_to_legacy_gtk, record_client_use  # noqa: E402
 from blueferry.glib_client_activation import ClientActivation  # noqa: E402
 from blueferry.i18n import _  # noqa: E402
+from blueferry.quick_reply_state import click_opens_quick_reply  # noqa: E402
 from blueferry.tel_links import phone_link_argument  # noqa: E402
 from blueferry.ui.client import DaemonClient  # noqa: E402
+from blueferry.ui.quick_reply import QuickReplyWindow  # noqa: E402
+from blueferry.ui.ui_state import UiState  # noqa: E402
 from blueferry.ui.window import MainWindow  # noqa: E402
 
 APP_ID = "io.weirdware.BlueFerry.Gtk"
@@ -59,6 +62,8 @@ class BlueFerryApp(Adw.Application):
         )
         self._client: DaemonClient | None = None
         self._activation: ClientActivation | None = None
+        self._ui_state: UiState | None = None
+        self._quick_reply: QuickReplyWindow | None = None
         # Positional arguments are not part of the parsed local options.
         self._local_arguments: list[str] = []
 
@@ -68,7 +73,7 @@ class BlueFerryApp(Adw.Application):
 
     def do_startup(self) -> None:
         Adw.Application.do_startup(self)
-        self._activation = ClientActivation("gtk", self._open_message, self._open_dial)
+        self._activation = ClientActivation("gtk", self._open_click, self._open_dial)
         for name, callback in (
             ("about", self._show_about),
             ("shortcuts", self._show_shortcuts),
@@ -163,8 +168,53 @@ class BlueFerryApp(Adw.Application):
         if link:
             self._open_dial(link, token)
         else:
-            self._open_message(handle.unpack() if handle is not None else "", token)
+            self._open_click(handle.unpack() if handle is not None else "", token)
         return 0
+
+    def _open_click(self, handle: str, token: str) -> None:
+        """A popup click: the quick reply box when it is switched on, else the window."""
+        if not handle:
+            self._open_message(handle, token)
+            return
+        if self._client is None:
+            self._client = DaemonClient()
+        if self._ui_state is None:
+            self._ui_state = UiState(self._client.task_runner("ui-state-app"))
+        # No window is open while the preference loads; keep the app running.
+        self.hold()
+
+        def loaded(values: dict) -> None:
+            self.release()
+            if click_opens_quick_reply(handle, values):
+                self._show_quick_reply(handle, token)
+            else:
+                self._open_message(handle, token)
+
+        self._ui_state.load(loaded)
+
+    def _show_quick_reply(self, handle: str, token: str) -> None:
+        box = self._quick_reply
+        if box is None:
+            box = QuickReplyWindow(
+                application=self, client=self._client, handle=handle,
+                open_in_app=self._open_in_window,
+            )
+            box.connect("destroy", self._quick_reply_closed)
+            self._quick_reply = box
+            if token:
+                box.set_startup_id(token)
+            box.present()
+        else:
+            box.show_handle(handle)
+        record_client_use("gtk")
+        os.environ.pop("XDG_ACTIVATION_TOKEN", None)
+        os.environ.pop("DESKTOP_STARTUP_ID", None)
+
+    def _quick_reply_closed(self, _box: Gtk.Window) -> None:
+        self._quick_reply = None
+
+    def _open_in_window(self, handle: str) -> None:
+        self._open_message(handle, "")
 
     def _open_dial(self, link: str, token: str) -> None:
         # Only asks for confirmation; the window dials after Call.
