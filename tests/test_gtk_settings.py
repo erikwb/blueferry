@@ -15,6 +15,7 @@ from tests.gtk_broadway import run_scenario
         "categories", "features", "old-daemon", "doctor", "mirror-removals",
         "battery-warning", "reconnect", "notification-rules", "muted-apps",
         "feature-races", "status-save-races", "rule-races", "storage-reset",
+        "quick-reply",
     ],
 )
 def test_gtk_settings(tmp_path, scenario):
@@ -786,6 +787,44 @@ def _exercise_storage_reset():
     window.destroy()
 
 
+def _exercise_quick_reply():
+    from blueferry.quick_reply_state import QUICK_REPLY
+
+    class FakeUiState:
+        def __init__(self, values):
+            self.values = values
+            self.saved = []
+
+        def load(self, done):
+            done(dict(self.values))
+
+        def save(self, **values):
+            self.saved.append(values)
+
+    dialog, window, _client = _settings()
+    assert not dialog.quick_reply_row.get_visible()
+    dialog.close()
+    _settle()
+    window.destroy()
+
+    state = FakeUiState({QUICK_REPLY: True})
+    dialog, window, _client = _settings(ui_state=state)
+    _settle()
+    row = dialog.quick_reply_row
+    assert row.get_visible() and row.get_active()
+    assert row.get_title() == "Quick Reply from Message Popups"
+    assert state.saved == []
+    row.set_active(False)
+    _settle()
+    assert state.saved == [{QUICK_REPLY: False}]
+    row.set_active(True)
+    _settle()
+    assert state.saved[-1] == {QUICK_REPLY: True}
+    dialog.close()
+    _settle()
+    window.destroy()
+
+
 if __name__ == "__main__":
     {
         "storage-reset": _exercise_storage_reset,
@@ -801,4 +840,5 @@ if __name__ == "__main__":
         "features": _exercise_features,
         "old-daemon": _exercise_old_daemon,
         "doctor": _exercise_doctor,
+        "quick-reply": _exercise_quick_reply,
     }[sys.argv[1]]()

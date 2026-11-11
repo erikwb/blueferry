@@ -60,6 +60,22 @@ Die Lupe in der Kopfzeile, `Strg+K` oder `Strg+F` öffnet die
 Ein Treffer öffnet die Unterhaltung bei dieser Nachricht, die Kontaktkarte
 oder den Anruf in der Anrufliste.
 
+**Quick Reply from Message Popups** (Settings › Notifications › Content and
+Actions, standardmäßig aus) lässt einen Klick auf ein Nachrichten-Popup statt
+des Fensters ein kleines Feld oben in der Bildschirmmitte öffnen: die
+letzten vier Nachrichten der Unterhaltung und ein Antwortfeld, in dem der
+Cursor schon steht. Eingabe sendet, und das Feld schließt sich, sobald das
+iPhone den Versand bestätigt. Esc oder ein Klick daneben schließt es; eine
+schon abgeschickte Antwort geht trotzdem raus, und ein Fehler erscheint dann
+als Desktop-Mitteilung. Ein leeres Feld schließt sich nach zwei Minuten von
+selbst. Braucht eine Antwort eine Bestätigung, etwa in manchen Gruppen,
+öffnet sich das Fenster mit dem schon getippten Text, ebenso mit **Open in
+BlueFerry**. Über anderen Fenstern bleibt das Feld mit
+[gtk4-layer-shell](https://github.com/wmww/gtk4-layer-shell) auf Compositors
+mit dem Layer-Shell-Protokoll (zum Beispiel COSMIC, KDE Plasma, Sway und
+Hyprland); ohne die Bibliothek oder unter GNOME ist es ein kleines normales
+Fenster.
+
 **Settings** (Hauptmenü, `Strg+,`) hat dieselben Kategorien wie der
 KDE-Client, je eine Seite; die Umschaltleiste sitzt in der Kopfzeile, in
 einem schmalen Fenster unten, und der Suchknopf findet jede Einstellung:
@@ -67,7 +83,7 @@ einem schmalen Fenster unten, und der Suchknopf findet jede Einstellung:
 | Kategorie | Inhalt |
 | --- | --- |
 | Phone | Kopplung, Verbindungszustand mit **Reconnect**, **Run Diagnostics** (dieselben Prüfungen wie `blueferry doctor`; der Bericht öffnet sich in einem eigenen Dialog mit Kopierknopf), Kopplungsbericht, Kontaktabgleich, Kontaktfotos |
-| Notifications | Welche Ereignisse Popups erzeugen, nur Kontakte, [stummgeschaltete Apps](notification-mute.md), Klickregeln, Mitteilungsinhalt, Aktionsknöpfe, Mitteilungen mit dem iPhone abgleichen, beim Wegklicken als gelesen markieren, letzte Mitteilungen behalten |
+| Notifications | Welche Ereignisse Popups erzeugen, nur Kontakte, [stummgeschaltete Apps](notification-mute.md), Klickregeln, Mitteilungsinhalt, Aktionsknöpfe, Mitteilungen mit dem iPhone abgleichen, beim Wegklicken als gelesen markieren, letzte Mitteilungen behalten, Schnellantwort aus Nachrichten-Popups |
 | Calls & Audio | Anrufe, Anrufliste, Akku-Warnung, [iPhone-Ton am Computer](phone-audio.md), Mediensteuerung |
 | Network | Optionales [Bluetooth-Tethering](bluetooth-tethering.md) |
 | Security | Einmalcodes, Abwesenheitssperre, lokale Daten und ihre Verschlüsselung, Verlauf löschen |
@@ -464,4 +480,5 @@ Ein Klick auf eine Nachrichtenmitteilung öffnet die Unterhaltung in einem
 laufenden grafischen Client, bevorzugt in dem zuletzt benutzten. Läuft keiner,
 öffnet BlueFerry den zuletzt benutzten Client. Ohne frühere Wahl bevorzugt es
 GTK unter GNOME, Qt unter KDE und Quickshell unter Omarchy/Hyprland und
-weicht auf einen installierten Client aus.
+weicht auf einen installierten Client aus. Im GTK-Client öffnet **Quick Reply
+from Message Popups** stattdessen das kleine Antwortfeld (siehe oben).

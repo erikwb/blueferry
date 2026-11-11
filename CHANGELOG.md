@@ -4,6 +4,17 @@
 
 ### Added
 
+- GTK: **Quick Reply from Message Popups** (Settings › Notifications ›
+  Content and Actions, off by default). Clicking a message popup opens a
+  small box at the top center of the screen with the last four messages of
+  that conversation and a reply field; Enter sends with the same group checks
+  as the window, **Sent** shows once the iPhone confirms, and Esc or a click
+  elsewhere closes it. A reply that needs a confirmation, and **Open in
+  BlueFerry**, open the window with the typed text. The box is pinned with
+  gtk4-layer-shell where the compositor supports the layer shell protocol
+  (`BLUEFERRY_GTK4_LAYER_SHELL_LIB` names a library outside the linker path)
+  and is a small window otherwise. The Debian, Fedora and Arch GTK packages
+  recommend gtk4-layer-shell.
 - Cover art of the iPhone's current track over AVRCP (Basic Imaging Profile),
   shown in the Qt and GTK clients, reported as `cover` in `GetNowPlaying` and
   `phone_media_cover` in `GetStatus`, and published as MPRIS `mpris:artUrl`.
