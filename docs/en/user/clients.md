@@ -55,6 +55,20 @@ The magnifier in the header bar, `Ctrl+K` or `Ctrl+F` opens the
 Choosing a hit opens the conversation at that message, the contact card,
 or the call in the call history.
 
+**Quick Reply from Message Popups** (Settings › Notifications › Content and
+Actions, off by default) makes a click on a message popup open a small box
+at the top center of the screen instead of the window: the last four
+messages of that conversation and a reply field that already has the focus.
+Enter sends, and the box closes once the iPhone confirms. Esc or a click
+elsewhere closes it; a reply already sent still goes out, and a failure is
+reported as a desktop notification. An empty box closes itself after two
+minutes. A reply that needs a confirmation, as in some groups, opens the
+window with the text already typed, as does **Open in BlueFerry**. The box
+stays above other windows with
+[gtk4-layer-shell](https://github.com/wmww/gtk4-layer-shell) on compositors
+with the layer shell protocol (for example COSMIC, KDE Plasma, Sway and
+Hyprland); without it, or on GNOME, it is a small ordinary window.
+
 **Settings** (main menu, `Ctrl+,`) has the same categories as the KDE
 client, one page each; the switcher sits in the header bar, or at the
 bottom in a narrow window, and the search button finds any setting:
@@ -62,7 +76,7 @@ bottom in a narrow window, and the search button finds any setting:
 | Category | What's there |
 | --- | --- |
 | Phone | Pairing, connection health with **Reconnect**, **Run Diagnostics** (the same checks as `blueferry doctor`; the report opens in its own dialog with a copy button), pairing report, contact sync, contact photos |
-| Notifications | Which events create popups, contacts only, [muted apps](notification-mute.md), click rules, notification content, action buttons, sync notifications with iPhone, mark read on dismiss, keeping recent notifications |
+| Notifications | Which events create popups, contacts only, [muted apps](notification-mute.md), click rules, notification content, action buttons, sync notifications with iPhone, mark read on dismiss, keeping recent notifications, quick reply from message popups |
 | Calls & Audio | Phone calls, call history, battery warning, [iPhone sound on this computer](phone-audio.md), media control |
 | Network | Opt-in [Bluetooth tethering](bluetooth-tethering.md) |
 | Security | One-time codes, away lock, local storage and its encryption, Clear History |
@@ -439,4 +453,5 @@ Clicking a message notification opens its conversation in a running graphical
 client, preferring the one you used most recently. If none is running,
 BlueFerry opens the last client you used. Without a previous choice, it
 prefers GTK on GNOME, Qt on KDE, and Quickshell on Omarchy/Hyprland, falling
-back to whichever client is installed.
+back to whichever client is installed. In the GTK client, **Quick Reply from
+Message Popups** opens the small reply box instead (see above).

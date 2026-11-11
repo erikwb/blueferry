@@ -186,6 +186,9 @@ package_blueferry-gtk() {
     'python-gobject'
     'webp-pixbuf-loader'
   )
+  optdepends=(
+    'gtk4-layer-shell: pin the quick reply box to the top of the screen'
+  )
 
   cd "$pkgbase-$pkgver"
   install -d "$pkgdir/$_site/blueferry"

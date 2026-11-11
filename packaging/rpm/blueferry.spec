@@ -71,6 +71,7 @@ Requires:       gtk4
 Requires:       gobject-introspection
 Requires:       libadwaita
 Requires:       python3-gobject
+Recommends:     gtk4-layer-shell
 # Photos thumbnails are WebP. Fedora's gdk-pixbuf2 decodes them through glycin
 # and obsoletes webp-pixbuf-loader, so no separate loader is required.
 
