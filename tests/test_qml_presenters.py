@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import time
 from pathlib import Path
 
 import pytest
@@ -6509,6 +6510,71 @@ def test_quickshell_now_playing_shows_the_shared_volume_buttons(qml_engine) -> N
         strip.setProperty("view", {"visible": True, "title": "Song", "toggle": True})
         assert down.property("visible") is False and up.property("visible") is False
         assert level.property("visible") is False
+    finally:
+        window.close()
+        strip.deleteLater()
+        window.deleteLater()
+        QGuiApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+
+
+def test_quickshell_now_playing_shows_the_cover_art(qml_engine, tmp_path) -> None:
+    from PySide6.QtGui import QColor, QImage
+    from PySide6.QtQml import QQmlExpression
+
+    from blueferry.quickshell_bridge import now_playing_view
+
+    cover = tmp_path / "cover-1000039.jpg"
+    image = QImage(200, 200, QImage.Format.Format_RGB32)
+    image.fill(QColor("#336699"))
+    assert image.save(str(cover), "JPEG")
+    theme_component = _component(qml_engine, "data/quickshell/ThemePalette.qml")
+    theme = theme_component.create()
+    assert theme is not None, theme_component.errors()
+    theme.setParent(qml_engine)
+    component = _component(qml_engine, "data/quickshell/QuickshellNowPlaying.qml")
+    strip = component.createWithInitialProperties({"ferryTheme": theme})
+    assert strip is not None, component.errors()
+    theme.setParent(strip)
+    window = QQuickWindow()
+    window.resize(640, 100)
+    strip.setParentItem(window.contentItem())
+    window.show()
+    QGuiApplication.processEvents()
+    snapshot = {
+        "enabled": True, "available": True, "player": {"state": "playing"},
+        "track": {"title": "Song"}, "supported_commands": ["pause"], "cover": str(cover),
+    }
+    try:
+        art = strip.findChild(QObject, "nowPlayingCover")
+        strip.setProperty("view", now_playing_view(snapshot))
+        for _attempt in range(200):
+            QGuiApplication.processEvents()
+            if art.property("visible"):
+                break
+            time.sleep(0.01)
+        assert art.property("visible") is True
+        assert art.property("source").toLocalFile() == str(cover)
+        assert art.property("sourceSize").width() == 2 * art.property("edge")
+
+        # No cover (or one that is gone): no image, the rest of the strip stays.
+        strip.setProperty("view", now_playing_view({**snapshot, "cover": ""}))
+        QGuiApplication.processEvents()
+        assert art.property("visible") is False
+        assert strip.property("visible") is True
+        strip.setProperty("view", now_playing_view({**snapshot, "cover": str(tmp_path / "gone.jpg")}))
+        def status() -> int:
+            expression = QQmlExpression(qml_engine.contextForObject(art), art, "Number(status)")
+            value, failed = expression.evaluate()
+            assert not failed, expression.error().toString()
+            return int(value)
+
+        for _attempt in range(200):
+            QGuiApplication.processEvents()
+            if status() != 2:  # Image.Loading
+                break
+            time.sleep(0.01)
+        assert status() == 3  # Image.Error
+        assert art.property("visible") is False
     finally:
         window.close()
         strip.deleteLater()

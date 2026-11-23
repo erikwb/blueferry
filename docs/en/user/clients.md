@@ -228,7 +228,8 @@ the iPhone. The list follows changes made elsewhere, for example with
 While something is playing, the now-playing strip under the header also has
 volume down and up buttons and the level the iPhone last reported. Each press
 moves the iPhone volume one step; the buttons are greyed out when the playing
-app does not offer volume control.
+app does not offer volume control. With [cover art](media-control.md#cover-art)
+the strip shows the track's cover before the title.
 
 | | Qt | GTK | TUI | Quickshell | CLI |
 |---|---|---|---|---|---|

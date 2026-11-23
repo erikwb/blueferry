@@ -665,7 +665,7 @@ def test_bridge_reduces_now_playing_to_booleans_and_verbatim_text() -> None:
     volume = result.pop("volume")
     assert result == {
         "visible": True, "playing": True, "title": "<b>Song</b>", "artist": "Band",
-        "idle": False, "previous": False, "toggle": True, "next": True,
+        "idle": False, "previous": False, "toggle": True, "next": True, "cover": "",
     }
     # This player offers no volume step: shown, but disabled with the reason.
     assert volume["visible"] is True
@@ -676,6 +676,27 @@ def test_bridge_reduces_now_playing_to_booleans_and_verbatim_text() -> None:
     assert not any(isinstance(value, list | tuple) for value in result.values())
     assert not any(isinstance(value, list | tuple) for value in volume.values())
     assert json.loads(json.dumps(result)) == result
+
+
+def test_bridge_passes_the_cover_art_as_a_file_url() -> None:
+    snapshot = {
+        "enabled": True, "available": True, "player": {"state": "playing"},
+        "track": {"title": "Song"}, "supported_commands": ["pause"],
+        "cover": "/home/me/.cache/blue ferry/cover/cover-a#1-1000039.jpg",
+    }
+    bridge = QuickshellBridge(SimpleNamespace(now_playing=lambda: snapshot))  # type: ignore[arg-type]
+
+    # Encoded, so a space or "#" in the cache path cannot change the file.
+    assert bridge.dispatch("now_playing", {})["cover"] == (
+        "file:///home/me/.cache/blue%20ferry/cover/cover-a%231-1000039.jpg"
+    )
+    # Only an absolute path from the daemon, and only while the strip shows.
+    for cover in ("cover.jpg", "", None, 7, "/tmp/a\0b.jpg"):
+        snapshot["cover"] = cover
+        assert bridge.dispatch("now_playing", {})["cover"] == ""
+    snapshot["cover"] = "/home/me/cover.jpg"
+    snapshot["available"] = False
+    assert bridge.dispatch("now_playing", {})["cover"] == ""
 
 
 HIDDEN_VOLUME = {
@@ -696,6 +717,7 @@ def test_bridge_hides_now_playing_until_the_media_service_is_available(snapshot)
     assert bridge.dispatch("now_playing", {}) == {
         "visible": False, "playing": False, "title": "", "artist": "", "idle": False,
         "previous": False, "toggle": False, "next": False, "volume": HIDDEN_VOLUME,
+        "cover": "",
     }
 
 
@@ -718,6 +740,7 @@ def test_bridge_hides_empty_inactive_media_after_reconnect(state, track) -> None
     assert bridge.dispatch("now_playing", {}) == {
         "visible": False, "playing": False, "title": "", "artist": "", "idle": False,
         "previous": False, "toggle": False, "next": False, "volume": HIDDEN_VOLUME,
+        "cover": "",
     }
 
 
