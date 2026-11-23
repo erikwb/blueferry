@@ -168,3 +168,17 @@ def test_knows_which_handles_the_shown_conversation_holds() -> None:
     assert state.shows_handle("h1") and state.shows_handle("h2")
     assert not state.shows_handle("o1")
     assert not QuickReplyState("h1").shows_handle("h1")
+
+
+def test_same_conversation_click_refreshes_in_place_only_without_a_send() -> None:
+    state = _loaded()
+    assert state.refreshes_in_place("h1")
+    assert not state.refreshes_in_place("o1")
+    state.request_send("x")
+    assert not state.refreshes_in_place("h1")
+    state.send_succeeded()
+    assert not state.refreshes_in_place("h1")
+    failed = _loaded()
+    failed.request_send("x")
+    failed.send_failed()
+    assert failed.refreshes_in_place("h1")

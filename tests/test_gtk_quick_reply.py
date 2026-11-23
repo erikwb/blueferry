@@ -13,7 +13,9 @@ SCENARIOS = [
     "long-text", "read-only", "fallback", "incoming", "switch-after-sent",
     "same-thread-click", "failed-pending-retry", "escape-while-sending",
     "escape-while-sending-ok", "group-handoff", "open-link-draft", "long-history",
-    "escape-binding", "click-away",
+    "escape-binding", "click-away", "reopen-after-hidden-failure",
+    "reopen-same-after-hidden-failure", "same-thread-click-after-sent",
+    "same-thread-click-while-sending",
 ]
 
 
@@ -106,6 +108,7 @@ def _exercise(scenario):
     from blueferry.ui.quick_reply import (
         BUBBLE_LINES,
         FADE_OUT_DELAY_MS,
+        LATE_CLOSE_MS,
         RELOAD_DELAY_MS,
         WIDTH,
         Adw,
@@ -311,6 +314,49 @@ def _exercise(scenario):
                 _settle()
                 assert late_failures == []
             assert not window.get_visible()
+            return
+
+        if scenario in ("reopen-after-hidden-failure", "reopen-same-after-hidden-failure"):
+            window.activate_action("quick-reply.close", None)
+            _settle()
+            client.take(client.sends()[0])[2]("iPhone not reachable")
+            _settle()
+            assert late_failures == ["on my way"]
+            assert LATE_CLOSE_MS in [made.delay for made in timers]
+            other = scenario == "reopen-after-hidden-failure"
+            window.show_handle("o1" if other else "h5")
+            _settle()
+            answer([_thread(SIX), OTHER])
+            assert window.title_label.get_label() == ("Casey" if other else "Jordan")
+            assert LATE_CLOSE_MS not in [made.delay for made in timers]
+            assert window.get_visible()
+            return
+
+        if scenario == "same-thread-click-after-sent":
+            client.take(client.sends()[0])[1]("transfer")
+            _settle()
+            assert window.status_label.get_label() == "Sent"
+            window.show_handle("h5")
+            _settle()
+            answer([_thread(SIX), OTHER])
+            assert FADE_OUT_DELAY_MS not in [made.delay for made in timers]
+            assert window.get_opacity() == 1.0
+            assert window.get_visible() and not window.status_label.get_visible()
+            entry.set_text("one more")
+            entry.emit("activate")
+            _settle()
+            assert client.sends() == [("send", KEY, "one more", False, "")]
+            return
+
+        if scenario == "same-thread-click-while-sending":
+            window.show_handle("h5")
+            _settle()
+            client.take(client.sends()[0])[1]("transfer")
+            _settle()
+            fire(FADE_OUT_DELAY_MS)
+            answer([_thread(SIX), OTHER])
+            assert window.get_visible() and window.get_opacity() == 1.0
+            assert window.title_label.get_label() == "Jordan"
             return
 
         if scenario == "second-click":

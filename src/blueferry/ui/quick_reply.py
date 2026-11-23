@@ -255,7 +255,9 @@ class QuickReplyWindow(Gtk.Window):
     def show_handle(self, handle: str) -> None:
         """Another popup was clicked: show its conversation once no send is in flight."""
         self._hidden_while_sending = False
-        if self._state.shows_handle(handle):
+        # Armed when a send failed behind the dismissed box; it is wanted again.
+        self._late_close_timer.stop()
+        if self._state.refreshes_in_place(handle):
             # Same conversation: keep what is typed, just refresh.
             self._load()
         elif self._state.request_switch(handle):

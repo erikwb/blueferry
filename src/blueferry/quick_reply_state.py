@@ -173,6 +173,17 @@ class QuickReplyState:
             message.handle == handle for message in thread.messages
         )
 
+    def refreshes_in_place(self, handle: str) -> bool:
+        """Whether a click on ``handle`` only refreshes the box, keeping the draft.
+
+        Once a reply is in flight or sent, the box is about to close, so the
+        click goes through :meth:`request_switch` instead and keeps it open.
+        """
+        return (
+            self._send_state in (SendState.IDLE, SendState.FAILED)
+            and self.shows_handle(handle)
+        )
+
     def may_close(self, reason: CloseReason) -> bool:
         return self._send_state is not SendState.SENDING
 
