@@ -374,6 +374,8 @@ def adverts(monkeypatch):
     context = SimpleNamespace(iteration=lambda _block: dispatched.pop(0)() if dispatched else None)
     monkeypatch.setattr(bluez_setup, '_advert_instance', None)
     monkeypatch.setattr(bluez_setup, '_compact_advert_adapters', set())
+    monkeypatch.setattr(bluez_setup, '_controller_refused_adapters', set())
+    monkeypatch.setattr(bluez_setup, '_compact_trial_adapters', set())
     monkeypatch.setattr(bluez_setup, 'get_system_bus', lambda: SimpleNamespace(
         get_object=lambda *a, **k: None, call_async=call_async,
     ))
@@ -504,8 +506,6 @@ def test_rejected_advert_payload_is_retried_in_the_legacy_packet_size(adverts):
     ('org.freedesktop.DBus.Error.NoReply', 'timed out'),
     ('org.bluez.Error.AlreadyExists', 'Already Exists'),
     ('org.bluez.Error.NotPermitted', 'Maximum advertisements reached'),
-    # The controller refused it; nothing says the payload was at fault.
-    ('org.bluez.Error.Failed', 'Failed to register advertisement'),
 ])
 def test_failures_unrelated_to_the_payload_keep_the_full_advert(
     adverts, error_name, message,
@@ -518,6 +518,92 @@ def test_failures_unrelated_to_the_payload_keep_the_full_advert(
     bluez_setup.register_advert('hci7')
 
     assert _advert_packet_bytes() == 40
+
+
+def _controller_refused():
+    # BlueZ passed the advert on and MGMT Add Advertising refused it, which
+    # some controllers do for anything over the legacy packet size (#431).
+    return dbus.exceptions.DBusException(
+        'Failed to register advertisement', name='org.bluez.Error.Failed',
+    )
+
+
+def test_controller_refusal_tries_the_legacy_packet_size(adverts):
+    bluez_setup.register_advert('hci7')
+    adverts.requests[0].error_handler(_controller_refused())
+
+    bluez_setup.register_advert('hci7')
+
+    assert _advert_packet_bytes() <= 31
+    adverts.requests[1].reply_handler()
+    assert bluez_setup.advert_registered()
+
+
+def test_compact_advert_refused_too_goes_back_to_the_full_advert_for_good(adverts):
+    for index in range(2):
+        bluez_setup.register_advert('hci7')
+        adverts.requests[index].error_handler(_controller_refused())
+
+    bluez_setup.register_advert('hci7')
+    assert _advert_packet_bytes() == 40
+    adverts.requests[2].error_handler(_controller_refused())
+
+    bluez_setup.register_advert('hci7')
+    assert _advert_packet_bytes() == 40  # Tried once; no alternating.
+
+
+def test_compact_advert_that_registered_survives_a_later_refusal(adverts):
+    bluez_setup.register_advert('hci7')
+    adverts.requests[0].error_handler(_controller_refused())
+    bluez_setup.register_advert('hci7')
+    adverts.requests[1].reply_handler()
+    bluez_setup._advert_instance.Release()
+
+    bluez_setup.register_advert('hci7')
+    adverts.requests[2].error_handler(_controller_refused())
+
+    bluez_setup.register_advert('hci7')
+    assert _advert_packet_bytes() <= 31
+
+
+def test_compact_trial_waits_out_failures_that_say_nothing_about_it(adverts):
+    bluez_setup.register_advert('hci7')
+    adverts.requests[0].error_handler(_controller_refused())
+    bluez_setup.register_advert('hci7')
+    adverts.requests[1].error_handler(dbus.exceptions.DBusException(
+        'timed out', name='org.freedesktop.DBus.Error.NoReply',
+    ))
+
+    bluez_setup.register_advert('hci7')
+    assert _advert_packet_bytes() <= 31
+    adverts.requests[2].error_handler(_controller_refused())
+
+    bluez_setup.register_advert('hci7')
+    assert _advert_packet_bytes() == 40
+
+
+def test_a_new_bluez_owner_gets_the_controller_fallback_again(adverts):
+    for index in range(3):
+        bluez_setup.register_advert('hci7')
+        adverts.requests[index].error_handler(_controller_refused())
+
+    bluez_setup.forget_advert_registration()
+    bluez_setup.register_advert('hci7')
+    assert _advert_packet_bytes() == 40
+    adverts.requests[3].error_handler(_controller_refused())
+
+    bluez_setup.register_advert('hci7')
+    assert _advert_packet_bytes() <= 31
+
+
+def test_pairing_retries_after_a_controller_refusal(adverts):
+    adverts.dispatched.append(lambda: adverts.requests[0].error_handler(_controller_refused()))
+    adverts.dispatched.append(lambda: adverts.requests[1].reply_handler())
+
+    assert bluez_setup.register_advert('hci7', settle_for_pairing=True)
+
+    assert len(adverts.requests) == 2
+    assert _advert_packet_bytes() <= 31
 
 
 def test_pairing_retries_a_rejected_payload_without_waiting_for_the_daemon(adverts):
