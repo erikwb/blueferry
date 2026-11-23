@@ -762,6 +762,24 @@ ModalScreen {
     height: 3;
 }
 
+#calls-audio {
+    height: auto;
+    margin-top: 1;
+}
+
+.calls-audio-row {
+    height: auto;
+}
+
+.calls-audio-label {
+    width: 14;
+    padding-top: 1;
+}
+
+.calls-audio-row Select {
+    width: 1fr;
+}
+
 #calls-suggestions {
     height: auto;
     max-height: 6;

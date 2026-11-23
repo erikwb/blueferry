@@ -118,6 +118,14 @@ class _Backend:
         self.requests.append(("find", query))
         return self.contacts.get(query, [])
 
+    def call_audio_devices(self) -> dict:
+        self.requests.append(("devices",))
+        return {"outputs": [{"name": "alsa_output.a50", "description": "A50 [b]Chat[/b]"}],
+                "inputs": []}
+
+    def set_call_audio_device_for_call(self, direction: str, name: str) -> None:
+        self.requests.append(("call_audio", direction, name))
+
 
 def _run(coroutine) -> None:
     loop = asyncio.new_event_loop()
@@ -488,6 +496,55 @@ def test_a_waiting_call_can_be_declined_while_another_is_active() -> None:
             screen.refresh_calls()
             await _until(pilot, lambda: not decline.display)
             assert str(screen.query_one("#calls-hangup", Button).label) == "Decline"
+
+    _run(scenario())
+
+
+def _audio_snapshot(audio, *calls):
+    snapshot = _snapshot(*calls)
+    return CallsSnapshot.from_dict({
+        "state": "ready", "calls": [call.to_dict() for call in snapshot.calls], "audio": audio,
+    })
+
+
+def test_running_call_shows_and_switches_its_audio_devices() -> None:
+    from blueferry.tui_call_audio import DeviceSelect
+
+    async def scenario() -> None:
+        backend = _Backend()
+        backend.snapshot = _snapshot(("voicecall01", "active", "Alice"))  # an older daemon
+        app = BlueFerryApp(TuiState(backend), monitor_factory=lambda: None)
+        async with app.run_test(size=(120, 50)) as pilot:
+            screen = await _open_calls(app, pilot)
+            assert not screen.query_one("#calls-audio").display
+            assert ("devices",) not in backend.requests
+
+            backend.snapshot = _audio_snapshot(
+                {"state": "ready",
+                 "output": {"stream": True, "description": "Built-in [i]Audio[/i]"},
+                 "input": {"stream": True, "description": "Webcam"}},
+                ("voicecall01", "active", "Alice"),
+            )
+            screen.refresh_calls()
+            await _until(pilot, lambda: ("devices",) in backend.requests)
+            speaker = screen.query_one("#calls-audio-output", DeviceSelect)
+            await _until(pilot, lambda: len(speaker.choices) == 2)
+            assert screen.query_one("#calls-audio").display
+            text = str(screen.query_one("#calls-audio-text", Static).render())
+            assert "Speaker: Built-in [i]Audio[/i]" in text
+            assert "Applies to this call only." in text
+            assert speaker.value == ""
+            await pilot.pause(0.2)
+            assert not [r for r in backend.requests if r[0] == "call_audio"]
+
+            speaker.value = "alsa_output.a50"
+            await _until(
+                pilot, lambda: ("call_audio", "output", "alsa_output.a50") in backend.requests,
+            )
+
+            backend.snapshot = _audio_snapshot({"state": "idle"})
+            screen.refresh_calls()
+            await _until(pilot, lambda: not screen.query_one("#calls-audio").display)
 
     _run(scenario())
 
