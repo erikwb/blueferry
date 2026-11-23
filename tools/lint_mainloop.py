@@ -68,6 +68,8 @@ ALLOWLIST: dict[tuple[str, str, str], str] = {
         "client-side backend check (cli/tui/ui); the daemon only uses installed_release",
     ("blueferry.bluetooth_capabilities", "compatibility", "sync-dbus"):
         "only called from pair_setup's CLI compatibility report",
+    ("blueferry.pair_setup", "bluez_support_status", "sync-dbus"):
+        "SetupClient capability probe on a client worker or CLI, never the daemon loop",
     ("blueferry.bluetooth_recovery", "BluezRecoveryAdapter._bus_id", "sync-dbus"): _WORKER,
     ("blueferry.bluetooth_recovery", "BluezRecoveryAdapter.cycle", "sync-dbus"): _WORKER,
     ("blueferry.bluetooth_recovery", "BluezRecoveryAdapter.restore", "sync-dbus"): _WORKER,
