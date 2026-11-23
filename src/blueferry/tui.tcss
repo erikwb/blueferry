@@ -521,6 +521,8 @@ ModalScreen {
 
 #calls-dialog {
     width: 90;
+    /* A ringing call next to a running one shows every row at once. */
+    overflow-y: auto;
 }
 
 #calls-dialog .dialog-actions Button {
@@ -762,6 +764,24 @@ ModalScreen {
     height: 3;
 }
 
+#calls-audio {
+    height: auto;
+    margin-top: 1;
+}
+
+.calls-audio-row {
+    height: auto;
+}
+
+.calls-audio-label {
+    width: 14;
+    padding-top: 1;
+}
+
+.calls-audio-row Select {
+    width: 1fr;
+}
+
 #calls-suggestions {
     height: auto;
     max-height: 6;
@@ -841,6 +861,53 @@ ModalScreen {
 #notifications-explanation {
     height: auto;
     color: #cbd5e1;
+}
+
+#calls-reply-row, #calls-mute-row {
+    height: auto;
+}
+
+#calls-mute-hint {
+    width: 1fr;
+    height: 3;
+    padding: 0 1;
+    content-align-vertical: middle;
+    color: #cbd5e1;
+}
+
+#calls-reply-dialog {
+    width: 72;
+}
+
+#calls-reply-choices {
+    height: auto;
+    max-height: 8;
+    background: #151f35;
+}
+
+#calls-reply-text {
+    height: 3;
+}
+
+#calls-reply-error {
+    height: auto;
+    color: #fca5a5;
+}
+
+#options-replies {
+    height: auto;
+    max-height: 7;
+    margin-top: 1;
+    background: #151f35;
+}
+
+#options-reply-text {
+    height: 3;
+    margin-top: 1;
+}
+
+#options-reply-actions Button {
+    margin-right: 1;
 }
 
 #notifications-list {

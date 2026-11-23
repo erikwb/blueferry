@@ -23,6 +23,7 @@ from blueferry.errors import (
     CALLS_DISABLED_HINT,
     CallsDisabledError,
     ConfirmationRequiredError,
+    DeclinedNotSentError,
     InvalidArgumentsError,
     NotFoundError,
     NotReadyError,
@@ -285,6 +286,8 @@ class CallControl(Protocol):
 
     def hangup_all(self, success: Success, failure: Failure) -> None: ...
 
+    def ringing_number(self, call_id: object) -> str: ...
+
     def send_tones(
         self, call_id: object, tones: object, success: Success, failure: Failure,
     ) -> None: ...
@@ -317,6 +320,8 @@ class CallAudioControl(Protocol):
 
     def set_for_call(self, direction: object, name: object) -> None: ...
 
+    def set_muted(self, muted: object) -> None: ...
+
 
 class PhoneAudioControl(Protocol):
     def snapshot(self) -> dict[str, object]: ...
@@ -336,6 +341,14 @@ class NotificationLog(Protocol):
     def clear(self) -> None: ...
 
 
+class QuickReplyControl(Protocol):
+    """Saved texts for declining a call (see ``blueferry.calls.quick_replies``)."""
+
+    def get(self) -> list[str]: ...
+
+    def set(self, values: object) -> list[str]: ...
+
+
 @dataclass(frozen=True, slots=True)
 class BackendDependencies:
     """Explicit optional capabilities supplied by the daemon composition root."""
@@ -343,6 +356,8 @@ class BackendDependencies:
     submit_obex: Callable[..., object] | None = None
     defer_mark_read: Callable[[str, Sequence[str]], None] | None = None
     on_sent: Callable[[str, str, str], None] | None = None
+    # Texts for declining a call with a message; only used while calls are on.
+    quick_replies: QuickReplyControl | None = None
     on_group_sent: Callable[..., None] | None = None
     sync_contacts: Callable[[Success, Failure], None] | None = None
     contacts: ContactIndex | None = None
@@ -1342,6 +1357,8 @@ class BackendOperations:
         if self.dependencies.notification_policy is not None:
             # Also the capability marker: daemons without click rules lack it.
             status["notification_open_map_revision"] = self._open_map_revision
+        if self.dependencies.quick_replies is not None and self._calls_on():
+            status["calls_quick_replies"] = self.dependencies.quick_replies.get()
         if self.dependencies.notification_apps is not None:
             # Also the capability marker for ListNotificationApps.
             status["notification_muted_app_count"] = (
@@ -2329,6 +2346,10 @@ class BackendOperations:
 
     # ---- optional phone calls -------------------------------------------
 
+    def _calls_on(self) -> bool:
+        calls = self.dependencies.calls
+        return calls is not None and bool(calls.enabled)
+
     def _call_control(self) -> CallControl:
         calls = self.dependencies.calls
         if calls is None or not calls.enabled:
@@ -2449,6 +2470,10 @@ class BackendOperations:
         """Use another speaker or microphone for the running call only."""
         self._call_audio().set_for_call(direction, name)
 
+    def set_call_muted(self, muted: bool) -> None:
+        """Mute or unmute this computer's microphone for the running call only."""
+        self._call_audio().set_muted(bool(muted))
+
     def dial(self, number: str, success: Success, failure: Failure) -> None:
         self._call_control().dial(number, success, failure)
 
@@ -2471,3 +2496,65 @@ class BackendOperations:
 
     def hold_and_answer_call(self, success: Success, failure: Failure) -> None:
         self._call_control().hold_and_answer(success, failure)
+
+    def _quick_replies(self) -> QuickReplyControl:
+        self._call_control()
+        replies = self.dependencies.quick_replies
+        if replies is None:
+            raise NotReadyError("declining with a message is unavailable in this backend")
+        return replies
+
+    def set_call_quick_replies(self, values: Sequence[object]) -> dict[str, Any]:
+        """Save the texts offered when declining a call; returns the status key."""
+        replies = self._quick_replies()
+        try:
+            saved = replies.set([str(value) for value in values])
+        except UnreadableSettingsError:
+            raise
+        except ValueError as error:
+            raise InvalidArgumentsError(str(error)) from error
+        except OSError as error:
+            log.error("could not save the quick replies: %s", error)
+            raise NotReadyError("could not save the quick replies") from error
+        return {"calls_quick_replies": saved}
+
+    def decline_with_message(
+        self, call_id: str, text: str, success: Success, failure: Failure,
+    ) -> None:
+        """Decline a ringing call over HFP, then text the caller over MAP.
+
+        Everything that can be checked is checked before the call is
+        declined, including an open MAP session and the OBEX worker. A
+        send that fails afterwards is reported as ``DeclinedNotSentError``;
+        the call stays declined.
+        """
+        self._quick_replies()
+        calls = self._call_control()
+        body = self._validate_body(text)
+        number = calls.ringing_number(call_id)
+        try:
+            recipient = validate_recipient(number)
+        except InvalidRecipient as error:
+            raise InvalidArgumentsError("the caller's number cannot receive messages") from error
+
+        def not_sent(error: Exception) -> None:
+            log.warning(
+                "declined a call, but the reply was not sent (%s)",
+                getattr(error, "dbus_suffix", type(error).__name__),
+            )
+            failure(DeclinedNotSentError(getattr(error, "cause", None) or error))
+
+        # MAP and the OBEX worker are checked before declining, so a reply
+        # that cannot even be queued leaves the call ringing.
+        self._require_map()
+        if self.dependencies.submit_obex is None:
+            raise NotReadyError("OBEX worker is unavailable")
+
+        def declined(_result: object = None) -> None:
+            log.info("declined a call with a %d-character reply", len(body))
+            try:
+                self._queue_send(recipient, body, success, not_sent)
+            except Exception as error:
+                not_sent(error)
+
+        calls.hangup(call_id, declined, failure)

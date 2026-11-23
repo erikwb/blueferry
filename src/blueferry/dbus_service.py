@@ -1020,6 +1020,37 @@ class MessagesService(StrictObject):
         )
 
     @dbus.service.method(
+        CALLS_IFACE, in_signature="ss", out_signature="", sender_keyword="sender",
+        async_callbacks=("reply_handler", "error_handler"),
+    )
+    def DeclineWithMessage(
+        self, call_id: str, text: str, reply_handler, error_handler, sender=None,
+    ) -> None:
+        """Decline a ringing call, then text the caller (counts as a send)."""
+        def invoke(success, failure) -> None:
+            # Declining is call control; the text is a message like Send.
+            self._caller_guard.authorize(sender, "send")
+            self.operations.decline_with_message(
+                str(call_id), str(text), lambda _result: success(), failure,
+            )
+
+        # Declining ends the call like Hangup, so it shares Hangup's bucket:
+        # a flood of tones or swaps never keeps a call from being declined.
+        self._call_control(sender, "calls-hangup", invoke, reply_handler, error_handler)
+
+    @dbus.service.method(
+        CALLS_IFACE, in_signature="as", out_signature="s", sender_keyword="sender"
+    )
+    def SetCallQuickReplies(self, replies, sender=None) -> str:
+        """Save the texts offered when declining a call with a message."""
+        return self._sync(lambda: self._authorized(
+            sender, "settings",
+            lambda: self._json_response(
+                self.operations.set_call_quick_replies([str(value) for value in replies])
+            ),
+        ))
+
+    @dbus.service.method(
         CALLS_IFACE, in_signature="", out_signature="", sender_keyword="sender",
         async_callbacks=("reply_handler", "error_handler"),
     )
@@ -1126,6 +1157,16 @@ class MessagesService(StrictObject):
         self._sync(lambda: self._authorized(
             sender, "calls-control",
             lambda: self.operations.set_call_audio_device_for_call(str(direction), str(name)),
+        ))
+
+    @dbus.service.method(
+        CALLS_IFACE, in_signature="b", out_signature="", sender_keyword="sender"
+    )
+    def SetCallMuted(self, muted: bool, sender=None) -> None:
+        """Mute or unmute this computer's microphone for the running call."""
+        self._sync(lambda: self._authorized(
+            sender, "calls-control",
+            lambda: self.operations.set_call_muted(bool(muted)),
         ))
 
     @dbus.service.signal(EVENTS_IFACE, signature="a{sv}")

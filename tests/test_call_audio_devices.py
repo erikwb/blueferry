@@ -581,3 +581,210 @@ def test_switching_calls_off_releases_the_remembered_targets() -> None:
     pipewire.dump = _dump(call=False)
     router.release()
     assert pipewire.commands == []
+
+
+# ---- muting the call microphone ---------------------------------------------
+
+MIC_STREAM = 104
+
+
+def _mic(muted=None, *, serial=1104, node_id=MIC_STREAM, **kwargs):
+    """A call dump whose microphone stream reports ``mute`` in its Props."""
+    objects = json.loads(_dump(**kwargs))
+    for item in objects:
+        if item.get("id") == MIC_STREAM and item.get("type") == audio_devices.NODE_TYPE:
+            item["id"] = node_id
+            item["info"]["props"]["object.serial"] = serial
+            if muted is not None:
+                # Real dumps list several Props entries; only one has "mute".
+                item["info"]["params"] = {"Props": [{"volume": 1.0}, {"mute": muted}]}
+    return json.dumps(objects)
+
+
+def _mute_commands(pipewire):
+    return [argv for argv in pipewire.commands if argv[0] == "pw-cli"]
+
+
+def test_parsing_reads_the_stream_mute_from_its_props() -> None:
+    graph = parse_dump(_mic(True))
+
+    assert graph.nodes[MIC_STREAM].muted is True
+    assert graph.nodes[103].muted is None
+    broken = json.loads(_dump())
+    broken[-3]["info"]["params"] = {"Props": "nonsense"}
+    assert all(node.muted is None for node in parse_dump(json.dumps(broken)).nodes.values())
+
+
+def test_mute_write_targets_only_the_call_microphone_stream() -> None:
+    write, serial = audio_devices.mute_write(parse_dump(_mic(False)), MAC, True, None)
+
+    assert serial == 1104
+    assert write.argv == ["pw-cli", "set-param", "104", "Props", "{ mute: true }"]
+    # Nothing to do: already in line, already settled, or no call stream.
+    assert audio_devices.mute_write(parse_dump(_mic(True)), MAC, True, None) == (None, 1104)
+    assert audio_devices.mute_write(parse_dump(_mic(False)), MAC, True, 1104) == (None, 1104)
+    assert audio_devices.mute_write(parse_dump(_dump(call=False)), MAC, True, None) == (None, None)
+    # A stream without Props counts as unmuted.
+    assert audio_devices.mute_write(parse_dump(_mic(None)), MAC, False, None) == (None, 1104)
+
+
+def test_muting_needs_a_call_and_a_boolean() -> None:
+    router, pipewire, _loop, _changes = _router()
+
+    with pytest.raises(NotReadyError):
+        router.set_muted(True)
+    router.calls_changed(True)
+    with pytest.raises(InvalidArgumentsError):
+        router.set_muted("yes")
+    assert _mute_commands(pipewire) == []
+
+
+def test_muting_writes_the_stream_after_checking_its_id() -> None:
+    router, pipewire, _loop, changes = _router(pipewire=FakePipeWire(_mic(False)))
+    router.calls_changed(True)
+    changes.clear()
+
+    router.set_muted(True)
+
+    assert _mute_commands(pipewire) == [
+        ["pw-cli", "set-param", "104", "Props", "{ mute: true }"],
+    ]
+    assert MIC_STREAM in pipewire.verified
+    assert router.call_audio()["muted"] is True and router.muted
+    assert changes  # the call view hears about it
+    # Settled: a later check does not write again, even if a mixer unmuted it.
+    pipewire.dump = _mic(False)
+    router._recheck()
+    assert len(_mute_commands(pipewire)) == 1
+
+
+def test_a_recycled_stream_id_is_never_muted() -> None:
+    pipewire = FakePipeWire(_mic(False))
+    router, pipewire, _loop, _changes = _router(pipewire=pipewire)
+    router.calls_changed(True)
+    pipewire.verify_dump = _mic(False, serial=4242)
+
+    router.set_muted(True)
+
+    assert _mute_commands(pipewire) == []
+
+
+def test_a_new_call_stream_gets_the_mute_again() -> None:
+    pipewire = FakePipeWire(_mic(False))
+    router, pipewire, _loop, _changes = _router(pipewire=pipewire)
+    router.calls_changed(True)
+    router.set_muted(True)
+
+    # The SCO link came back: a new stream with a new ID and serial.
+    pipewire.dump = _mic(False, serial=2104, node_id=204)
+    router._recheck()
+
+    assert _mute_commands(pipewire)[-1] == ["pw-cli", "set-param", "204", "Props", "{ mute: true }"]
+
+
+def test_the_mute_ends_with_the_call() -> None:
+    pipewire = FakePipeWire(_mic(False))
+    router, pipewire, _loop, _changes = _router(pipewire=pipewire)
+    router.calls_changed(True)
+    router.set_muted(True)
+    pipewire.dump = _mic(True)
+
+    router.calls_changed(False)
+
+    assert _mute_commands(pipewire)[-1] == ["pw-cli", "set-param", "104", "Props", "{ mute: false }"]
+    assert router.call_audio()["muted"] is False
+    with pytest.raises(NotReadyError):
+        router.set_muted(True)
+
+
+def test_a_mute_wireplumber_restored_is_lifted_on_the_next_call() -> None:
+    router, pipewire, _loop, _changes = _router(pipewire=FakePipeWire(_mic(True)))
+
+    router.calls_changed(True)
+
+    assert _mute_commands(pipewire) == [
+        ["pw-cli", "set-param", "104", "Props", "{ mute: false }"],
+    ]
+    assert router.call_audio()["muted"] is False
+
+
+def test_an_unmuted_call_end_runs_nothing() -> None:
+    router, pipewire, _loop, _changes = _router(pipewire=FakePipeWire(_mic(False)))
+    router.calls_changed(True)
+
+    router.calls_changed(False)
+
+    assert _mute_commands(pipewire) == []
+
+
+def test_a_toggle_during_a_check_leaves_the_stream_unsettled() -> None:
+    loop = Loop()
+    pipewire = FakePipeWire(_mic(False))
+    router, pipewire, loop, _changes = _router(pipewire=pipewire, loop=loop)
+    router.calls_changed(True)
+    loop.defer = True
+    router.set_muted(True)
+    router.set_muted(False)  # queued behind the running check
+    pipewire.dump = _mic(True)
+    while loop.deferred:
+        loop.deferred.pop(0)()
+
+    # The second toggle is applied, not lost to the first check's result.
+    assert _mute_commands(pipewire)[-1][-1] == "{ mute: false }"
+    assert router.call_audio()["muted"] is False
+
+
+def test_switching_calls_off_lifts_the_mute_too() -> None:
+    pipewire = FakePipeWire(_mic(False, targets={103: "62"}))
+    router, pipewire, _loop, _changes = _router(pipewire=pipewire)
+    router.calls_changed(True)
+    router.set_muted(True)
+    pipewire.dump = _mic(True, targets={103: "62"})
+
+    router.release()
+
+    assert ["pw-cli", "set-param", "104", "Props", "{ mute: false }"] in pipewire.commands
+
+
+def test_muting_needs_the_call_audio_and_working_tools() -> None:
+    router, pipewire, _loop, _changes = _router(pipewire=FakePipeWire(_dump(call=False)))
+    router.calls_changed(True)
+    with pytest.raises(NotReadyError, match="not there yet"):
+        router.set_muted(True)
+
+    broken, pipewire, _loop, _changes = _router(pipewire=FakePipeWire(_mic(False)))
+    pipewire.missing = True
+    broken.calls_changed(True)
+    with pytest.raises(NotReadyError, match="pw-cli"):
+        broken.set_muted(True)
+    assert _mute_commands(pipewire) == []
+
+
+def test_reported_mute_follows_pipewire_not_the_request() -> None:
+    pipewire = FakePipeWire(_mic(False))
+    router, pipewire, _loop, changes = _router(pipewire=pipewire)
+    router.calls_changed(True)
+    router.set_muted(True)
+    assert router.call_audio()["muted"] is True
+
+    # Unmuted by hand in a mixer: the call view says so.
+    pipewire.dump = _mic(False)
+    changes.clear()
+    router._recheck()
+    assert router.call_audio()["muted"] is False and changes
+
+
+def test_a_failed_mute_write_is_undone_and_announced() -> None:
+    pipewire = FakePipeWire(_mic(False))
+    router, pipewire, _loop, changes = _router(pipewire=pipewire)
+    router.calls_changed(True)
+    pipewire.metadata_error = True
+    changes.clear()
+
+    router.set_muted(True)
+
+    assert router.call_audio()["muted"] is False and router.muted is False
+    assert changes  # CallsChanged tells the clients
+    pipewire.metadata_error = False
+    router._recheck()
+    assert _mute_commands(pipewire) == []  # no retry loop

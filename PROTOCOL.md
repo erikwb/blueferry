@@ -304,6 +304,14 @@ validated before interpolation so CR/LF or vCard delimiters cannot inject an
 additional recipient. Message lines beginning with bMessage structural tokens
 also require MAP byte-stuffing.
 
+Declining a call with a message (`Calls1.DeclineWithMessage`) is HFP
+`Hangup` (oFono `VoiceCall.Hangup`, which declines a ringing call) followed by
+this same one-recipient `PushMessage` to the caller's `LineIdentification`.
+The two are not atomic: the phone has no "decline with message" command over
+HFP or MAP, so a failed send leaves the call declined. Callers without a
+number (withheld, unknown) cannot be texted and are refused before declining.
+Not tested on hardware yet.
+
 ## Group metadata side channel
 
 MAP delivers an incoming group message with only one sender and no participant
@@ -1238,6 +1246,17 @@ name) of the selected phone, not by profile name alone. The device lists
 leave out only that phone's nodes; other Bluetooth headsets can be chosen. The device actually
 used is the stream's link peer in `pw-dump`. Moving the streams with
 BlueFerry's router has not been tested on hardware yet.
+
+Muting this computer for a call writes `mute` into the `Props` of the
+`bluez_output.<MAC>` stream (`pw-cli set-param <id> Props '{ mute: true }'`,
+after the same `pw-dump <id>` check), so the microphone device and other
+recording applications are not affected. `pw-dump` shows the state in the
+stream's `info.params.Props` entry that has `mute`. WirePlumber's
+`node.stream.restore-props` (on by default) saves a stream's mute like its
+target, under the same kind of key, so a call that ended muted would start
+muted; BlueFerry therefore unmutes the stream when a muted call ends (if it
+still exists) and checks every new call stream once. Muting has not been
+tested on hardware yet.
 
 ## Pairing diagnostics
 

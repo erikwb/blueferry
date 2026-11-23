@@ -842,6 +842,28 @@ class BackendClient:
     def hangup_all_calls(self) -> None:
         self._calls_call("HangupAll", timeout=CALL_CONTROL_TIMEOUT_SEC)
 
+    def decline_call_with_message(self, call_id: str, text: str) -> None:
+        """Decline a ringing call and text the caller.
+
+        The decline comes first; a failed send afterwards raises a
+        ``BackendError`` whose text says that the call was declined.
+        """
+        self._calls_call(
+            "DeclineWithMessage", call_id, text,
+            # oFono's decline, then a send queued on the OBEX worker.
+            timeout=CALL_CONTROL_TIMEOUT_SEC + OBEX_CALL_TIMEOUT_SEC,
+        )
+
+    def set_call_quick_replies(self, replies: list[str]) -> dict:
+        """Save the texts offered when declining a call (at most 5)."""
+        try:
+            return decode_mapping(self._calls_call(
+                "SetCallQuickReplies", dbus.Array([str(item) for item in replies], signature="s"),
+                timeout=STATUS_CALL_TIMEOUT_SEC,
+            ))
+        except ValueError as error:
+            raise BackendError(str(error)) from error
+
     def send_call_tones(self, call_id: str, tones: str) -> None:
         self._calls_call("SendTones", call_id, tones, timeout=CALL_CONTROL_TIMEOUT_SEC)
 
@@ -906,4 +928,10 @@ class BackendClient:
         """Use another speaker or microphone until the running call ends."""
         self._calls_call(
             "SetCallAudioDeviceForCall", direction, name, timeout=STATUS_CALL_TIMEOUT_SEC,
+        )
+
+    def set_call_muted(self, muted: bool) -> None:
+        """Mute or unmute this computer's microphone for the running call."""
+        self._calls_call(
+            "SetCallMuted", dbus.Boolean(bool(muted)), timeout=STATUS_CALL_TIMEOUT_SEC,
         )

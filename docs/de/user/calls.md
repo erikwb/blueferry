@@ -156,6 +156,26 @@ Gerät noch einmal, falls die Anruf-Streams noch existieren. Bleiben die
 Anrufe aus und wirkt ein gemerktes Gerät noch, lösche diese Zeilen, solange
 WirePlumber nicht läuft.
 
+## Mikrofon im Anruf stummschalten
+
+**Stumm** in der Anrufansicht des Qt-, GTK- und Terminal-Clients (im
+Anruf-Panel des Terminals auch die Taste `m`, oder
+`blueferry calls mute on|off`) schaltet das Mikrofon dieses Computers nur für
+den laufenden Anruf stumm: Die Gegenseite hört nichts, andere Anwendungen
+nehmen weiter vom Mikrofon auf. Die Stummschaltung endet, wenn kein Anruf
+mehr übrig ist (bei einem gehaltenen oder wartenden Anruf gilt sie dort
+weiter); der nächste Anruf beginnt mit Ton. Bricht das Gesprächsaudio während
+des Anrufs ab und kommt wieder (eine neue Freisprech-Audioverbindung), bleibt
+es stumm. Der Knopf wirkt, sobald das Gesprächsaudio da ist (einige Sekunden
+nach dem Annehmen), und zeigt, was PipeWire meldet: Scheitert das
+Stummschalten, bleibt er auf **Stumm**.
+
+BlueFerry schaltet dazu den Audio-Stream des Anrufs in PipeWire mit `pw-cli`
+(Teil von PipeWire) stumm, nicht das Mikrofon selbst. Hebst du die
+Stummschaltung dieses Streams in einem Mixer von Hand auf, gilt das für den
+Rest des Anrufs. WirePlumber merkt sich eine Stummschaltung des Anruf-Streams
+eventuell; BlueFerry hebt sie zu Beginn des nächsten Anrufs auf.
+
 ## Telefon-Links
 
 Der Qt- und der GTK-Client können `tel:`- und `callto:`-Links öffnen, etwa
@@ -192,6 +212,40 @@ Auch die gedruckte Schreibweise `+41 (0)79 …` wird abgelehnt: Ob die
 eingeklammerte Null gewählt wird, hängt vom Nummerierungsplan ab. Verwende
 stattdessen eine eindeutige internationale Nummer, etwa `+4179…` für die
 Schweiz oder `+3906…` für Rom.
+
+## Ablehnen mit Nachricht
+
+Einen klingelnden Anruf kannst du mit einer Nachricht an den Anrufer
+ablehnen, etwa „Can't talk now. I'll call you back.“: Zuerst wird der Anruf
+am iPhone abgelehnt, dann geht der Text über die Nachrichten-Verbindung des
+iPhones (MAP) hinaus, genau wie eine in BlueFerry geschriebene Nachricht,
+und erscheint in der Unterhaltung.
+
+- Der Qt-, GTK- und Terminal-Client bieten in der Anrufansicht beim Klingeln
+  **Decline with message** an: eine gespeicherte Antwort wählen oder einen
+  eigenen Text schreiben.
+- Nur Anrufe mit Nummer bekommen diese Wahl; unterdrückte oder unbekannte
+  Anrufer lassen sich nur ablehnen.
+- Ohne Nachrichten-Verbindung wird der Anruf nicht abgelehnt, und BlueFerry
+  sagt warum. Scheitert das Senden erst nach dem Ablehnen, meldet BlueFerry
+  das; der Anruf bleibt abgelehnt. Ein eigener Text darf bis zu 1000 Zeichen
+  haben.
+- Die gespeicherten Antworten bearbeitest du in den Einstellungen unter
+  **Calls & Audio**: bis zu 5 Zeilen mit je höchstens 160 Zeichen. Bis du sie
+  änderst, stehen drei englische Antworten bereit (übersetzt, wo es eine
+  Übersetzung gibt); mit einer leeren Liste bleibt nur der eigene Text.
+
+```bash
+blueferry calls decline-with-message            # die erste gespeicherte Antwort
+blueferry calls decline-with-message --reply 2  # eine andere gespeicherte Antwort
+blueferry calls decline-with-message --text "Bin in einer Sitzung, rufe um 15 Uhr an"
+blueferry calls replies                         # gespeicherte Antworten zeigen
+blueferry calls replies set "Bin unterwegs" "Rufe später zurück"
+blueferry calls replies clear                   # nur eigener Text
+```
+
+Die Funktion gibt es nur, solange Anrufe eingeschaltet sind; einen eigenen
+Schalter braucht sie nicht.
 
 ## Grenzen
 

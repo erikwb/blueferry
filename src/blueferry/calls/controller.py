@@ -1249,6 +1249,21 @@ class CallController:
         record = self._find(call_id)
         self._control(record.path, VOICE_CALL_IFACE, "Hangup", "", (), success, failure)
 
+    def ringing_number(self, call_id: object) -> str:
+        """The caller's number of a ringing call, for a reply by message.
+
+        Refuses calls that do not ring and callers without a number
+        (withheld or unknown), so nothing is declined that cannot be
+        answered with a text.
+        """
+        self._require_ready()
+        record = self._find(call_id)
+        if not record.ringing:
+            raise InvalidArgumentsError("call is not ringing")
+        if not record.number:
+            raise InvalidArgumentsError("the caller's number is unknown")
+        return record.number
+
     def hangup_all(self, success: Success, failure: Failure) -> None:
         modem = self._require_ready()
         self._control(modem, VOICE_CALL_MANAGER_IFACE, "HangupAll", "", (), success, failure)

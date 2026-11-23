@@ -144,6 +144,18 @@ class _Client(_TetherClient, Protocol):
 
     def send_call_tones(self, call_id: str, tones: str) -> None: ...
 
+    def call_audio_devices(self) -> dict: ...
+
+    def set_call_audio_device(self, direction: str, name: str) -> dict: ...
+
+    def set_call_quick_replies(self, replies: list[str]) -> dict: ...
+
+    def set_call_audio_device_for_call(self, direction: str, name: str) -> None: ...
+
+    def set_call_muted(self, muted: bool) -> None: ...
+
+    def decline_call_with_message(self, call_id: str, text: str) -> None: ...
+
     # Contact matches for the calls panel's number field.
     def find_contacts(self, query: str) -> list[tuple[str, str]]: ...
 
@@ -1765,7 +1777,7 @@ class BlueFerryApp(App[None]):
             self._open_contacts,
         )
         yield SystemCommand(
-            _("Phone Calls"), _("Dial, answer, hold and hang up (c)"), self._open_calls,
+            _("Phone Calls"), _("Dial, answer, hold, mute (m) and hang up (c)"), self._open_calls,
         )
         yield SystemCommand(
             _("Recent Calls"), _("The iPhone's recent calls (h)"), self._open_recent_calls,

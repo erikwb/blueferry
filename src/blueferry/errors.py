@@ -93,6 +93,31 @@ class SendOutcomeUnknownError(ObexError):
         )
 
 
+class DeclinedNotSentError(BlueFerryError):
+    """``DeclineWithMessage`` declined the call, but the text was not sent.
+
+    The call stays declined; ``outcome_unknown`` is True when the send may
+    still have reached the phone (check Messages before sending again).
+    """
+
+    dbus_suffix = "DeclinedNotSent"
+
+    def __init__(self, cause: Exception) -> None:
+        self.outcome_unknown = isinstance(cause, SendOutcomeUnknownError)
+        if self.outcome_unknown:
+            message = (
+                "The call was declined, but the message could not be confirmed. "
+                "Check Messages on the iPhone before sending it again."
+            )
+        else:
+            message = (
+                "The call was declined, but the message was not sent: "
+                f"{str(cause) or cause.__class__.__name__}"
+            )
+        super().__init__(message)
+        self.cause = cause
+
+
 class CommandError(BlueFerryError):
     """A fixed external command could not be executed successfully."""
 

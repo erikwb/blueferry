@@ -462,6 +462,22 @@
       <annotation name="io.weirdware.BlueFerry.Errors"
                   value="CallsUnavailable,CallFailed"/>
     </method>
+    <method name="DeclineWithMessage">
+      <annotation name="org.freedesktop.DBus.Description"
+                  value="Decline a ringing call over HFP, then send text to the caller's number over MAP like Send; refused for callers without a number. DeclinedNotSent means the call was declined but the text was not sent"/>
+      <arg name="call_id" type="s" direction="in"/>
+      <arg name="text" type="s" direction="in"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="InvalidArgs,NotFound,NotReady,CallsUnavailable,CallFailed,DeclinedNotSent"/>
+    </method>
+    <method name="SetCallQuickReplies">
+      <annotation name="org.freedesktop.DBus.Description"
+                  value="Save up to 5 one-line texts (160 characters each) offered when declining a call with a message; an empty list leaves only a typed text; returns the calls_quick_replies GetStatus key as JSON"/>
+      <arg name="replies" type="as" direction="in"/>
+      <arg name="status_json" type="s" direction="out"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="InvalidArgs,NotReady"/>
+    </method>
     <method name="HoldAndAnswer">
       <annotation name="io.weirdware.BlueFerry.Errors"
                   value="InvalidArgs,CallsUnavailable,CallFailed"/>
@@ -487,6 +503,13 @@
                   value="Use another device until no call is left: direction output or input, a node.name or empty for the system default; the result shows in ListCalls audio"/>
       <arg name="direction" type="s" direction="in"/>
       <arg name="name" type="s" direction="in"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="InvalidArgs,NotReady"/>
+    </method>
+    <method name="SetCallMuted">
+      <annotation name="org.freedesktop.DBus.Description"
+                  value="Mute or unmute this computer's microphone for the running call only (the phone's call stream in PipeWire, not the microphone itself); ends when no call is left; NotReady before the call audio exists; the state PipeWire shows is in ListCalls audio.muted"/>
+      <arg name="muted" type="b" direction="in"/>
       <annotation name="io.weirdware.BlueFerry.Errors"
                   value="InvalidArgs,NotReady"/>
     </method>

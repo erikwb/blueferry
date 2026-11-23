@@ -68,6 +68,9 @@ class FakeClient:
     def set_call_audio_device_for_call(self, direction, name):
         self._record("audio_call", direction, name)
 
+    def set_call_muted(self, muted):
+        self._record("mute", muted)
+
 
 def _call(call_id="voicecall01", state="incoming", **extra):
     return {"call_id": call_id, "state": state, "direction": "incoming",
@@ -228,3 +231,36 @@ def test_audio_failures_exit_with_the_backend_error(monkeypatch) -> None:
 
     assert result.exit_code == 3
     assert "no call is in progress" in result.output
+
+
+def test_mute_on_and_off_for_the_running_call(monkeypatch) -> None:
+    client = FakeClient()
+
+    muted = _invoke(monkeypatch, client, "mute", "on")
+    unmuted = _invoke(monkeypatch, client, "mute", "OFF")
+    wrong = _invoke(monkeypatch, client, "mute", "maybe")
+
+    assert muted.exit_code == unmuted.exit_code == 0
+    assert "Microphone muted for this call." in muted.output
+    assert "Microphone unmuted." in unmuted.output
+    assert wrong.exit_code == 2
+    assert client.requests == [("mute", True), ("mute", False)]
+
+
+def test_mute_without_a_call_reports_the_backend_error(monkeypatch) -> None:
+    result = _invoke(monkeypatch, FakeClient(error="no call is in progress"), "mute", "on")
+
+    assert result.exit_code == 3 and "no call is in progress" in result.output
+
+
+def test_audio_shows_a_muted_microphone(monkeypatch) -> None:
+    client = FakeClient([_call(state="active")])
+    client.snapshot = CallsSnapshot.from_dict({"state": "ready", "calls": [], "audio": {
+        "state": "ready", "muted": True,
+        "output": {"stream": True, "description": "Built-in Audio"},
+        "input": {"stream": True, "description": "A50 Chat"},
+    }})
+
+    result = _invoke(monkeypatch, client, "audio")
+
+    assert "Microphone: A50 Chat (muted for this call)" in result.output
