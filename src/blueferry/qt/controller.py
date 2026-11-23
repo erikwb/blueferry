@@ -13,6 +13,7 @@ from PySide6.QtCore import (
     QObject,
     QThreadPool,
     QTimer,
+    QUrl,
     Signal,
     Slot,
 )
@@ -1382,7 +1383,6 @@ class BridgeController(QObject):
 
     @Slot()
     def filePairingIssue(self) -> None:
-        from PySide6.QtCore import QUrl
         from PySide6.QtGui import QDesktopServices
 
         QDesktopServices.openUrl(QUrl(issue_url(self._pairing_issue_report or None)))
@@ -1502,6 +1502,12 @@ class BridgeController(QObject):
 
     def _set_now_playing(self, value: object) -> None:
         snapshot = dict(value) if isinstance(value, dict) else {}
+        # AVRCP cover art: an absolute path of an owner-only cache file.
+        # QML gets a proper file URL (spaces, non-ASCII home directories).
+        cover = snapshot.pop("cover", None)
+        if isinstance(cover, str) and cover.startswith("/") and "\0" not in cover:
+            snapshot["cover_url"] = QUrl.fromLocalFile(cover).toString(
+                QUrl.ComponentFormattingOption.FullyEncoded)
         if snapshot != self._now_playing:
             self._now_playing = snapshot
             self.nowPlayingChanged.emit()
