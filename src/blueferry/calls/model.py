@@ -331,6 +331,19 @@ def parse_call_state(value: object) -> str:
     return state if state in CALL_STATES else UNKNOWN_STATE
 
 
+def parse_start_time(value: object) -> float | None:
+    """Epoch seconds from oFono's optional VoiceCall ``StartTime``.
+
+    oFono formats it as ISO 8601 with a numeric offset once the call is
+    active. Anything else, including a time without an offset, is ignored.
+    """
+    text = remote_text(value, limit=40)
+    try:
+        return datetime.strptime(text, "%Y-%m-%dT%H:%M:%S%z").timestamp()
+    except (ValueError, OverflowError):
+        return None
+
+
 def parse_line_identification(value: object) -> str:
     """Keep a number only when it is phone-shaped; withheld IDs become ``""``."""
     text = remote_text(value, limit=64)
@@ -352,6 +365,9 @@ class CallRecord:
     multiparty: bool = False
     emergency: bool = False
     first_seen: str = field(default_factory=_now_iso)
+    # When the call became active (oFono's StartTime), if oFono reported it.
+    # Local only: desktop notifications show it; it is not part of the wire.
+    start_time: float | None = None
 
     @property
     def ringing(self) -> bool:
@@ -374,6 +390,8 @@ class CallRecord:
             return replace(self, multiparty=_bool(value))
         if key == "Emergency":
             return replace(self, emergency=_bool(value))
+        if key == "StartTime":
+            return replace(self, start_time=parse_start_time(value))
         return self
 
     def to_wire(self) -> dict[str, object]:
@@ -407,7 +425,7 @@ def parse_call(
         state=state,
         direction=direction or direction_for_state(state),
     )
-    for key in ("LineIdentification", "Name", "Multiparty", "Emergency"):
+    for key in ("LineIdentification", "Name", "Multiparty", "Emergency", "StartTime"):
         if key in properties:
             record = record.with_property(key, properties[key])
     return record

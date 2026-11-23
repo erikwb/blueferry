@@ -26,6 +26,13 @@ flowchart LR
   link is connected, and brings it online (iOS does not do this by itself).
 - Shows a desktop popup for an incoming call with **Answer** and
   **Decline**. It closes itself when the call stops ringing.
+- While a call is in progress (answered here or on the iPhone, or an
+  outgoing call once connected), a lasting notification shows **Call with**
+  the caller, the start time ("since 15:14"), and **Hang up**. On hold it
+  says **On hold**. Closing the notification never ends the call, and it
+  stays closed until the call is put on hold or resumed. It goes away when
+  the call ends. With `BLUEFERRY_SHOW_NOTIFICATION_CONTENT=false` it shows no
+  caller; switching to **No notifications** closes open call popups at once.
 - The Qt and GTK clients show running calls as cards on their **Calls**
   tab (answer, hold/resume, hang up and, while a call is active, keypad
   tones: each dial pad key and each 0-9, `*`, `#` typed outside a text
