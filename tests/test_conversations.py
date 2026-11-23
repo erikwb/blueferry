@@ -341,8 +341,10 @@ def test_backend_error_remains_visible_until_both_refreshes_recover():
 
 def test_gtk_message_composer_sends_on_enter_and_keeps_shift_enter() -> None:
     submitted = []
+    newlines = []
     composer = SimpleNamespace(
         _on_submit=lambda widget: submitted.append(widget),
+        _insert_newline=lambda: newlines.append(True),
     )
 
     handled = conversations.MessageComposer._key_pressed(
@@ -363,6 +365,92 @@ def test_gtk_message_composer_sends_on_enter_and_keeps_shift_enter() -> None:
     assert handled is True
     assert shift_handled is False
     assert submitted == [composer]
+    assert newlines == []
+
+
+def test_gtk_message_composer_modifier_enter_inserts_newline_without_sending() -> None:
+    submitted = []
+    newlines = []
+    composer = SimpleNamespace(
+        _on_submit=lambda widget: submitted.append(widget),
+        _insert_newline=lambda: newlines.append(True),
+    )
+    Gdk = conversations.Gdk
+
+    for keyval, state in (
+        (Gdk.KEY_Return, Gdk.ModifierType.CONTROL_MASK),
+        (Gdk.KEY_Return, Gdk.ModifierType.ALT_MASK),
+        (Gdk.KEY_KP_Enter, Gdk.ModifierType.CONTROL_MASK),
+        (Gdk.KEY_ISO_Enter, Gdk.ModifierType.SHIFT_MASK),
+    ):
+        assert conversations.MessageComposer._key_pressed(
+            composer, None, keyval, 0, state
+        ) is True
+
+    assert len(newlines) == 4
+    assert submitted == []
+
+    # Super/Meta+Enter never accidentally submits.
+    for state in (Gdk.ModifierType.SUPER_MASK, Gdk.ModifierType.META_MASK):
+        assert conversations.MessageComposer._key_pressed(
+            composer, None, Gdk.KEY_Return, 0, state
+        ) is False
+    assert submitted == []
+
+    # Bare Enter (Return, KP_Enter, ISO_Enter) submits with zero modifiers or CapsLock.
+    for keyval in (Gdk.KEY_Return, Gdk.KEY_KP_Enter, Gdk.KEY_ISO_Enter):
+        for state in (Gdk.ModifierType(0), Gdk.ModifierType.LOCK_MASK):
+            submitted.clear()
+            assert (
+                conversations.MessageComposer._key_pressed(
+                    composer, None, keyval, 0, state
+                )
+                is True
+            )
+            assert submitted == [composer]
+
+
+def test_gtk_message_composer_insert_newline_replaces_selection() -> None:
+    events: list[object] = []
+
+    class FakeBuffer:
+        def begin_user_action(self) -> None:
+            events.append("begin")
+
+        def delete_selection(self, interactive: bool, default_editable: bool) -> bool:
+            events.append(("delete_selection", interactive, default_editable))
+            return True
+
+        def insert_interactive_at_cursor(
+            self, text: str, length: int, default_editable: bool
+        ) -> bool:
+            events.append(("insert", text, length, default_editable))
+            return True
+
+        def end_user_action(self) -> None:
+            events.append("end")
+
+        def get_insert(self) -> str:
+            return "insert-mark"
+
+    buf = FakeBuffer()
+    scrolled: list[object] = []
+    composer = SimpleNamespace(
+        _view=SimpleNamespace(
+            get_buffer=lambda: buf,
+            scroll_mark_onscreen=lambda mark: scrolled.append(mark),
+        )
+    )
+
+    conversations.MessageComposer._insert_newline(composer)
+
+    assert events == [
+        "begin",
+        ("delete_selection", True, True),
+        ("insert", "\n", -1, True),
+        "end",
+    ]
+    assert scrolled == ["insert-mark"]
 
 
 def test_gtk_message_composer_placeholder_tracks_empty_buffer() -> None:
