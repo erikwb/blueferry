@@ -29,6 +29,16 @@ from blueferry.ui.status_presenter import (
 from blueferry.ui.util import format_ts
 
 _ELLIPSIZE_END = Pango.EllipsizeMode.END
+_ENTER_KEYS = (Gdk.KEY_Return, Gdk.KEY_KP_Enter, Gdk.KEY_ISO_Enter)
+_EXPLICIT_NEWLINE_MODIFIERS = (
+    Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.ALT_MASK
+)
+_SUBMIT_BLOCKING_MODIFIERS = (
+    Gdk.ModifierType.SHIFT_MASK
+    | _EXPLICIT_NEWLINE_MODIFIERS
+    | Gdk.ModifierType.SUPER_MASK
+    | Gdk.ModifierType.META_MASK
+)
 
 
 class MessageComposer(Gtk.ScrolledWindow):
@@ -73,12 +83,31 @@ class MessageComposer(Gtk.ScrolledWindow):
         self._placeholder.set_visible(buffer.get_char_count() == 0)
         self.queue_resize()
 
+    def _insert_newline(self) -> None:
+        buffer = self._view.get_buffer()
+        buffer.begin_user_action()
+        try:
+            buffer.delete_selection(True, True)
+            buffer.insert_interactive_at_cursor("\n", -1, True)
+        finally:
+            buffer.end_user_action()
+        self._view.scroll_mark_onscreen(buffer.get_insert())
+
     def _key_pressed(self, _controller, keyval, _keycode, state) -> bool:
-        enter = keyval in (Gdk.KEY_Return, Gdk.KEY_KP_Enter)
-        if enter and not state & Gdk.ModifierType.SHIFT_MASK:
-            self._on_submit(self)
+        if keyval not in _ENTER_KEYS:
+            return False
+        if state & _EXPLICIT_NEWLINE_MODIFIERS:
+            self._insert_newline()
             return True
-        return False
+        if state & Gdk.ModifierType.SHIFT_MASK:
+            if keyval == Gdk.KEY_ISO_Enter:
+                self._insert_newline()
+                return True
+            return False
+        if state & _SUBMIT_BLOCKING_MODIFIERS:
+            return False
+        self._on_submit(self)
+        return True
 
     def connect_changed(self, callback) -> int:
         return self._view.get_buffer().connect("changed", callback)
