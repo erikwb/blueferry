@@ -213,12 +213,19 @@ def _exercise_gtk_activation():
             calls.append(("token", token))
             super().set_startup_id(token)
 
-        def open_message(self, handle):
+        def open_message(self, handle, draft=""):
             calls.append(("message", handle))
             self.present()
 
         def present_initial_setup(self):
             calls.append(("setup", ""))
+
+    class FakeUiState:
+        def __init__(self, _runner=None, _path=None):
+            pass
+
+        def load(self, done):
+            done({})
 
     def request_existing():
         try:
@@ -234,7 +241,12 @@ def _exercise_gtk_activation():
 
     with (
         patch.object(app_module, "MainWindow", Window),
-        patch.object(app_module, "DaemonClient", lambda: SimpleNamespace(stop=lambda: None)),
+        patch.object(
+            app_module,
+            "DaemonClient",
+            lambda: SimpleNamespace(stop=lambda: None, task_runner=lambda _name: None),
+        ),
+        patch.object(app_module, "UiState", FakeUiState),
         patch.dict(os.environ, {"XDG_ACTIVATION_TOKEN": "cold-token"}),
     ):
         app = app_module.BlueFerryApp()
