@@ -191,6 +191,13 @@
   characteristic itself, and a plugin `Battery1` that survives an LE
   reconnect unchanged is checked against it
   ([#280](https://github.com/erikwb/blueferry/issues/280)).
+- Register the ANCS advertisement on controllers that refuse the full
+  40-byte payload with `Failed to register advertisement` (MGMT `Invalid
+  Parameters`), such as the Intel Wireless-AC 9560. After that refusal the
+  next attempt sends the compact payload, once per BlueZ owner. If the
+  controller refuses the compact payload too, BlueFerry goes back to the
+  full one and keeps retrying it as before
+  ([#431](https://github.com/erikwb/blueferry/issues/431)).
 
 ## [0.9.1](https://github.com/erikwb/blueferry/releases/tag/v0.9.1) - 2026-10-30
 

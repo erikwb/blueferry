@@ -349,12 +349,20 @@ def set_cod(
 
 # ---- BLE advertisement (SolicitUUIDs = ANCS) ----------------------------
 
-# Adapters on which BlueZ rejected the full advertisement. A legacy
-# advertising packet carries 31 bytes: flags and tx-power take 3 each, the
-# 128-bit solicitation 18, and the manufacturer and service payloads 8 each.
-# Controllers with extended advertising fit all 40; the others fit only
-# flags, solicitation and manufacturer data.
+# Adapters that get the compact advertisement. A legacy advertising packet
+# carries 31 bytes: flags and tx-power take 3 each, the 128-bit solicitation
+# 18, and the manufacturer and service payloads 8 each. Controllers with
+# extended advertising fit all 40; the others fit only flags, solicitation
+# and manufacturer data.
 _compact_advert_adapters: set[str] = set()
+# Adapters whose controller refused the full advertisement. Some controllers
+# answer an over-long legacy advertisement that way (#431), but so does any
+# other controller failure, so these get one compact attempt per BlueZ owner.
+_controller_refused_adapters: set[str] = set()
+# Of those, the adapters whose compact advertisement has not registered yet.
+# If the controller refuses it too, the length was not the problem and the
+# adapter goes back to the full advertisement.
+_compact_trial_adapters: set[str] = set()
 
 
 def _advert_payload_rejected(error: dbus.exceptions.DBusException) -> bool:
@@ -366,6 +374,15 @@ def _advert_payload_rejected(error: dbus.exceptions.DBusException) -> bool:
     return (
         error.get_dbus_name() == "org.bluez.Error.Failed"
         and "parse advertisement" in (error.get_dbus_message() or "").casefold()
+    )
+
+
+def _advert_controller_refused(error: dbus.exceptions.DBusException) -> bool:
+    """Whether BlueZ passed the advertisement on and the controller refused it."""
+    return (
+        error.get_dbus_name() == "org.bluez.Error.Failed"
+        and "failed to register advertisement"
+        in (error.get_dbus_message() or "").casefold()
     )
 
 
@@ -428,6 +445,8 @@ class _AncsAdvert(StrictObject):
         self.pending = False
         self.registered = True
         self.request = None
+        if self.compact:
+            _compact_trial_adapters.discard(self.adapter)
         log.info("BLE advert registered: %s", self.path)
 
     def _failed(self, error: dbus.exceptions.DBusException) -> None:
@@ -442,6 +461,31 @@ class _AncsAdvert(StrictObject):
                 self.adapter,
             )
             _compact_advert_adapters.add(self.adapter)
+        elif (
+            not self.compact
+            and _advert_controller_refused(error)
+            and self.adapter not in _controller_refused_adapters
+        ):
+            log.info(
+                "the controller refused the ANCS advertisement on %s; "
+                "trying once without its optional fields",
+                self.adapter,
+            )
+            _controller_refused_adapters.add(self.adapter)
+            _compact_trial_adapters.add(self.adapter)
+            _compact_advert_adapters.add(self.adapter)
+        elif (
+            self.compact
+            and self.adapter in _compact_trial_adapters
+            and _advert_controller_refused(error)
+        ):
+            log.info(
+                "the controller refused the compact ANCS advertisement on %s "
+                "too; going back to the full one",
+                self.adapter,
+            )
+            _compact_trial_adapters.discard(self.adapter)
+            _compact_advert_adapters.discard(self.adapter)
         # NoReply and AlreadyExists are not activation proof. Retire this
         # unique path so an unresolved request cannot poison future retries.
         self.retire()
@@ -533,6 +577,8 @@ def forget_advert_registration() -> None:
     global _advert_instance
     # A replacement bluetoothd gets the full advertisement first again.
     _compact_advert_adapters.clear()
+    _controller_refused_adapters.clear()
+    _compact_trial_adapters.clear()
     previous, _advert_instance = _advert_instance, None
     if previous is not None:
         previous.retire(unregister=False)
