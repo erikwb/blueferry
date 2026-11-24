@@ -65,6 +65,8 @@ Depends:
  gir1.2-gtk-4.0,
  python3-gi,
  webp-pixbuf-loader,
+Recommends:
+ gir1.2-gtk4layershell-1.0,
 Description: GTK4/libadwaita client for BlueFerry
  This package contains BlueFerry's GTK4 graphical client for GNOME and other
  GTK-based desktops.

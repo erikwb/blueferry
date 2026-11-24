@@ -19,6 +19,7 @@ from blueferry.models import BackendStatus
 from blueferry.onboarding import OnboardingState, ancs_unavailable_detail
 from blueferry.phone_audio_view import phone_audio
 from blueferry.proximity_lock import clamp_grace
+from blueferry.quick_reply_state import QUICK_REPLY
 from blueferry.quirks_report import issue_report, issue_url
 from blueferry.reconnect_view import ManualReconnect, reconnect_view
 from blueferry.setup_client import (
@@ -48,12 +49,14 @@ from blueferry.ui.status_presenter import (
     map_connection_refused_message,
     tether_controls,
 )
+from blueferry.ui.ui_state import UiState
 
 
 class SettingsDialog(Adw.PreferencesDialog):
     def __init__(
         self, client, toast=None, *, doctor_runner=None, timer=None,
         plugin_settings: ModelFactory | None = None,
+        ui_state: UiState | None = None,
     ) -> None:
         super().__init__(
             title=_("Settings"), search_enabled=True, content_width=680, content_height=640,
@@ -441,6 +444,18 @@ class SettingsDialog(Adw.PreferencesDialog):
         content_group.add(self.features.row(
             "mark_read_on_dismiss", _("Mark Read When a Popup Is Dismissed"),
         ))
+        # This window's own preference (gtk-ui.json), not a daemon feature.
+        self._ui_state = ui_state
+        self._applying_quick_reply = False
+        self.quick_reply_row = Adw.SwitchRow(
+            title=_("Quick Reply from Message Popups"),
+            subtitle=_("Clicking a message popup opens a small reply box instead of BlueFerry"),
+            use_markup=False, visible=ui_state is not None,
+        )
+        content_group.add(self.quick_reply_row)
+        if ui_state is not None:
+            self.quick_reply_row.connect("notify::active", self._quick_reply_toggled)
+            ui_state.load(self._quick_reply_loaded)
         history_group = Adw.PreferencesGroup(title=_("History"))
         history_group.add(self.features.row(
             "notification_history",
@@ -1701,6 +1716,18 @@ class SettingsDialog(Adw.PreferencesDialog):
         self._mirror_removals_row.set_sensitive(
             reachable and not self._mirror_removals_choice.saving
         )
+
+    def _quick_reply_loaded(self, values: dict) -> None:
+        self._applying_quick_reply = True
+        try:
+            self.quick_reply_row.set_active(values.get(QUICK_REPLY) is True)
+        finally:
+            self._applying_quick_reply = False
+
+    def _quick_reply_toggled(self, row, _property) -> None:
+        if self._applying_quick_reply or self._ui_state is None:
+            return
+        self._ui_state.save(**{QUICK_REPLY: row.get_active()})
 
     def _mirror_removals_changed(self, row, _property) -> None:
         if self._applying_mirror_removals:

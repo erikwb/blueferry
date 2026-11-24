@@ -70,7 +70,8 @@ class MainWindow(Adw.ApplicationWindow):
         self._toasts = Adw.ToastOverlay()
         self._configured = SetupClient().configuration().configured
         self._initial_setup_pending = not self._configured
-        self.settings = SettingsDialog(client)
+        self._ui_state = ui_state or UiState(client.task_runner("ui-state"))
+        self.settings = SettingsDialog(client, ui_state=self._ui_state)
 
         self.stack = Adw.ViewStack(vexpand=True)
         self.messages = ConversationsPage(client, self.toast)
@@ -153,7 +154,6 @@ class MainWindow(Adw.ApplicationWindow):
         self.extras_button.connect("toggled", self._extras_toggled)
         self.phone_card.append(self.extras_button)
         # The unfolded state is remembered; new card items unfold it too.
-        self._ui_state = ui_state or UiState(client.task_runner("ui-state"))
         self._ui_state.load(self._ui_state_loaded)
         self._plugin_set: tuple | None = None
         self.settings.plugins.add_listener(self._plugins_changed)
@@ -380,11 +380,11 @@ class MainWindow(Adw.ApplicationWindow):
     def _on_open_message_requested(self, _client, handle: str) -> None:
         self.open_message(handle)
 
-    def open_message(self, handle: str) -> None:
+    def open_message(self, handle: str, draft: str = "") -> None:
         self.settings.close()
         self.show_tab("messages")
         self.present()
-        self.messages.open_message(handle)
+        self.messages.open_message(handle, draft)
 
     def request_dial(self, link: str) -> None:
         """Confirm a clicked phone link; only the Call response dials."""
