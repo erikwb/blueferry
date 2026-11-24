@@ -22,6 +22,10 @@ Rectangle {
   property var features: ({})
   property var featurePending: ({})
   property var doctor: ({})
+  // The bridge's call_audio_view.settings_view (speaker and microphone).
+  property var callAudio: ({})
+  readonly property bool callAudioShown: root.status.calls_audio_output !== undefined
+    && root.callAudio.supported === true
   property var notificationList: ({})
   // The bridge's refusal of the last pin request (shared wording).
   property string notificationPinError: ""
@@ -876,6 +880,58 @@ Rectangle {
           Layout.fillWidth: true
           wrapMode: Text.Wrap
           text: "Experimental. While this is on, the iPhone's hands-free link stays connected to this computer, so calls can ring and be answered here and their audio plays here. Music stays on the iPhone. Working calls also need oFono set as the hands-free backend and BlueZ's own HFP plugin disabled; see \"Phone calls\" in the BlueFerry documentation. Make emergency calls on the iPhone itself."
+        }
+        // Speaker and microphone for calls; only while calls are on and the
+        // daemon reports the saved choices. Rows and wording come from the
+        // bridge (call_audio_view); the panel has no running-call view.
+        FerrySectionLabel {
+          ferryTheme: root.theme
+          visible: root.callAudioShown
+          text: "Call speaker and microphone"
+        }
+        Repeater {
+          model: root.callAudioShown ? (root.callAudio.rows || []) : []
+          delegate: ColumnLayout {
+            id: callAudioRow
+            required property var modelData
+            Layout.fillWidth: true
+            spacing: root.theme.scaled(4)
+            FerryLabel {
+              ferryTheme: root.theme
+              text: callAudioRow.modelData.label || ""
+              textFormat: Text.PlainText
+            }
+            FerryComboBox {
+              id: callAudioCombo
+              objectName: "callAudioCombo_" + (callAudioRow.modelData.direction || "")
+              ferryTheme: root.theme
+              Layout.fillWidth: true
+              model: callAudioRow.modelData.options || []
+              textRole: "label"
+              currentIndex: callAudioRow.modelData.index ?? 0
+              enabled: root.setup.configured && !root.busy.callAudio
+              Accessible.name: callAudioRow.modelData.label || ""
+              onActivated: index => {
+                const choice = (callAudioRow.modelData.options || [])[index]
+                if (choice)
+                  root.operationRequested("set_call_audio_device", {
+                    direction: callAudioRow.modelData.direction, name: choice.value
+                  });
+                callAudioCombo.currentIndex = Qt.binding(function() {
+                  return callAudioRow.modelData.index ?? 0
+                });
+              }
+            }
+          }
+        }
+        FerryLabel {
+          objectName: "callAudioHint"
+          ferryTheme: root.theme
+          visible: root.callAudioShown
+          Layout.fillWidth: true
+          wrapMode: Text.Wrap
+          textFormat: Text.PlainText
+          text: root.callAudio.hint || ""
         }
         // Only daemons that report the call-history keys support the settings.
         FerrySectionLabel {

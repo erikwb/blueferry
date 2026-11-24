@@ -73,6 +73,17 @@ ShellRoot {
   property bool syncContactsBusy: false
   property string contactsSyncNotice: ""
   property var doctor: ({})
+  // Speaker and microphone for calls: the bridge's settings rows, read
+  // when Settings opens while the daemon offers the choice.
+  property var callAudio: ({})
+  property bool callAudioBusy: false
+  readonly property bool callAudioWanted: root.featuresWanted
+    && root.backendStatus.calls_audio_output !== undefined
+  onCallAudioWantedChanged: if (root.callAudioWanted) root.loadCallAudio()
+
+  function loadCallAudio() {
+    if (root.callAudioWanted) backendBridge.requestLatest("call_audio_settings", {})
+  }
   // Recent iPhone notifications: private, read only while the settings
   // page shows the list in a visible window, forgotten otherwise.
   property var notificationList: ({})
@@ -770,6 +781,12 @@ ShellRoot {
         root.contactsSyncNotice = typeof result === "object" && result !== null
           ? String(result.text || "") : ""
         root.reload()
+      } else if (method === "call_audio_settings") {
+        root.callAudio = typeof result === "object" && result !== null ? result : ({})
+      } else if (method === "set_call_audio_device") {
+        root.callAudioBusy = false
+        root.loadCallAudio()
+        root.reload()
       } else if (method === "features") {
         root.applyFeatures(result)
       } else if (method === "set_feature") {
@@ -953,6 +970,12 @@ ShellRoot {
         root.syncContactsBusy = false
         root.contactsSyncNotice = ""
         root.errorText = "Contact sync failed: " + (message || "BlueFerry is unavailable")
+      } else if (method === "call_audio_settings") {
+        root.callAudio = ({})
+      } else if (method === "set_call_audio_device") {
+        root.callAudioBusy = false
+        root.errorText = message || "Could not save the call audio device"
+        root.loadCallAudio()
       } else if (method === "features") {
         root.features = ({})
       } else if (method === "set_feature") {
@@ -1738,6 +1761,7 @@ ShellRoot {
           features: root.features
           featurePending: root.featurePending
           doctor: root.doctor
+          callAudio: root.callAudio
           notificationList: root.notificationList
           notificationPinError: root.notificationPinError
           notificationApps: root.notificationApps
@@ -1752,6 +1776,7 @@ ShellRoot {
                   autoProfileReset: root.autoProfileReset.busy,
                   proximityLock: root.proximityLock.busy,
                   calls: root.callsChoice.busy,
+                  callAudio: root.callAudioBusy,
                   callHistory: root.callHistory.busy || root.missedCallPopups.busy,
                   tether: root.tetherBusy,
                   photos: root.contactPhotos.busy,
@@ -1815,6 +1840,7 @@ ShellRoot {
             if (method === "set_auto_profile_reset") root.autoProfileReset.request(args.enabled)
             if (method === "set_proximity_lock") root.proximityLock.request(args.enabled)
             if (method === "set_calls_enabled") root.callsChoice.request(args.enabled)
+            if (method === "set_call_audio_device") root.callAudioBusy = true
             if (method === "set_call_history") {
               root.callHistory.request(args.enabled)
               root.missedCallPopups.request(args.missed_call_notifications)
