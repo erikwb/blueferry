@@ -317,6 +317,8 @@ class CallAudioControl(Protocol):
 
     def set_for_call(self, direction: object, name: object) -> None: ...
 
+    def set_muted(self, muted: object) -> None: ...
+
 
 class PhoneAudioControl(Protocol):
     def snapshot(self) -> dict[str, object]: ...
@@ -2448,6 +2450,10 @@ class BackendOperations:
     def set_call_audio_device_for_call(self, direction: str, name: str) -> None:
         """Use another speaker or microphone for the running call only."""
         self._call_audio().set_for_call(direction, name)
+
+    def set_call_muted(self, muted: bool) -> None:
+        """Mute or unmute this computer's microphone for the running call only."""
+        self._call_audio().set_muted(bool(muted))
 
     def dial(self, number: str, success: Success, failure: Failure) -> None:
         self._call_control().dial(number, success, failure)

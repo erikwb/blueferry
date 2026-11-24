@@ -1239,6 +1239,17 @@ leave out only that phone's nodes; other Bluetooth headsets can be chosen. The d
 used is the stream's link peer in `pw-dump`. Moving the streams with
 BlueFerry's router has not been tested on hardware yet.
 
+Muting this computer for a call writes `mute` into the `Props` of the
+`bluez_output.<MAC>` stream (`pw-cli set-param <id> Props '{ mute: true }'`,
+after the same `pw-dump <id>` check), so the microphone device and other
+recording applications are not affected. `pw-dump` shows the state in the
+stream's `info.params.Props` entry that has `mute`. WirePlumber's
+`node.stream.restore-props` (on by default) saves a stream's mute like its
+target, under the same kind of key, so a call that ended muted would start
+muted; BlueFerry therefore unmutes the stream when a muted call ends (if it
+still exists) and checks every new call stream once. Muting has not been
+tested on hardware yet.
+
 ## Pairing diagnostics
 
 Each pairing attempt records the resolved delivery mode, authentication

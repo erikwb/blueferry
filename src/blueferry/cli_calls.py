@@ -184,6 +184,28 @@ def calls_hold_answer() -> None:
     typer.echo("Answered the waiting call.")
 
 
+_MUTE_WORDS = {"on": True, "off": False}
+
+
+@calls_app.command("mute")
+def calls_mute(
+    state: str = typer.Argument(..., help="'on' mutes, 'off' unmutes", metavar="on|off"),
+) -> None:
+    """Mute this computer's microphone for the running call only.
+
+    Other applications keep the microphone; the mute ends with the call.
+    """
+    muted = _MUTE_WORDS.get(state.strip().lower())
+    if muted is None:
+        typer.echo(typer.style("Pass 'on' or 'off'.", fg=typer.colors.RED), err=True)
+        raise typer.Exit(code=2)
+    _run(lambda: _client().set_call_muted(muted), "Could not change the call microphone")
+    typer.echo(typer.style(
+        "Microphone muted for this call." if muted else "Microphone unmuted.",
+        fg=typer.colors.GREEN,
+    ))
+
+
 audio_app = typer.Typer(
     help="Speaker and microphone for calls (the rest of the system is not changed).",
     invoke_without_command=True,
@@ -220,6 +242,8 @@ def calls_audio(ctx: typer.Context) -> None:
         for word, route in (("Speaker", audio.output), ("Microphone", audio.input)):
             used = terminal_text(route.description or route.device or "not connected yet")
             note = " — chosen device missing, using the system default" if route.missing else ""
+            if word == "Microphone" and audio.muted:
+                note += " (muted for this call)"
             typer.echo(f"  {word}: {used}{note}")
     for title, items in (("Speakers", outputs), ("Microphones", inputs)):
         typer.echo(f"{title}:")

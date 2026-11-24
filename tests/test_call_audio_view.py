@@ -99,3 +99,18 @@ def test_call_view_offers_the_switch_options() -> None:
     assert result["rows"][0]["index"] == 1
     assert result["rows"][1]["options"][0]["value"] == ""
     assert view.call_view(None, DEVICES)["rows"] == []
+
+
+def test_mute_button_names_the_action_and_needs_a_new_daemon() -> None:
+    assert view.call_audio(None)["mute"]["supported"] is False
+    assert view.call_audio({"state": "ready"})["mute"]["supported"] is False
+
+    muted = view.call_audio({"state": "ready", "muted": True})["mute"]
+    unmuted = view.mute(CallAudio(state="waiting", muted=False))
+
+    assert muted == {
+        "supported": True, "muted": True, "label": "Unmute",
+        "hint": "Your microphone is muted for this call.",
+    }
+    assert unmuted["label"] == "Mute" and not unmuted["muted"]
+    assert "this call only" in unmuted["hint"]

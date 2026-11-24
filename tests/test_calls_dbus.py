@@ -120,6 +120,9 @@ class FakeCallAudio:
     def set_for_call(self, direction, name):
         self.requests.append(("call", direction, name))
 
+    def set_muted(self, muted):
+        self.requests.append(("muted", muted))
+
 
 def _service(calls, caller_guard=None, call_audio=None):
     bus = dbus.SessionBus()
@@ -551,6 +554,9 @@ def test_call_audio_methods_reject_wrongly_typed_arguments(calls_service) -> Non
         ("SetCallAudioDeviceForCall", (True, "x"), "bs"),
         ("SetCallAudioDeviceForCall", ("input", ["x"]), "sas"),
         ("ListCallAudioDevices", ("output",), "s"),
+        # bool() would read the string "false" as muting.
+        ("SetCallMuted", ("false",), "s"),
+        ("SetCallMuted", (0,), "i"),
     ):
         outcome = _raw_call(name, CALLS_IFACE, method, args, signature)
         assert outcome == {"error": "org.freedesktop.DBus.Error.InvalidArgs"}, (method, signature)
@@ -566,7 +572,18 @@ def test_call_audio_methods_fail_while_calls_are_off(disabled_service) -> None:
 
     for method, args in (
         ("ListCallAudioDevices", ()), ("SetCallAudioDevice", ("output", "")),
-        ("SetCallAudioDeviceForCall", ("output", "")),
+        ("SetCallAudioDeviceForCall", ("output", "")), ("SetCallMuted", (True,)),
     ):
         outcome = _call(name, CALLS_IFACE, method, *args)
         assert outcome["error"].get_dbus_name() == "io.weirdware.BlueFerry.Error.CallsDisabled"
+
+
+def test_set_call_muted_reaches_the_router(calls_service) -> None:
+    name, _calls, service = calls_service
+    audio = FakeCallAudio()
+    service.operations.dependencies = replace(service.operations.dependencies, call_audio=audio)
+
+    assert "error" not in _call(name, CALLS_IFACE, "SetCallMuted", True)
+    assert "error" not in _call(name, CALLS_IFACE, "SetCallMuted", False)
+
+    assert audio.requests == [("muted", True), ("muted", False)]
