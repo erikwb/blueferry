@@ -90,6 +90,21 @@ def test_listing_shows_state_and_escaped_callers(monkeypatch) -> None:
     assert "\x1b[2J" not in result.output
 
 
+def test_listing_shows_how_long_an_answered_call_runs() -> None:
+    from blueferry.cli_calls import _describe
+    from blueferry.models import CallInfo
+
+    active = CallInfo.from_dict(_call(
+        state="active", active_since="2026-10-26T10:00:00+00:00",
+    ))
+    now = 1793008800.0 + 3725  # 2026-10-26T10:00:00Z + 1:02:05
+    assert _describe(active, now).endswith(" 1:02:05")
+    ringing = CallInfo.from_dict(_call())
+    assert _describe(ringing, now).endswith("(+41791234567)")
+    older = CallInfo.from_dict(_call(state="active"))
+    assert _describe(older, now).endswith("(+41791234567)")
+
+
 def test_disabled_listing_explains_the_opt_in(monkeypatch) -> None:
     result = _invoke(monkeypatch, FakeClient(error="phone calls are disabled"))
 

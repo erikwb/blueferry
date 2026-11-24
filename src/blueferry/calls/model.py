@@ -35,6 +35,8 @@ CALL_STATES = frozenset({
     "disconnected",
 })
 RINGING_STATES = frozenset({"incoming", "waiting"})
+# States of a call that has been answered (the duration runs while held).
+ACTIVE_STATES = frozenset({"active", "held"})
 UNKNOWN_STATE = "unknown"
 
 Direction = Literal["incoming", "outgoing", "unknown"]
@@ -365,8 +367,9 @@ class CallRecord:
     multiparty: bool = False
     emergency: bool = False
     first_seen: str = field(default_factory=_now_iso)
-    # When the call became active (oFono's StartTime), if oFono reported it.
-    # Local only: desktop notifications show it; it is not part of the wire.
+    # When the call became active (epoch seconds): oFono's StartTime, or the
+    # moment the backend first saw it active when oFono did not report one.
+    # On the wire as ``active_since``; the notification shows it as "since".
     start_time: float | None = None
 
     @property
@@ -391,8 +394,31 @@ class CallRecord:
         if key == "Emergency":
             return replace(self, emergency=_bool(value))
         if key == "StartTime":
-            return replace(self, start_time=parse_start_time(value))
+            start = parse_start_time(value)
+            # A malformed StartTime keeps the start already known.
+            return self if start is None else replace(self, start_time=start)
         return self
+
+    def with_active_start(self, now: float) -> CallRecord:
+        """Remember ``now`` as the start of an active (or held) call.
+
+        oFono sends ``StartTime`` right after the ``State`` change, and then
+        it overrides this. A call never active (ringing, dialing) keeps none.
+        """
+        if self.start_time is not None or self.state not in ACTIVE_STATES:
+            return self
+        return replace(self, start_time=now)
+
+    @property
+    def active_since(self) -> str:
+        """ISO 8601 (UTC) start of the active call, ``""`` before it is active."""
+        if self.start_time is None:
+            return ""
+        try:
+            moment = datetime.fromtimestamp(self.start_time, timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            return ""
+        return moment.isoformat(timespec="seconds")
 
     def to_wire(self) -> dict[str, object]:
         return {
@@ -405,6 +431,7 @@ class CallRecord:
             "multiparty": self.multiparty,
             "emergency": self.emergency,
             "first_seen": self.first_seen,
+            "active_since": self.active_since,
         }
 
 

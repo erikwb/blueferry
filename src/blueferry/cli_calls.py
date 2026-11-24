@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 from collections.abc import Callable
 from typing import Optional, TypeVar
 
@@ -11,6 +12,7 @@ import typer
 from blueferry.calls.phone_status import PHONE_STATUS_KEYS
 from blueferry.client import BackendClient, BackendError
 from blueferry.models import CALLS_STATE_TEXT, CallInfo, CallsSnapshot, phone_status_fields
+from blueferry.phone_link_view import call_duration
 from blueferry.text_safety import terminal_text
 
 T = TypeVar("T")
@@ -38,11 +40,15 @@ def _run(action: Callable[[], T], failure: str = "Call failed") -> T:
         raise typer.Exit(code=3) from None
 
 
-def _describe(call: CallInfo) -> str:
+def _describe(call: CallInfo, now: float | None = None) -> str:
     peer = terminal_text(call.display_peer).replace("\n", " ")
     number = terminal_text(call.number)
     suffix = f" ({number})" if number and number != peer else ""
     flags = " [conference]" if call.multiparty else ""
+    # How long an answered call has run; daemons without active_since: none.
+    duration = call_duration(call.active_since, time.time() if now is None else now)
+    if duration and call.state in {"active", "held"}:
+        flags += f" {duration}"
     return f"{call.call_id:<14} {call.state:<10} {call.direction:<9} {peer}{suffix}{flags}"
 
 

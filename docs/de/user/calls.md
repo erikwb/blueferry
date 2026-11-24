@@ -45,7 +45,15 @@ flowchart LR
   „Sent: …“; ein Feld für Tastentöne mit **Send Tones** nimmt ganze Folgen
   wie eine PIN), der
   Terminal-Client ein Anruf-Panel (`c`: annehmen, halten/fortsetzen, auflegen, Tastentöne,
-  Kontaktvorschläge) und die CLI die Befehlsgruppe `calls`:
+  Kontaktvorschläge) und die CLI die Befehlsgruppe `calls`. Läuft ein
+  angenommener Anruf, zeigen die Karten, das Panel und `blueferry calls`
+  seine Dauer (`2:05`, ab einer Stunde `1:02:05`), gezählt ab dem Annehmen
+  hier oder am iPhone (oder sobald die Gegenseite abnimmt), nicht ab dem
+  ersten Klingeln. Die Desktop-Mitteilung nennt nur die Startzeit: Würde sie
+  jede Sekunde erneuert, zeigten manche Mitteilungsdienste sie jedes Mal neu
+  an oder legten jede Änderung im Verlauf ab. Startet das Backend während
+  eines Anrufs neu und meldet oFono keine Startzeit, beginnt die Dauer wieder
+  bei 0:00.
 
   ```bash
   blueferry calls                 # Zustand und laufende Anrufe

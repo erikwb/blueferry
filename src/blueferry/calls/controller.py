@@ -49,6 +49,7 @@ observational; a missing interface only leaves those values unknown.
 from __future__ import annotations
 
 import logging
+import time
 from collections import deque
 from collections.abc import Callable, Mapping
 from dataclasses import replace
@@ -168,6 +169,7 @@ class CallController:
         on_powered: Callable[[], None] | None = None,
         schedule: Schedule = GLib.timeout_add_seconds,
         cancel: Cancel = GLib.source_remove,
+        clock: Callable[[], float] = time.time,
     ) -> None:
         self.enabled = bool(enabled)
         self._mac = mac
@@ -186,6 +188,8 @@ class CallController:
         self._on_powered = on_powered or (lambda: None)
         self._schedule = schedule
         self._cancel = cancel
+        # Wall clock for an active call's start when oFono reports none.
+        self._clock = clock
 
         self._state = CALLS_DISABLED if not self.enabled else CALLS_UNAVAILABLE
         self._running = False
@@ -987,7 +991,7 @@ class CallController:
             log.warning("could not watch an iPhone call", exc_info=True)
             return
         self._call_matches[record.call_id] = match
-        record = self._resolved(record)
+        record = self._resolved(record).with_active_start(self._clock())
         self._calls[record.call_id] = record
         log.info("call %s added (%s, %s)", record.call_id, record.direction, record.state)
         self._emit("call_incoming" if record.ringing else "call_changed", record)
@@ -999,7 +1003,7 @@ class CallController:
         current = self._calls.get(call_id)
         if current is None:
             return
-        updated = current.with_property(name, value)
+        updated = current.with_property(name, value).with_active_start(self._clock())
         if updated == current:
             return
         if updated.number != current.number:
