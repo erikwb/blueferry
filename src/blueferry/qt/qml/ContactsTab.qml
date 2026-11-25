@@ -10,7 +10,8 @@ import "ui"
 // page by page, and the open card with every number, address and its photo.
 // Main asks the bridge to read cards only while this tab is shown. Rows,
 // sections and wording come from contacts_view (via contacts_model); every
-// field comes from the iPhone and is rendered as plain text.
+// field comes from the iPhone and is rendered as plain text. List rows show
+// initials until the bridge has read the photos of the rows on screen.
 Item {
     id: tab
     objectName: "contactsTab"
@@ -158,6 +159,39 @@ Item {
                 // Next page when the end of the list comes into view.
                 onAtYEndChanged: if (atYEnd && count > 0 && tab.view.has_more === true)
                     tab.bridge.loadMoreContacts()
+                onContentYChanged: photoTimer.restart()
+                onCountChanged: photoTimer.restart()
+                onHeightChanged: photoTimer.restart()
+                // Dropped photos (new epoch or photo setting) are read again.
+                readonly property int photoRevision: tab.bridge.contactPhotoRevision || 0
+                onPhotoRevisionChanged: photoTimer.restart()
+
+                // Ask for the photos of the rows on screen after a short
+                // pause in scrolling; the bridge skips loaded ones.
+                Timer {
+                    id: photoTimer
+                    objectName: "contactPhotoTimer"
+                    interval: 120
+                    onTriggered: {
+                        const rows = tab.view.rows || []
+                        if (rows.length === 0 || contactList.height <= 0)
+                            return
+                        let first = contactList.indexAt(contactList.width / 2, contactList.contentY + 1)
+                        let last = contactList.indexAt(contactList.width / 2,
+                            contactList.contentY + contactList.height - 1)
+                        if (first < 0)
+                            first = 0
+                        if (last < 0)
+                            last = rows.length - 1
+                        const ids = []
+                        for (let index = first; index <= last && index < rows.length; ++index) {
+                            if (rows[index].has_photo === true)
+                                ids.push(rows[index].id)
+                        }
+                        if (ids.length > 0)
+                            tab.bridge.requestContactPhotos(ids)
+                    }
+                }
 
                 delegate: ListRow {
                     id: contactRow
@@ -170,7 +204,11 @@ Item {
                     subtitle: contactRow.modelData.subtitle
                     leading: Component {
                         CardAvatar {
+                            objectName: "contactRowAvatar"
                             initials: contactRow.modelData.initials
+                            source: contactRow.modelData.has_photo === true
+                                && tab.bridge.contactPhotoRevision >= 0
+                                ? tab.bridge.contactRowPhoto(contactRow.modelData.id) : ""
                         }
                     }
                     onClicked: tab.bridge.openContact(contactRow.modelData.id)
