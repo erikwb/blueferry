@@ -188,6 +188,10 @@
 
 ### Fixed
 
+- Optional phone calls: ignore an oFono `StartTime` without a UTC offset on
+  Python 3.15, whose `strptime` `%z` now accepts a missing offset. This also
+  fixes the test suite and the RPM `%check` on Fedora 45.
+
 - Pass BlueZ's `MaxCount` filter key to MAP `ListMessages` instead of
   `MaxListCount`, which obexd ignored. The message query now asks the iPhone
   for only the requested number of messages instead of up to 1024. The

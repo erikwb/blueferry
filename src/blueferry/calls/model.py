@@ -339,7 +339,14 @@ def parse_start_time(value: object) -> float | None:
     """
     text = remote_text(value, limit=40)
     try:
-        return datetime.strptime(text, "%Y-%m-%dT%H:%M:%S%z").timestamp()
+        parsed = datetime.strptime(text, "%Y-%m-%dT%H:%M:%S%z")
+    except (ValueError, OverflowError):
+        return None
+    # Python 3.15's %z also accepts a missing offset; require one explicitly.
+    if parsed.tzinfo is None:
+        return None
+    try:
+        return parsed.timestamp()
     except (ValueError, OverflowError):
         return None
 
